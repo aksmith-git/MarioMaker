@@ -137,6 +137,33 @@ pub enum Control {
     Demo,
 }
 
+/// Game style: one movement model with style-specific moves on top (player-physics.md §2.6).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Style {
+    #[default]
+    M1,
+    M3,
+    MW,
+    WU,
+    W3,
+}
+
+impl Style {
+    pub fn from_code(code: &str) -> Self {
+        match code {
+            "M3" => Style::M3,
+            "MW" => Style::MW,
+            "WU" => Style::WU,
+            "3W" => Style::W3,
+            _ => Style::M1,
+        }
+    }
+    /// Items can be picked up and carried (disabled in SMB1).
+    pub fn can_carry(self) -> bool {
+        self != Style::M1
+    }
+}
+
 fn jump_bonus(speed: f32) -> f32 {
     if speed < 0.7 {
         0.0
@@ -246,6 +273,9 @@ pub struct Player {
     pub shoe: Option<bool>,
     /// Flying a Koopa Clown Car (its actor id).
     pub clown: Option<u32>,
+    pub style: Style,
+    /// Carrying an item (its actor id; not in SMB1).
+    pub held: Option<u32>,
     /// Climbing a vine: its centre x and the side the player hangs on (−1 left, +1 right).
     pub climbing: Option<(f32, i32)>,
     /// Frames before a vine can be grabbed again (after jumping off).
@@ -290,6 +320,8 @@ impl Player {
             climb_lock: 0,
             shoe: None,
             clown: None,
+            style: Style::M1,
+            held: None,
         }
     }
 

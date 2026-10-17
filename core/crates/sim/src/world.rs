@@ -205,6 +205,10 @@ pub struct World {
     pub pink_total: usize,
     /// Jump / Run held last frame while flying a Clown Car.
     clown_prev: (bool, bool),
+    /// The course's game style (feature switches for the player and objects).
+    pub style: crate::player::Style,
+    /// Run held this frame (carrying).
+    run_held: bool,
     /// Key-door pairs unlocked: (area, warp id >> 1).
     unlocked_doors: std::collections::BTreeSet<(usize, u8)>,
     /// Snake blocks in the current area.
@@ -278,6 +282,7 @@ impl World {
     pub fn with_areas(areas: Vec<Level>) -> Self {
         let level = areas[0].clone();
         let pink_total = areas.iter().map(|l| l.pink_coins.len()).sum();
+        let style = crate::player::Style::from_code(&level.style);
         let mut w = Self {
             tick: 0,
             initial: level.clone(),
@@ -336,6 +341,8 @@ impl World {
             pink: Default::default(),
             pink_total,
             clown_prev: (false, false),
+            style,
+            run_held: false,
             unlocked_doors: Default::default(),
             snakes: Vec::new(),
             held_by: None,
@@ -683,6 +690,50 @@ impl World {
         }
     }
 
+    /// A carried item sits in front of the player; letting go of Run kicks it. A carried shell
+    /// that touches an enemy defeats both. A shell that wakes up in the hands is dropped.
+    fn carry_held(&mut self) {
+        let Some(id) = self.player.held else { return };
+        let Some(i) = self.actors.iter().position(|a| a.id == id && a.held) else {
+            self.player.held = None;
+            return;
+        };
+        let p = &self.player;
+        let (x, y, facing, pvx) = (p.x + p.facing as f32 * 11.0, p.y + 2.0, p.facing, p.vx);
+        let release =
+            !self.run_held || !self.player.alive() || self.actors[i].mode != Mode::ShellWait;
+        if release {
+            self.actors[i].held = false;
+            self.player.held = None;
+            if self.actors[i].mode == Mode::ShellWait && self.player.alive() {
+                self.actors[i].x = x;
+                self.actors[i].kick(facing, pvx);
+                self.events.push(Event::Kick);
+            }
+            return;
+        }
+        {
+            let a = &mut self.actors[i];
+            a.x = x;
+            a.y = y;
+            a.vx = 0.0;
+            a.vy = 0.0;
+            a.timer = a.timer.max(60); // [inf] the shell doesn't wake while carried
+        }
+        let sb = self.actors[i].bbox();
+        let hit = self
+            .actors
+            .iter()
+            .position(|e| e.id != id && e.alive() && e.kind.is_enemy() && overlap(sb, e.bbox()));
+        if let Some(j) = hit {
+            self.actors[j].die_fall(x);
+            self.actors[i].held = false;
+            self.actors[i].die_fall(x - facing as f32);
+            self.player.held = None;
+            self.events.push(Event::EnemyDown);
+        }
+    }
+
     /// A defeated shoe Goomba leaves its empty shoe behind (unless it fell into lava).
     fn drop_shoes(&mut self) {
         let mut shoes = Vec::new();
@@ -788,6 +839,8 @@ impl World {
         let prev_head = self.player.y + self.player.sensors().head_y;
         let was_ground = self.player.on_ground;
         let jump_held = input.held(input::JUMP);
+        self.run_held = input.held(input::RUN);
+        self.player.style = self.style;
         self.player.on_ice = self.ice_under_player();
         self.player.low_gravity = self.level.theme == 8 && self.level.night;
         self.step_wind();
@@ -917,7 +970,11 @@ impl World {
         let px = self.player.x;
         let py = self.player.y;
         let mut born = Vec::new();
+        self.carry_held();
         for a in &mut self.actors {
+            if a.held {
+                continue;
+            }
             if a.kind.is_platform() {
                 continue; // already moved before the player
             }
@@ -1655,6 +1712,19 @@ impl World {
                 continue;
             }
             let still_shell = a.mode == Mode::ShellWait;
+            if a.held {
+                i += 1;
+                continue;
+            }
+            if still_shell && self.style.can_carry() && self.run_held && self.player.held.is_none()
+            {
+                // pick it up (player-physics.md §5.5; not in SMB1)
+                let id = a.id;
+                self.actors[i].held = true;
+                self.player.held = Some(id);
+                i += 1;
+                continue;
+            }
             if still_shell {
                 let dir = if ax >= p.x { 1 } else { -1 };
                 let pvx = p.vx;
@@ -4324,6 +4394,21 @@ impl World {
                 }
             }
         };
+        // carrying (not in SMB1): the carry poses, named per style
+        let frame = if p.held.is_some() {
+            let k = ((p.walk_phase / 6.0) as usize) % 3;
+            match (p.pose, self.style) {
+                (Pose::Walk, crate::player::Style::MW) => {
+                    ["walk_carry.0", "walk_carry.1", "walk_carry.2"][k]
+                }
+                (Pose::Walk, _) => ["carry_walk.0", "carry_walk.1", "carry_walk.2"][k],
+                (Pose::Jump, _) => "carry_jump.0",
+                (Pose::Dead, _) => "dead.0",
+                _ => "carry_wait.0",
+            }
+        } else {
+            frame
+        };
         let frame = if p.pose == Pose::Dead {
             "dead.0"
         } else {
@@ -5357,6 +5442,39 @@ mod tests {
             (w.camera_x + VIEW_W / 2.0 - 1000.0).abs() < 1.0,
             "stops at the last node"
         );
+    }
+
+    #[test]
+    fn shells_are_carried_outside_smb1_and_kicked_on_release() {
+        for style in [crate::player::Style::M3, crate::player::Style::M1] {
+            let mut lvl = Level::flat(40);
+            lvl.spawns
+                .push(spawn(Kind::Koopa { red: false }, 120.0, 32.0));
+            let mut w = World::with_level(lvl);
+            w.style = style;
+            w.player.x = 60.0;
+            run(&mut w, 0, 1);
+            assert!(w.actors[0].stomp(), "into its shell");
+            let sx = w.actors[0].x;
+            w.player.x = sx - 10.0;
+            run(&mut w, input::RUN, 2);
+            if style == crate::player::Style::M1 {
+                assert!(w.player.held.is_none(), "SMB1 kicks");
+                assert_eq!(w.actors[0].mode, Mode::ShellSlide);
+                continue;
+            }
+            assert!(w.player.held.is_some());
+            run(&mut w, input::RUN | input::RIGHT, 30);
+            let a = &w.actors[0];
+            assert!(
+                a.held && (a.x - (w.player.x + 11.0)).abs() < 0.01,
+                "in front of the player"
+            );
+            run(&mut w, 0, 1);
+            assert!(w.player.held.is_none());
+            assert_eq!(w.actors[0].mode, Mode::ShellSlide);
+            assert!(w.actors[0].vx > 0.0, "kicked forward");
+        }
     }
 
     #[test]

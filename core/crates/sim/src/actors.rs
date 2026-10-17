@@ -431,6 +431,8 @@ pub struct Actor {
     pub rail_off: (f32, f32),
     /// Counted toward a "defeat N" clear condition.
     pub tallied: bool,
+    /// Carried by the player: the world positions it; it doesn't step on its own.
+    pub held: bool,
     /// Set by the world each frame: the camera's bottom-left corner, and the reference level a
     /// Lava Bubble leaps from (the liquid surface, else the area bottom − 12).
     pub camera: (f32, f32),
@@ -477,6 +479,7 @@ impl Actor {
             rail: None,
             rail_off: (0.0, 0.0),
             tallied: false,
+            held: false,
             camera: (0.0, 0.0),
             floor_ref: 0.0,
         }
