@@ -106,3 +106,29 @@ cargo run --release -p mmk-shell -- --check-textures        # GPU vs CPU BCn dec
 
 Keys: arrows/WASD move, Z/Space jump, X/Shift run, Esc/P/Enter pause, R restart. Gamepads:
 d-pad/left stick, south/east jump, west/north run, Start pause.
+
+### Course Maker (`mmk-play --edit`)
+
+```sh
+cargo run --release -p mmk-shell -- --edit my-course.bin            # edit (a new course if the file doesn't exist)
+cargo run --release -p mmk-shell -- --edit new.bin --style M3       # new course in SMB3 style
+```
+
+Mouse: left places the selected part (or paints ground), right erases. 1–9/0 and Tab pick the
+part, arrows scroll, Ctrl+Z / Ctrl+Y undo / redo, Ctrl+S saves. On the part under the cursor: W
+wings, B big, F alternate form, I put the selected part inside it (a block's item). T cycles
+the theme, N toggles night. Enter test-plays; E goes back to editing.
+
+## Online: the open-source course server
+
+Our own self-hostable server; it never talks to Nintendo's network.
+
+```sh
+cargo run --release -p mmk-cli -- server --dir ./server-data --addr 0.0.0.0:8640
+cargo run --release -p mmk-cli -- upload my-course.bin --server http://localhost:8640 --maker me
+cargo run --release -p mmk-cli -- search "castle" --server http://localhost:8640 --sort popular
+cargo run --release -p mmk-cli -- download ABC-DEF-GHJ --server http://localhost:8640
+```
+
+The API is described at the top of `core/crates/server/src/lib.rs`. Clients use
+`core/crates/online`, which also feeds 100 Mario runs from a server.
