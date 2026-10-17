@@ -3,9 +3,10 @@ import ImageIO
 import MetalKit
 import SwiftUI
 
-/// Debug: show one SMM1 layout full-screen with the layout player.
+/// Debug: show one imported layout full-screen with the layout player (SMM1, or SMM2 with
+/// MMK_UI_CACHE=<smm2-ui import>).
 ///
-///     MMK_UI_LAYOUT=<name>                 e.g. Nwk_WorldMapEsy_00, LEnd_WorldClearTelop_00
+///     MMK_UI_LAYOUT=<name>                 e.g. Nwk_WorldMapEsy_00, Play_Title_00
 ///     [MMK_UI_ANIM=<spec>[,<spec>…]]       spec: Name (plays from 0, holds the last frame),
 ///                                          Name~ (loops), Name@<frame> (fixed frame);
 ///                                          parts: L_Part_00/Name

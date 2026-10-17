@@ -209,9 +209,12 @@ pub struct LayoutPlayer {
     /// bits, values). See [`PartBasicInfo`] for the bits.
     basic_overrides: HashMap<String, (u8, Option<PartBasicInfo>)>,
     /// Picture panes whose content (material, texture coordinates, colours) the enclosing
-    /// layout replaces: pane name → (enclosing layout, its replacement pane). The material is
-    /// one of the enclosing layout's (e.g. the number on each world-map course dot).
-    pane_overrides: HashMap<String, (Arc<LayoutRes>, Pane)>,
+    /// layout replaces: pane name → (enclosing layout, its replacement pane, material usage).
+    /// The material is one of the enclosing layout's (e.g. the number on each world-map course
+    /// dot). Material usage 1 takes only that material's colours and keeps the part's own
+    /// textures [inf: SMM2's Course Maker / World Maker icons are tinted this way; SMM1 only
+    /// uses 0].
+    pane_overrides: HashMap<String, (Arc<LayoutRes>, Pane, u8)>,
 }
 
 /// A pane's values after the bound animations (`LayoutPlayer::pane_info`), in its parent's space.
@@ -273,8 +276,10 @@ impl LayoutPlayer {
             if let Some(pane) = &prop.pane
                 && matches!(pane.kind, PaneKind::Picture(_))
             {
-                inst.pane_overrides
-                    .insert(prop.name.clone(), (res.clone(), (**pane).clone()));
+                inst.pane_overrides.insert(
+                    prop.name.clone(),
+                    (res.clone(), (**pane).clone(), prop.material_usage),
+                );
             }
         }
         // text overrides carried by the part pane's properties: a message id that the screen's
@@ -896,6 +901,24 @@ impl LayoutPlayer {
                             kind: PaneKind::Picture(op),
                             ..
                         },
+                        1,
+                    )) => {
+                        // the enclosing layout's colours on the part's own picture
+                        let colors = base_mats(owner)
+                            .get(op.material as usize)
+                            .map(|m| (m.black.map(to_u8), m.white.map(to_u8)));
+                        ctx.frame_colors.set(colors);
+                        let vc = vertex_colors(&st.colors, alpha[i]);
+                        ctx.picture(pic.material, &pic.tex_coords, rect, &mtx[i], vc, out);
+                        ctx.frame_colors.set(None);
+                    }
+                    Some((
+                        owner,
+                        Pane {
+                            kind: PaneKind::Picture(op),
+                            ..
+                        },
+                        _,
                     )) => {
                         let owner_mats = base_mats(owner);
                         let octx = Ctx {
