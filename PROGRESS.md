@@ -276,7 +276,10 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
 - ⬜ SMM2 layouts: Switch BFLYT/BFLAN + BNTX textures through the same layout player; title
   screen, main menu, Course World, Story Mode map, pause, clear/death screens, HUD
 - 🔄 All five styles (SMB1, SMB3, SMW, NSMBU, 3D World) and all themes (day/night) — all five
-  playable; 3D World-only parts (! block, warp box, crate, …) ⬜
+  playable; 3D World-only parts (! block, crate, tree, …) ⬜
+- ✅ Warp Box (97-warp-box.md): pairs 2k ↔ 2k+1 in the same area, entered by touch (no button),
+  player hidden at once, held items dropped, key boxes spend one key and stay open, a used pair
+  vanishes (single player); blocked-exit cancel ⬜
 - ✅ Super Bell / Cat Mario (3D World): the bell walks like a mushroom; wall climb (1.0, 1.5 with
   run, ≤ 120 f / 120 px, top-out vy 4.8, then WallClimbFall −0.085 to −2.0), dive (Down in the
   air: 4.0 forward, −3.0), slide scratch (2.5 for 12 f) and air scratch (vy 2.4, gravity −0.1, once

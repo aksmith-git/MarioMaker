@@ -248,6 +248,10 @@ pub enum WarpKind {
     Pipe(PipeDir),
     /// type: 0 normal, 1 P-switch door, 2 key door
     Door(u8),
+    /// Warp Box (97-warp-box.md), key-locked or not: entered by touch.
+    Box {
+        key: bool,
+    },
 }
 
 /// A warp entrance/exit (9-pipe.md, 55-door.md). Pipes link to the same id in the other area;
@@ -271,7 +275,7 @@ impl Warp {
             WarpKind::Pipe(PipeDir::Left) => (self.x - 8.0, self.y),
             WarpKind::Pipe(PipeDir::Up) => (self.x, self.y + 8.0),
             WarpKind::Pipe(PipeDir::Down) => (self.x, self.y - 8.0),
-            WarpKind::Door(_) => (self.x, self.y),
+            WarpKind::Door(_) | WarpKind::Box { .. } => (self.x, self.y),
         }
     }
 }
@@ -387,7 +391,7 @@ pub const SUPPORTED_PARTS: &[i16] = &[
     0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 52, 53,
     54, 55, 56, 57, 58, 60, 61, 62, 63, 64, 66, 67, 68, 70, 71, 76, 77, 82, 83, 84, 87, 88, 89, 90,
-    91, 92, 94, 95, 98, 99, 100, 102, 103, 104, 105, 108, 109, 110,
+    91, 92, 94, 95, 97, 98, 99, 100, 102, 103, 104, 105, 108, 109, 110,
 ];
 
 /// Game styles the engine plays.
@@ -1104,6 +1108,18 @@ impl Level {
                         x: dx,
                         y: dy,
                         len: 2,
+                    });
+                }
+                97 => {
+                    // warp box: one tile, origin at the bottom centre; pairs 2k ↔ 2k+1 (5 bits)
+                    lvl.warps.push(Warp {
+                        kind: WarpKind::Box {
+                            key: o.flags & 0x4 != 0,
+                        },
+                        id: ((o.flags >> 20) & 0x1F) as u8,
+                        x: o.x as f32 / 10.0,
+                        y: o.y as f32 / 10.0 - 8.0,
+                        len: 1,
                     });
                 }
                 16 | 14 | 17 | 71 => {

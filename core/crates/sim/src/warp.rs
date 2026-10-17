@@ -15,6 +15,8 @@ pub const PIPE_SPEED: f32 = 0.75;
 pub const HOLD_FRAMES: i32 = 30;
 pub const DOOR_IN_FRAMES: i32 = 50;
 pub const DOOR_OUT_FRAMES: i32 = 20;
+/// Warp box exit: frames hidden in the exit box before popping out [inf].
+pub const BOX_OUT_FRAMES: i32 = 30;
 const MOUTH_HALF_W: f32 = 7.85;
 const SIDE_PROBE_Y: f32 = 11.9;
 const SIDE_HOLD: u32 = 10;
@@ -162,6 +164,19 @@ pub fn door_entry(
 }
 
 /// The partner of `from`: pipes → same id in the other area; doors → id ^ 1 in the same area.
+/// Warp Box entry (97-warp-box.md): touching the trigger box (12×12 centred 8 px above the
+/// origin) is enough — no button, no ground check. The nearest box by |dx| wins. `usable` says
+/// whether a box can be used now (not gone; a locked key box needs a key).
+pub fn box_entry(p: &Player, usable: impl Fn(&Warp) -> bool, warps: &[Warp]) -> Option<Warp> {
+    let (x0, y0, x1, y1) = p.hurt_box();
+    warps
+        .iter()
+        .filter(|w| matches!(w.kind, WarpKind::Box { .. }) && usable(w))
+        .filter(|w| x1 > w.x - 6.0 && x0 < w.x + 6.0 && y1 > w.y + 2.0 && y0 < w.y + 14.0)
+        .min_by(|a, b| (p.x - a.x).abs().total_cmp(&(p.x - b.x).abs()))
+        .copied()
+}
+
 pub fn destination(from: &Warp, area: usize, areas: &[Vec<Warp>]) -> Option<(usize, Warp)> {
     match from.kind {
         WarpKind::Pipe(_) => {
@@ -172,6 +187,10 @@ pub fn destination(from: &Warp, area: usize, areas: &[Vec<Warp>]) -> Option<(usi
         }
         WarpKind::Door(_) => areas.get(area)?.iter().find_map(|w| {
             (matches!(w.kind, WarpKind::Door(_)) && w.id == from.id ^ 1).then_some((area, *w))
+        }),
+        // warp boxes never link across areas
+        WarpKind::Box { .. } => areas.get(area)?.iter().find_map(|w| {
+            (matches!(w.kind, WarpKind::Box { .. }) && w.id == from.id ^ 1).then_some((area, *w))
         }),
     }
 }
@@ -195,7 +214,7 @@ pub fn inside_pos(w: &Warp, p: &Player) -> (f32, f32) {
         WarpKind::Pipe(PipeDir::Down) => (ex, ey + 1.0),
         WarpKind::Pipe(PipeDir::Left) => (ex + 8.0, ey - 15.0),
         WarpKind::Pipe(PipeDir::Right) => (ex - 8.0, ey - 15.0),
-        WarpKind::Door(_) => (w.x, w.y),
+        WarpKind::Door(_) | WarpKind::Box { .. } => (w.x, w.y),
     }
 }
 
@@ -208,7 +227,7 @@ pub fn outside_pos(w: &Warp, p: &Player) -> (f32, f32) {
         WarpKind::Pipe(PipeDir::Down) => (ex, ey - h),
         WarpKind::Pipe(PipeDir::Left) => (ex - 8.0, ey - 15.0),
         WarpKind::Pipe(PipeDir::Right) => (ex + 8.0, ey - 15.0),
-        WarpKind::Door(_) => (w.x, w.y),
+        WarpKind::Door(_) | WarpKind::Box { .. } => (w.x, w.y),
     }
 }
 
@@ -270,6 +289,8 @@ pub fn step(t: &mut Transit, p: &mut Player) -> bool {
             if n <= 1 {
                 t.phase = match t.to.kind {
                     WarpKind::Door(_) => Phase::DoorOut(DOOR_OUT_FRAMES),
+                    // the exit box's OutSign / Out before the player pops out [inf: length]
+                    WarpKind::Box { .. } => Phase::DoorOut(BOX_OUT_FRAMES),
                     _ => Phase::Out,
                 };
             } else {
@@ -304,8 +325,13 @@ pub fn finished(t: &Transit) -> bool {
 pub fn hidden(t: &Transit) -> bool {
     match t.phase {
         Phase::HoldOut(_) | Phase::HoldIn(_) => true,
-        Phase::DoorIn(n) => n < DOOR_IN_FRAMES - 20,
-        Phase::DoorOut(n) => n > DOOR_OUT_FRAMES - 6 && matches!(t.to.kind, WarpKind::Door(_)),
+        // a warp box hides the player at once (doors after 20 frames)
+        Phase::DoorIn(n) => n < DOOR_IN_FRAMES - 20 || matches!(t.from.kind, WarpKind::Box { .. }),
+        Phase::DoorOut(n) => match t.to.kind {
+            WarpKind::Door(_) => n > DOOR_OUT_FRAMES - 6,
+            WarpKind::Box { .. } => n > 0,
+            _ => false,
+        },
         _ => false,
     }
 }

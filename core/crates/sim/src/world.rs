@@ -227,6 +227,10 @@ pub struct World {
     run_held: bool,
     /// Key-door pairs unlocked: (area, warp id >> 1).
     unlocked_doors: std::collections::BTreeSet<(usize, u8)>,
+    /// Warp-box pairs unlocked with a key, and pairs used up (single player: a box vanishes
+    /// after its warp): (area, warp id >> 1).
+    unlocked_boxes: std::collections::BTreeSet<(usize, u8)>,
+    gone_boxes: std::collections::BTreeSet<(usize, u8)>,
     /// Snake blocks in the current area.
     pub snakes: Vec<Snake>,
     /// Swinging claw holding the player (actor id).
@@ -415,6 +419,8 @@ impl World {
             yoshi_prev_run: false,
             run_held: false,
             unlocked_doors: Default::default(),
+            unlocked_boxes: Default::default(),
+            gone_boxes: Default::default(),
             snakes: Vec::new(),
             held_by: None,
             prev_jump_claw: false,
@@ -454,6 +460,8 @@ impl World {
         self.keys = 0;
         self.pink.clear();
         self.unlocked_doors.clear();
+        self.unlocked_boxes.clear();
+        self.gone_boxes.clear();
         self.p_timer = 0;
         self.p_bricks.clear();
         self.p_coins.clear();
@@ -1188,6 +1196,22 @@ impl World {
                     &self.level.warps,
                 )
                 .map(|w| (w, false))
+            })
+            .or_else(|| {
+                let (keys, area) = (self.keys, self.area);
+                let (unlocked, gone) = (&self.unlocked_boxes, &self.gone_boxes);
+                warp::box_entry(
+                    &self.player,
+                    |w| {
+                        let pair = (area, w.id >> 1);
+                        !gone.contains(&pair)
+                            && (w.kind == crate::level::WarpKind::Box { key: false }
+                                || keys > 0
+                                || unlocked.contains(&pair))
+                    },
+                    &self.level.warps,
+                )
+                .map(|w| (w, false))
             });
             if let Some((from, is_pipe)) = entry {
                 let warps: Vec<Vec<crate::level::Warp>> =
@@ -1197,6 +1221,17 @@ impl World {
                         && self.unlocked_doors.insert((self.area, from.id >> 1))
                     {
                         self.keys -= 1; // a key opens the pair for good
+                    }
+                    if let crate::level::WarpKind::Box { key } = from.kind {
+                        if key && self.unlocked_boxes.insert((self.area, from.id >> 1)) {
+                            self.keys -= 1;
+                        }
+                        // held items don't travel: dropped where the player was
+                        if let Some(id) = self.player.held.take()
+                            && let Some(a) = self.actors.iter_mut().find(|a| a.id == id)
+                        {
+                            a.held = false;
+                        }
                     }
                     self.player.control = Control::Demo;
                     self.player.vx = 0.0;
@@ -3447,6 +3482,10 @@ impl World {
         self.fade = warp::fade(&t);
         self.player.hidden = warp::hidden(&t);
         if warp::finished(&t) {
+            if let crate::level::WarpKind::Box { .. } = t.to.kind {
+                // single player: the pair is used up and vanishes
+                self.gone_boxes.insert((self.area, t.to.id >> 1));
+            }
             self.transit = None;
             self.player.control = Control::Normal;
             self.player.hidden = false;
@@ -3967,6 +4006,27 @@ impl World {
                 dy,
                 16.0,
                 32.0,
+                false,
+                8,
+            ));
+        }
+        // warp boxes (3D World art; drawn until their pair is used up)
+        for w in &self.level.warps {
+            let crate::level::WarpKind::Box { key } = w.kind else {
+                continue;
+            };
+            let pair = (self.area, w.id >> 1);
+            if !visible(w.x, w.y) || self.gone_boxes.contains(&pair) {
+                continue;
+            }
+            let locked = key && !self.unlocked_boxes.contains(&pair);
+            out.push(Self::model_sprite(
+                "M1_Object_warpbox",
+                if locked { "key.0" } else { "wait.0" },
+                w.x - 8.0,
+                w.y,
+                16.0,
+                16.0,
                 false,
                 8,
             ));
@@ -6757,6 +6817,48 @@ mod tests {
         assert_eq!(w.keys, 0);
         run(&mut w, 0, 200);
         assert_eq!(w.player.x, 600.0);
+    }
+
+    #[test]
+    fn warp_box_by_touch_then_used_up() {
+        let mut lvl = Level::flat(60);
+        lvl.spawns.push(spawn(Kind::Key, 240.0, 32.0));
+        for (id, x, key) in [
+            (4u8, 600.0f32, false),
+            (5, 100.0, false),
+            (6, 300.0, true),
+            (7, 700.0, true),
+        ] {
+            lvl.warps.push(crate::level::Warp {
+                kind: crate::level::WarpKind::Box { key },
+                id,
+                x,
+                y: 32.0,
+                len: 1,
+            });
+        }
+        let mut w = World::with_level(lvl);
+        // the key box ignores a player without a key
+        w.player.x = 285.0;
+        run(&mut w, input::RIGHT, 20);
+        assert!(w.transit.is_none(), "locked");
+        // touching is enough (no button); the key is spent
+        w.player.x = 225.0;
+        run(&mut w, input::RIGHT, 50);
+        assert!(w.transit.is_some() && w.keys == 0, "a key opens it");
+        assert!(w.player.hidden, "hidden at once");
+        run(&mut w, 0, 200);
+        assert!(w.transit.is_none());
+        assert_eq!(w.player.x, 700.0);
+        // used up: walking back through the exit box does nothing
+        run(&mut w, input::LEFT, 20);
+        assert!(w.transit.is_none(), "the pair vanished");
+        // a plain pair
+        w.player.x = 580.0;
+        run(&mut w, input::RIGHT, 60);
+        assert!(w.transit.is_some(), "entered by touch");
+        run(&mut w, 0, 200);
+        assert_eq!(w.player.x, 100.0);
     }
 
     #[test]
