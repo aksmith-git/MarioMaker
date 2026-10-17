@@ -104,6 +104,8 @@ pub enum Form {
     Cape,
     /// NSMBU Propeller Mushroom: Spin flies up, then a slow fall.
     Propeller,
+    /// 3D World Super Bell: climbs walls, scratches, dives.
+    Cat,
 }
 
 /// Invincibility after taking damage (§7).
@@ -313,6 +315,18 @@ pub struct Player {
     /// Ground pound: > 0 wind-up frames left, −1 diving; `pound_landed` for the world this frame.
     pub pound: i32,
     pub pound_landed: bool,
+    /// 3D World: frames of continuous running (the dash stage starts at 75, 60 as Cat).
+    pub dash: i32,
+    /// Cat: wall climb (> 0 frames climbed, −1 sliding down after it), the wall's side, height
+    /// climbed; one climb per air time. Dive (ClimbBodyAttack) until landing; the air scratch's
+    /// slow rise (frames left) and whether it was used this air time.
+    pub cat_climb: i32,
+    pub cat_wall: i32,
+    cat_climbed: f32,
+    cat_climb_used: bool,
+    pub dive: bool,
+    pub roll: i32,
+    roll_used: bool,
     /// Riding Yoshi (his actor id), the re-mount lockout, and what the world must do with
     /// Yoshi this frame (dismounted / knocked off by a hit).
     pub yoshi: Option<u32>,
@@ -387,6 +401,14 @@ impl Player {
             land_timer: 0,
             pound: 0,
             pound_landed: false,
+            dash: 0,
+            cat_climb: 0,
+            cat_wall: 0,
+            cat_climbed: 0.0,
+            cat_climb_used: false,
+            dive: false,
+            roll: 0,
+            roll_used: false,
             yoshi: None,
             yoshi_lock: 0,
             yoshi_off: false,
@@ -401,7 +423,33 @@ impl Player {
     }
 
     fn thresholds(&self) -> &'static [f32; 4] {
-        if self.star > 0 { &T_STAR } else { &T }
+        // 3D World keeps the normal row under a star (its run cap is raised instead, run_max)
+        if self.star > 0 && self.style != Style::W3 {
+            &T_STAR
+        } else {
+            &T
+        }
+    }
+
+    /// Run target speed: T3, except 3D World's two-stage run (2.25 until the dash stage, then
+    /// 3.0; 3.6 with a star) (§2.2).
+    fn run_max(&self) -> f32 {
+        if self.style != Style::W3 {
+            return self.thresholds()[3];
+        }
+        if self.star > 0 {
+            3.6
+        } else if self.dashing() {
+            3.0
+        } else {
+            2.25
+        }
+    }
+
+    /// 3D World: the run has reached the dash stage (75 frames, 60 as Cat).
+    pub fn dashing(&self) -> bool {
+        let need = if self.form == Form::Cat { 60 } else { 75 };
+        self.style == Style::W3 && self.dash >= need
     }
 
     pub fn big(&self) -> bool {
@@ -576,9 +624,19 @@ impl Player {
     fn ground(&mut self, inp: Input) {
         let dir = inp.dir_x();
         let run = inp.held(input::RUN);
+        if self.on_ground {
+            self.dash = if run && dir != 0 { self.dash + 1 } else { 0 };
+        }
+        if self.form == Form::Cat && self.attack > 4 && self.vx.abs() >= 2.0 {
+            // cat slide attack: speed held for its first 12 frames [inf: decel after is the
+            // normal table rather than 0.075]
+            self.vx = 2.5 * self.facing as f32;
+            self.pose = Pose::Walk;
+            return;
+        }
         let t = self.thresholds();
         let star = self.star > 0;
-        let (walk_max, run_max) = (t[1], t[3]);
+        let (walk_max, run_max) = (t[1], self.run_max());
 
         // skid (§2.3): reversing at |v| ≥ 2.5 brakes at 0.12, then re-accelerates at 0.25
         if self.skid == SkidPhase::None
@@ -715,7 +773,7 @@ impl Player {
             let star = self.star > 0;
             let s = self.vx.abs();
             let target = if run {
-                t[3]
+                self.run_max().max(s.min(t[3]))
             } else if s > t[1] && self.vx.signum() as i32 == dir {
                 s
             } else {
@@ -740,7 +798,7 @@ impl Player {
             };
             self.vx = approach(self.vx, target, table[b]);
         }
-        let cap = self.thresholds()[3];
+        let cap = self.thresholds()[3].max(self.run_max());
         self.vx = self.vx.clamp(-cap, cap); // hard air cap
     }
 
@@ -799,13 +857,27 @@ impl Player {
         if run && !self.prev_run && self.form == Form::Fire && !self.crouch {
             self.throw = true;
         }
-        // raccoon tail swing / cape spin on Run (player-physics.md §5.4) [inf: 16 frames]
+        // raccoon tail swing / cape spin / cat scratch on Run (player-physics.md §5.4)
+        // [inf: 16 frames]
         if run
             && !self.prev_run
-            && matches!(self.form, Form::Raccoon | Form::Cape)
+            && matches!(self.form, Form::Raccoon | Form::Cape | Form::Cat)
             && self.held.is_none()
+            && !self.dive
+            && self.cat_climb == 0
         {
             self.attack = 16;
+            if self.form == Form::Cat {
+                if self.on_ground {
+                    // slide attack: 2.5 px/f forward for 12 frames, then the normal decel
+                    self.vx = 2.5 * self.facing as f32;
+                } else if !self.roll_used && !self.in_water {
+                    // rolling attack: a small rise (vy 2.4, gravity −0.1) once per air time
+                    self.vy = 2.4;
+                    self.roll = 24;
+                    self.roll_used = true;
+                }
+            }
         }
         if self.attack > 0 {
             self.attack -= 1;
@@ -899,7 +971,7 @@ impl Player {
                         0
                     };
                     self.vy = JUMP_BASE + jump_bonus(self.vx.abs());
-                    if self.jump_count == 2 {
+                    if self.jump_count == 2 || self.dashing() {
                         self.vy *= 1.05;
                     }
                     if self.low_gravity {
@@ -968,6 +1040,12 @@ impl Player {
             self.flap = 0;
             self.slow_fall = 0;
         }
+        if self.roll > 0 {
+            self.roll -= 1;
+            if !self.on_ground && self.cat_climb == 0 && !self.dive {
+                self.vy = vy_before - 0.1;
+            }
+        }
         self.was_in_water = self.in_water;
         self.x += self.wind;
 
@@ -1015,6 +1093,7 @@ impl Player {
                 Form::Raccoon => 3,
                 Form::Cape => 4,
                 Form::Propeller => 5,
+                Form::Cat => 6,
             },
             shoe: self.shoe.is_some(),
             clown_car: self.clown.is_some(),
@@ -1103,6 +1182,66 @@ impl Player {
         self.vx = approach(self.vx, target, acc);
     }
 
+    /// Cat wall climb (§5.4 Neko): pushing into a wall in the air climbs it at 1.0 px/f (1.5
+    /// with run) for up to 120 frames or 120 px, gravity 0; reaching the top pops up (vy 4.8).
+    /// Then WallClimbFall: gravity −0.085, max fall −2.0 while still on the wall. Jump → the
+    /// wall jump; stick away or the wall ending lets go. One climb per air time [inf].
+    fn cat_wall_climb(&mut self, inp: Input, pressed: bool, level: &Level) -> bool {
+        let dir = inp.dir_x();
+        if self.cat_climb == 0 {
+            if self.cat_climb_used
+                || self.held.is_some()
+                || self.shoe.is_some()
+                || dir == 0
+                || !self.wall_at(level, dir)
+            {
+                return false;
+            }
+            self.cat_climb = 1;
+            self.cat_wall = dir;
+            self.cat_climbed = 0.0;
+            self.cat_climb_used = true;
+            self.spinning = false;
+        }
+        let w = self.cat_wall;
+        self.facing = w;
+        self.vx = 0.0;
+        if pressed {
+            self.vy = 3.5;
+            self.vx = -w as f32 * 2.25;
+            self.facing = -w;
+            self.cat_climb = 0;
+            return true;
+        }
+        if dir == -w {
+            self.cat_climb = 0;
+            return false;
+        }
+        if self.cat_climb > 0 {
+            if !self.wall_at(level, w) {
+                // over the top
+                self.vy = 4.8;
+                self.cat_climb = 0;
+                return true;
+            }
+            let speed = if inp.held(input::RUN) { 1.5 } else { 1.0 };
+            self.vy = speed;
+            self.cat_climbed += speed;
+            self.cat_climb += 1;
+            if self.cat_climb > 120 || self.cat_climbed >= 120.0 {
+                self.cat_climb = -1;
+            }
+            return true;
+        }
+        // sliding down after the climb
+        if !self.wall_at(level, w) {
+            self.cat_climb = 0;
+            return false;
+        }
+        self.vy = (self.vy - 0.085).max(-2.0);
+        true
+    }
+
     fn wall_at(&self, level: &Level, dir: i32) -> bool {
         let s = self.sensors();
         let x = self.x + dir as f32 * (s.wall_x + 0.5);
@@ -1125,16 +1264,45 @@ impl Player {
             }
             self.pound = 0;
             self.wall_slide = 0;
+            self.cat_climb = 0;
+            self.cat_climb_used = false;
+            self.dive = false;
+            self.roll_used = false;
             return;
+        }
+        if self.form != Form::Cat {
+            self.cat_climb = 0;
+            self.dive = false;
         }
         if self.style.has_jump_chain()
             && down_pressed
             && self.pound == 0
+            && !self.dive
+            && self.cat_climb == 0
             && self.held.is_none()
             && self.shoe.is_none()
         {
-            self.pound = 12;
+            if self.form == Form::Cat {
+                self.dive = true;
+            } else {
+                self.pound = 12;
+            }
             self.wall_slide = 0;
+        }
+        if self.dive {
+            // cat dive (ClimbBodyAttack): vy −3.0, 4.0 px/f forward, no accel, until landing
+            // or a wall
+            if self.wall_at(level, self.facing) {
+                self.dive = false;
+            } else {
+                self.vx = 4.0 * self.facing as f32;
+                self.vy = -3.0;
+                self.attack = self.attack.max(8);
+                return;
+            }
+        }
+        if self.form == Form::Cat && self.cat_wall_climb(inp, pressed, level) {
+            return;
         }
         if self.pound > 0 {
             self.pound -= 1;
@@ -1804,5 +1972,189 @@ mod tests {
             (p.x.to_bits(), p.y.to_bits(), p.vx.to_bits(), p.vy.to_bits())
         };
         assert_eq!(run(), run());
+    }
+
+    fn cat(level: &Level) -> Player {
+        let mut p = Player::new(56.0, 32.0);
+        p.style = Style::W3;
+        p.form = Form::Cat;
+        p.step(Input::default(), level);
+        p
+    }
+
+    /// 3D World's two-stage run: 2.25 until the dash stage (75 frames, 60 as Cat), then 3.0.
+    #[test]
+    fn w3_run_has_a_dash_stage() {
+        let level = Level::flat(800);
+        let mut p = Player::new(56.0, 32.0);
+        p.style = Style::W3;
+        let run = Input {
+            buttons: input::RIGHT | input::RUN,
+        };
+        for _ in 0..70 {
+            p.step(run, &level);
+        }
+        assert!((p.vx - 2.25).abs() < 1e-4, "before the dash {}", p.vx);
+        for _ in 0..40 {
+            p.step(run, &level);
+        }
+        assert!(p.dashing() && (p.vx - 3.0).abs() < 1e-4, "dashing {}", p.vx);
+        let mut c = cat(&level);
+        for _ in 0..61 {
+            c.step(run, &level);
+        }
+        assert!(c.dashing(), "the cat dashes after 60 frames ({})", c.dash);
+    }
+
+    #[test]
+    fn cat_climbs_a_wall_then_pops_over_the_top() {
+        let mut level = Level::flat(40);
+        // a 5-tile wall at tile x = 6
+        for y in 2..7 {
+            level.set_solid(6, y);
+        }
+        let mut p = cat(&level);
+        let right = Input {
+            buttons: input::RIGHT,
+        };
+        let mut climbed = false;
+        let mut top = false;
+        for _ in 0..200 {
+            p.step(
+                Input {
+                    buttons: input::RIGHT | if p.on_ground { input::JUMP } else { 0 },
+                },
+                &level,
+            );
+            if p.cat_climb > 0 {
+                climbed = true;
+                assert!((p.vy - 1.0).abs() < 1e-4, "climbs at 1.0: {}", p.vy);
+            }
+            if climbed && p.cat_climb == 0 && p.vy > 4.0 {
+                top = true;
+                break;
+            }
+        }
+        assert!(climbed, "grabbed the wall");
+        assert!(top, "popped over the top (vy 4.8)");
+        for _ in 0..20 {
+            p.step(right, &level);
+        }
+        for _ in 0..100 {
+            p.step(Input::default(), &level);
+        }
+        assert!(
+            p.on_ground && p.y >= 7.0 * 16.0 - 0.01,
+            "landed on the wall top: {}",
+            p.y
+        );
+    }
+
+    #[test]
+    fn cat_slides_down_after_a_long_climb_and_dives() {
+        let mut level = Level::flat(40);
+        for y in 2..30 {
+            level.set_solid(6, y);
+        }
+        let mut p = cat(&level);
+        for _ in 0..200 {
+            p.step(
+                Input {
+                    buttons: input::RIGHT | if p.on_ground { input::JUMP } else { 0 },
+                },
+                &level,
+            );
+            if p.cat_climb < 0 {
+                break;
+            }
+        }
+        assert_eq!(p.cat_climb, -1, "the climb ran out");
+        let mut fell = p.vy;
+        for _ in 0..30 {
+            p.step(
+                Input {
+                    buttons: input::RIGHT,
+                },
+                &level,
+            );
+            fell = p.vy;
+        }
+        assert!(
+            (-2.0..0.0).contains(&fell),
+            "WallClimbFall caps at −2.0: {fell}"
+        );
+
+        // dive: Down in the air → 4.0 forward, −3.0 down
+        let level = Level::flat(80);
+        let mut p = cat(&level);
+        p.step(
+            Input {
+                buttons: input::JUMP,
+            },
+            &level,
+        );
+        for _ in 0..10 {
+            p.step(
+                Input {
+                    buttons: input::JUMP,
+                },
+                &level,
+            );
+        }
+        p.step(
+            Input {
+                buttons: input::DOWN,
+            },
+            &level,
+        );
+        assert!(
+            p.dive && p.vx == 4.0 && p.vy == -3.0,
+            "dive {} {}",
+            p.vx,
+            p.vy
+        );
+        for _ in 0..60 {
+            p.step(Input::default(), &level);
+        }
+        assert!(p.on_ground && !p.dive, "the dive ends on landing");
+    }
+
+    #[test]
+    fn cat_scratch_rises_once_per_air_time() {
+        let level = Level::flat(80);
+        let mut p = cat(&level);
+        p.step(
+            Input {
+                buttons: input::JUMP,
+            },
+            &level,
+        );
+        for _ in 0..8 {
+            p.step(Input::default(), &level);
+        }
+        p.step(
+            Input {
+                buttons: input::RUN,
+            },
+            &level,
+        );
+        assert!(p.attack > 0 && p.vy > 2.0, "rolling attack rise: {}", p.vy);
+        let vy = p.vy;
+        p.step(Input::default(), &level);
+        assert!(
+            (vy - p.vy - 0.1).abs() < 1e-4,
+            "gravity −0.1: {vy} → {}",
+            p.vy
+        );
+        for _ in 0..20 {
+            p.step(Input::default(), &level);
+        }
+        p.step(
+            Input {
+                buttons: input::RUN,
+            },
+            &level,
+        );
+        assert!(p.vy < 1.0, "no second rise in the same air time: {}", p.vy);
     }
 }

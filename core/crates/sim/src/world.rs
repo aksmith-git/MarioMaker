@@ -2245,10 +2245,8 @@ impl World {
     /// The style power-up as an item: SMB1 keeps the mushroom (its Big Mushroom isn't in yet).
     fn style_item(&self) -> Kind {
         match self.style {
-            crate::player::Style::M3 | crate::player::Style::MW | crate::player::Style::WU => {
-                Kind::StyleItem
-            }
-            _ => Kind::Mushroom,
+            crate::player::Style::M1 => Kind::Mushroom,
+            _ => Kind::StyleItem,
         }
     }
 
@@ -2258,6 +2256,7 @@ impl World {
                 let form = match self.style {
                     crate::player::Style::MW => Form::Cape,
                     crate::player::Style::WU => Form::Propeller,
+                    crate::player::Style::W3 => Form::Cat,
                     _ => Form::Raccoon,
                 };
                 self.player.power_up(form);
@@ -2894,7 +2893,10 @@ impl World {
     /// bumps the block it touches.
     fn tail_attack(&mut self) {
         let p = &self.player;
-        if !(4..=12).contains(&p.attack) || !matches!(p.form, Form::Raccoon | Form::Cape) {
+        // the cat's scratch hits from its first frame (it lunges into what it hits) [inf]
+        let window = if p.form == Form::Cat { 2..=15 } else { 4..=12 };
+        if !window.contains(&p.attack) || !matches!(p.form, Form::Raccoon | Form::Cape | Form::Cat)
+        {
             return;
         }
         let both = p.form == Form::Cape;
@@ -5039,6 +5041,8 @@ impl World {
             Form::Super | Form::Cape | Form::Propeller => "M1_Player_SpMarioMdl",
             Form::Fire => "M1_Player_FireMarioMdl",
             Form::Raccoon => "M1_Player_TnkMarioMdl",
+            // 3D World only: the mesh path draws the cat suit (3W_Player_MarioClimb)
+            Form::Cat => "M1_Player_NekoMarioMdl",
         };
         // the multiplayer characters are the model's variants: _2 Luigi, _3 Toad, _4 Toadette
         // (star power is a palette effect in the game; not drawn yet [⬜])
@@ -5097,6 +5101,12 @@ impl World {
             Form::Raccoon if !p.on_ground && (p.slow_fall > 0 || p.attack > 0) => {
                 (model, ["jump_swing.0", "jump_swing.1", "jump_swing.2"][k3])
             }
+            // cat: the mesh path plays these with its "Climb" animation prefix
+            Form::Cat if p.cat_climb > 0 => (model, "WallRun.0"),
+            Form::Cat if p.cat_climb < 0 => (model, "WallFall.0"),
+            Form::Cat if p.dive => (model, "BodyAttackLoop.0"),
+            Form::Cat if p.attack > 0 && p.on_ground => (model, "SlidingAttack.0"),
+            Form::Cat if p.attack > 0 => (model, "AttackAir.0"),
             Form::Cape if !p.on_ground && p.flight > 0 => ("M1_Player_MantMario", "up1.0"),
             Form::Cape if !p.on_ground && p.vy <= -0.99 && p.vy >= -1.01 => {
                 ("M1_Player_MantMario", "down1.0")
@@ -6214,6 +6224,41 @@ mod tests {
         w.player_interactions(false);
         assert!(w.player.vy > 0.0 && w.player.alive() && w.player.form == form);
         assert!(w.actors[i].alive());
+    }
+
+    #[test]
+    fn super_bell_walks_and_gives_the_cat_scratch() {
+        let mut lvl = Level::flat(200);
+        lvl.style = "3W".into();
+        lvl.spawns.push(spawn(Kind::StyleItem, 120.0, 32.0));
+        lvl.spawns.push(spawn(Kind::Goomba, 400.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.style = crate::player::Style::W3;
+        w.player.x = 40.0;
+        let bell = w
+            .actors
+            .iter()
+            .position(|a| a.kind == Kind::StyleItem)
+            .unwrap();
+        let x0 = w.actors[bell].x;
+        run(&mut w, 0, 10);
+        assert!(w.actors[bell].x != x0, "the bell walks like a mushroom");
+        run(&mut w, input::RIGHT | input::RUN, 90);
+        run(&mut w, 0, 60);
+        assert_eq!(w.player.form, Form::Cat, "picked up the bell");
+        let gi = w
+            .actors
+            .iter()
+            .position(|a| a.kind == Kind::Goomba)
+            .unwrap();
+        let (gx, gy) = (w.actors[gi].x, w.actors[gi].y);
+        w.player.x = gx - 20.0;
+        w.player.y = gy;
+        w.player.facing = 1;
+        run(&mut w, 0, 2);
+        run(&mut w, input::RUN, 6);
+        assert!(!w.actors[gi].alive(), "scratch hit");
+        assert_eq!(w.player.at_goal().form, 6);
     }
 
     #[test]

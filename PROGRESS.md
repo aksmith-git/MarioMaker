@@ -276,7 +276,13 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
 - ⬜ SMM2 layouts: Switch BFLYT/BFLAN + BNTX textures through the same layout player; title
   screen, main menu, Course World, Story Mode map, pause, clear/death screens, HUD
 - 🔄 All five styles (SMB1, SMB3, SMW, NSMBU, 3D World) and all themes (day/night) — all five
-  playable; 3D World-only parts (Super Bell, ! block, warp box, crate, …) ⬜
+  playable; 3D World-only parts (! block, warp box, crate, …) ⬜
+- ✅ Super Bell / Cat Mario (3D World): the bell walks like a mushroom; wall climb (1.0, 1.5 with
+  run, ≤ 120 f / 120 px, top-out vy 4.8, then WallClimbFall −0.085 to −2.0), dive (Down in the
+  air: 4.0 forward, −3.0), slide scratch (2.5 for 12 f) and air scratch (vy 2.4, gravity −0.1, once
+  per air time); "goal as Cat" condition; drawn with the cat suit's meshes and Climb animations
+- ✅ 3D World two-stage run: 2.25 until the dash stage (75 f, 60 as Cat), then 3.0 (star 3.6),
+  ×1.05 jump while dashing
 - ⬜ Every part (0–132, incl. 2.0/3.0 items from the update dump), Yoshi, shoes, clown cars,
   power-ups per style, Koopalings, Master Sword, etc.
 - 🔄 Course Maker (editor): core crate `editor` ✅ (place / erase parts with default sizes, child items,

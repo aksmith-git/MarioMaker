@@ -732,6 +732,7 @@ type PlayerPart = (&'static str, &'static str, Option<(usize, &'static str)>);
 fn player_parts(style: &str, model: &str) -> Option<(Vec<PlayerPart>, u32)> {
     let small = model.starts_with("M1_Player_MarioMdl");
     let fire = model.starts_with("M1_Player_FireMarioMdl");
+    let cat = model.starts_with("M1_Player_NekoMarioMdl");
     let player = model.starts_with("M1_Player_") && model.contains("MarioMdl");
     if !player {
         return None;
@@ -762,6 +763,18 @@ fn player_parts(style: &str, model: &str) -> Option<(Vec<PlayerPart>, u32)> {
                 ("3W_Player_MarioMiniEye", "", Some((0, "Head"))),
                 ("3W_Player_MarioMiniHandL", "", Some((0, "HandL"))),
                 ("3W_Player_MarioMiniHandR", "", Some((0, "HandR"))),
+            ],
+            variant,
+        ),
+        // the cat suit: its own body, hands and tail on Mario's skeleton (animations "Climb…")
+        ("3W", false) if cat => (
+            vec![
+                ("3W_Player_MarioClimb", "", None),
+                ("3W_Player_MarioFace", "", Some((0, "Head"))),
+                ("3W_Player_MarioEye", "", Some((0, "Head"))),
+                ("3W_Player_MarioClimbHandL", "", Some((0, "HandL"))),
+                ("3W_Player_MarioClimbHandR", "", Some((0, "HandR"))),
+                ("3W_Player_MarioClimbTail", "", Some((0, "Hip"))),
             ],
             variant,
         ),
@@ -849,6 +862,8 @@ impl MeshStore {
             variant = v;
             let small_prefix = if model.starts_with("M1_Player_MarioMdl") {
                 "SMB_"
+            } else if model.starts_with("M1_Player_NekoMarioMdl") {
+                "Climb"
             } else {
                 ""
             };
