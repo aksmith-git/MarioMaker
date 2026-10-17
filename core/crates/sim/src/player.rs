@@ -162,6 +162,10 @@ impl Style {
     pub fn can_carry(self) -> bool {
         self != Style::M1
     }
+    /// Spin jump from the ground (SMW, NSMBU, 3D World).
+    pub fn can_spin(self) -> bool {
+        matches!(self, Style::MW | Style::WU | Style::W3)
+    }
 }
 
 fn jump_bonus(speed: f32) -> f32 {
@@ -211,6 +215,7 @@ pub enum Pose {
     Swim,
     Climb,
     Slide,
+    Spin,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -279,6 +284,9 @@ pub struct Player {
     pub held: Option<u32>,
     /// Sliding down a slope on the backside (Slip; not in SMB1).
     pub sliding: bool,
+    /// In a spin jump (until landing).
+    pub spinning: bool,
+    prev_spin: bool,
     /// Climbing a vine: its centre x and the side the player hangs on (−1 left, +1 right).
     pub climbing: Option<(f32, i32)>,
     /// Frames before a vine can be grabbed again (after jumping off).
@@ -326,6 +334,8 @@ impl Player {
             style: Style::M1,
             held: None,
             sliding: false,
+            spinning: false,
+            prev_spin: false,
         }
     }
 
@@ -684,6 +694,9 @@ impl Player {
         let jump = inp.held(input::JUMP);
         let pressed = jump && !self.prev_jump;
         self.prev_jump = jump;
+        let spin = inp.held(input::SPIN);
+        let spin_pressed = spin && !self.prev_spin;
+        self.prev_spin = spin;
         let run = inp.held(input::RUN);
         if run && !self.prev_run && self.form == Form::Fire && !self.crouch {
             self.throw = true;
@@ -745,7 +758,15 @@ impl Player {
                 } else {
                     self.ground(inp);
                 }
-                if pressed {
+                if spin_pressed && self.style.can_spin() && self.held.is_none() {
+                    // spin jump (player-physics.md §2.6): vy 3.228, 4.5 in 3D World
+                    self.vy = if self.style == Style::W3 { 4.5 } else { 3.228 };
+                    self.spinning = true;
+                    self.sliding = false;
+                    self.crouch = false;
+                    self.on_ground = false;
+                    self.skid = SkidPhase::None;
+                } else if pressed {
                     self.sliding = false;
                     self.vy = JUMP_BASE + jump_bonus(self.vx.abs());
                     if self.low_gravity {
@@ -780,11 +801,17 @@ impl Player {
 
         if self.on_ground {
             self.stomp_chain = 0;
+            if self.vy <= 0.0 {
+                self.spinning = false;
+            }
         }
         if self.crouch {
             self.pose = Pose::Crouch;
         } else if self.in_water && !self.on_ground {
             self.pose = Pose::Swim;
+            self.walk_phase += 1.0;
+        } else if !self.on_ground && self.spinning {
+            self.pose = Pose::Spin;
             self.walk_phase += 1.0;
         } else if !self.on_ground {
             self.pose = Pose::Jump;

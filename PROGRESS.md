@@ -174,6 +174,10 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
 - ⬜ App screens drawn with the SMM1 layouts (world map walk, intro card, clear, game over, ending)
 
 ### Phase 7 — Expansion ⬜
+- ✅ Styles: all five styles' art imported (importer v4); SMB3 and SMW courses play with their own
+  art (SMB1 fallback per model/frame); carrying shells, slope slide (not SMB1), SMW spin jump (new
+  Spin button: C / R / ZR); the sim owns the playable-style gate — sample 319/550 (M1 148, M3 94,
+  MW 77) · Super Leaf, Cape Feather, Yoshi, P-meter, NSMBU/3D World (3D mesh renderer) ⬜
 - ✅ Clear conditions: header hash → condition; defeat / collect / coins / POW / P Switch counts
   (each placed object once), goal as Super / Fire / invincible, no damage / no landing; the goal
   lets the player pass until met; HUD shows progress · holding / riding conditions ⬜ (no carry,

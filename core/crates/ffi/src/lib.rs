@@ -196,7 +196,7 @@ pub struct MmkEngine {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MmkInput {
-    /// Bitmask: 1 left, 2 right, 4 up, 8 down, 16 jump, 32 run, 64 start.
+    /// Bitmask: 1 left, 2 right, 4 up, 8 down, 16 jump, 32 run, 64 start, 128 spin.
     pub buttons: u32,
 }
 

@@ -12,7 +12,7 @@ typedef struct MmkChallenge MmkChallenge;
 
 enum {
     MMK_BTN_LEFT = 1, MMK_BTN_RIGHT = 2, MMK_BTN_UP = 4, MMK_BTN_DOWN = 8,
-    MMK_BTN_JUMP = 16, MMK_BTN_RUN = 32, MMK_BTN_START = 64,
+    MMK_BTN_JUMP = 16, MMK_BTN_RUN = 32, MMK_BTN_START = 64, MMK_BTN_SPIN = 128,
 };
 
 typedef struct { uint32_t buttons; } MmkInput;                       // 4 bytes

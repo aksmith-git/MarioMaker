@@ -91,6 +91,7 @@ final class InputState {
         if held(.down) { b |= UInt32(MMK_BTN_DOWN) }
         if held(.jump) { b |= UInt32(MMK_BTN_JUMP) }
         if held(.run) { b |= UInt32(MMK_BTN_RUN) }
+        if held(.spin) { b |= UInt32(MMK_BTN_SPIN) }
         if held(.pause) { b |= UInt32(MMK_BTN_START) }
 
         for c in GCController.controllers() {
@@ -102,6 +103,7 @@ final class InputState {
             if g.dpad.down.isPressed || y < -0.4 { b |= UInt32(MMK_BTN_DOWN) }
             if padHeld(.jump, g) { b |= UInt32(MMK_BTN_JUMP) }
             if padHeld(.run, g) { b |= UInt32(MMK_BTN_RUN) }
+            if padHeld(.spin, g) { b |= UInt32(MMK_BTN_SPIN) }
             if padHeld(.pause, g) { b |= UInt32(MMK_BTN_START) }
         }
         return MmkInput(buttons: b)

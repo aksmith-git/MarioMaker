@@ -1520,6 +1520,12 @@ impl World {
             if let (Kind::Muncher, Some((x0, y0, x1, y1, _))) = (a.kind, a.solid_box()) {
                 // a Muncher hurts on every side, including from on top (not through a shoe)
                 let shod = self.player.shoe.is_some() && self.player.y >= y1 - 2.0;
+                if self.player.spinning && self.player.vy < 0.0 && self.player.y >= y1 - 4.0 {
+                    // spin-jumping onto a Muncher bounces off it ("Pass")
+                    self.player.bounce(jump_held);
+                    i += 1;
+                    continue;
+                }
                 if overlap(hurt, (x0 - 1.5, y0 - 1.5, x1 + 1.5, y1 + 1.5))
                     && !star
                     && !shod
@@ -1709,6 +1715,30 @@ impl World {
                         | Kind::Magic
                         | Kind::Wrench
                 );
+            // a spin jump: stomped enemies vanish; spiky ones are bounced off safely ("Pass")
+            let spin_stomp = self.player.spinning && p.vy < 0.0 && p.y >= ay + ah * 0.5;
+            let spin_safe = matches!(
+                a.kind,
+                Kind::EnemyFire | Kind::Hammer | Kind::Magic | Kind::Wrench | Kind::AngrySun { .. }
+            );
+            if spin_stomp && !spin_safe {
+                let boss = matches!(
+                    a.kind,
+                    Kind::Bowser { .. } | Kind::BoomBoom { .. } | Kind::BowserJr { .. }
+                );
+                if !(a.kind.unstompable() || a.kind.stomp_bounces() || boss || a.kind.is_platform())
+                {
+                    self.actors[i].mode = Mode::Dead;
+                    self.add_score(Self::chain_score(self.player.stomp_chain), ax, ay + 24.0);
+                    self.player.stomp_chain += 1;
+                    self.events.push(Event::Stomp);
+                } else {
+                    self.events.push(Event::Bump);
+                }
+                self.player.bounce(jump_held);
+                i += 1;
+                continue;
+            }
             if shoe_stomp && (a.kind.unstompable() || a.kind.stomp_bounces()) {
                 let px = p.x;
                 self.actors[i].die_fall(px);
@@ -4393,6 +4423,9 @@ impl World {
             }
             Pose::Pole => "climb.0",
             Pose::Slide => "slip.0",
+            Pose::Spin => {
+                ["spin.0", "spin.1", "spin.2", "spin.3"][((p.walk_phase / 3.0) as usize) % 4]
+            }
             Pose::Climb => {
                 if ((p.walk_phase / 8.0) as i32) % 2 == 0 {
                     "climb.0"
@@ -5491,6 +5524,36 @@ mod tests {
             assert_eq!(w.actors[0].mode, Mode::ShellSlide);
             assert!(w.actors[0].vx > 0.0, "kicked forward");
         }
+    }
+
+    #[test]
+    fn spin_jumps_destroy_or_bounce_off_enemies() {
+        let mut lvl = Level::flat(40);
+        lvl.spawns.push(spawn(Kind::Goomba, 140.0, 32.0));
+        lvl.spawns.push(spawn(Kind::Spiny, 200.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.style = crate::player::Style::MW;
+        w.player.x = 60.0;
+        run(&mut w, input::SPIN, 1);
+        assert!(w.player.spinning);
+        assert!((w.player.vy - (3.228 - 0.0)).abs() < 0.4, "{}", w.player.vy);
+        // fall onto the Goomba: it vanishes
+        let (gx, gy) = (w.actors[0].x, w.actors[0].y);
+        w.player.x = gx;
+        w.player.y = gy + 12.0;
+        w.player.vy = -2.0;
+        w.player_interactions(false);
+        assert_eq!(w.actors[0].mode, Mode::Dead);
+        // onto the Spiny: a safe bounce
+        let i = w.actors.iter().position(|a| a.kind == Kind::Spiny).unwrap();
+        let (sx, sy) = (w.actors[i].x, w.actors[i].y);
+        w.player.x = sx;
+        w.player.y = sy + 12.0;
+        w.player.vy = -2.0;
+        let form = w.player.form;
+        w.player_interactions(false);
+        assert!(w.player.vy > 0.0 && w.player.alive() && w.player.form == form);
+        assert!(w.actors[i].alive());
     }
 
     #[test]

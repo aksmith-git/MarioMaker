@@ -468,10 +468,7 @@ fn main() -> ExitCode {
                     continue;
                 };
                 let style = c.header.game_style.as_str_lossy();
-                let mut missing = mmk_sim::level::unsupported_features(&c);
-                if style != "M1" {
-                    missing.insert(0, format!("style {style}"));
-                }
+                let missing = mmk_sim::level::unsupported_features(&c);
                 total += 1;
                 let e = by_style.entry(style.clone()).or_default();
                 e.0 += 1;

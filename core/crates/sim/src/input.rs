@@ -7,6 +7,8 @@ pub const DOWN: u32 = 1 << 3;
 pub const JUMP: u32 = 1 << 4;
 pub const RUN: u32 = 1 << 5;
 pub const START: u32 = 1 << 6;
+/// Spin jump (SMW, NSMBU, 3D World).
+pub const SPIN: u32 = 1 << 7;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Input {

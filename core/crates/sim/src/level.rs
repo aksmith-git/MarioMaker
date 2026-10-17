@@ -385,6 +385,9 @@ pub const SUPPORTED_PARTS: &[i16] = &[
     91, 92, 94, 95, 98, 99, 100, 102, 103, 104, 105, 109,
 ];
 
+/// Game styles the engine plays.
+pub const PLAYABLE_STYLES: &[&str] = &["M1", "M3", "MW"];
+
 /// Parts that become actors and so can ride a track (59-track.md).
 const RIDES_TRACKS: &[i16] = &[
     0, 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 15, 18, 19, 20, 22, 23, 25, 28, 30, 31, 32, 33, 34, 35, 36,
@@ -395,6 +398,12 @@ const RIDES_TRACKS: &[i16] = &[
 /// Why a course is not fully playable yet: one entry per missing feature (empty = playable).
 pub fn unsupported_features(course: &Course) -> Vec<String> {
     let mut out = std::collections::BTreeSet::new();
+    // styles: SMB3 and SMW are 2D sprite styles drawn like SMB1; NSMBU and 3D World use 3D
+    // models (a mesh renderer is still to come)
+    let style = course.header.game_style.as_str_lossy();
+    if !PLAYABLE_STYLES.contains(&style.as_str()) {
+        out.insert(format!("style {style}"));
+    }
     for (ai, area) in course.areas().iter().enumerate() {
         let h = &area.header;
         if ai == 1 && area.objects.is_empty() && area.ground.is_empty() {
@@ -406,6 +415,17 @@ pub fn unsupported_features(course: &Course) -> Vec<String> {
         }
 
         for o in area.objects.iter() {
+            // style-specific parts the engine doesn't have yet: the style power-up (44: Super
+            // Leaf in SMB3, Cape Feather in SMW, Propeller in NSMBU, Super Bell in 3D World) and
+            // Yoshi's Egg (45 in SMW / NSMBU)
+            if o.id == 44 && style != "M1" {
+                out.insert(format!("{style} power-up (44)"));
+                continue;
+            }
+            if o.id == 45 && matches!(style.as_str(), "MW" | "WU") {
+                out.insert("Yoshi (45)".to_string());
+                continue;
+            }
             if !SUPPORTED_PARTS.contains(&o.id) {
                 out.insert(format!("part {}", o.id));
             } else if o.flags & 0x400 != 0 && !RIDES_TRACKS.contains(&o.id) {

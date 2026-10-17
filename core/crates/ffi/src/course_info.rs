@@ -6,9 +6,9 @@ use mmk_formats::smm2::Course;
 
 use crate::{MmkAssets, decode_course_data, guard, set_error};
 
-/// Game styles the engine can play today. A course in another style is listed as
-/// "not yet supported". Widen as styles are added.
-pub const PLAYABLE_STYLES: &[&str] = &["M1"];
+/// Game styles the engine can play today (the sim decides; a course in another style is
+/// listed as "not yet supported").
+pub use mmk_sim::level::PLAYABLE_STYLES;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -200,7 +200,7 @@ mod tests {
         let b = course_info(&z.finish().unwrap(), None).unwrap();
         assert_eq!(a.content_hash, b.content_hash);
 
-        let other = course_info(&Course::blank("M3").to_bytes().unwrap(), None).unwrap();
+        let other = course_info(&Course::blank("WU").to_bytes().unwrap(), None).unwrap(); // NSMBU: not yet
         assert_eq!(other.playable, 0);
         assert_ne!(other.content_hash, a.content_hash);
     }
