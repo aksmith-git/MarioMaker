@@ -2,6 +2,25 @@
 
 Newest first. Each entry: what was decided, why, and what would change it.
 
+## 2026-10-18 — Camera choices where the spec is inferred (Phase 5 step 5)
+The follow rules and constants come from the binary as-is (dead zone ±4 px; box −28/+40 px around
+home, shrinking to ±16 while rising; 4 px vertical hysteresis; follower caps 5–8.5 px/frame
+horizontally, 4.99 up / 7.99 down vertically; 216 px ceiling; 60-frame scroll-stop hold, 4 px/frame
+release). Checked identical in v3.0.3. Inferred until the Ryujinx harness can measure them:
+- Header boundary type ≠ 0 means "nothing built above the line" and gives the 216 px ceiling
+  (strong corpus correlation with build height; blank courses have 1).
+- The box-shrink curve is the identity (Bézier controls 0, 1/3, 2/3, 1); the multiplayer join
+  weight is 1 for one player.
+- The engine has no separate Fall state: leaving the ground with vy ≤ 0 counts as a walk-off (no
+  hysteresis) until an upward impulse; jumps use the normal mode, as the game's Jump state does.
+- Scroll-stop walls count any solid cell (ground and blocks); semisolids and slopes do not. Which
+  block types the game counts is unverified.
+- The descend-only start strategy is on at course start (the game enables it in a play mode that
+  was not identified; it only matters in low-camera main areas).
+- Death freezes the view (camera mode 3 → the empty cDemo state); the goal keeps following with
+  the goal strategy (5 px/frame vertical cap).
+- Player velocity for the followers is the player's vx/vy (the game adds a carrying platform's speed).
+
 ## 2026-10-18 — Core-object choices where the specs have no number (Phase 5 step 6)
 Values read from the binary are used as-is (bump curve, coin pop, item emergence, walker speeds,
 shell wake 511, kick 2.5 + 0.5·|v|, death 45-frame pose → vy 3.2 / g −0.16 / restart after 140,

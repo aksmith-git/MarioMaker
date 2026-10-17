@@ -54,7 +54,10 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
 - 🔄 3. Rendering: tiles, sprites, letterboxed integer scaling ✅ · exact BFRES quad placement and
   animation timing ⬜ (sprite offsets currently measured from the textures)
 - ⬜ 4. Audio (BWAV DSP-ADPCM decode, mixer, music + sound effects)
-- 🔄 5. Terrain: ground, blocks, pipes, semisolids, slopes ✅ · ice ✅ · exact camera rules ⬜
+- ✅ 5. Terrain: ground, blocks, pipes, semisolids, slopes ✅ · ice ✅ · in-course camera ✅ (4 px
+  dead-zone follow, filtered vertical tracking, six vertical speed strategies, low-camera 216 px
+  ceiling, full-height scroll-stop walls, course start, frozen on death, goal); autoscroll and
+  vertical-area camera come with those features
 - ✅ 6. Core objects: coins; ? / brick / hidden / hard / note blocks (bump curve, contents, multi-coin,
   breaking + debris); Super Mushroom, Fire Flower + fireballs, Star, 1-Up; Goomba (+ Paragoomba),
   Koopa green/red (+ Paratroopas), shells (kick, slide, chain kills, wake-up); stomp chains, damage

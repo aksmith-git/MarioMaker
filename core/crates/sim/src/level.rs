@@ -138,6 +138,13 @@ pub struct Level {
     pub left: f32,
     pub right: f32,
     pub top: f32,
+    pub bottom: f32,
+    /// Header boundary type: ≠ 0 when nothing is built above the line (the camera stays on the
+    /// first screen height) [camera spec §5.2].
+    pub boundary_type: u8,
+    pub vertical: bool,
+    /// Main area (0) rather than the sub-area.
+    pub main_area: bool,
     pub timer: i16,
 }
 
@@ -200,6 +207,10 @@ impl Level {
             left: h.boundary_left as f32,
             right,
             top,
+            bottom: h.boundary_bottom as f32,
+            boundary_type: h.boundary_type,
+            vertical: h.orientation != 0,
+            main_area: area_index == 0,
             timer: course.header.timer,
         };
 
@@ -562,6 +573,10 @@ impl Level {
             left: 0.0,
             right: width_tiles as f32 * TILE,
             top: 432.0,
+            bottom: 0.0,
+            boundary_type: 0,
+            vertical: false,
+            main_area: true,
             timer: 300,
         };
         lvl.fill_ground(-3, width_tiles + 3, 2);

@@ -8,6 +8,7 @@
 
 pub mod actors;
 pub mod blocks;
+pub mod camera;
 pub mod input;
 pub mod level;
 pub mod player;
