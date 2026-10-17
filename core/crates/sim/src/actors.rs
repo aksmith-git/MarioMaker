@@ -171,6 +171,15 @@ pub enum Kind {
     Crate {
         contents: Option<crate::blocks::Contents>,
     },
+    /// Track Block (85-track-block.md): a 2×2 solid that follows its own path (index `path`)
+    /// at 0.5 px/f once ridden while the ON/OFF state is ON (the world passes it in
+    /// `target_facing`). Phases: 0 wait, 1 forward, 2 back, 3 end stop (60 f), 4 blink (180 f),
+    /// 5 gone, 6 appear (5 f). Normal blocks ping-pong; `alt` ones blink away and respawn.
+    /// Path points in `trail`, next node in `chain`.
+    TrackBlock {
+        path: u8,
+        alt: bool,
+    },
     /// Koopa Troopa Car (72, 3D World): phases 0 empty (brakes 0.05/frame), 1 start spin,
     /// 2 run, 3 turn (30 frames) — the world drives it while the player rides; `hops` = damage
     /// taken (the third hit breaks it) [inf].
@@ -349,6 +358,7 @@ impl Kind {
             Kind::Thwomp { .. }
                 | Kind::Lift { .. }
                 | Kind::Trampoline { .. }
+                | Kind::TrackBlock { .. }
                 | Kind::Crate { .. }
                 | Kind::Spring
                 | Kind::Muncher
@@ -543,6 +553,9 @@ impl Actor {
             Kind::Trampoline { width, .. } => {
                 let hw = width as f32 * 8.0;
                 Some((self.x - hw, self.y + 8.0, self.x + hw, self.y + 16.0, true))
+            }
+            Kind::TrackBlock { .. } if self.phase != 5 => {
+                Some((self.x - 16.0, self.y, self.x + 16.0, self.y + 32.0, false))
             }
             Kind::Crate { .. } if !self.held && self.phase == 0 && self.mode == Mode::Normal => {
                 Some((self.x - 8.0, self.y, self.x + 8.0, self.y + 16.0, false))
@@ -968,6 +981,7 @@ impl Actor {
             Kind::ClownCar { .. } => 14.0,
             Kind::KoopaCar => 14.0,
             Kind::Trampoline { width, .. } => width as f32 * 8.0,
+            Kind::TrackBlock { .. } => 16.0,
             _ if self.big => 16.0,
             _ => 8.0,
         }
@@ -1682,6 +1696,7 @@ impl Actor {
                     self.x += 0.5 * self.dir as f32;
                 }
             }
+            Kind::TrackBlock { path, alt } => self.step_track_block(level, path, alt),
             Kind::Crate { .. } => {
                 if !self.held {
                     self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
@@ -2222,6 +2237,104 @@ impl Actor {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn step_track_block(&mut self, level: &Level, path: u8, alt: bool) {
+        if self.trail.is_empty() {
+            // path points: the start, then 2 tiles per node [inf: the 2×2 grid]
+            let codes = level
+                .track_paths
+                .iter()
+                .find(|(i, _)| *i == path)
+                .map(|(_, c)| c.as_slice())
+                .unwrap_or(&[]);
+            let mut p = (self.x, self.y);
+            self.trail.push(p);
+            for &c in codes {
+                let Some((dx, dy)) = crate::snake::node_step(c) else {
+                    break;
+                };
+                p = (p.0 + dx * 2.0 * TILE, p.1 + dy * 2.0 * TILE);
+                self.trail.push(p);
+            }
+            self.chain = 1;
+            self.home_x = self.x;
+            self.home_y = self.y;
+        }
+        let on = self.target_facing != 0;
+        let last = self.trail.len() as u32 - 1;
+        match self.phase {
+            0 => {
+                if self.ridden && on && last > 0 {
+                    self.phase = 1;
+                    self.chain = 1;
+                }
+            }
+            1 | 2 if on => {
+                // axis-aligned steps toward the next node, 0.5 px/f
+                let (tx, ty) = self.trail[self.chain as usize];
+                let step = |v: f32, t: f32| v + (t - v).clamp(-0.5, 0.5);
+                if self.x != tx {
+                    self.x = step(self.x, tx);
+                } else {
+                    self.y = step(self.y, ty);
+                }
+                if (self.x, self.y) == (tx, ty) {
+                    let end = if self.phase == 1 {
+                        self.chain == last
+                    } else {
+                        self.chain == 0
+                    };
+                    if end {
+                        self.timer = 60;
+                        self.phase = 3;
+                    } else if self.phase == 1 {
+                        self.chain += 1;
+                    } else {
+                        self.chain -= 1;
+                    }
+                }
+            }
+            3 => {
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    if alt {
+                        self.phase = 4;
+                        self.timer = 180;
+                    } else {
+                        // reverse
+                        let back = self.chain == last;
+                        self.phase = if back { 2 } else { 1 };
+                        self.chain = if back { last - 1 } else { 1 };
+                    }
+                }
+            }
+            4 => {
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    self.phase = 5;
+                    self.timer = 30;
+                }
+            }
+            5 => {
+                // back at the start once the spot is clear [inf: 30 frames]
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    self.x = self.home_x;
+                    self.y = self.home_y;
+                    self.phase = 6;
+                    self.timer = 5;
+                }
+            }
+            6 => {
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    self.phase = 0;
+                    self.chain = 1;
+                }
+            }
+            _ => {} // switched OFF: holds still
         }
     }
 

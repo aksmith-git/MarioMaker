@@ -336,6 +336,8 @@ pub struct Level {
     pub exclamations: Vec<((i32, i32), Vec<u16>)>,
     /// Trees (106, 3D World): climbable trunk (a vine) and a canopy platform.
     pub trees: Vec<Tree>,
+    /// Track-block paths: (path index, node codes).
+    pub track_paths: Vec<(u8, Vec<u16>)>,
     /// Track graph (59-track.md).
     pub tracks: crate::track::Tracks,
     /// Custom autoscroll path (89 nodes): (node number, x, y, speed setting 0–2), in px.
@@ -413,7 +415,7 @@ pub const SUPPORTED_PARTS: &[i16] = &[
     0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 52, 53,
     54, 55, 56, 57, 58, 60, 61, 62, 63, 64, 66, 67, 68, 70, 71, 76, 77, 82, 83, 84, 87, 88, 89, 90,
-    72, 91, 92, 94, 95, 97, 98, 99, 100, 102, 103, 104, 105, 106, 108, 109, 110, 112, 113, 119,
+    72, 85, 91, 92, 94, 95, 97, 98, 99, 100, 102, 103, 104, 105, 106, 108, 109, 110, 112, 113, 119,
 ];
 
 /// Game styles the engine plays.
@@ -530,6 +532,7 @@ impl Level {
             snakes: Vec::new(),
             exclamations: Vec::new(),
             trees: Vec::new(),
+            track_paths: Vec::new(),
             blink_blocks: Vec::new(),
             spike_blocks: Vec::new(),
             scroll_nodes: Vec::new(),
@@ -647,6 +650,17 @@ impl Level {
                 (ex, ey, dir, ((o.flags >> 18) & 3) as u8)
             })
             .collect();
+        lvl.track_paths = area
+            .track_blocks
+            .slots
+            .values()
+            .map(|p| {
+                (
+                    p.head.index,
+                    p.nodes.iter().map(|n| n.direction as u16).collect(),
+                )
+            })
+            .collect();
         for o in area.objects.iter() {
             let (w, hgt) = (o.width.max(1) as i32, o.height.max(1) as i32);
             let left_px = o.x as f32 / 10.0 - 8.0;
@@ -686,6 +700,10 @@ impl Level {
                     fire: o.flags & 0x4 != 0,
                 }),
                 72 => Some(Kind::KoopaCar),
+                85 => Some(Kind::TrackBlock {
+                    path: o.extended_data.wrapping_sub(1) as u8,
+                    alt: o.flags & 0x4 != 0,
+                }),
                 113 => Some(Kind::Trampoline {
                     width: o.width.max(1),
                     // flag 0x4: stationary (lift mode 6); 0x8 picks the ±2-tile range [inf]
@@ -1491,6 +1509,7 @@ impl Level {
             snakes: Vec::new(),
             exclamations: Vec::new(),
             trees: Vec::new(),
+            track_paths: Vec::new(),
             blink_blocks: Vec::new(),
             spike_blocks: Vec::new(),
             scroll_nodes: Vec::new(),

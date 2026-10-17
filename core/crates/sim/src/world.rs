@@ -3537,6 +3537,9 @@ impl World {
             if a.kind == Kind::Cloud {
                 a.target_facing = dir; // the rider steers the cloud
             }
+            if matches!(a.kind, Kind::TrackBlock { .. }) {
+                a.target_facing = self.on_off as i32;
+            }
             a.step_spawning(&self.level);
         }
         self.level.solids = self
@@ -5415,6 +5418,13 @@ impl World {
                 a.dir > 0,
             ),
             Kind::Crate { .. } => ("M1_Object_woodbox", "woodbox.0", 16.0, 16.0, false),
+            Kind::TrackBlock { .. } => {
+                // blinking before it vanishes; nothing while gone
+                if a.phase == 5 || (a.phase == 4 && (a.timer / 4) % 2 == 0) {
+                    return None;
+                }
+                ("M1_Object_block_orbit", "wait.0", 16.0, 16.0, false)
+            }
             Kind::Trampoline { .. } => return None,
             // 3D World only: the mesh is drawn at its own size (16 = no scaling)
             Kind::KoopaCar => (
@@ -7547,6 +7557,46 @@ mod tests {
             w.actors.iter().any(|a| a.kind == Kind::OneUp),
             "contents out"
         );
+    }
+
+    #[test]
+    fn track_block_follows_its_path_while_on() {
+        let mut lvl = Level::flat(60);
+        // right, right, end
+        lvl.track_paths.push((0, vec![2, 2, 15]));
+        lvl.spawns.push(spawn(
+            Kind::TrackBlock {
+                path: 0,
+                alt: false,
+            },
+            100.0,
+            64.0,
+        ));
+        let mut w = World::with_level(lvl);
+        run(&mut w, 0, 2);
+        let x0 = w.actors[0].x;
+        // stand on it
+        w.player.x = 100.0;
+        w.player.y = 100.0;
+        run(&mut w, 0, 40);
+        assert!(w.player.ride.is_some(), "riding");
+        let xa = w.actors[0].x;
+        assert!(xa > x0, "set off once ridden");
+        run(&mut w, 0, 20);
+        let x1 = w.actors[0].x;
+        assert!((x1 - xa - 10.0).abs() < 0.01, "0.5 px/f: {}", x1 - xa);
+        // switched OFF it holds still
+        w.on_off = false;
+        run(&mut w, 0, 30);
+        assert_eq!(w.actors[0].x, x1);
+        w.on_off = true;
+        let mut far = 0.0f32;
+        for _ in 0..200 {
+            run(&mut w, 0, 1);
+            far = far.max(w.actors[0].x);
+        }
+        assert_eq!(far, x0 + 64.0, "reached the end");
+        assert!(w.actors[0].x < far, "and came back after the 60-frame stop");
     }
 
     #[test]

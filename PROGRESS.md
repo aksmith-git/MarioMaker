@@ -290,7 +290,7 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   - ⬜ boot scene, fades, FLCT per-character text, glyph borders; Course World (`Nwk_Title_00`),
     Story Mode map (`Qst_*`), pause, clear / death screens, HUD; title in `mmk-play`
 - 🔄 All five styles (SMB1, SMB3, SMW, NSMBU, 3D World) and all themes (day/night) — all five
-  playable — sample 3D World 38/100; 3D World-only parts (track block, enemies …) ⬜
+  playable — sample 3D World 39/100; 3D World-only parts (track block, enemies …) ⬜
 - ✅ Warp Box (97-warp-box.md): pairs 2k ↔ 2k+1 in the same area, entered by touch (no button),
   player hidden at once, held items dropped, key boxes spend one key and stay open, a used pair
   vanishes (single player); blocked-exit cancel ⬜
@@ -308,6 +308,9 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   winged); unflagged ones sway as lifts [inf]
 - ✅ Crate (112): solid to stand on, picked up with Run beside it, thrown (3.5 px/f [inf]) it
   breaks on a wall or an enemy and releases its contents (vy 3.5)
+- ✅ Track Block (85): 2×2 solid on its own path (2 tiles per node [inf]), sets off when ridden,
+  0.5 px/f while ON, holds while OFF, 60-frame stop at the ends, then back (normal) or blink
+  180 f, vanish and respawn at the start (alternate)
 - ✅ Super Bell / Cat Mario (3D World): the bell walks like a mushroom; wall climb (1.0, 1.5 with
   run, ≤ 120 f / 120 px, top-out vy 4.8, then WallClimbFall −0.085 to −2.0), dive (Down in the
   air: 4.0 forward, −3.0), slide scratch (2.5 for 12 f) and air scratch (vy 2.4, gravity −0.1, once
