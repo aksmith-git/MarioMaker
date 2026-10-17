@@ -413,7 +413,7 @@ pub const SUPPORTED_PARTS: &[i16] = &[
     0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 52, 53,
     54, 55, 56, 57, 58, 60, 61, 62, 63, 64, 66, 67, 68, 70, 71, 76, 77, 82, 83, 84, 87, 88, 89, 90,
-    72, 91, 92, 94, 95, 97, 98, 99, 100, 102, 103, 104, 105, 106, 108, 109, 110, 119,
+    72, 91, 92, 94, 95, 97, 98, 99, 100, 102, 103, 104, 105, 106, 108, 109, 110, 112, 113, 119,
 ];
 
 /// Game styles the engine plays.
@@ -686,6 +686,15 @@ impl Level {
                     fire: o.flags & 0x4 != 0,
                 }),
                 72 => Some(Kind::KoopaCar),
+                113 => Some(Kind::Trampoline {
+                    width: o.width.max(1),
+                    // flag 0x4: stationary (lift mode 6); 0x8 picks the ±2-tile range [inf]
+                    moving: o.flags & 0x4 == 0,
+                    range: if o.flags & 0x8 != 0 { 2 } else { 3 },
+                }),
+                112 => Some(Kind::Crate {
+                    contents: Contents::from_part(o.child_id, o.child_flags),
+                }),
                 60 => Some(Kind::LavaBubble),
                 103 => Some(Kind::FishBone),
                 45 if matches!(lvl.style.as_str(), "MW" | "WU") => Some(Kind::YoshiEgg {

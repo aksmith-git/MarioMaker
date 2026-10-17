@@ -239,6 +239,11 @@ pub struct World {
     trees_shaken: std::collections::BTreeSet<(usize, usize)>,
     /// Snake blocks in the current area.
     pub snakes: Vec<Snake>,
+    /// Frames since a plain Mushroom Trampoline bounce (1…6, the late-jump window; 0 = none),
+    /// and whether jump was pressed this frame.
+    tramp_late: i32,
+    jump_pressed_now: bool,
+    prev_jump_tramp: bool,
     /// ! blocks in the current area.
     pub exclamations: Vec<crate::exclamation::ExclamationBlock>,
     /// Swinging claw holding the player (actor id).
@@ -431,6 +436,9 @@ impl World {
             gone_boxes: Default::default(),
             trees_shaken: Default::default(),
             snakes: Vec::new(),
+            tramp_late: 0,
+            jump_pressed_now: false,
+            prev_jump_tramp: false,
             exclamations: Vec::new(),
             held_by: None,
             prev_jump_claw: false,
@@ -930,8 +938,23 @@ impl World {
         };
         let p = &self.player;
         let (x, y, facing, pvx) = (p.x + p.facing as f32 * 11.0, p.y + 2.0, p.facing, p.vx);
-        let release =
-            !self.run_held || !self.player.alive() || self.actors[i].mode != Mode::ShellWait;
+        let crate_held = matches!(self.actors[i].kind, Kind::Crate { .. });
+        let release = !self.run_held
+            || !self.player.alive()
+            || (self.actors[i].mode != Mode::ShellWait && !crate_held);
+        if release && crate_held {
+            // thrown forward [inf: 3.5 px/f, vy 2.0]; it breaks on a wall or an enemy
+            let a = &mut self.actors[i];
+            a.held = false;
+            a.x = x;
+            a.vx = 3.5 * facing as f32 + 0.5 * pvx;
+            a.vy = 2.0;
+            a.phase = 1;
+            a.dir = facing;
+            self.player.held = None;
+            self.events.push(Event::Kick);
+            return;
+        }
         if release {
             self.actors[i].held = false;
             self.player.held = None;
@@ -961,6 +984,112 @@ impl World {
             self.actors[i].die_fall(x - facing as f32);
             self.player.held = None;
             self.events.push(Event::EnemyDown);
+        }
+    }
+
+    /// Crates: pick one up by standing beside it with Run held (not in SMB1); a thrown crate
+    /// that hits an enemy knocks it out and breaks; a broken crate releases its contents
+    /// upward (vy 3.5).
+    fn step_crates(&mut self) {
+        let p = &self.player;
+        if self.style.can_carry()
+            && self.run_held
+            && p.held.is_none()
+            && p.on_ground
+            && p.control == Control::Normal
+            && p.yoshi.is_none()
+        {
+            let (px, py, facing) = (p.x, p.y, p.facing);
+            if let Some(a) = self.actors.iter_mut().find(|a| {
+                matches!(a.kind, Kind::Crate { .. })
+                    && a.alive()
+                    && !a.held
+                    && a.phase == 0
+                    && (a.y - py).abs() < 4.0
+                    && (a.x - px) * facing as f32 > 0.0
+                    && (a.x - px).abs() <= 16.0
+            }) {
+                a.held = true;
+                self.player.held = Some(a.id);
+            }
+        }
+        // enemies landing on a Mushroom Trampoline bounce (EnemyDB jump-step: 5.5, 6.5 winged)
+        let tramps: Vec<(f32, f32, f32)> = self
+            .actors
+            .iter()
+            .filter_map(|a| match a.kind {
+                Kind::Trampoline { width, .. } => Some((
+                    a.x - width as f32 * 8.0,
+                    a.x + width as f32 * 8.0,
+                    a.y + 16.0,
+                )),
+                _ => None,
+            })
+            .collect();
+        for a in &mut self.actors {
+            if a.kind.is_enemy()
+                && a.alive()
+                && a.on_ground
+                && tramps
+                    .iter()
+                    .any(|&(x0, x1, top)| a.x > x0 && a.x < x1 && (a.y - top).abs() < 1.5)
+            {
+                a.vy = if a.wings { 6.5 } else { 5.5 };
+                a.on_ground = false;
+            }
+        }
+        let mut broken = Vec::new();
+        for ci in 0..self.actors.len() {
+            let c = &self.actors[ci];
+            let Kind::Crate { contents } = c.kind else {
+                continue;
+            };
+            if !c.alive() {
+                continue;
+            }
+            let mut hit = c.phase == 2;
+            if c.phase == 1 {
+                let cb = c.bbox();
+                for j in 0..self.actors.len() {
+                    let e = &self.actors[j];
+                    if j != ci && e.kind.is_enemy() && e.alive() && overlap(cb, e.bbox()) {
+                        let cx = self.actors[ci].x;
+                        self.actors[j].die_fall(cx);
+                        self.events.push(Event::EnemyDown);
+                        hit = true;
+                        break;
+                    }
+                }
+            }
+            if hit {
+                let c = &mut self.actors[ci];
+                c.mode = Mode::Dead;
+                broken.push((c.x, c.y, contents));
+            }
+        }
+        for (x, y, contents) in broken {
+            self.effects.extend(Effect::debris(x, y, 0.0, 0.1));
+            self.events.push(Event::Break);
+            let kind = match contents {
+                None => continue,
+                Some(Contents::Coin) => {
+                    self.effects.push(Effect::coin_pop(x, y, false));
+                    self.events.push(Event::Coin);
+                    continue;
+                }
+                Some(Contents::Mushroom) => Kind::Mushroom,
+                Some(Contents::Special) => self.style_item(),
+                Some(Contents::FireFlower) => Kind::FireFlower,
+                Some(Contents::Star) => Kind::Star,
+                Some(Contents::OneUp) => Kind::OneUp,
+                Some(Contents::Goomba) => Kind::Goomba,
+                Some(Contents::Koopa { red }) => Kind::Koopa { red },
+                Some(Contents::YoshiEgg) => Kind::YoshiEgg { red: false },
+            };
+            let mut a = Actor::new(kind, x, y);
+            a.dir = 1;
+            a.vy = 3.5;
+            self.add_actor(a);
         }
     }
 
@@ -1299,6 +1428,8 @@ impl World {
             .liquid
             .is_some_and(|l| l.water() && l.covers(self.player.y + 8.0))
             || (self.level.theme == 2 && self.level.night); // castle night: swim in the air
+        self.jump_pressed_now = jump_held && !self.prev_jump_tramp;
+        self.prev_jump_tramp = jump_held;
         self.step_platforms(jump_held, input.dir_x());
         self.conveyor_carry();
         let prev_x = self.player.x;
@@ -1452,6 +1583,7 @@ impl World {
         let py = self.player.y;
         let mut born = Vec::new();
         self.carry_held();
+        self.step_crates();
         for a in &mut self.actors {
             if a.held {
                 continue;
@@ -3496,6 +3628,30 @@ impl World {
                 self.player.ride = None;
                 self.events.push(Event::Jump);
             }
+            // Mushroom Trampoline: landing launches at once — 6.0, or 4.43 with jump held; jump
+            // pressed within 6 frames of a plain bounce re-launches at 4.43 − 0.1·frames
+            let tramp = self
+                .actors
+                .iter()
+                .any(|a| a.id == id && matches!(a.kind, Kind::Trampoline { .. }));
+            if tramp {
+                self.player.vy = if jump_held { 4.43 } else { 6.0 };
+                self.tramp_late = if jump_held { 0 } else { 1 };
+                self.player.on_ground = false;
+                self.player.ride = None;
+                self.events.push(Event::Jump);
+            }
+        }
+        if self.tramp_late > 0 {
+            if self.jump_pressed_now && self.tramp_late <= 6 {
+                self.player.vy = 4.43 - 0.1 * (self.tramp_late - 1) as f32;
+                self.tramp_late = 0;
+            } else {
+                self.tramp_late += 1;
+                if self.tramp_late > 6 {
+                    self.tramp_late = 0;
+                }
+            }
         }
     }
 
@@ -4732,6 +4888,32 @@ impl World {
                 ));
                 continue;
             }
+            if let Kind::Trampoline { width, .. } = a.kind {
+                // 3D World pieces: left cap, middle units, right cap (meshes at their own size)
+                let x0 = a.x - width as f32 * 8.0;
+                for i in 0..width {
+                    let stem = if width == 1 {
+                        "tranpoline_unit.0"
+                    } else if i == 0 {
+                        "tranpoline_left.0"
+                    } else if i == width - 1 {
+                        "tranpoline_right.0"
+                    } else {
+                        "tranpoline_unit.0"
+                    };
+                    out.push(Self::model_sprite(
+                        "M1_Object_trampoline",
+                        stem,
+                        x0 + i as f32 * TILE,
+                        a.y + 8.0,
+                        16.0,
+                        16.0,
+                        false,
+                        15,
+                    ));
+                }
+                continue;
+            }
             if let Kind::Lift { width, falling } = a.kind {
                 let x0 = a.x - width as f32 * 8.0;
                 for i in 0..width {
@@ -5232,6 +5414,8 @@ impl World {
                 32.0,
                 a.dir > 0,
             ),
+            Kind::Crate { .. } => ("M1_Object_woodbox", "woodbox.0", 16.0, 16.0, false),
+            Kind::Trampoline { .. } => return None,
             // 3D World only: the mesh is drawn at its own size (16 = no scaling)
             Kind::KoopaCar => (
                 "M1_Enemy_koopacar",
@@ -7281,6 +7465,88 @@ mod tests {
         w.player.vy = 0.0;
         run(&mut w, 0, 30);
         assert!(w.player.on_ground && (w.player.y - t.canopy().1).abs() < 0.5);
+    }
+
+    #[test]
+    fn mushroom_trampoline_bounces_high_or_with_a_jump() {
+        let mut lvl = Level::flat(60);
+        lvl.spawns.push(spawn(
+            Kind::Trampoline {
+                width: 4,
+                moving: false,
+                range: 3,
+            },
+            200.0,
+            48.0,
+        ));
+        let mut w = World::with_level(lvl);
+        w.player.x = 200.0;
+        w.player.y = 100.0;
+        let mut top = 0.0f32;
+        for _ in 0..40 {
+            run(&mut w, 0, 1);
+            top = top.max(w.player.vy);
+        }
+        // launched at 6.0 before the player's step applies one frame of gravity
+        assert!((top - (6.0 - 0.34)).abs() < 0.01, "plain bounce 6.0: {top}");
+        // with jump held on landing: 4.43
+        let mut lvl2 = Level::flat(60);
+        lvl2.spawns.push(spawn(
+            Kind::Trampoline {
+                width: 4,
+                moving: false,
+                range: 3,
+            },
+            200.0,
+            48.0,
+        ));
+        let mut w2 = World::with_level(lvl2);
+        w2.player.x = 200.0;
+        w2.player.y = 100.0;
+        let mut top2 = 0.0f32;
+        for _ in 0..40 {
+            run(&mut w2, input::JUMP, 1);
+            top2 = top2.max(w2.player.vy);
+        }
+        assert!(top2 > 3.5 && top2 < 4.43, "jump-held launch 4.43: {top2}");
+    }
+
+    #[test]
+    fn crate_is_carried_thrown_and_breaks_on_an_enemy() {
+        let mut lvl = Level::flat(60);
+        lvl.style = "3W".into();
+        lvl.spawns.push(spawn(
+            Kind::Crate {
+                contents: Some(Contents::OneUp),
+            },
+            120.0,
+            32.0,
+        ));
+        lvl.spawns.push(spawn(Kind::Goomba, 260.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.style = crate::player::Style::W3;
+        w.player.x = 100.0;
+        run(&mut w, input::RIGHT, 8);
+        run(&mut w, input::RUN | input::RIGHT, 4);
+        assert!(w.player.held.is_some(), "picked up");
+        run(&mut w, 0, 1);
+        let c = w
+            .actors
+            .iter()
+            .find(|a| matches!(a.kind, Kind::Crate { .. }))
+            .unwrap();
+        assert!(c.phase == 1 && c.vx > 2.0, "thrown");
+        run(&mut w, 0, 60);
+        assert!(
+            w.actors
+                .iter()
+                .all(|a| a.kind != Kind::Goomba || !a.alive()),
+            "the Goomba was hit"
+        );
+        assert!(
+            w.actors.iter().any(|a| a.kind == Kind::OneUp),
+            "contents out"
+        );
     }
 
     #[test]

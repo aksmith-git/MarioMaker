@@ -159,6 +159,18 @@ pub enum Kind {
     ClownCar {
         fire: bool,
     },
+    /// Mushroom Trampoline (113-mushroom-trampoline.md): a bouncy top-only platform `width`
+    /// tiles wide. `moving`: a lift that sways ±`range` tiles at 0.5 px/f [inf: horizontal].
+    Trampoline {
+        width: u8,
+        moving: bool,
+        range: u8,
+    },
+    /// Crate (112-crate.md): carried and thrown; breaks on hitting a wall or an enemy after a
+    /// throw (phase 1) and releases what it holds (vy 3.5). Phase 0 = resting (solid).
+    Crate {
+        contents: Option<crate::blocks::Contents>,
+    },
     /// Koopa Troopa Car (72, 3D World): phases 0 empty (brakes 0.05/frame), 1 start spin,
     /// 2 run, 3 turn (30 frames) — the world drives it while the player rides; `hops` = damage
     /// taken (the third hit breaks it) [inf].
@@ -336,6 +348,8 @@ impl Kind {
             self,
             Kind::Thwomp { .. }
                 | Kind::Lift { .. }
+                | Kind::Trampoline { .. }
+                | Kind::Crate { .. }
                 | Kind::Spring
                 | Kind::Muncher
                 | Kind::Donut
@@ -525,6 +539,13 @@ impl Actor {
             Kind::Lift { width, .. } => {
                 let hw = width as f32 * 8.0;
                 Some((self.x - hw, self.y + 8.0, self.x + hw, self.y + 16.0, true))
+            }
+            Kind::Trampoline { width, .. } => {
+                let hw = width as f32 * 8.0;
+                Some((self.x - hw, self.y + 8.0, self.x + hw, self.y + 16.0, true))
+            }
+            Kind::Crate { .. } if !self.held && self.phase == 0 && self.mode == Mode::Normal => {
+                Some((self.x - 8.0, self.y, self.x + 8.0, self.y + 16.0, false))
             }
             Kind::Muncher if self.mode == Mode::Normal => {
                 Some((self.x - 8.0, self.y, self.x + 8.0, self.y + 16.0, false))
@@ -946,6 +967,7 @@ impl Actor {
             Kind::Lift { width, .. } => width as f32 * 8.0,
             Kind::ClownCar { .. } => 14.0,
             Kind::KoopaCar => 14.0,
+            Kind::Trampoline { width, .. } => width as f32 * 8.0,
             _ if self.big => 16.0,
             _ => 8.0,
         }
@@ -1644,6 +1666,42 @@ impl Actor {
                         16.0
                     };
                     self.wing_bob(amp);
+                }
+            }
+            Kind::Trampoline { moving, range, .. } => {
+                if moving {
+                    // a lift swaying around its start [inf]
+                    if self.age <= 1 {
+                        self.home_x = self.x;
+                    }
+                    let r = range as f32 * TILE;
+                    let nx = self.x + 0.5 * self.dir as f32;
+                    if (nx - self.home_x).abs() >= r {
+                        self.dir = -self.dir;
+                    }
+                    self.x += 0.5 * self.dir as f32;
+                }
+            }
+            Kind::Crate { .. } => {
+                if !self.held {
+                    self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+                    self.collide(level);
+                    if self.phase == 1 {
+                        if self.wall {
+                            self.phase = 2; // broken: the world releases the contents
+                        } else if self.on_ground {
+                            // each landing halves the speed
+                            self.vx *= 0.5;
+                            if self.vx.abs() < 0.25 {
+                                self.vx = 0.0;
+                                self.phase = 0;
+                            } else {
+                                self.vy = 1.0;
+                            }
+                        }
+                    } else if self.on_ground {
+                        self.vx = 0.0;
+                    }
                 }
             }
             Kind::Lift { .. } if self.wings => self.wing_bob(16.0),
