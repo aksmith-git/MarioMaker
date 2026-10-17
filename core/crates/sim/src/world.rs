@@ -678,6 +678,7 @@ impl World {
         self.fire_hazards();
         self.step_cannons();
         self.twister_lift();
+        self.magikoopas();
         self.claws(input);
         self.pow_quake();
         self.check_checkpoints();
@@ -1187,7 +1188,33 @@ impl World {
                 i += 1;
                 continue;
             }
-            let harmful = a.kind.is_enemy() || a.kind == Kind::EnemyFire || a.kind == Kind::Hammer;
+            if a.kind == Kind::Magikoopa && a.phase == 0 {
+                i += 1;
+                continue; // hidden
+            }
+            if a.kind == Kind::RockyWrench && a.heading < 6.0 {
+                i += 1;
+                continue; // down the manhole
+            }
+            if a.kind == Kind::Wiggler
+                && a.wiggler_segments()
+                    .iter()
+                    .any(|&(sx, sy)| overlap(hurt, (sx - 7.0, sy, sx + 7.0, sy + 14.0)))
+                && !star
+                && self.player.hurt()
+            {
+                self.events.push(if self.player.alive() {
+                    Event::PowerDown
+                } else {
+                    Event::Death
+                });
+                return;
+            }
+            let harmful = a.kind.is_enemy()
+                || matches!(
+                    a.kind,
+                    Kind::EnemyFire | Kind::Hammer | Kind::Magic | Kind::Wrench
+                );
             if !harmful || !overlap(hurt, ab) {
                 i += 1;
                 continue;
@@ -1322,6 +1349,12 @@ impl World {
                     };
                 }
                 a.rng ^= (idx as u32 + 1).wrapping_mul(0x85eb_ca6b);
+                if s.kind == Kind::RockyWrench {
+                    a.home_y = s.y - 8.0;
+                }
+                if s.kind == Kind::Magikoopa {
+                    a.timer = 30;
+                }
                 if s.kind == Kind::Claw {
                     // pivot at the top centre of the 3×4 object
                     a.home_x = s.x;
@@ -1626,6 +1659,76 @@ impl World {
             }
         }
         self.prev_jump_claw = input.held(input::JUMP);
+    }
+
+    /// Magikoopa (39-magikoopa.md): hidden 60–75 frames → appears near the view centre (x
+    /// ± 16k px, y on the floor below a random height) → after 30–60 frames casts one magic shot
+    /// (0.75 px/frame toward the player, within ±45° of its facing) → 30–60 frames → vanishes.
+    /// `phase`: 0 hidden, 1 shown, 2 cast done. Hidden Magikoopas don't collide.
+    fn magikoopas(&mut self) {
+        let (cx, cy) = (self.camera_x + VIEW_W / 2.0, self.camera_y + VIEW_H / 2.0);
+        let (px, py) = (self.player.x, self.player.y);
+        let mut casts = Vec::new();
+        for idx in 0..self.actors.len() {
+            if self.actors[idx].kind != Kind::Magikoopa || !self.actors[idx].alive() {
+                continue;
+            }
+            let r1 = self.rand();
+            let r2 = self.rand();
+            let a = &mut self.actors[idx];
+            a.timer -= 1;
+            match a.phase {
+                0 => {
+                    a.mode = Mode::Normal;
+                    if a.timer <= 0 {
+                        // pick a spot: x within ±144 of the view centre, on the floor below
+                        let k = (r1 * 9.0).floor() * 16.0 * if r2 < 0.5 { -1.0 } else { 1.0 };
+                        let x = cx + k.clamp(-144.0, 144.0);
+                        let mut y = cy + (r2 - 0.5) * 160.0;
+                        let mut tries = 0;
+                        while !self.level.cell_at(x, y - 1.0).is_solid() && y > 0.0 && tries < 40 {
+                            y = ((y - 1.0) / TILE).floor() * TILE;
+                            tries += 1;
+                        }
+                        a.x = x;
+                        a.y = y;
+                        a.phase = 1;
+                        a.timer = 30 + (r1 * 30.0) as i32;
+                        a.dir = if px < a.x { -1 } else { 1 };
+                    }
+                }
+                1 => {
+                    if a.timer <= 0 {
+                        let face = if px < a.x { 180.0f32 } else { 0.0 };
+                        let want = (py + 8.0 - (a.y + 16.0)).atan2(px - a.x).to_degrees();
+                        let mut d = want - face;
+                        while d > 180.0 {
+                            d -= 360.0;
+                        }
+                        while d < -180.0 {
+                            d += 360.0;
+                        }
+                        let ang = (face + d.clamp(-45.0, 45.0)).to_radians();
+                        casts.push((a.x + a.dir as f32 * 8.0, a.y + 12.0, ang));
+                        a.phase = 2;
+                        a.timer = 30 + (r2 * 30.0) as i32;
+                    }
+                }
+                _ => {
+                    if a.timer <= 0 {
+                        a.phase = 0;
+                        a.timer = 60 + (r1 * 16.0) as i32;
+                    }
+                }
+            }
+        }
+        for (x, y, ang) in casts {
+            let mut m = Actor::new(Kind::Magic, x, y);
+            m.vx = 0.75 * ang.cos();
+            m.vy = 0.75 * ang.sin();
+            m.timer = 600;
+            self.add_actor(m);
+        }
     }
 
     /// Twister wind column: x within ±16 of the twister, from its feet to the column top. The
@@ -2534,6 +2637,45 @@ impl World {
                 }
             }
         }
+        for a in &self.actors {
+            if a.kind == Kind::Wiggler && visible(a.x, a.y) {
+                let angry = a.phase == 1;
+                for (k, (sx, sy)) in a.wiggler_segments().into_iter().enumerate() {
+                    let tex = match (angry, (a.age / 8 + k as u32) % 2) {
+                        (false, 0) => "walk.0",
+                        (false, _) => "walk.1",
+                        (true, 0) => "walk_angry.0",
+                        (true, _) => "walk_angry.1",
+                    };
+                    out.push(Self::model_sprite(
+                        "M1_Enemy_hanachan",
+                        tex,
+                        sx - 8.0,
+                        sy,
+                        16.0,
+                        16.0,
+                        a.dir > 0,
+                        39,
+                    ));
+                }
+            }
+            if let Kind::LavaLift { .. } = a.kind
+                && visible(a.x, a.y)
+            {
+                for k in 0..4 {
+                    out.push(Self::model_sprite(
+                        "M1_Object_lift_yougan",
+                        "wait.0",
+                        a.x - 32.0 + k as f32 * 16.0,
+                        a.y + 8.0,
+                        16.0,
+                        16.0,
+                        false,
+                        15,
+                    ));
+                }
+            }
+        }
         for sn in &self.snakes {
             let model = if sn.fast {
                 "M1_Object_block_snake2"
@@ -3051,6 +3193,41 @@ impl World {
             ),
             Kind::Seesaw { .. } => return None,
             Kind::Claw => return None,
+            Kind::Magikoopa => {
+                if a.phase == 0 {
+                    return None;
+                }
+                (
+                    "M1_Enemy_kameck",
+                    if a.phase == 2 { "throw.0" } else { "wait.0" },
+                    32.0,
+                    32.0,
+                    a.dir > 0,
+                )
+            }
+            Kind::Magic => (
+                "M1_Enemy_kameck",
+                walk_frame(&["effect.0", "effect.1", "effect.2"], a.age, 4),
+                16.0,
+                16.0,
+                false,
+            ),
+            Kind::RockyWrench => (
+                "M1_Enemy_poo",
+                if a.phase == 4 { "throw.0" } else { "wait.0" },
+                16.0,
+                32.0,
+                a.dir > 0,
+            ),
+            Kind::Wrench => (
+                "M1_Enemy_poo",
+                walk_frame(&["hammer.0", "hammer.1", "hammer.2", "hammer.3"], a.age, 4),
+                16.0,
+                16.0,
+                false,
+            ),
+            Kind::Wiggler => ("M1_Enemy_hanachan", "head.0", 16.0, 32.0, a.dir > 0),
+            Kind::LavaLift { .. } => return None,
             Kind::Skewer { .. } => return None,
             Kind::CheepCheep { red } => (
                 if red {
@@ -4164,6 +4341,67 @@ mod tests {
         assert!(w.held_by.is_none());
         assert_eq!(w.player.control, Control::Normal);
         assert!(w.player.vy > 0.0);
+    }
+
+    #[test]
+    fn magikoopa_appears_and_casts() {
+        let mut lvl = Level::flat(60);
+        lvl.spawns.push(spawn(Kind::Magikoopa, 250.0, 32.0));
+        let mut w = World::with_level(lvl);
+        let mut magic = false;
+        for _ in 0..300 {
+            w.step(Input::default());
+            magic |= w.actors.iter().any(|a| a.kind == Kind::Magic);
+            if !w.player.alive() {
+                break;
+            }
+        }
+        assert!(magic);
+    }
+
+    #[test]
+    fn rocky_wrench_throws() {
+        let mut lvl = Level::flat(60);
+        lvl.spawns.push(spawn(Kind::RockyWrench, 250.0, 32.0));
+        let mut w = World::with_level(lvl);
+        let mut wrench = false;
+        for _ in 0..400 {
+            w.step(Input::default());
+            wrench |= w.actors.iter().any(|a| a.kind == Kind::Wrench);
+            if !w.player.alive() {
+                break;
+            }
+        }
+        assert!(wrench);
+    }
+
+    #[test]
+    fn wiggler_gets_angry() {
+        let mut lvl = Level::flat(60);
+        lvl.spawns.push(spawn(Kind::Wiggler, 300.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 40.0;
+        run(&mut w, 0, 30);
+        assert!(w.actors[0].stomp());
+        assert_eq!(w.actors[0].phase, 1);
+        run(&mut w, 0, 61);
+        assert!((w.actors[0].vx.abs() - 1.0).abs() < 1e-6, "angry speed");
+        assert_eq!(w.actors[0].wiggler_segments().len(), 4);
+    }
+
+    #[test]
+    fn lava_lift_moves_when_ridden() {
+        let mut lvl = Level::flat(60);
+        lvl.spawns
+            .push(spawn(Kind::LavaLift { fast: false }, 200.0, 64.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 200.0;
+        w.player.y = 100.0;
+        run(&mut w, 0, 30);
+        assert!(w.player.ride.is_some());
+        let x0 = w.actors[0].x;
+        run(&mut w, 0, 50);
+        assert!((w.actors[0].x - x0 - 40.0).abs() < 1.0);
     }
 
     #[test]

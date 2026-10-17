@@ -125,6 +125,20 @@ pub enum Kind {
     Skewer {
         dir: u8,
     },
+    /// Magikoopa: teleports near the view centre, casts magic at the player (39-magikoopa.md).
+    Magikoopa,
+    /// Magikoopa's magic: straight line at 0.75 px/frame (velocity in vx, vy).
+    Magic,
+    /// Rocky Wrench: pops out of its manhole and throws a wrench (58-rocky-wrench.md).
+    RockyWrench,
+    /// Thrown wrench: rises 0–30 px then flies at 1 px/frame; 480-frame life.
+    Wrench,
+    /// Wiggler: head + 4 trailing segments; a stomp makes it angry (52-wiggler.md).
+    Wiggler,
+    /// Lava lift (skull raft, 64 px): drifts right at 0.8 (fast 2.5) once ridden.
+    LavaLift {
+        fast: bool,
+    },
 }
 
 impl Kind {
@@ -140,6 +154,9 @@ impl Kind {
                 | Kind::Cannonball
                 | Kind::Lakitu
                 | Kind::SpinyEgg
+                | Kind::Magikoopa
+                | Kind::RockyWrench
+                | Kind::Wiggler
                 | Kind::Spiny
                 | Kind::Buzzy
                 | Kind::SpikeTop
@@ -194,6 +211,7 @@ impl Kind {
                 | Kind::Seesaw { .. }
                 | Kind::Cloud
                 | Kind::Pow
+                | Kind::LavaLift { .. }
         )
     }
     pub fn is_item(self) -> bool {
@@ -271,6 +289,8 @@ pub struct Actor {
     pub generator: Option<usize>,
     /// Behaviour phase for actors with small state machines (Piranha).
     pub phase: u8,
+    /// Wiggler: recent head positions (newest last), for the trailing segments.
+    pub trail: Vec<(f32, f32)>,
     /// Per-actor random state (xorshift32), seeded at spawn.
     pub rng: u32,
     /// Nearest player's position, set by the world before each step.
@@ -315,6 +335,7 @@ impl Actor {
             spawn: None,
             wall: false,
             pipe: None,
+            trail: Vec::new(),
             generator: None,
             phase: 0,
             rng: 0x9e37_79b9 ^ (x.to_bits().rotate_left(7)) ^ y.to_bits(),
@@ -356,6 +377,13 @@ impl Actor {
                 self.y + 4.0,
                 self.x + 16.0,
                 self.y + 12.0,
+                true,
+            )),
+            Kind::LavaLift { .. } => Some((
+                self.x - 32.0,
+                self.y + 8.0,
+                self.x + 32.0,
+                self.y + 16.0,
                 true,
             )),
             Kind::Pow if self.mode == Mode::Normal => {
@@ -520,6 +548,89 @@ impl Actor {
                 }
             }
         }
+    }
+
+    /// Rocky Wrench: hidden (30–59) → peek +2 at 0.2/frame for 96 → rise to +10 at 0.4 →
+    /// throw → sink at 0.8. `heading` holds the height above home; only a risen one can be hit.
+    fn step_rocky(&mut self) -> Option<Actor> {
+        let (px, _) = self.target;
+        self.dir = if px < self.x { -1 } else { 1 };
+        let mut thrown = None;
+        match self.phase {
+            0 => {
+                self.heading = 0.0;
+                if self.timer <= 0 {
+                    self.timer = 30 + self.rand(30) as i32;
+                    self.phase = 1;
+                }
+            }
+            1 => {
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    self.phase = 2;
+                    self.timer = 96;
+                }
+            }
+            2 => {
+                self.heading = (self.heading + 0.2).min(2.0);
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    self.phase = 3;
+                }
+            }
+            3 => {
+                self.heading = (self.heading + 0.4).min(10.0);
+                if self.heading >= 10.0 {
+                    self.phase = 4;
+                    self.timer = 47;
+                }
+            }
+            4 => {
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    let d = self.dir as f32;
+                    let mut w = Actor::new(Kind::Wrench, self.x - 2.0 * d, self.home_y + 28.0);
+                    w.home_y = w.y + 5.0 * self.rand(7) as f32;
+                    w.vx = d;
+                    w.timer = 480;
+                    thrown = Some(w);
+                    self.phase = 5;
+                }
+            }
+            _ => {
+                self.heading = (self.heading - 0.8).max(0.0);
+                if self.heading <= 0.0 {
+                    self.phase = 0;
+                    self.timer = 0;
+                }
+            }
+        }
+        self.y = self.home_y + self.heading;
+        thrown
+    }
+
+    /// Wiggler segment positions (4, nearest first), 16 px apart along the head's path.
+    pub fn wiggler_segments(&self) -> Vec<(f32, f32)> {
+        let mut out = Vec::new();
+        let mut dist = 0.0;
+        let mut want = 16.0;
+        let mut prev = (self.x, self.y);
+        for &p in self.trail.iter().rev() {
+            dist += ((p.0 - prev.0).powi(2) + (p.1 - prev.1).powi(2)).sqrt();
+            prev = p;
+            if dist >= want {
+                out.push(p);
+                want += 16.0;
+                if out.len() == 4 {
+                    break;
+                }
+            }
+        }
+        while out.len() < 4 {
+            let k = out.len() as f32 + 1.0;
+            out.push((self.x - self.dir as f32 * 16.0 * k, self.y));
+        }
+        out
     }
 
     /// The Skewer's spiked head box: 64 wide × 32 deep at the extended end.
@@ -755,8 +866,16 @@ impl Actor {
                 self.die_fall(self.x - self.dir as f32);
                 true
             }
-            Kind::Lakitu => {
+            Kind::Lakitu | Kind::Magikoopa | Kind::RockyWrench => {
                 self.die_fall(self.x - 1.0);
+                true
+            }
+            Kind::Wiggler => {
+                // not hurt: angry after a 60-frame pause
+                if self.phase == 0 {
+                    self.phase = 1;
+                    self.timer = 60;
+                }
                 true
             }
             Kind::BulletBill | Kind::BanzaiBill { .. } | Kind::Cannonball => {
@@ -1382,6 +1501,53 @@ impl Actor {
                 self.dir = if px >= self.x { 1 } else { -1 };
             }
             Kind::Skewer { .. } => self.step_skewer(),
+            Kind::Magic | Kind::Wrench => {
+                if self.kind == Kind::Wrench && self.y < self.home_y {
+                    self.y += 1.0; // rises first
+                } else {
+                    self.x += self.vx;
+                    self.y += if self.kind == Kind::Magic {
+                        self.vy
+                    } else {
+                        0.0
+                    };
+                }
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    self.mode = Mode::Dead;
+                }
+            }
+            Kind::RockyWrench => return self.step_rocky(),
+            Kind::Wiggler => {
+                if self.timer > 0 {
+                    self.timer -= 1; // anger pause
+                    self.vx = 0.0;
+                } else {
+                    let speed = if self.phase == 1 { 1.0 } else { 0.5 };
+                    if self.phase == 1 && self.on_ground && self.age.is_multiple_of(64) {
+                        self.dir = if self.target.0 < self.x { -1 } else { 1 };
+                    }
+                    if self.on_ground {
+                        self.vx = speed * self.dir as f32;
+                    }
+                }
+                self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+                self.collide(level);
+                if self.wall && self.turn_lock == 0 {
+                    self.turn();
+                }
+                self.trail.push((self.x, self.y));
+                if self.trail.len() > 200 {
+                    self.trail.remove(0);
+                }
+            }
+            Kind::LavaLift { fast } => {
+                if self.ridden || self.phase == 1 {
+                    self.phase = 1;
+                    self.x += if fast { 2.5 } else { 0.8 };
+                }
+            }
+            Kind::Magikoopa => {}
             Kind::Claw => {
                 // pendulum: angle = A·sin(2π t / T); A 60°, T 160 frames [inf: the rope helper
                 // simulation is outside the decompiled range]
