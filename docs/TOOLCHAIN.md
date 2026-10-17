@@ -18,6 +18,7 @@ All versions are pinned. Downloaded release artefacts are hashed in `~/smm-work/
 | CDecrypt | v4.8 @ `a4338402` + local patch | VitaSmith/cdecrypt | Wii U NUS (tmd/tik/app) decryption, used for the update bundled on the disc |
 | oead | 1.3.0 (pip, venv) | zeldamods/oead | SARC, Yaz0, BYML, AAMP |
 | zstandard | 0.25.0 (pip, venv) | indygreg/python-zstandard | SMM2 `.zs` decompression |
+| cryptography | 50.0.1 (pip, venv; `requirements.txt`) | pyca/cryptography | AES-CBC / AES-CMAC for SMM2 `.bcd` |
 | DuckDB | 1.5.6 (pip, venv) | duckdb/duckdb | Remote parquet queries for `tools/fetch_courses.py` |
 | vgmstream | r2117 (Homebrew) | vgmstream/vgmstream | BFSTM/BWAV/BFWAV decoding |
 

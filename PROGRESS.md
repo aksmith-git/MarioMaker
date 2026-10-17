@@ -8,16 +8,15 @@
 - ✅ SMM1 decrypted (base v16 + update v208); SMM2 v1.0.0 extracted; inventories; 550-course sample
 - ✅ SMM2 update v3.0.3 extracted (patched RomFS + ExeFS); both executables converted to ELF
 
-### Phase 2 — Course formats 🔄
-- 🔄 Gather community format docs (SMM1, SMM2)
-- ✅ Confirmed: SMM2 `.bcd` = 0x10 header + AES-CBC body + 0x30 trailer (CMAC); SMM1 `.cdt` = 0x15000 BE, CRC32 @0x08 over [0x10:]
-- ⬜ Format docs in `docs/formats/`
-- ⬜ SMM2 decrypted-course parser/writer
-- ⬜ SMM2 `.bcd` decrypt/encrypt (key table read at runtime from the owner's executable)
-- ⬜ SMM1 `.cdt` parser/writer + CRC
-- ⬜ Course ID ↔ code conversion (both games)
-- ⬜ Byte-exact round-trip tests: 550 dataset courses + all built-in courses
-- ⏳ Owner's own saved courses (optional)
+### Phase 2 — Course formats ✅ (awaiting go-ahead)
+- ✅ Community format docs gathered and cross-checked (13 sources; disagreements recorded)
+- ✅ Confirmed: SMM2 `.bcd` = 0x10 header + AES-CBC body + IV / random state / CMAC; SMM1 `.cdt` = 0x15000 BE, CRC32 @0x08 over [0x10:]
+- ✅ Format docs: [docs/formats/smm2-course.md](docs/formats/smm2-course.md), [docs/formats/smm1-course.md](docs/formats/smm1-course.md)
+- ✅ `smmfmt` reference package: SMM2 course parser/writer, SMM1 `.cdt` parser/writer (CRC), course codes, `python -m smmfmt` summary CLI
+- ✅ SMM2 `.bcd` decrypt/encrypt; key table found at runtime in the owner's executable (`smmfmt.smm2.keyfind`, ~2 s; same table in v1.0.0 and v3.0.3)
+- ✅ Byte-exact round trips: 550 dataset courses, 180 built-in SMM2 courses × 2 versions (decrypt → parse → write → re-encrypt), 156 built-in SMM1 `.cdt` — 30 tests, CI runs the 24 that need no game data
+- ✅ Finding: path arrays (snake, clear pipe, creeper, ! block, track block) are slot-indexed and can be sparse
+- ⏳ Owner's own saved courses (optional; not needed to proceed)
 
 ### Phase 3 — Binary analysis ⬜
 - ⬜ Course-loading pipeline · player physics per style · game-parameter file mapping

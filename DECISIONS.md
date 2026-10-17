@@ -2,6 +2,22 @@
 
 Newest first. Each entry: what was decided, why, and what would change it.
 
+## 2026-10-17 — Course key table is located at runtime, never shipped
+`smmfmt.smm2.keyfind` scans the user's own executable for the 64-word table that decrypts one of
+the user's own `.bcd` files (cheap one-block test, then full CRC32 + CMAC). The engine's
+first-launch importer will do the same and cache the result in the user's app-data folder.
+Community sources that print the table were not used for it.
+
+## 2026-10-17 — Format code lives in a Python reference package (`smmfmt`) for now
+Phase 4 chooses the engine language. Until then, `smmfmt` is the executable specification: the
+engine's own parser will be tested against it (same inputs, same parsed values). Records keep
+their raw bytes so unknown fields survive round trips.
+
+## 2026-10-17 — Path arrays are slot-indexed
+Snake blocks, clear pipes, piranha creepers, ! blocks and track blocks store entry *i* in slot *i*
+and may be sparse; the count is the number of live slots. Found in 16 of 730 courses. Parsers that
+read only the first *count* slots lose entries.
+
 ## 2026-10-17 — v3.0.3 is the behavioural target; v1.0.0 is the mapping aid
 The engine targets SMM2 3.0.3 (final) behaviour and assets. Community RE notes (e.g. Treeki's
 SMM2Reversing, July 2019) were written against v1.0.x, so Phase 3 maps functions in the v1.0.0

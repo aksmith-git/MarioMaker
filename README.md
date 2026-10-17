@@ -3,7 +3,8 @@
 An open-source, native macOS (Apple Silicon) engine that plays Super Mario Maker 2 courses and
 adds Super Mario Maker 1's 100 Mario Challenge.
 
-**Status:** Phase 1 (environment and extraction). No engine code yet. See [PROGRESS.md](PROGRESS.md).
+**Status:** Phase 2 done — course format reference implementation (`smmfmt/`) with byte-exact
+round-trip tests. No engine code yet. See [PROGRESS.md](PROGRESS.md).
 
 ## What is and isn't in this repository
 
@@ -22,6 +23,8 @@ behavioural reference only; the engine is a clean implementation.
 ```sh
 scripts/install-hooks.sh                         # pre-commit guard against proprietary files
 python3 -m unittest scripts/test_check_no_proprietary.py
+pip install -r requirements.txt && python -m unittest discover -s tests -t .
+python -m smmfmt path/to/course   # summarise a course (.bcd needs --table, see docs/formats/smm2-course.md)
 ```
 
 Tooling for working with your own dumps is described in [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md).

@@ -1,0 +1,5 @@
+# Extra dependencies for tools/ scripts that read the owner's local game data
+-r requirements.txt
+oead==1.3.0
+zstandard==0.25.0
+duckdb==1.5.6
