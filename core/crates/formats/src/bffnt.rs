@@ -17,6 +17,13 @@
 //! Cells are laid out on each sheet with a 1-pixel gutter: cell (c, r) starts at
 //! (c·(cell_w+1)+1, r·(cell_h+1)+1). Sheets are the slices of one 2D-tiled GX2 array surface
 //! (so each has its own bank rotation) and are stored bottom row first.
+//!
+//! Switch fonts (version 4, little-endian; SMM2's number and picture fonts) keep that layout
+//! with two changes, checked on every SMM2 bitmap font:
+//! - the sheet data is a complete BNTX file (one texture; sheets are its array layers, or one
+//!   BNTX per sheet), stored top row first;
+//! - CMAP code ranges are u32 (`u32 first, u32 last, u16 method, pad, u32 next`) and scan
+//!   entries are `u32 code, u16 index, pad` after a `u16 count, pad` header.
 
 use std::collections::BTreeMap;
 
@@ -138,12 +145,28 @@ impl Font {
         }
 
         guard = 0;
+        let nx = f.is_nx();
         while cmap != 0 && guard < 4096 {
-            let first = r.u16(cmap)? as u32;
-            let last = r.u16(cmap + 2)? as u32;
-            let method = r.u16(cmap + 4)?;
-            let next = r.u32(cmap + 8)? as usize;
-            let d = cmap + 12;
+            let (first, last, method, next, d) = if nx {
+                (
+                    r.u32(cmap)?,
+                    r.u32(cmap + 4)?,
+                    r.u16(cmap + 8)?,
+                    r.u32(cmap + 12)? as usize,
+                    cmap + 16,
+                )
+            } else {
+                (
+                    r.u16(cmap)? as u32,
+                    r.u16(cmap + 2)? as u32,
+                    r.u16(cmap + 4)?,
+                    r.u32(cmap + 8)? as usize,
+                    cmap + 12,
+                )
+            };
+            if last < first || last - first > 0x10_FFFF {
+                return Err(r.err(format!("CMAP range {first:#x}..{last:#x}")));
+            }
             match method {
                 0 => {
                     let base = r.u16(d)?;
@@ -156,6 +179,16 @@ impl Font {
                         let idx = r.u16(d + k * 2)?;
                         if idx != 0xFFFF {
                             f.cmap.insert(code, idx);
+                        }
+                    }
+                }
+                _ if nx => {
+                    let n = r.u16(d)? as usize;
+                    for k in 0..n {
+                        let e = d + 4 + k * 8;
+                        let idx = r.u16(e + 4)?;
+                        if idx != 0xFFFF {
+                            f.cmap.insert(r.u32(e)?, idx);
                         }
                     }
                 }
@@ -174,6 +207,11 @@ impl Font {
             guard += 1;
         }
         Ok(f)
+    }
+
+    /// A Switch font (version 4): BNTX sheets, 32-bit CMAP codes.
+    pub fn is_nx(&self) -> bool {
+        self.version >= 0x0400_0000
     }
 
     /// Glyph index for a character (falls back to `alter_char_index`).
@@ -224,8 +262,63 @@ impl Font {
         })
     }
 
+    /// Sheet `i` of a Switch font: the embedded BNTX's texture (layer `i`, or the `i`th BNTX),
+    /// top row first, in its stored format with the BNTX channel select.
+    fn decode_nx_sheet(&self, i: usize) -> Result<Image> {
+        let bad = |detail: String| crate::Error::Format {
+            what: "BFFNT",
+            detail,
+        };
+        let parse = |raw: &[u8]| {
+            crate::bntx::parse(raw)
+                .ok()
+                .and_then(|t| t.into_iter().next())
+        };
+        let (tex, layer) = match self.sheets.get(i).and_then(|raw| parse(raw)) {
+            Some(t) => (t, None),
+            // one BNTX holding every sheet as an array layer
+            None => (
+                self.sheets
+                    .first()
+                    .and_then(|raw| parse(raw))
+                    .ok_or_else(|| bad(format!("sheet {i}: no BNTX texture")))?,
+                Some(i),
+            ),
+        };
+        let data = match layer {
+            Some(l) if !tex.layers.is_empty() => tex
+                .layers
+                .get(l)
+                .cloned()
+                .ok_or_else(|| bad(format!("no sheet {i}")))?,
+            _ => tex.data.clone(),
+        };
+        use crate::bflim::PixelKind;
+        use crate::bntx::PixelFormat as P;
+        let kind = match tex.format {
+            P::Rgba8 => PixelKind::Rgba8,
+            P::Bc1 => PixelKind::Bc1,
+            P::Bc2 => PixelKind::Bc2,
+            P::Bc3 => PixelKind::Bc3,
+            P::Bc4 => PixelKind::Bc4,
+            P::Bc5 => PixelKind::Bc5,
+            f => return Err(bad(format!("sheet format {f:?} not supported"))),
+        };
+        Ok(Image {
+            width: tex.width as u32,
+            height: tex.height as u32,
+            kind,
+            srgb: tex.variant == crate::bntx::Variant::Srgb,
+            channel_select: tex.channel_select,
+            data,
+        })
+    }
+
     /// Untile and decode sheet `i`. Glyph coverage ends up in alpha (RGB = 1).
     pub fn decode_sheet(&self, i: usize) -> Result<Image> {
+        if self.is_nx() {
+            return self.decode_nx_sheet(i);
+        }
         let fmt = self
             .sheet_flim_format()
             .ok_or_else(|| crate::Error::Format {
@@ -263,6 +356,88 @@ impl Font {
 mod tests {
     use super::*;
     use crate::fixtures::sample_font;
+
+    /// A Switch (v4) font: one BNTX sheet (BC4-like channel select on RGBA8 data), glyphs for
+    /// '0' (index 0) and 'é' (index 1, a code above 0xFF) through a v4 scan CMAP.
+    fn sample_font_nx() -> Vec<u8> {
+        use crate::fixtures::{W, sample_bntx};
+        let px: Vec<u8> = (0..16 * 8 * 4).map(|i| (i % 7) as u8).collect();
+        let sheet = sample_bntx("Font", 0x0B01, 16, 8, 4, [1, 1, 1, 2], &[px]);
+        let mut w = W::le();
+        w.bytes(b"FFNT")
+            .u16(0xFEFF)
+            .u16(0x14)
+            .u32(0x0401_0000)
+            .u32(0)
+            .u16(4)
+            .u16(0);
+        w.bytes(b"FINF").u32(0x20);
+        w.u8(1)
+            .u8(8)
+            .u8(6)
+            .u8(7)
+            .u16(9)
+            .u16(0)
+            .u8(0)
+            .u8(5)
+            .u8(6)
+            .u8(1);
+        let ptrs = w.len();
+        w.u32(0).u32(0).u32(0);
+        let tglp = w.len();
+        w.bytes(b"TGLP").u32(0x20);
+        w.u8(6)
+            .u8(7)
+            .u8(1)
+            .u8(6)
+            .u32(sheet.len() as u32)
+            .u16(6)
+            .u16(12);
+        w.u16(2).u16(1).u16(16).u16(8);
+        let data_ptr = w.len();
+        w.u32(0);
+        let cwdh = w.len();
+        w.bytes(b"CWDH").u32(8 + 8 + 6).u16(0).u16(1).u32(0);
+        w.u8(0).u8(5).u8(6).u8(1).u8(4).u8(5).pad_to(4);
+        let cmap = w.len();
+        w.bytes(b"CMAP").u32(8 + 16 + 4 + 16);
+        w.u32(0).u32(0xFFFF).u16(2).u16(0).u32(0);
+        w.u16(2).u16(0);
+        w.u32('0' as u32)
+            .u16(0)
+            .u16(0)
+            .u32('é' as u32)
+            .u16(1)
+            .u16(0);
+        w.pad_to(0x80);
+        let data = w.len();
+        w.bytes(&sheet);
+        let total = w.len() as u32;
+        w.put_u32(0x0C, total);
+        w.put_u32(ptrs, (tglp + 8) as u32);
+        w.put_u32(ptrs + 4, (cwdh + 8) as u32);
+        w.put_u32(ptrs + 8, (cmap + 8) as u32);
+        w.put_u32(data_ptr, data as u32);
+        w.0
+    }
+
+    #[test]
+    fn parses_switch_font() {
+        let f = Font::parse(&sample_font_nx()).unwrap();
+        assert!(f.is_nx());
+        assert_eq!((f.height, f.ascent, f.baseline), (8, 7, 6));
+        assert_eq!(f.glyph('0'), 0);
+        assert_eq!(f.glyph('é'), 1);
+        assert_eq!(f.char_width(1).char_width, 5);
+        let img = f.decode_sheet(0).unwrap();
+        assert_eq!(
+            (img.width, img.height, img.kind),
+            (16, 8, crate::bflim::PixelKind::Rgba8)
+        );
+        assert_eq!(img.channel_select, [1, 1, 1, 2]);
+        // top row first: pixel (1, 0) is bytes 4..8 of the linear source
+        assert_eq!(&img.data[4..8], &[4, 5, 6, 0]);
+    }
 
     #[test]
     fn parses_synthetic_font() {

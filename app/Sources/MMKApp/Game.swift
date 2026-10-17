@@ -64,6 +64,16 @@ final class GameSession: ObservableObject, Identifiable {
     private var livesGained: UInt32 = 0
     /// Debug/smoke tests: replaces the player's input; given the engine tick.
     var scriptedInput: ((UInt64) -> MmkInput)?
+    /// A layout screen drawn over the course and stepped at 60 Hz with the menu input (the SMM2
+    /// title over its scripted demo course). Drawn by the Renderer.
+    var sceneOverlay: (scene: UIScene, ui: LayoutUI)?
+    /// No HUD strip (title demo).
+    var hideHud = false
+    /// Title demo: called instead of the clear / death handling when the course ends (the
+    /// owner loads the next course with `loadDemoCourse`).
+    var onDemoEnd: (() -> Void)?
+    private var sceneAccumulator = 0.0
+    private var sceneHeld: MenuInput = []
     /// Debug: pause automatically after this many ticks (screenshots of the pause menu).
     var autoPauseTick: UInt64?
 
@@ -138,6 +148,7 @@ final class GameSession: ObservableObject, Identifiable {
     func frame(now: CFTimeInterval) {
         let dt = now - lastTime
         lastTime = now
+        // (a title demo's scene reads the menu input itself, below)
         let live = scriptedInput == nil ? input.current : MmkInput(buttons: 0)
         let startDown = live.buttons & UInt32(MMK_BTN_START) != 0
         let startPressed = startDown && !heldStart
@@ -151,6 +162,19 @@ final class GameSession: ObservableObject, Identifiable {
             while uiAccumulator >= Self.tick {
                 uiAccumulator -= Self.tick
                 overlayTick(o)
+            }
+        }
+        if let (scene, _) = sceneOverlay {
+            if let freeze = DebugCapture.freezeTicks {
+                while scene.tick < freeze { scene.step(UIInput()) }
+            } else {
+                sceneAccumulator = min(sceneAccumulator + dt, 0.25)
+                while sceneAccumulator >= Self.tick {
+                    sceneAccumulator -= Self.tick
+                    let m = input.menu
+                    scene.step(UIInput(pressed: m.subtracting(sceneHeld), held: m, skip: false))
+                    sceneHeld = m
+                }
             }
         }
 
@@ -202,6 +226,16 @@ final class GameSession: ObservableObject, Identifiable {
         }
         livesGained = h.lives_gained
         let dying = h.flags & 2 != 0
+        if let end = onDemoEnd {
+            // title demo: the end of a death sequence, or a clear, moves on to the next course
+            if (wasDying && !dying) || h.flags & 1 != 0 {
+                wasDying = dying
+                end()
+                return
+            }
+            wasDying = dying
+            return
+        }
         if wasDying && !dying, let run {
             // the engine restarted the course; the run decides whether it continues
             if run.died() { newAttempt(); showRetryCard() } else { setPhase(.gameOver) }
@@ -271,6 +305,16 @@ final class GameSession: ObservableObject, Identifiable {
         default:
             break
         }
+    }
+
+    /// Title demo: replace the course (the scripted input starts over).
+    func loadDemoCourse(_ data: Data) {
+        let ok = data.withUnsafeBytes { mmk_engine_load_course(engine, $0.bindMemory(to: UInt8.self).baseAddress, data.count) }
+        if !ok { mmk_engine_restart(engine) }
+        engineTick = 0
+        accumulator = 0
+        wasDying = false
+        livesGained = 0
     }
 
     /// Debug captures: show the clear overlay / the retry card without finishing the course.

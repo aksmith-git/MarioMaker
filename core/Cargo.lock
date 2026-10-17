@@ -1224,6 +1224,7 @@ dependencies = [
 name = "mmk-import"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "mmk-assets",
  "mmk-formats",
  "serde_json",

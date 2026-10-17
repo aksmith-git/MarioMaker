@@ -10,4 +10,5 @@ publish.workspace = true
 mmk-formats = { path = "../formats" }
 mmk-assets = { path = "../assets" }
 serde_json.workspace = true
+ab_glyph.workspace = true
 thiserror.workspace = true

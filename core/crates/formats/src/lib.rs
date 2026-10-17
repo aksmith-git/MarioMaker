@@ -8,6 +8,7 @@ pub mod aes_modes;
 pub mod archive;
 pub mod audio;
 pub mod bcn;
+pub mod bfcpx;
 pub mod bffnt;
 pub mod bflim;
 pub mod bfres;

@@ -3,12 +3,19 @@ import MetalKit
 import QuartzCore
 import SwiftUI
 
-/// The owner's SMM1 UI import (`mmk import-smm1`), opened once, with the GPU side shared by every
-/// layout-driven screen. `nil` when no import is found (or `MMK_UI_SMM1=off`): the app then uses
-/// its SwiftUI stand-in screens. Where it is looked for: `AppPaths.findSMM1Cache()`.
+/// An imported UI (layouts, textures, fonts, text) opened once, with the GPU side shared by every
+/// layout-driven screen:
+/// - `LayoutUI.smm1` (alias `SMM1UI.shared`): the SMM1 import (`mmk import-smm1`) for the 100
+///   Mario screens; where it is looked for: `AppPaths.findSMM1Cache()`; `MMK_UI_SMM1=off` ignores it.
+/// - `LayoutUI.smm2`: the SMM2 import (`mmk import-smm2-ui`) for the title screen and menus;
+///   `AppPaths.findSMM2UICache()`; `MMK_UI_SMM2=off` ignores it.
+/// `nil` when there is no import: the app then uses its SwiftUI screens.
 @MainActor
-final class SMM1UI {
-    static let shared: SMM1UI? = SMM1UI.open()
+final class LayoutUI {
+    static let smm1: LayoutUI? = open(ProcessInfo.processInfo.environment["MMK_UI_SMM1"] == "off" ? nil : AppPaths.findSMM1Cache())
+    static let smm2: LayoutUI? = open(ProcessInfo.processInfo.environment["MMK_UI_SMM2"] == "off" ? nil : AppPaths.findSMM2UICache())
+    /// The SMM1 import (100 Mario screens).
+    static var shared: LayoutUI? { smm1 }
 
     let handle: OpaquePointer
     let device: MTLDevice
@@ -22,15 +29,13 @@ final class SMM1UI {
         self.dir = dir
     }
 
-    private static func open() -> SMM1UI? {
-        if ProcessInfo.processInfo.environment["MMK_UI_SMM1"] == "off" { return nil }
-        guard let dir = AppPaths.findSMM1Cache(), let device = MTLCreateSystemDefaultDevice(),
-              let h = mmk_ui_open(dir.path) else { return nil }
+    private static func open(_ dir: URL?) -> LayoutUI? {
+        guard let dir, let device = MTLCreateSystemDefaultDevice(), let h = mmk_ui_open(dir.path) else { return nil }
         guard let layer = try? UILayer(device: device, ui: h, pixelFormat: .bgra8Unorm_srgb) else {
             mmk_ui_free(h)
             return nil
         }
-        return SMM1UI(handle: h, device: device, layer: layer, dir: dir)
+        return LayoutUI(handle: h, device: device, layer: layer, dir: dir)
     }
 
     func layout(_ name: String) -> UILayout? { UILayout(ui: self, name: name) }
@@ -45,7 +50,10 @@ final class SMM1UI {
     }
 }
 
-/// One playing SMM1 layout plus a small timeline: animations are scheduled on the owner's tick
+/// The SMM1 screens' name for the shared layout UI type.
+typealias SMM1UI = LayoutUI
+
+/// One playing layout plus a small timeline: animations are scheduled on the owner's tick
 /// counter (60 per second) and evaluated by `apply(tick:)` before drawing.
 @MainActor
 final class UILayout {
@@ -140,6 +148,37 @@ final class UILayout {
         return mmk_ui_pane(handle, name, &p) ? p : nil
     }
 
+    /// Where pane `name` (`[Part/…/]Pane`) is drawn: centre and size of its rectangle in layout
+    /// units (y up), its global alpha (0–1) and whether it is shown. Apply the timeline first.
+    func rect(_ name: String) -> (center: SIMD2<Float>, size: SIMD2<Float>, alpha: Float, visible: Bool)? {
+        var r = MmkUiRect()
+        guard mmk_ui_pane_rect(handle, name, &r) else { return nil }
+        let c = r.corners
+        let xs = [c.0, c.2, c.4, c.6], ys = [c.1, c.3, c.5, c.7]
+        let lo = SIMD2(xs.min()!, ys.min()!), hi = SIMD2(xs.max()!, ys.max()!)
+        return ((lo + hi) / 2, hi - lo, r.alpha, r.visible != 0)
+    }
+
+    /// Force a pane's translate (parent space) / size / scale / alpha (0–255) over its
+    /// animations; all nil gives it back to them.
+    func setPane(_ name: String, translate: SIMD2<Float>? = nil, size: SIMD2<Float>? = nil,
+                 scale: SIMD2<Float>? = nil, alpha: Float? = nil) {
+        var flags: UInt32 = 0
+        if translate != nil { flags |= 1 }
+        if size != nil { flags |= 2 }
+        if scale != nil { flags |= 4 }
+        if alpha != nil { flags |= 8 }
+        let t = translate ?? .zero, s = size ?? .zero, k = scale ?? SIMD2(1, 1)
+        _ = mmk_ui_set_pane(handle, name, flags, t.x, t.y, s.x, s.y, k.x, k.y, alpha ?? 255)
+    }
+
+    /// Draw a copy of part pane `part` as `name`, moved by `offset`; it follows the original's
+    /// animations and has its own part instance (`name/Anim`, `name/Pane`).
+    @discardableResult
+    func clone(_ part: String, as name: String, offset: SIMD2<Float>) -> Bool {
+        mmk_ui_add_clone(handle, part, name, offset.x, offset.y)
+    }
+
     /// A message of this layout's text table; value tags become U+FFFC.
     func message(_ label: String) -> String? {
         let n = mmk_ui_message(handle, label, nil, 0)
@@ -185,12 +224,14 @@ protocol UIScene: AnyObject {
 /// Hosts a `UIScene` full screen (16:9, letterboxed), with keyboard and controller input.
 struct UIScreenView: NSViewRepresentable {
     let scene: UIScene
+    /// The imported UI the scene's layouts come from (SMM1 by default).
+    var ui: LayoutUI? = LayoutUI.smm1
 
-    func makeCoordinator() -> UIScreenRenderer { UIScreenRenderer(scene: scene) }
+    func makeCoordinator() -> UIScreenRenderer { UIScreenRenderer(scene: scene, ui: ui) }
 
     func makeNSView(context: Context) -> MTKView {
         let view = GameMTKView()
-        view.device = SMM1UI.shared?.device ?? MTLCreateSystemDefaultDevice()
+        view.device = ui?.device ?? MTLCreateSystemDefaultDevice()
         view.colorPixelFormat = .bgra8Unorm_srgb
         view.preferredFramesPerSecond = 60
         view.framebufferOnly = !DebugCapture.requested
@@ -207,15 +248,17 @@ struct UIScreenView: NSViewRepresentable {
 @MainActor
 final class UIScreenRenderer: NSObject, MTKViewDelegate {
     var scene: UIScene
+    let ui: LayoutUI?
     let input = InputState()
-    private lazy var queue = SMM1UI.shared?.device.makeCommandQueue()
+    private lazy var queue = ui?.device.makeCommandQueue()
     private var last = CACurrentMediaTime()
     private var acc = 0.0
     private var held: MenuInput = []
     private var frames = 0
 
-    init(scene: UIScene) {
+    init(scene: UIScene, ui: LayoutUI?) {
         self.scene = scene
+        self.ui = ui
         super.init()
         held = input.menu
     }
@@ -223,7 +266,7 @@ final class UIScreenRenderer: NSObject, MTKViewDelegate {
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
-        guard let ui = SMM1UI.shared, let queue, let pass = view.currentRenderPassDescriptor,
+        guard let ui, let queue, let pass = view.currentRenderPassDescriptor,
               let drawable = view.currentDrawable else { return }
         let now = CACurrentMediaTime()
         acc = min(acc + now - last, 0.25)

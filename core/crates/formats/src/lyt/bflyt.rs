@@ -13,6 +13,13 @@
 //! Every pane section starts with the common pane block (0x4C bytes after the section header):
 //! u8 flags, u8 origin, u8 alpha, u8 mag_flags, name[24], user_info[8], f32 translate[3],
 //! f32 rotate[3] (degrees), f32 scale[2], f32 size[2].
+//!
+//! Switch files (version 8 and later, little-endian; SMM2 uses 9.0) differ in two places
+//! (checked against every SMM2 layout):
+//! - a material starts `name[28], u32 flags, u32 (unknown, always 00 02 04 08 so far), black,
+//!   white` instead of `name[28], black, white, u32 flags`, and its texture-coordinate generator
+//!   entries are 16 bytes;
+//! - a group is `name[34], u16 pane_count, names[24]…` instead of `name[32], u32 count, …`.
 
 use super::{FileHeader, Reader, file_header, sections};
 use crate::error::Result;
@@ -389,7 +396,9 @@ fn parse_with(r: &Reader, h: &FileHeader) -> Result<Layout> {
                     } else {
                         o + size
                     };
-                    layout.materials.push(parse_material(r, start, end)?);
+                    layout
+                        .materials
+                        .push(parse_material(r, start, end, is_nx(h.version))?);
                 }
             }
             b"pan1" | b"pic1" | b"txt1" | b"wnd1" | b"bnd1" | b"prt1" => {
@@ -408,8 +417,11 @@ fn parse_with(r: &Reader, h: &FileHeader) -> Result<Layout> {
                 }
             }
             b"grp1" => {
-                let name = r.cstr(body)?;
-                let count = r.u32(body + 0x20)? as usize;
+                let (name, count) = if is_nx(h.version) {
+                    (r.fixed_str(body, 0x22)?, r.u16(body + 0x22)? as usize)
+                } else {
+                    (r.cstr(body)?, r.u32(body + 0x20)? as usize)
+                };
                 let panes = (0..count)
                     .map(|i| r.fixed_str(body + 0x24 + i * 24, 24))
                     .collect::<Result<_>>()?;
@@ -462,28 +474,51 @@ fn parse_with(r: &Reader, h: &FileHeader) -> Result<Layout> {
     Ok(layout)
 }
 
-fn parse_material(r: &Reader, start: usize, end: usize) -> Result<Material> {
-    // texture-coordinate generator entries are 8 bytes in v5+ files and 4 in older ones; pick
-    // the one that makes the material end where the offset table says it does
-    let first = parse_material_with(r, start, 8)?;
-    if first.1 == end {
-        return Ok(first.0);
-    }
-    let second = parse_material_with(r, start, 4)?;
-    if second.1 == end {
-        return Ok(second.0);
-    }
-    Ok(first.0)
+/// Switch layout family (version 8.0 and later).
+pub(crate) fn is_nx(version: u32) -> bool {
+    version >= 0x0800_0000
 }
 
-fn parse_material_with(r: &Reader, start: usize, gen_size: usize) -> Result<(Material, usize)> {
+fn parse_material(r: &Reader, start: usize, end: usize, nx: bool) -> Result<Material> {
+    // texture-coordinate generator entries are 16 bytes in Switch files, 8 in Wii U v5+ files
+    // and 4 in older ones; pick the one that makes the material end where the offset table says
+    let sizes: &[usize] = if nx { &[16, 8, 4] } else { &[8, 4] };
+    let mut first = None;
+    for &gen_size in sizes {
+        let (m, e) = parse_material_with(r, start, gen_size, nx)?;
+        if e == end {
+            return Ok(m);
+        }
+        first.get_or_insert(m);
+    }
+    if nx {
+        // Switch materials can carry blocks this parser doesn't know; say so rather than guess
+        return Err(r.err(format!(
+            "material at {start:#x} does not end at {end:#x} (flags {:#x})",
+            r.u32(start + 0x1C)?
+        )));
+    }
+    Ok(first.unwrap())
+}
+
+fn parse_material_with(
+    r: &Reader,
+    start: usize,
+    gen_size: usize,
+    nx: bool,
+) -> Result<(Material, usize)> {
+    let (black_at, white_at, flags_at, data_at) = if nx {
+        (0x24, 0x28, 0x1C, 0x2C)
+    } else {
+        (0x1C, 0x20, 0x24, 0x28)
+    };
     let mut m = Material {
         name: r.fixed_str(start, 0x1C)?,
-        black: r.rgba(start + 0x1C)?,
-        white: r.rgba(start + 0x20)?,
+        black: r.rgba(start + black_at)?,
+        white: r.rgba(start + white_at)?,
         ..Default::default()
     };
-    let flags = r.u32(start + 0x24)?;
+    let flags = r.u32(start + flags_at)?;
     m.raw_flags = flags;
     let tex_count = flags & 3;
     let mtx_count = (flags >> 2) & 3;
@@ -496,7 +531,7 @@ fn parse_material_with(r: &Reader, start: usize, gen_size: usize) -> Result<(Mat
     let ind = (flags >> 14) & 1 != 0;
     let proj_count = (flags >> 15) & 3;
     let font_shadow = (flags >> 17) & 1 != 0;
-    let mut o = start + 0x28;
+    let mut o = start + data_at;
     for _ in 0..tex_count {
         let a = r.u8(o + 2)?;
         let b = r.u8(o + 3)?;
@@ -787,6 +822,50 @@ mod tests {
         assert_eq!(t.bottom_color, [255, 0, 0, 255]);
         assert_eq!(t.font_size, [24.0, 28.0]);
         assert_eq!(l.groups[0].panes, ["P_Box"]);
+    }
+
+    #[test]
+    fn parses_switch_layout() {
+        let l = Layout::parse(&crate::fixtures::sample_bflyt_nx()).unwrap();
+        assert_eq!(l.version, 0x0900_0000);
+        assert_eq!(l.name, "SampleNx");
+        assert_eq!(l.textures, ["Box^s"]);
+        assert_eq!(Layout::texture_stem(&l.textures[0]), "Box^s");
+        assert_eq!(l.fonts, ["MessageFont.fcpx"]);
+        let m = &l.materials[0];
+        assert_eq!((m.black, m.white), ([10, 20, 30, 0], [200, 100, 50, 255]));
+        assert_eq!(m.tex_maps.len(), 1);
+        assert_eq!(m.tex_srts[0].translate, [0.25, 0.0]);
+        assert_eq!(m.tex_coord_gens.len(), 1);
+        assert_eq!(l.materials[1].white, [28, 3, 3, 255]);
+        assert_eq!(l.groups[0].name, "G_All");
+        assert_eq!(l.groups[0].panes, ["P_Box", "T_Msg"]);
+        let PaneKind::Part(p) = &l.root.find("L_Btn").unwrap().kind else {
+            panic!()
+        };
+        assert_eq!(p.layout, "Sample");
+        let over = p.properties[0].pane.as_ref().unwrap();
+        let PaneKind::Text(t) = &over.kind else {
+            panic!()
+        };
+        assert_eq!(t.text, "Ov");
+        let PaneKind::Text(t) = &l.root.find("T_Msg").unwrap().kind else {
+            panic!()
+        };
+        assert_eq!(
+            (t.text.as_str(), t.material, t.line_alignment),
+            ("Hi", 1, 2)
+        );
+        assert_eq!(t.font_size, [24.0, 36.0]);
+    }
+
+    #[test]
+    fn switch_material_with_unknown_blocks_is_an_error() {
+        // claim an extra TEV stage: the material no longer ends where the table says
+        let mut d = crate::fixtures::sample_bflyt_nx();
+        let at = d.windows(5).position(|w| w == b"M_Box").unwrap() + 0x1C;
+        d[at] |= 1 << 6;
+        assert!(Layout::parse(&d).is_err());
     }
 
     #[test]
