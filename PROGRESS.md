@@ -205,6 +205,8 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   enemies below)
 - ✅ Propeller Mushroom (NSMBU style power-up): Spin rise toward 2.5 for 50 f, slow fall −1.25,
   drill −6; goal-as-Propeller (ready for when NSMBU renders)
+- ✅ 3D World blinking blocks (two groups, 240-frame swap) and spike blocks (shared timer: warning
+  118–177, out 178–239; ON/OFF-linked modes [inf]) — placeholder tile art until 3W models draw
 - ✅ Pink coins: counted once each across both areas; the last one gives the key
 - ✅ Goomba's Shoe / Stiletto: shoe Goomba hops (50-frame pause, 4.5 / 1.5), leaves the empty
   shoe; the player wears it (spikes and Munchers underfoot safe, shoe stomps, a hit knocks it

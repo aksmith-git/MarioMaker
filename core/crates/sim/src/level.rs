@@ -314,6 +314,11 @@ pub struct Level {
     pub tracks: crate::track::Tracks,
     /// Custom autoscroll path (89 nodes): (node number, x, y, speed setting 0–2), in px.
     pub scroll_nodes: Vec<(u8, f32, f32, u8)>,
+    /// Blinking blocks (108): tile and phase group (flag 0x4: the opposite group).
+    pub blink_blocks: Vec<(i32, i32, bool)>,
+    /// Spike blocks (110): bottom-left tile of the 2×2 block and mode (0 timer, 1 out while ON,
+    /// 2 out while OFF [inf]).
+    pub spike_blocks: Vec<(i32, i32, u8)>,
     /// Vines (64): climb areas (centre x, bottom, top) in px.
     pub vines: Vec<(f32, f32, f32)>,
     pub liquid: Option<LiquidSpec>,
@@ -382,7 +387,7 @@ pub const SUPPORTED_PARTS: &[i16] = &[
     0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 52, 53,
     54, 55, 56, 57, 58, 60, 61, 62, 63, 64, 66, 67, 68, 70, 71, 76, 77, 82, 83, 84, 87, 88, 89, 90,
-    91, 92, 94, 95, 98, 99, 100, 102, 103, 104, 105, 109,
+    91, 92, 94, 95, 98, 99, 100, 102, 103, 104, 105, 108, 109, 110,
 ];
 
 /// Game styles the engine plays.
@@ -505,6 +510,8 @@ impl Level {
             firebars: Vec::new(),
             cannons: Vec::new(),
             snakes: Vec::new(),
+            blink_blocks: Vec::new(),
+            spike_blocks: Vec::new(),
             scroll_nodes: Vec::new(),
             pink_coins: Vec::new(),
             vines: Vec::new(),
@@ -822,6 +829,23 @@ impl Level {
                     o.y as f32 / 10.0,
                     ((o.flags >> 18) & 3) as u8,
                 ));
+                continue;
+            }
+            if o.id == 108 {
+                // blinking block (108-blinking-block.md): the plain group starts solid [inf]
+                let alt = o.flags & 0x4 != 0;
+                lvl.blink_blocks.push((tx, ty, alt));
+                lvl.set(tx, ty, if alt { Cell::Empty } else { Cell::Solid });
+                continue;
+            }
+            if o.id == 110 {
+                // spike block (110-spike-block.md): a solid 2×2 block whose spikes come and go
+                for dx in 0..2 {
+                    for dy in 0..2 {
+                        lvl.set(tx + dx, ty + dy, Cell::Solid);
+                    }
+                }
+                lvl.spike_blocks.push((tx, ty, ((o.flags >> 18) & 3) as u8));
                 continue;
             }
             if o.id == 64 {
@@ -1389,6 +1413,8 @@ impl Level {
             firebars: Vec::new(),
             cannons: Vec::new(),
             snakes: Vec::new(),
+            blink_blocks: Vec::new(),
+            spike_blocks: Vec::new(),
             scroll_nodes: Vec::new(),
             pink_coins: Vec::new(),
             vines: Vec::new(),

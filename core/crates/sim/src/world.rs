@@ -179,6 +179,9 @@ pub struct World {
     blaster_timers: Vec<(i32, i32)>,
     /// Course-wide ON/OFF state (true = ON / red, the start state).
     pub on_off: bool,
+    /// Shared 240-frame area timer of blinking and spike blocks; blinking group state.
+    pub area_timer: u32,
+    pub blink_alt: bool,
     /// P-switch time left (frames).
     pub p_timer: i32,
     /// Tiles swapped by the P switch: bricks that became coins, coins that became bricks.
@@ -327,6 +330,8 @@ impl World {
             next_id: 1,
             blaster_timers: Vec::new(),
             on_off: true,
+            area_timer: 0,
+            blink_alt: false,
             p_timer: 0,
             p_bricks: Vec::new(),
             p_coins: Vec::new(),
@@ -378,6 +383,8 @@ impl World {
         self.countdown = false;
         self.cleared = false;
         self.on_off = true;
+        self.area_timer = 0;
+        self.blink_alt = false;
         self.keys = 0;
         self.pink.clear();
         self.unlocked_doors.clear();
@@ -962,6 +969,7 @@ impl World {
         self.collect_coins();
         self.step_donuts();
         self.step_p_switch();
+        self.step_area_timer();
 
         // blocks, actors, effects
         for r in self.blocks.step() {
@@ -2406,6 +2414,56 @@ impl World {
         }
     }
 
+    /// Blinking and spike blocks share one area timer (240 frames). Blinking blocks swap groups
+    /// at each wrap. Spike blocks: retracted for frames 0–117, warning 118–177, out 178–239; ON/OFF
+    /// linked ones are out while ON (mode 1) / OFF (mode 2).
+    fn step_area_timer(&mut self) {
+        self.area_timer = self.area_timer.wrapping_add(1);
+        if self.area_timer.is_multiple_of(240) && !self.level.blink_blocks.is_empty() {
+            self.blink_alt = !self.blink_alt;
+            let blocks = self.level.blink_blocks.clone();
+            for (x, y, alt) in blocks {
+                let solid = alt == self.blink_alt;
+                self.level
+                    .set(x, y, if solid { Cell::Solid } else { Cell::Empty });
+            }
+            // a block appearing around the player pushes them out upward [inf]
+            let p = &self.player;
+            let (tx, ty) = (
+                (p.x / TILE).floor() as i32,
+                ((p.y + 1.0) / TILE).floor() as i32,
+            );
+            if self.level.cell(tx, ty) == Cell::Solid {
+                self.player.y = (ty + 1) as f32 * TILE;
+            }
+        }
+        if self.level.spike_blocks.is_empty() || !self.player.alive() {
+            return;
+        }
+        let hb = self.player.hurt_box();
+        let spiky = self.level.spike_blocks.iter().any(|&(x, y, mode)| {
+            let out = match mode {
+                1 => self.on_off,
+                2 => !self.on_off,
+                _ => self.spikes_out(),
+            };
+            let (x0, y0) = (x as f32 * TILE, y as f32 * TILE);
+            out && overlap(hb, (x0 - 5.0, y0 - 2.0, x0 + 37.0, y0 + 34.0))
+        });
+        if spiky && self.player.shoe.is_none() && self.player.hurt() {
+            self.events.push(if self.player.alive() {
+                Event::PowerDown
+            } else {
+                Event::Death
+            });
+        }
+    }
+
+    /// Timer-driven spike blocks have their spikes out (frames 178–239 of the shared timer).
+    pub fn spikes_out(&self) -> bool {
+        (178..240).contains(&(self.area_timer % 240))
+    }
+
     /// A ground pound landing hits the blocks under the feet from above (bricks break when big).
     fn pound_blocks(&mut self) {
         if !self.player.pound_landed {
@@ -3416,6 +3474,30 @@ impl World {
             let (px, py) = (c.x as f32 * TILE, c.y as f32 * TILE);
             if visible(px, py) {
                 out.push(tile(px, py, 7, 20));
+            }
+        }
+        // blinking blocks (solid / outline) and spike blocks [placeholder art: dotted-line
+        // blocks and hard blocks until the 3D World models draw]
+        for &(x, y, alt) in &self.level.blink_blocks {
+            let (px, py) = (x as f32 * TILE, y as f32 * TILE);
+            if visible(px, py) {
+                let solid = alt == self.blink_alt;
+                out.push(tile(px, py, 21 * 16 + 2 + if solid { 0 } else { 16 }, 12));
+            }
+        }
+        for &(x, y, mode) in &self.level.spike_blocks {
+            let out_now = match mode {
+                1 => self.on_off,
+                2 => !self.on_off,
+                _ => self.spikes_out(),
+            };
+            for dx in 0..2 {
+                for dy in 0..2 {
+                    let (px, py) = ((x + dx) as f32 * TILE, (y + dy) as f32 * TILE);
+                    if visible(px, py) {
+                        out.push(tile(px, py, if out_now { 43 } else { 6 }, 12));
+                    }
+                }
             }
         }
         for c in &self.level.pink_coins {
@@ -5810,6 +5892,34 @@ mod tests {
             w.player.vy < -3.0 || w.player.on_ground,
             "drill: {}",
             w.player.vy
+        );
+    }
+
+    #[test]
+    fn blinking_blocks_swap_and_spike_blocks_bite_on_the_beat() {
+        let mut lvl = Level::flat(40);
+        lvl.blink_blocks.push((10, 5, false));
+        lvl.blink_blocks.push((11, 5, true));
+        lvl.set(10, 5, Cell::Solid);
+        lvl.spike_blocks.push((20, 2, 0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 40.0;
+        run(&mut w, 0, 239);
+        assert_eq!(w.level.cell(10, 5), Cell::Solid);
+        run(&mut w, 0, 1);
+        assert_eq!(w.level.cell(10, 5), Cell::Empty, "swapped at 240");
+        assert_eq!(w.level.cell(11, 5), Cell::Solid);
+        // stand next to the spike block: safe until frame 178 of the cycle
+        w.player.x = 20.0 * TILE - 6.0;
+        w.area_timer = 100;
+        run(&mut w, 0, 10);
+        assert_eq!(w.player.form, Form::Small);
+        assert!(w.player.alive());
+        w.area_timer = 177;
+        run(&mut w, 0, 2);
+        assert!(
+            !w.player.alive() || w.events.contains(&Event::Death),
+            "spikes out"
         );
     }
 
