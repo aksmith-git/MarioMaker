@@ -361,9 +361,9 @@ pub fn switch_atlas(kind: BlockKind, on: bool) -> u32 {
 /// 37/38 (start/goal ground, goal, start sign) come from the header; 66 (arrow sign) and 109
 /// (sound effect) are decoration only.
 pub const SUPPORTED_PARTS: &[i16] = &[
-    0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27,
-    28, 29, 32, 33, 34, 35, 37, 38, 40, 41, 43, 44, 46, 47, 53, 54, 55, 57, 63, 66, 67, 68, 70, 71,
-    82, 87, 88, 90, 91, 99, 100, 109,
+    0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
+    27, 28, 29, 30, 31, 32, 33, 34, 35, 37, 38, 40, 41, 43, 44, 46, 47, 53, 54, 55, 57, 63, 66, 67,
+    68, 70, 71, 82, 87, 88, 90, 91, 95, 99, 100, 109,
 ];
 
 /// Why a course is not fully playable yet: one entry per missing feature (empty = playable).
@@ -576,6 +576,10 @@ impl Level {
                     fire: o.flags & 0x4 != 0,
                 }),
                 82 => Some(Kind::Bumper),
+                30 => Some(Kind::Lakitu),
+                31 => Some(Kind::Cloud),
+                19 => Some(Kind::Pow),
+                95 => Some(Kind::Key),
                 68 => Some(Kind::Grinder),
                 91 => Some(Kind::Seesaw {
                     width: o.width.max(2),

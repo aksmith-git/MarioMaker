@@ -100,6 +100,17 @@ pub enum Kind {
     },
     /// Airship cannonball: straight line at 1 px/frame (velocity in vx, vy).
     Cannonball,
+    /// Lakitu: hovers near the top of the view, drifts ±48 px around an anchor that follows the
+    /// player, throws Spiny eggs every 60–119 frames (30-lakitu.md).
+    Lakitu,
+    /// A thrown Spiny egg: falls, becomes a Spiny on landing.
+    SpinyEgg,
+    /// Rideable Lakitu cloud (31-lakitu-cloud.md): bobs in place; the rider steers it.
+    Cloud,
+    /// POW block: a head hit from below sets off a quake (19-pow-block.md).
+    Pow,
+    /// Key: collect to open a locked door.
+    Key,
 }
 
 impl Kind {
@@ -113,6 +124,8 @@ impl Kind {
                 | Kind::BulletBill
                 | Kind::BanzaiBill { .. }
                 | Kind::Cannonball
+                | Kind::Lakitu
+                | Kind::SpinyEgg
                 | Kind::Spiny
                 | Kind::Buzzy
                 | Kind::SpikeTop
@@ -165,6 +178,8 @@ impl Kind {
                 | Kind::Muncher
                 | Kind::Donut
                 | Kind::Seesaw { .. }
+                | Kind::Cloud
+                | Kind::Pow
         )
     }
     pub fn is_item(self) -> bool {
@@ -322,6 +337,16 @@ impl Actor {
             Kind::Muncher if self.mode == Mode::Normal => {
                 Some((self.x - 8.0, self.y, self.x + 8.0, self.y + 16.0, false))
             }
+            Kind::Cloud => Some((
+                self.x - 16.0,
+                self.y + 4.0,
+                self.x + 16.0,
+                self.y + 12.0,
+                true,
+            )),
+            Kind::Pow if self.mode == Mode::Normal => {
+                Some((self.x - 8.0, self.y, self.x + 8.0, self.y + 16.0, false))
+            }
             Kind::Seesaw { width } => {
                 let hw = width as f32 * 8.0;
                 Some((self.x - hw, self.y + 8.0, self.x + hw, self.y + 16.0, true))
@@ -387,6 +412,47 @@ impl Actor {
             self.heading = 45.0 * self.heading.signum();
             self.speed = -self.speed * (w + 3.0) / 36.0;
         }
+    }
+
+    /// Lakitu: anchor x (home_x) follows the player by at most max(|player vx|, 0.05) — the
+    /// player's x-speed comes in `speed`; drift toward ±1.5 (accel 0.05), turning 48 px either
+    /// side of the anchor; throw every 60–119 frames (release 30 frames into the throw); after
+    /// 10 throws leave upward at 3.0 [inf budget].
+    fn step_lakitu(&mut self) -> Option<Actor> {
+        let (px, _) = self.target;
+        if self.chain >= 10 {
+            self.vy = (self.vy + 0.1).min(3.0);
+            self.y += self.vy;
+            return None;
+        }
+        let follow = self.speed.abs().max(0.05);
+        self.home_x += (px - self.home_x).clamp(-follow, follow);
+        if self.x > self.home_x + 48.0 {
+            self.dir = -1;
+        } else if self.x < self.home_x - 48.0 {
+            self.dir = 1;
+        }
+        let t = 1.5 * self.dir as f32;
+        self.vx += (t - self.vx).clamp(-0.05, 0.05);
+        self.x += self.vx;
+        if self.timer <= 0 {
+            self.timer = 60 + self.rand(60) as i32;
+            self.pause = 30;
+        }
+        self.timer -= 1;
+        if self.pause > 0 {
+            self.pause -= 1;
+            if self.pause == 0 {
+                self.chain += 1;
+                let face = if px < self.x { -1.0 } else { 1.0 };
+                let mut egg = Actor::new(Kind::SpinyEgg, self.x, self.y + 16.8);
+                egg.vx = (self.vx.abs() * 0.9).max(0.5) * face;
+                egg.vy = 2.0;
+                egg.dir = face as i32;
+                return Some(egg);
+            }
+        }
+        None
     }
 
     /// Spring compression c (0…4 px), kept in `pause`.
@@ -602,6 +668,10 @@ impl Actor {
             }
             Kind::HammerBro => {
                 self.die_fall(self.x - self.dir as f32);
+                true
+            }
+            Kind::Lakitu => {
+                self.die_fall(self.x - 1.0);
                 true
             }
             Kind::BulletBill | Kind::BanzaiBill { .. } | Kind::Cannonball => {
@@ -1129,6 +1199,45 @@ impl Actor {
                 self.y += self.vy;
             }
             Kind::Seesaw { width } => self.step_seesaw(width),
+            Kind::Lakitu => return self.step_lakitu(),
+            Kind::SpinyEgg => {
+                self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+                self.collide(level);
+                if self.on_ground {
+                    self.kind = Kind::Spiny;
+                    self.dir = if self.target.0 < self.x { -1 } else { 1 };
+                }
+            }
+            Kind::Cloud => {
+                if self.ridden {
+                    // the rider steers (target_facing carries the input direction here)
+                    self.vx = 1.5 * self.target_facing as f32;
+                    self.vy = 0.0;
+                    self.x += self.vx;
+                    if self.timer < 0 {
+                        self.timer = 900;
+                    }
+                } else {
+                    // idle bob ±1.6 px around home
+                    let below = self.y < self.home_y - 1.6;
+                    let t = if self.y > self.home_y + 1.6 {
+                        -0.1
+                    } else if below || self.vy >= 0.0 {
+                        0.1
+                    } else {
+                        -0.1
+                    };
+                    self.vy += (t - self.vy).clamp(-0.004, 0.004);
+                    self.y += self.vy;
+                }
+                if self.timer > 0 {
+                    self.timer -= 1;
+                    if self.timer == 0 {
+                        self.mode = Mode::Dead;
+                    }
+                }
+            }
+            Kind::Pow | Kind::Key => {}
             Kind::Cannonball => {
                 self.x += self.vx;
                 self.y += self.vy;

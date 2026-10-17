@@ -228,6 +228,8 @@ pub struct Player {
     pub spiked: bool,
     /// Below a water surface (set by the world each frame): swim physics.
     pub in_water: bool,
+    /// Moving solid the head bonked this frame (POW blocks react).
+    pub head_solid: Option<u32>,
     was_in_water: bool,
     /// Jump pressed in the last 20 frames (a jump out of the water when leaving it).
     exit_window: i32,
@@ -262,6 +264,7 @@ impl Player {
             ride: None,
             spiked: false,
             in_water: false,
+            head_solid: None,
             was_in_water: false,
             exit_window: 0,
             skid: SkidPhase::None,
@@ -603,6 +606,7 @@ impl Player {
     /// One 60 Hz tick.
     pub fn step(&mut self, inp: Input, level: &Level) {
         self.head_hit = None;
+        self.head_solid = None;
         self.throw = false;
         if !self.step_control() {
             return;
@@ -862,6 +866,7 @@ impl Player {
                     && prev_y + s.head_y <= b.y0 + 0.01
                 {
                     self.y = b.y0 - s.head_y - 0.001;
+                    self.head_solid = Some(b.owner);
                     self.vy = 0.0;
                 }
             }

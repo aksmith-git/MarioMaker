@@ -136,12 +136,14 @@ pub fn pipe_entry(
 }
 
 /// A door the player can enter this frame (Up pressed, no Left/Right, on the ground). P doors
-/// work only while a P switch is active; key doors are not handled yet.
+/// work only while a P switch is active; key doors when `key_ok(id)` (unlocked, or the player
+/// holds a key — the caller consumes it).
 pub fn door_entry(
     p: &Player,
     inp: Input,
     up_pressed: bool,
     p_active: bool,
+    key_ok: impl Fn(u8) -> bool,
     warps: &[Warp],
 ) -> Option<Warp> {
     if !p.on_ground || !up_pressed || inp.held(input::LEFT) || inp.held(input::RIGHT) {
@@ -150,7 +152,9 @@ pub fn door_entry(
     warps
         .iter()
         .filter(|w| {
-            matches!(w.kind, WarpKind::Door(0)) || (p_active && w.kind == WarpKind::Door(1))
+            matches!(w.kind, WarpKind::Door(0))
+                || (p_active && w.kind == WarpKind::Door(1))
+                || (w.kind == WarpKind::Door(2) && key_ok(w.id))
         })
         .filter(|w| (p.x - w.x).abs() <= 7.0 && (p.y - w.y).abs() < 2.0)
         .min_by(|a, b| (p.x - a.x).abs().total_cmp(&(p.x - b.x).abs()))

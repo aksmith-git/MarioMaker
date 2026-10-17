@@ -175,6 +175,10 @@ pub struct World {
     pub liquid: Option<Liquid>,
     /// Cannon countdowns (current area).
     cannon_timers: Vec<i32>,
+    /// Keys held.
+    pub keys: u32,
+    /// Key-door pairs unlocked: (area, warp id >> 1).
+    unlocked_doors: std::collections::BTreeSet<(usize, u8)>,
 }
 
 impl Default for World {
@@ -272,6 +276,8 @@ impl World {
             carry: 0.0,
             liquid: None,
             cannon_timers: Vec::new(),
+            keys: 0,
+            unlocked_doors: Default::default(),
         };
         w.field_model = Box::leak(field_model(&w.level.style, w.level.theme).into_boxed_str());
         w.reset_course();
@@ -300,6 +306,8 @@ impl World {
         self.countdown = false;
         self.cleared = false;
         self.on_off = true;
+        self.keys = 0;
+        self.unlocked_doors.clear();
         self.p_timer = 0;
         self.p_bricks.clear();
         self.p_coins.clear();
@@ -505,7 +513,7 @@ impl World {
             .liquid
             .is_some_and(|l| l.water() && l.covers(self.player.y + 8.0))
             || (self.level.theme == 2 && self.level.night); // castle night: swim in the air
-        self.step_platforms(jump_held);
+        self.step_platforms(jump_held, input.dir_x());
         self.conveyor_carry();
         let prev_x = self.player.x;
         self.player.step(input, &self.level);
@@ -531,11 +539,15 @@ impl World {
             )
             .map(|w| (w, true))
             .or_else(|| {
+                let keys = self.keys;
+                let area = self.area;
+                let unlocked = &self.unlocked_doors;
                 warp::door_entry(
                     &self.player,
                     input,
                     up_pressed,
                     self.p_timer > 0,
+                    |id| keys > 0 || unlocked.contains(&(area, id >> 1)),
                     &self.level.warps,
                 )
                 .map(|w| (w, false))
@@ -544,6 +556,11 @@ impl World {
                 let warps: Vec<Vec<crate::level::Warp>> =
                     self.area_initial.iter().map(|l| l.warps.clone()).collect();
                 if let Some((to_area, to)) = warp::destination(&from, self.area, &warps) {
+                    if from.kind == crate::level::WarpKind::Door(2)
+                        && self.unlocked_doors.insert((self.area, from.id >> 1))
+                    {
+                        self.keys -= 1; // a key opens the pair for good
+                    }
                     self.player.control = Control::Demo;
                     self.player.vx = 0.0;
                     self.player.vy = 0.0;
@@ -611,6 +628,9 @@ impl World {
             }
             a.target = (px, py);
             a.target_facing = self.player.facing;
+            if a.kind == Kind::Lakitu {
+                a.speed = self.player.vx;
+            }
             if let Some(n) = a.step_spawning(&self.level) {
                 born.push(n);
             }
@@ -623,6 +643,7 @@ impl World {
         self.step_blasters();
         self.fire_hazards();
         self.step_cannons();
+        self.pow_quake();
         self.check_checkpoints();
         self.shell_walls();
         self.actor_interactions();
@@ -1040,6 +1061,15 @@ impl World {
                 i += 1;
                 continue;
             }
+            if a.kind == Kind::Key {
+                if overlap(contact, ab) {
+                    self.actors[i].mode = Mode::Dead;
+                    self.keys += 1;
+                    self.events.push(Event::OneUp);
+                }
+                i += 1;
+                continue;
+            }
             if a.kind == Kind::Bumper {
                 self.bumper_contact(i, jump_held);
                 i += 1;
@@ -1139,7 +1169,15 @@ impl World {
                 self.add_score(KICK_SCORE, ax, ay + 24.0);
                 self.events.push(Event::Kick);
             } else if stomp {
+                let was_lakitu = self.actors[i].kind == Kind::Lakitu;
                 if self.actors[i].stomp() {
+                    if was_lakitu {
+                        // the empty cloud stays, rideable
+                        let mut c = Actor::new(Kind::Cloud, ax, ay);
+                        c.home_y = ay;
+                        c.timer = -1;
+                        self.add_actor(c);
+                    }
                     self.player.bounce(jump_held);
                     let n = self.player.stomp_chain;
                     self.player.stomp_chain += 1;
@@ -1491,6 +1529,36 @@ impl World {
         fb.start + fb.dir * 2.8125 * self.tick as f32
     }
 
+    /// POW block hit from below: every grounded enemy in view is knocked out; the POW is used up.
+    fn pow_quake(&mut self) {
+        let Some(id) = self.player.head_solid else {
+            return;
+        };
+        let Some(i) = self
+            .actors
+            .iter()
+            .position(|a| a.id == id && a.kind == Kind::Pow)
+        else {
+            return;
+        };
+        self.actors[i].mode = Mode::Dead;
+        let v = self.view_rect(16.0);
+        let px = self.player.x;
+        for a in &mut self.actors {
+            if a.kind.is_enemy()
+                && a.alive()
+                && a.on_ground
+                && a.x >= v.0
+                && a.x <= v.2
+                && a.y >= v.1
+                && a.y <= v.3
+            {
+                a.die_fall(px);
+            }
+        }
+        self.events.push(Event::Break);
+    }
+
     /// Cannons (47-cannon.md): first shot 60 frames after spawn, then every 190, while the
     /// muzzle is on screen; the ball flies 1 px/frame along the barrel.
     fn step_cannons(&mut self) {
@@ -1557,7 +1625,7 @@ impl World {
     /// Moving solids step before the player; riders are carried by their movement. A spring
     /// launches its rider: 6.0, or 4.43 with the jump button held (the held-jump gravity then
     /// gives the high bounce) (10-spring.md).
-    fn step_platforms(&mut self, jump_held: bool) {
+    fn step_platforms(&mut self, jump_held: bool, dir: i32) {
         let (px, py) = (self.player.x, self.player.y);
         let ride = self.player.ride;
         for a in &mut self.actors {
@@ -1566,6 +1634,9 @@ impl World {
             }
             a.target = (px, py);
             a.ridden = ride == Some(a.id);
+            if a.kind == Kind::Cloud {
+                a.target_facing = dir; // the rider steers the cloud
+            }
             a.step_spawning(&self.level);
         }
         self.level.solids = self
@@ -2185,10 +2256,17 @@ impl World {
             if !visible(dx, dy) {
                 continue;
             }
+            let locked = kind == 2
+                && !self.level.warps.iter().any(|w| {
+                    w.kind == crate::level::WarpKind::Door(2)
+                        && (w.x, w.y) == (dx, dy)
+                        && self.unlocked_doors.contains(&(self.area, w.id >> 1))
+                });
             let tex = match kind {
+                2 if !locked => "wait.0",
+                2 => "nokey_wait.0",
                 1 if self.p_timer == 0 => "door_dot",
                 1 => "door_p",
-                2 => "key_wait.0",
                 _ => "wait.0",
             };
             out.push(Self::model_sprite(
@@ -2723,6 +2801,29 @@ impl World {
                 false,
             ),
             Kind::Seesaw { .. } => return None,
+            Kind::Lakitu => (
+                "M1_Enemy_jugem",
+                if a.pause > 0 { "throw.0" } else { "wait.0" },
+                16.0,
+                24.0,
+                a.target.0 > a.x,
+            ),
+            Kind::SpinyEgg => ("M1_Enemy_togezo", "shell.0", 16.0, 16.0, false),
+            Kind::Cloud => ("M1_Enemy_jugem_cloud", "wait.0", 32.0, 32.0, false),
+            Kind::Pow => (
+                "M1_Object_block_pow",
+                ["wait.0", "wait.1", "wait.2", "wait.3"][(self.tick as usize / 8) % 4],
+                16.0,
+                16.0,
+                false,
+            ),
+            Kind::Key => (
+                "M1_Object_key",
+                ["wait.0", "wait.1", "wait.2", "wait.3"][(self.tick as usize / 8) % 4],
+                16.0,
+                16.0,
+                false,
+            ),
             Kind::Boo => (
                 "M1_Enemy_teresa",
                 if (a.target.0 < a.x) == (a.target_facing > 0) {
@@ -3668,6 +3769,72 @@ mod tests {
         }
         assert_eq!(shots.len(), 3);
         assert_eq!(shots[1] - shots[0], 190);
+    }
+
+    #[test]
+    fn lakitu_throws_spiny_eggs_that_hatch() {
+        let mut lvl = Level::flat(60);
+        lvl.spawns.push(spawn(Kind::Lakitu, 200.0, 160.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 150.0;
+        let mut spinies = 0;
+        for _ in 0..400 {
+            w.step(Input::default());
+            spinies = spinies.max(w.actors.iter().filter(|a| a.kind == Kind::Spiny).count());
+            if !w.player.alive() {
+                break;
+            }
+        }
+        assert!(spinies >= 1);
+    }
+
+    #[test]
+    fn pow_quake_knocks_out_grounded_enemies() {
+        let mut lvl = Level::flat(40);
+        lvl.spawns.push(spawn(Kind::Pow, 56.0, 64.0));
+        lvl.spawns.push(spawn(Kind::Goomba, 300.0, 32.0));
+        let mut w = World::with_level(lvl);
+        run(&mut w, 0, 5);
+        run(&mut w, input::JUMP, 20);
+        assert!(w.actors.iter().all(|a| a.kind != Kind::Pow));
+        assert!(
+            w.actors
+                .iter()
+                .any(|a| a.kind == Kind::Goomba && a.mode == Mode::DieFall)
+        );
+    }
+
+    #[test]
+    fn key_opens_a_locked_door() {
+        let mut lvl = Level::flat(60);
+        lvl.spawns.push(spawn(Kind::Key, 100.0, 32.0));
+        for (id, x) in [(2u8, 200.0f32), (3, 600.0)] {
+            lvl.warps.push(crate::level::Warp {
+                kind: crate::level::WarpKind::Door(2),
+                id,
+                x,
+                y: 32.0,
+                len: 2,
+            });
+            lvl.doors.push((x, 32.0, 2));
+        }
+        let mut w = World::with_level(lvl);
+        // locked without a key
+        w.player.x = 200.0;
+        run(&mut w, 0, 2);
+        run(&mut w, input::UP, 1);
+        assert!(w.transit.is_none());
+        // get the key, come back
+        w.player.x = 100.0;
+        run(&mut w, 0, 3);
+        assert_eq!(w.keys, 1);
+        w.player.x = 200.0;
+        run(&mut w, 0, 2);
+        run(&mut w, input::UP, 1);
+        assert!(w.transit.is_some());
+        assert_eq!(w.keys, 0);
+        run(&mut w, 0, 200);
+        assert_eq!(w.player.x, 600.0);
     }
 
     #[test]
