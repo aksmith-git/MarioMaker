@@ -244,6 +244,8 @@ pub struct Player {
     /// Wearing a Goomba's Shoe (Some(stiletto)): spikes and Munchers underfoot are safe, stomps
     /// defeat most enemies; a hit knocks the shoe off instead of costing a form.
     pub shoe: Option<bool>,
+    /// Flying a Koopa Clown Car (its actor id).
+    pub clown: Option<u32>,
     /// Climbing a vine: its centre x and the side the player hangs on (−1 left, +1 right).
     pub climbing: Option<(f32, i32)>,
     /// Frames before a vine can be grabbed again (after jumping off).
@@ -287,6 +289,7 @@ impl Player {
             climbing: None,
             climb_lock: 0,
             shoe: None,
+            clown: None,
         }
     }
 
@@ -741,6 +744,20 @@ impl Player {
         }
         if self.y < -2.0 * TILE {
             self.kill(); // fell into a pit
+        }
+    }
+
+    /// State that status clear conditions look at.
+    pub fn at_goal(&self) -> crate::clear::AtGoal {
+        crate::clear::AtGoal {
+            star: self.star > 0,
+            form: match self.form {
+                Form::Small => 0,
+                Form::Super => 1,
+                Form::Fire => 2,
+            },
+            shoe: self.shoe.is_some(),
+            clown_car: self.clown.is_some(),
         }
     }
 

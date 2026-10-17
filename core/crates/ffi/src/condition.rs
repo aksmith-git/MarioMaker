@@ -1,7 +1,6 @@
 //! `mmk_engine_clear_condition`: the course's clear condition and its progress, for the HUD.
 
 use mmk_sim::clear::Goal;
-use mmk_sim::player::Form;
 
 use crate::{MmkEngine, guard};
 
@@ -10,7 +9,7 @@ use crate::{MmkEngine, guard};
 pub struct MmkCondition {
     /// 0 none, 1 defeat N (target = enemy class), 2 collect N 1-Ups, 3 collect N coins (target =
     /// coin value, 0 any), 4 use N POW blocks, 5 press N P Switches, 6 goal while invincible,
-    /// 7 goal as Super, 8 goal as Fire, 9 no damage, 10 no landing, 11 goal in a Goomba's Shoe,
+    /// 7 goal as Super, 8 goal as Fire, 9 no damage, 10 no landing, 11 goal in a Goomba's Shoe, 12 in a Koopa Clown Car,
     /// 255 not supported.
     pub kind: u32,
     pub target: u32,
@@ -47,22 +46,18 @@ pub unsafe extern "C" fn mmk_engine_clear_condition(
             Goal::Super => (7, 0),
             Goal::Fire => (8, 0),
             Goal::Shoe => (11, 0),
+            Goal::ClownCar => (12, 0),
             Goal::NoDamage => (9, 0),
             Goal::NoLanding => (10, 0),
             Goal::Unsupported(i) => (255, i as u32),
         };
         let p = &e.world.player;
-        let form = match p.form {
-            Form::Small => 0,
-            Form::Super => 1,
-            Form::Fire => 2,
-        };
         *out = MmkCondition {
             kind,
             target,
             count: c.count,
             needed: c.n,
-            met: c.met(p.star > 0, form, p.shoe.is_some()) as u8,
+            met: c.met(p.at_goal()) as u8,
             violated: c.violated as u8,
             _pad: [0; 2],
         };

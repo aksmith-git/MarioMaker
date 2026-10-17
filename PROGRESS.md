@@ -155,6 +155,9 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   lets the player pass until met; HUD shows progress · holding / riding conditions ⬜ (no carry,
   Yoshi, shoe yet) — SMB1 sample 53 → 65 playable
 - ✅ Chain Chomp (chained + unchained)
+- ✅ Koopa Clown Car (and Fire car): floats empty, chases with an enemy rider (riders linked by
+  link id, carried on top), flown by the player (2 px/f, 0.05 accel, Fire shoots, Down+Jump exits
+  [inf]); "goal in a Clown Car" condition
 - ✅ Pink coins: counted once each across both areas; the last one gives the key
 - ✅ Goomba's Shoe / Stiletto: shoe Goomba hops (50-frame pause, 4.5 / 1.5), leaves the empty
   shoe; the player wears it (spikes and Munchers underfoot safe, shoe stomps, a hit knocks it

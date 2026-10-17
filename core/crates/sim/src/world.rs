@@ -199,6 +199,8 @@ pub struct World {
     /// Pink coins collected this attempt (area, tile) and the course's total.
     pub pink: std::collections::BTreeSet<(usize, i32, i32)>,
     pub pink_total: usize,
+    /// Jump / Run held last frame while flying a Clown Car.
+    clown_prev: (bool, bool),
     /// Key-door pairs unlocked: (area, warp id >> 1).
     unlocked_doors: std::collections::BTreeSet<(usize, u8)>,
     /// Snake blocks in the current area.
@@ -328,6 +330,7 @@ impl World {
             keys: 0,
             pink: Default::default(),
             pink_total,
+            clown_prev: (false, false),
             unlocked_doors: Default::default(),
             snakes: Vec::new(),
             held_by: None,
@@ -556,6 +559,118 @@ impl World {
         }
     }
 
+    /// The player flies a Koopa Clown Car (42-koopa-clown-car.md, player state 68): toward the
+    /// pad direction at up to 2 px/f (diagonals normalised), accelerating 0.05/frame per axis,
+    /// braking by 5 % when over speed; the Fire car shoots with Run; Down + Jump climbs out
+    /// [inf: exit input not traced].
+    fn fly_clown_car(&mut self, input: Input) {
+        let Some(id) = self.player.clown else { return };
+        let Some(i) = self.actors.iter().position(|a| a.id == id && a.alive()) else {
+            self.player.clown = None;
+            return;
+        };
+        let jump = input.held(input::JUMP);
+        let run = input.held(input::RUN);
+        let jump_pressed = jump && !self.clown_prev.0;
+        let run_pressed = run && !self.clown_prev.1;
+        self.clown_prev = (jump, run);
+        if jump_pressed && input.held(input::DOWN) {
+            self.player.clown = None;
+            self.actors[i].phase = 0;
+            self.player.vy = 3.5;
+            self.player.on_ground = false;
+            self.events.push(Event::Jump);
+            return;
+        }
+        let dx = input.dir_x() as f32;
+        let dy = if input.held(input::UP) {
+            1.0
+        } else if input.held(input::DOWN) {
+            -1.0
+        } else {
+            0.0
+        };
+        let n = (dx * dx + dy * dy).sqrt();
+        let (tx, ty) = if n > 0.0 {
+            (2.0 * dx / n, 2.0 * dy / n)
+        } else {
+            (0.0, 0.0)
+        };
+        let car = &mut self.actors[i];
+        car.vx += (tx - car.vx).clamp(-0.05, 0.05);
+        car.vy += (ty - car.vy).clamp(-0.05, 0.05);
+        let v = (car.vx * car.vx + car.vy * car.vy).sqrt();
+        if v > 2.0 {
+            let k = (0.95 * v).max(2.0) / v;
+            car.vx *= k;
+            car.vy *= k;
+        }
+        if dx != 0.0 {
+            car.dir = dx as i32;
+        }
+        let before = (car.x, car.y);
+        car.collide(&self.level);
+        car.moved = (car.x - before.0, car.y - before.1);
+        let (cx, cy, dir, fire) = (
+            car.x,
+            car.y,
+            car.dir,
+            matches!(car.kind, Kind::ClownCar { fire: true }),
+        );
+        let p = &mut self.player;
+        p.x = cx;
+        p.y = cy + 14.0;
+        p.vx = 0.0;
+        p.vy = 0.0;
+        p.on_ground = true;
+        p.facing = dir;
+        if fire && run_pressed {
+            let mut f = Actor::new(Kind::Fireball, cx + dir as f32 * 18.0, cy + 10.0);
+            f.dir = dir;
+            f.vx = 4.0 * dir as f32;
+            self.add_actor(f);
+            self.events.push(Event::Fireball);
+        }
+    }
+
+    /// Enemies riding a Koopa Clown Car stay on top of it (same link id, flag 0x200); the car
+    /// chases the player while it has a rider.
+    fn carry_clown_riders(&mut self) {
+        let spawns = &self.level.spawns;
+        let mut moves = Vec::new();
+        for (ri, r) in self.actors.iter().enumerate() {
+            let Some(rs) = r.spawn else { continue };
+            let Some(rspawn) = spawns.get(rs) else {
+                continue;
+            };
+            if !rspawn.clown || !r.alive() {
+                continue;
+            }
+            let car = self.actors.iter().position(|c| {
+                matches!(c.kind, Kind::ClownCar { .. })
+                    && c.alive()
+                    && c.spawn
+                        .and_then(|s| spawns.get(s))
+                        .is_some_and(|s| s.link == rspawn.link)
+            });
+            if let Some(ci) = car {
+                moves.push((ri, ci));
+            }
+        }
+        for (ri, ci) in moves {
+            let (cx, cy) = (self.actors[ci].x, self.actors[ci].y);
+            if self.actors[ci].phase == 0 {
+                self.actors[ci].phase = 1;
+            }
+            let r = &mut self.actors[ri];
+            r.x = cx;
+            r.y = cy + 24.0;
+            r.vx = 0.0;
+            r.vy = 0.0;
+            r.on_ground = true;
+        }
+    }
+
     /// A defeated shoe Goomba leaves its empty shoe behind (unless it fell into lava).
     fn drop_shoes(&mut self) {
         let mut shoes = Vec::new();
@@ -675,7 +790,11 @@ impl World {
         self.step_platforms(jump_held, input.dir_x());
         self.conveyor_carry();
         let prev_x = self.player.x;
-        self.player.step(input, &self.level);
+        if self.player.clown.is_some() {
+            self.fly_clown_car(input);
+        } else {
+            self.player.step(input, &self.level);
+        }
         let shoe_safe = self.player.shoe.is_some() && self.player.on_ground;
         if self.player.spiked && !shoe_safe && self.player.hurt() {
             self.events.push(if self.player.alive() {
@@ -823,6 +942,7 @@ impl World {
         self.actor_interactions();
         self.player_interactions(jump_held);
         self.step_effects();
+        self.carry_clown_riders();
         self.tally_defeats();
         self.drop_shoes();
         self.despawn();
@@ -1387,6 +1507,23 @@ impl World {
                     Event::Death
                 });
                 return;
+            }
+            if let Kind::ClownCar { .. } = a.kind {
+                // climb in by dropping into an empty car
+                if a.phase == 0
+                    && overlap(contact, ab)
+                    && self.player.vy <= 0.0
+                    && self.player.y >= a.y + 10.0
+                    && self.player.clown.is_none()
+                {
+                    let id = a.id;
+                    self.actors[i].phase = 2;
+                    self.player.clown = Some(id);
+                    self.player.vy = 0.0;
+                    self.events.push(Event::Pipe);
+                }
+                i += 1;
+                continue;
             }
             if let Kind::Shoe { heels } = a.kind {
                 // climb in by landing on it
@@ -2534,12 +2671,7 @@ impl World {
             return;
         }
         // a clear condition not met: the goal lets the player pass
-        let form = match p.form {
-            Form::Small => 0,
-            Form::Super => 1,
-            Form::Fire => 2,
-        };
-        if !self.clear.met(p.star > 0, form, p.shoe.is_some()) {
+        if !self.clear.met(p.at_goal()) {
             return;
         }
         // grab: snap to the pole, score by height
@@ -3749,6 +3881,17 @@ impl World {
             ),
             Kind::Wiggler => ("M1_Enemy_hanachan", "head.0", 16.0, 32.0, a.dir > 0),
             Kind::LavaBubble => ("M1_Enemy_bubble", "wait.0", 16.0, 16.0, false),
+            Kind::ClownCar { fire } => (
+                if fire {
+                    "M1_Enemy_koopaclownfire"
+                } else {
+                    "M1_Enemy_koopaclown"
+                },
+                ["wait.0", "wait.1", "wait.2", "wait.3"][(self.tick as usize / 8) % 4],
+                32.0,
+                32.0,
+                a.dir > 0,
+            ),
             Kind::ShoeGoomba { heels } => (
                 if heels {
                     "M1_Enemy_kutsu_kuriboB"
@@ -4116,6 +4259,8 @@ mod tests {
             pipe: None,
             parachute: false,
             rail: None,
+            link: -1,
+            clown: false,
         });
         let mut w = World::with_level(lvl);
         assert_eq!(w.actors.len(), 1);
@@ -4150,6 +4295,8 @@ mod tests {
             pipe: None,
             parachute: false,
             rail: None,
+            link: -1,
+            clown: false,
         });
         let mut w = World::with_level(lvl);
         let lives = w.lives;
@@ -4242,7 +4389,7 @@ mod tests {
         }
         run(&mut w, 0, 1);
         assert_eq!(w.clear.count, 2);
-        assert!(w.clear.met(false, 0, false));
+        assert!(w.clear.met(Default::default()));
     }
 
     #[test]
@@ -4330,6 +4477,8 @@ mod tests {
             pipe: Some((PipeDir::Up, 336.0, 64.0)),
             parachute: false,
             rail: None,
+            link: -1,
+            clown: false,
         });
         let mut w = World::with_level(lvl);
         w.player.x = 200.0;
@@ -4416,6 +4565,8 @@ mod tests {
             pipe: None,
             parachute: false,
             rail: None,
+            link: -1,
+            clown: false,
         }
     }
 
@@ -4854,6 +5005,44 @@ mod tests {
         assert_eq!((w.pink.len(), w.keys), (2, 1));
         run(&mut w, 0, 1);
         assert_eq!(w.keys, 1, "counted once");
+    }
+
+    #[test]
+    fn clown_car_is_flown_and_carries_riders() {
+        let mut lvl = Level::flat(80);
+        lvl.spawns
+            .push(spawn(Kind::ClownCar { fire: false }, 120.0, 64.0));
+        let mut car2 = spawn(Kind::ClownCar { fire: false }, 300.0, 80.0);
+        car2.link = 4;
+        lvl.spawns.push(car2);
+        let mut rider = spawn(Kind::Goomba, 300.0, 104.0);
+        rider.link = 4;
+        rider.clown = true;
+        lvl.spawns.push(rider);
+        let mut w = World::with_level(lvl);
+        w.player.x = 40.0;
+        run(&mut w, 0, 2);
+        // the Goomba rides its car, which chases the player
+        let car = w.actors.iter().find(|a| a.spawn == Some(1)).unwrap();
+        let g = w.actors.iter().find(|a| a.kind == Kind::Goomba).unwrap();
+        assert_eq!((g.x, g.y), (car.x, car.y + 24.0));
+        assert_eq!(car.phase, 1);
+        // drop into the empty car
+        let i = w.actors.iter().position(|a| a.spawn == Some(0)).unwrap();
+        let (cx, cy) = (w.actors[i].x, w.actors[i].y);
+        w.player.x = cx;
+        w.player.y = cy + 14.0;
+        w.player.vy = -1.0;
+        w.player_interactions(false);
+        assert!(w.player.clown.is_some());
+        // fly right: 0.05/frame up to 2 px/f
+        run(&mut w, input::RIGHT, 60);
+        let car = w.actors.iter().find(|a| a.spawn == Some(0)).unwrap();
+        assert!((car.vx - 2.0).abs() < 1e-3, "{}", car.vx);
+        assert_eq!(w.player.x, car.x);
+        // Down + Jump: out
+        run(&mut w, input::DOWN | input::JUMP, 1);
+        assert!(w.player.clown.is_none());
     }
 
     #[test]
@@ -5308,6 +5497,8 @@ mod tests {
                     pipe: None,
                     parachute: false,
                     rail: None,
+                    link: -1,
+                    clown: false,
                 });
             }
             World::with_level(lvl)

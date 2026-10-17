@@ -144,6 +144,11 @@ pub enum Kind {
     Shoe {
         heels: bool,
     },
+    /// Koopa Clown Car (42; `fire` = the Fire Koopa Clown Car). Phases: 0 empty (floats),
+    /// 1 an enemy rides it (chases the player), 2 the player flies it (the world drives it).
+    ClownCar {
+        fire: bool,
+    },
     /// Lava Bubble (60): leaps from the lava (or the area floor) to its placed height.
     LavaBubble,
     /// Monty Mole (102): buried until the player comes near, then chases.
@@ -841,6 +846,7 @@ impl Actor {
                 }
             }
             Kind::Lift { width, .. } => width as f32 * 8.0,
+            Kind::ClownCar { .. } => 14.0,
             _ if self.big => 16.0,
             _ => 8.0,
         }
@@ -1391,6 +1397,7 @@ impl Actor {
             Kind::Boo => self.step_boo(),
             Kind::ChainChomp { chained } => self.step_chomp(level, chained),
             Kind::LavaBubble => self.step_lava_bubble(),
+            Kind::ClownCar { .. } => self.step_clown_car(level),
             Kind::ShoeGoomba { .. } => self.step_shoe_goomba(level),
             Kind::Shoe { .. } => {
                 self.vx = 0.0;
@@ -1890,6 +1897,41 @@ impl Actor {
         self.vy = self.speed * s + w * c;
         self.x += self.vx;
         self.y += self.vy;
+    }
+
+    /// Koopa Clown Car (42-koopa-clown-car.md). Empty: velocity × 0.95 with a ±0.2 bob in 0.01
+    /// steps. With an enemy rider: homes on the player at up to 1.0 px/f, accelerating 0.02.
+    /// Flown by the player: moved by the world (`World::fly_clown_car`). Bob speed in `heading`.
+    fn step_clown_car(&mut self, level: &Level) {
+        match self.phase {
+            0 => {
+                self.vx *= 0.95;
+                if self.timer <= 0 {
+                    self.timer = 40;
+                    self.hops ^= 1;
+                }
+                self.timer -= 1;
+                self.heading =
+                    (self.heading + if self.hops == 0 { 0.01 } else { -0.01 }).clamp(-0.2, 0.2);
+                self.vy = self.heading;
+                self.collide(level);
+            }
+            1 => {
+                let (px, py) = self.target;
+                let (dx, dy) = (px - self.x, py + 8.0 - self.y);
+                let d = (dx * dx + dy * dy).sqrt().max(1.0);
+                self.vx += 0.02 * dx / d;
+                self.vy += 0.02 * dy / d;
+                let v = (self.vx * self.vx + self.vy * self.vy).sqrt();
+                if v > 1.0 {
+                    self.vx /= v;
+                    self.vy /= v;
+                }
+                self.dir = if dx < 0.0 { -1 } else { 1 };
+                self.collide(level);
+            }
+            _ => {}
+        }
     }
 
     /// Goomba's Shoe enemy (45-goombas-shoe.md): on the ground it brakes to 0 by 0.5/frame and
