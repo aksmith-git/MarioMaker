@@ -347,6 +347,8 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
     // 5. sounds of the imported styles
     let sound_count =
         audio::import_audio(&cfg.romfs, &out, SOUND_STYLES, audio::M1_SOUNDS, progress)?;
+    // each style's theme music, decoded per course by the player
+    audio::export_music(&cfg.romfs, &out, STYLES)?;
 
     // 6. manifest
     let manifest: Value = json!({

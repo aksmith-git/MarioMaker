@@ -625,7 +625,7 @@ pub unsafe extern "C" fn mmk_audio_open(path: *const c_char) -> *mut MmkAudio {
             .to_string_lossy()
             .into_owned();
         match mmk_audio::Bank::load_cache(&path) {
-            Ok(bank) => Box::into_raw(Box::new(MmkAudio::new(bank))),
+            Ok(bank) => Box::into_raw(Box::new(MmkAudio::new(bank).with_root(&path))),
             Err(e) => {
                 set_error(e.to_string());
                 std::ptr::null_mut()
@@ -702,6 +702,7 @@ pub unsafe extern "C" fn mmk_engine_set_audio(engine: *mut MmkEngine, audio: *co
         };
         e.director = unsafe { audio.as_ref() }.map(|a| {
             let mut d = Director::new(a.tx.clone(), &a.bank);
+            d.load_music(a, &e.world.level.style, e.world.level.theme);
             d.start_course(&e.world);
             d
         });

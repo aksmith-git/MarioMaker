@@ -25,6 +25,9 @@ pub struct MmkAudio {
     inner: Mutex<Inner>,
     pub(crate) tx: SyncSender<Command>,
     pub(crate) bank: Arc<Bank>,
+    /// Per-course music (decoded on the game thread) and the cache root it is read from.
+    pub(crate) slots: mmk_audio::mixer::MusicSlots,
+    pub(crate) root: Option<std::path::PathBuf>,
 }
 
 struct Inner {
@@ -36,14 +39,21 @@ impl MmkAudio {
     pub fn new(bank: Bank) -> Self {
         let bank = Arc::new(bank);
         let (tx, rx) = command_channel(256);
+        let slots = mmk_audio::mixer::music_slots();
+        let mut mixer = Mixer::new(bank.clone(), OUTPUT_RATE);
+        mixer.set_slots(slots.clone());
         Self {
-            inner: Mutex::new(Inner {
-                mixer: Mixer::new(bank.clone(), OUTPUT_RATE),
-                rx,
-            }),
+            inner: Mutex::new(Inner { mixer, rx }),
             tx,
             bank,
+            slots,
+            root: None,
         }
+    }
+
+    pub fn with_root(mut self, root: impl Into<std::path::PathBuf>) -> Self {
+        self.root = Some(root.into());
+        self
     }
 
     /// Apply pending commands and render interleaved stereo frames into `out`.
@@ -113,7 +123,7 @@ impl Ids {
             fanfare_down: id("fanfare_down"),
             fanfare_clear: id("fanfare_clear"),
             fanfare_hurry: id("fanfare_hurry"),
-            // SMB1 ground music; other themes are not imported yet and use it too
+            // SMB1 ground music until `load_music` puts the course's own tracks in the slots
             bgm: id("bgm_plain"),
             bgm_hurry: id("bgm_plain_hurry"),
             bgm_star: id("bgm_star"),
@@ -149,6 +159,53 @@ impl Director {
             count_gap: 0,
             kick_alt: 0,
         }
+    }
+
+    /// The course's own music: its style's theme track and hurry variant, and the style's star
+    /// music, decoded from `<cache>/audio/music/` into the mixer's slots. Missing tracks fall
+    /// back to the style's ground track, then SMB1's, then the bank's SMB1 ground music.
+    pub fn load_music(&mut self, audio: &MmkAudio, style: &str, theme: u8) {
+        let Some(root) = &audio.root else { return };
+        let dir = root.join("audio/music");
+        let load = |names: &[String]| {
+            names.iter().find_map(|n| {
+                let bytes = std::fs::read(dir.join(format!("{n}.bwav"))).ok()?;
+                mmk_audio::Sound::from_bwav(n, &bytes).ok()
+            })
+        };
+        let t = theme;
+        let theme_names = |suffix: &str| {
+            vec![
+                format!("{style}_{t}{suffix}"),
+                format!("{style}_0{suffix}"),
+                format!("M1_{t}{suffix}"),
+                format!("M1_0{suffix}"),
+            ]
+        };
+        let tracks = [
+            load(&theme_names("")),
+            load(&theme_names("_hurry")),
+            load(&[format!("{style}_star"), "M1_star".into()]),
+            load(&[format!("{style}_star_hurry"), "M1_star_hurry".into()]),
+        ];
+        let present: Vec<bool> = tracks.iter().map(Option::is_some).collect();
+        if let Ok(mut g) = audio.slots.lock() {
+            *g = tracks;
+        } else {
+            return;
+        }
+        self.send(Command::LoadSlots);
+        let slot = |k: usize, old: Option<u16>| {
+            if present[k] {
+                Some(mmk_audio::mixer::SLOT_BASE + k as u16)
+            } else {
+                old
+            }
+        };
+        self.ids.bgm = slot(0, self.ids.bgm);
+        self.ids.bgm_hurry = slot(1, self.ids.bgm_hurry);
+        self.ids.bgm_star = slot(2, self.ids.bgm_star);
+        self.ids.bgm_star_hurry = slot(3, self.ids.bgm_star_hurry);
     }
 
     fn send(&self, cmd: Command) {

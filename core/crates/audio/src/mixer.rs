@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
-use crate::bank::Bank;
+use crate::bank::{Bank, Sound};
 
 pub const OUTPUT_RATE: u32 = 48_000;
 pub const MAX_VOICES: usize = 32;
@@ -50,6 +50,36 @@ pub enum Command {
         music: f32,
         sfx: f32,
     },
+    /// Take the sounds now in the shared music slots (see [`MusicSlots`]); they play as sound
+    /// ids `SLOT_BASE + slot`.
+    LoadSlots,
+}
+
+/// Sounds loaded per course (theme music is too large to keep every track decoded): the game
+/// thread decodes into these slots, then sends [`Command::LoadSlots`].
+pub type MusicSlots = Arc<std::sync::Mutex<[Option<Sound>; SLOTS]>>;
+pub const SLOTS: usize = 4;
+/// Sound id of music slot 0.
+pub const SLOT_BASE: u16 = 0xFF00;
+
+pub fn music_slots() -> MusicSlots {
+    Arc::new(std::sync::Mutex::new(std::array::from_fn(|_| None)))
+}
+
+/// Bank sounds plus the loaded slots, by id.
+struct Sounds<'a> {
+    bank: &'a Bank,
+    slots: &'a [Option<Sound>; SLOTS],
+}
+
+impl<'a> Sounds<'a> {
+    fn get(&self, id: u16) -> Option<&'a Sound> {
+        if id >= SLOT_BASE {
+            self.slots.get((id - SLOT_BASE) as usize)?.as_ref()
+        } else {
+            self.bank.sounds.get(id as usize)
+        }
+    }
 }
 
 /// Bounded command queue from the game thread to the audio thread (no allocation per command).
@@ -76,6 +106,8 @@ struct Voice {
 
 pub struct Mixer {
     bank: Arc<Bank>,
+    shared_slots: Option<MusicSlots>,
+    slots: [Option<Sound>; SLOTS],
     out_rate: u32,
     voices: [Option<Voice>; MAX_VOICES],
     serial: u64,
@@ -92,6 +124,8 @@ impl Mixer {
     pub fn new(bank: Arc<Bank>, out_rate: u32) -> Self {
         Self {
             bank,
+            shared_slots: None,
+            slots: std::array::from_fn(|_| None),
             out_rate,
             voices: [None; MAX_VOICES],
             serial: 0,
@@ -103,6 +137,18 @@ impl Mixer {
 
     pub fn bank(&self) -> &Bank {
         &self.bank
+    }
+
+    /// Share the per-course music slots with the game thread.
+    pub fn set_slots(&mut self, slots: MusicSlots) {
+        self.shared_slots = Some(slots);
+    }
+
+    fn sounds(&self) -> Sounds<'_> {
+        Sounds {
+            bank: &self.bank,
+            slots: &self.slots,
+        }
     }
 
     pub fn out_rate(&self) -> u32 {
@@ -157,7 +203,7 @@ impl Mixer {
                 self.fade_where(fade, |v| v.bus == Bus::Sfx && v.sound == sound)
             }
             Command::PlayMusic { sound, then } => {
-                if (sound as usize) >= self.bank.sounds.len() {
+                if self.sounds().get(sound).is_none() {
                     return;
                 }
                 self.fade_where(STOP_FADE, |v| v.bus == Bus::Music);
@@ -169,6 +215,18 @@ impl Mixer {
                 self.master = master.clamp(0.0, 1.0);
                 self.music = music.clamp(0.0, 1.0);
                 self.sfx = sfx.clamp(0.0, 1.0);
+            }
+            Command::LoadSlots => {
+                // never block the audio thread: if the game thread holds the lock, keep the old
+                if let Some(Ok(g)) = self.shared_slots.as_ref().map(|s| s.try_lock()) {
+                    // voices playing a slot sound stop first (its data is about to change)
+                    for v in &mut self.voices {
+                        if v.is_some_and(|v| v.sound >= SLOT_BASE) {
+                            *v = None;
+                        }
+                    }
+                    self.slots = g.clone();
+                }
             }
         }
     }
@@ -188,13 +246,16 @@ impl Mixer {
     }
 
     fn start(&mut self, sound: u16, bus: Bus, next: Option<u16>) {
-        let s = &self.bank.sounds[sound as usize];
+        let Some(s) = self.sounds().get(sound) else {
+            return;
+        };
+        let rate = s.rate;
         self.serial += 1;
         let voice = Voice {
             sound,
             bus,
             pos: 0,
-            step: step_for(s.rate, self.out_rate),
+            step: step_for(rate, self.out_rate),
             fade: 1.0,
             fade_step: 0.0,
             next,
@@ -218,13 +279,17 @@ impl Mixer {
         out.fill(0.0);
         let frames = out.len() / 2;
         let bank = self.bank.clone();
+        let sounds = Sounds {
+            bank: &bank,
+            slots: &self.slots,
+        };
         for slot in &mut self.voices {
             let Some(v) = slot else { continue };
             let bus_gain = match v.bus {
                 Bus::Music => self.music,
                 Bus::Sfx => self.sfx,
             } * self.master;
-            if !render_voice(&bank, v, bus_gain, self.out_rate, &mut out[..frames * 2]) {
+            if !render_voice(&sounds, v, bus_gain, self.out_rate, &mut out[..frames * 2]) {
                 *slot = None;
             }
         }
@@ -235,9 +300,17 @@ impl Mixer {
 }
 
 /// Render one voice; false when it has finished.
-fn render_voice(bank: &Bank, v: &mut Voice, bus_gain: f32, out_rate: u32, out: &mut [f32]) -> bool {
+fn render_voice(
+    sounds: &Sounds,
+    v: &mut Voice,
+    bus_gain: f32,
+    out_rate: u32,
+    out: &mut [f32],
+) -> bool {
     const SCALE: f32 = 1.0 / 32768.0;
-    let mut s = &bank.sounds[v.sound as usize];
+    let Some(mut s) = sounds.get(v.sound) else {
+        return false;
+    };
     let mut f = 0;
     let frames = out.len() / 2;
     while f < frames {
@@ -249,15 +322,11 @@ fn render_voice(bank: &Bank, v: &mut Voice, bus_gain: f32, out_rate: u32, out: &
             }
             None if i >= s.frames => {
                 // finished: continue with the chained sound, if any
-                match v
-                    .next
-                    .take()
-                    .and_then(|n| bank.sounds.get(n as usize).map(|_| n))
-                {
-                    Some(n) => {
+                match v.next.take().and_then(|n| sounds.get(n).map(|s| (n, s))) {
+                    Some((n, ns)) => {
                         v.sound = n;
                         v.pos = 0;
-                        s = &bank.sounds[n as usize];
+                        s = ns;
                         v.step = step_for(s.rate, out_rate);
                         continue;
                     }
