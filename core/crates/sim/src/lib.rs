@@ -15,6 +15,7 @@ pub mod liquid;
 pub mod player;
 pub mod render;
 pub mod snake;
+pub mod track;
 pub mod warp;
 pub mod world;
 

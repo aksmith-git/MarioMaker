@@ -269,3 +269,12 @@ small library repeats would dominate). The castle search (last course) is read a
 and falls back to any course. Difficulty value = 100 − clear rate (the same fail-rate scale the
 SMM1 bands use); courses without metadata get 30, so they appear only in Easy and Normal runs.
 
+## 2026-10-18 — Tracks as a geometric graph, not the game's per-cell rail grid
+The game expands each track record into a 3×3 (5×5 for junctions) template of tile codes and walks
+a cell grid. The engine builds the same paths as line and arc pieces joined at shared end points.
+The geometry was fitted to the corpus: object reference points land on the pieces they link to.
+Riders keep their offset from the track point and move 0.75 px/frame (1.5 winged). The pieces
+are 32 px long; only free ends reverse. Still guessed: which way curves bulge, the start direction
+field, and open-vs-closed ends (all ends reverse). Junctions aren't built. Tracks are drawn with
+white texels from the field atlas, a placeholder for the real per-cell track tiles.
+

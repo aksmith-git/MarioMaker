@@ -156,6 +156,11 @@ Per-object meanings of the remaining bits are listed in `smmfmt/smm2/enums.py` (
 **Ground tile (4):** u8 x, u8 y, u8 tile id, u8 background id. Viewers usually auto-tile instead.
 **Track (0x0C):** u16 unknown, u8 flags, u8 x, u8 y, u8 type (0 horizontal, 1 vertical, 2–3 diagonal,
 4–7 curve, 8–15 junction), u16 link id, u16 × 2 endpoint data. 255 = −1 for x/y.
+A piece is centred on object tile (x + 1, y + 1) and joins two points one tile from its centre:
+horizontal, vertical, type 2 diagonal down to the right, type 3 up to the right; curves 4–7 join
+the same corner pairs as the diagonals. Adjacent pieces share end points. The two end words are
+field-atlas tile indices written at the ends (0x104 = nothing written). Verified on the corpus:
+433 of 438 on-track objects sit within 24 px of a piece built this way (project finding).
 **Icicle (4):** u8 x, u8 y, u8 type (0 falling, 1 fixed), u8 pad.
 **Snake block (0x3C4):** u8 index, u8 node count, u8 in-use (1), pad, then 120 × {u16 index,
 u16 direction, u16 0x100, pad}.

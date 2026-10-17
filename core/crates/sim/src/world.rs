@@ -1414,6 +1414,16 @@ impl World {
                     a.home_x = s.x;
                     a.home_y = s.y + 64.0;
                 }
+                if let Some(start) = s.rail {
+                    // the reference point is the object's tile centre (feet + 8)
+                    if let Some(r) =
+                        crate::track::Rail::attach(&self.level.tracks, s.x, s.y + 8.0, start, s.wings)
+                    {
+                        let p = r.point(&self.level.tracks);
+                        a.rail_off = (s.x - p.0, s.y - p.1);
+                        a.rail = Some(r);
+                    }
+                }
                 // enemies face the player (left if player.x ≤ x); items face right; a Twister
                 // starts facing left
                 a.dir = if (s.kind.is_enemy() && self.player.x <= s.x) || s.kind == Kind::Twister {
@@ -2580,6 +2590,40 @@ impl World {
             layer,
         };
         self.background_sprites(&mut out);
+        // tracks: drawn from the white line texels of the field atlas (tile 0x80) [placeholder
+        // for the game's per-cell track tiles], with a dot at every free end
+        let line = |px: f32, py: f32, size: f32| Sprite {
+            image: SpriteImage {
+                model: field,
+                texture: field,
+                rect: Some((12.0, 136.0, 1.0, 1.0)),
+            },
+            x: px - size / 2.0,
+            y: py - size / 2.0,
+            w: size,
+            h: size,
+            flip_x: false,
+            flip_y: false,
+            layer: 9,
+        };
+        for poly in self.level.tracks.polylines() {
+            for w in poly.windows(2) {
+                let (a, b) = (w[0], w[1]);
+                let n = ((b.0 - a.0).abs().max((b.1 - a.1).abs())).ceil().max(1.0) as usize;
+                for k in 0..n {
+                    let t = k as f32 / n as f32;
+                    let (px, py) = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+                    if visible(px, py) {
+                        out.push(line(px, py, 1.5));
+                    }
+                }
+            }
+        }
+        for (px, py) in self.level.tracks.ends() {
+            if visible(px, py) {
+                out.push(line(px, py, 5.0));
+            }
+        }
         for t in &self.level.tiles {
             let (px, py) = (t.x as f32 * TILE, t.y as f32 * TILE);
             if visible(px, py) {
@@ -3691,6 +3735,7 @@ mod tests {
             wings: false,
             pipe: None,
             parachute: false,
+            rail: None,
         });
         let mut w = World::with_level(lvl);
         assert_eq!(w.actors.len(), 1);
@@ -3724,6 +3769,7 @@ mod tests {
             wings: false,
             pipe: None,
             parachute: false,
+            rail: None,
         });
         let mut w = World::with_level(lvl);
         let lives = w.lives;
@@ -3866,6 +3912,7 @@ mod tests {
             wings: false,
             pipe: Some((PipeDir::Up, 336.0, 64.0)),
             parachute: false,
+            rail: None,
         });
         let mut w = World::with_level(lvl);
         w.player.x = 200.0;
@@ -3951,6 +3998,7 @@ mod tests {
             wings: false,
             pipe: None,
             parachute: false,
+            rail: None,
         }
     }
 
@@ -4662,6 +4710,7 @@ mod tests {
                     wings: i == 4,
                     pipe: None,
                     parachute: false,
+                    rail: None,
                 });
             }
             World::with_level(lvl)

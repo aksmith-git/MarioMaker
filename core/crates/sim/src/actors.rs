@@ -308,6 +308,9 @@ pub struct Actor {
     pub heading: f32,
     /// The player's facing (+1 right), set by the world.
     pub target_facing: i32,
+    /// Riding a track, and the offset from the track point to (x, y).
+    pub rail: Option<crate::track::Rail>,
+    pub rail_off: (f32, f32),
 }
 
 impl Actor {
@@ -347,6 +350,8 @@ impl Actor {
             speed: 0.0,
             heading: 0.0,
             target_facing: 1,
+            rail: None,
+            rail_off: (0.0, 0.0),
         }
     }
 
@@ -944,8 +949,32 @@ impl Actor {
     pub fn step_spawning(&mut self, level: &Level) -> Option<Actor> {
         let before = (self.x, self.y);
         let out = self.step_inner(level);
+        self.ride_track(level);
         self.moved = (self.x - before.0, self.y - before.1);
         out
+    }
+
+    /// On a track the rail sets the position (the actor's own motion is replaced); knocked off
+    /// (stomped, killed, kicked), it falls under its own rules.
+    fn ride_track(&mut self, level: &Level) {
+        let Some(mut r) = self.rail else { return };
+        if !matches!(self.mode, Mode::Normal) {
+            self.rail = None;
+            return;
+        }
+        let before = r.point(&level.tracks);
+        let (px, py) = r.step(&level.tracks);
+        self.rail = Some(r);
+        if self.kind == Kind::Claw {
+            // the claw hangs from a pivot that rides the track
+            self.home_x += px - before.0;
+            self.home_y += py - before.1;
+            return;
+        }
+        self.x = px + self.rail_off.0;
+        self.y = py + self.rail_off.1;
+        self.vx = 0.0;
+        self.vy = 0.0;
     }
 
     fn step_inner(&mut self, level: &Level) -> Option<Actor> {

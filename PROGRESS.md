@@ -150,6 +150,9 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
 - ⬜ App screens drawn with the SMM1 layouts (world map walk, intro card, clear, game over, ending)
 
 ### Phase 7 — Expansion ⬜
+- ✅ Tracks: graph from track records (lines + quarter arcs), rail follower (0.75 / 1.5 px/f),
+  any actor rides (lifts, seesaws, grinders, claws, items, enemies); drawn as lines · junctions,
+  open ends, blocks/coins on tracks, exact track tiles ⬜ — SMB1 sample 49 → 52 playable
 - ⬜ Measure object/style/theme frequency in real courses
 - ⬜ Add styles, themes, objects in that order (2.0/3.0 items need the update dump)
 
