@@ -175,6 +175,8 @@ pub struct World {
     donut_respawn: Vec<((i32, i32), i32)>,
     /// Conveyor carry applied to the player (px/frame).
     carry: f32,
+    /// Autoscroll view position (x, or y in vertical areas).
+    autoscroll_pos: f32,
     /// The current area's liquid level, if any.
     pub liquid: Option<Liquid>,
     /// Cannon countdowns (current area).
@@ -288,6 +290,7 @@ impl World {
             donut_ride: None,
             donut_respawn: Vec::new(),
             carry: 0.0,
+            autoscroll_pos: 0.0,
             liquid: None,
             cannon_timers: Vec::new(),
             keys: 0,
@@ -348,6 +351,12 @@ impl World {
         let (px, py) = (self.player.x, self.player.y);
         let level = &self.level;
         self.camera = Camera::start(&area, px, py, |x, y| level.cell(x, y) == Cell::Solid);
+        let v = self.camera.view(&self.camera_area());
+        self.autoscroll_pos = if self.level.vertical {
+            v.bottom
+        } else {
+            v.left
+        };
         self.sync_camera();
         self.activate();
     }
@@ -703,6 +712,7 @@ impl World {
 
         self.check_goal();
         self.update_camera();
+        self.autoscroll_push();
         self.activate();
     }
 
@@ -2398,6 +2408,12 @@ impl World {
         self.camera.reset(&area, (x, y + 16.0), (x, y), |tx, ty| {
             level.cell(tx, ty) == Cell::Solid
         });
+        let v = self.camera.view(&self.camera_area());
+        self.autoscroll_pos = if self.level.vertical {
+            v.bottom
+        } else {
+            v.left
+        };
         self.sync_camera();
     }
 
@@ -2415,6 +2431,51 @@ impl World {
         let v = self.camera.view(&self.camera_area());
         self.camera_x = v.left;
         self.camera_y = v.bottom;
+        // preset autoscroll (themes.md §4.2): the view moves right (vertical areas: up) at
+        // 0.5 / 1.0 / 2.0 px/frame (vertical 0.28 / 0.53 / 1.12); the player is pushed along
+        if let 1..=3 = self.level.autoscroll {
+            let s = (self.level.autoscroll - 1) as usize;
+            if self.level.vertical {
+                let max_y = (self.level.top - VIEW_H).max(self.level.bottom);
+                if self.player.alive() && self.goal_phase == GoalPhase::None {
+                    self.autoscroll_pos = (self.autoscroll_pos + [0.28, 0.53, 1.12][s]).min(max_y);
+                }
+                self.camera_y = self.autoscroll_pos;
+            } else {
+                let max_x = (self.level.right - VIEW_W).max(self.level.left);
+                if self.player.alive() && self.goal_phase == GoalPhase::None {
+                    self.autoscroll_pos = (self.autoscroll_pos + [0.5, 1.0, 2.0][s]).min(max_x);
+                }
+                self.camera_x = self.autoscroll_pos;
+            }
+        }
+    }
+
+    /// Autoscroll pushes the player with the view edges; squeezed against a wall = death.
+    fn autoscroll_push(&mut self) {
+        if !matches!(self.level.autoscroll, 1..=3)
+            || self.level.vertical
+            || !self.player.alive()
+            || self.player.control != Control::Normal
+        {
+            return;
+        }
+        let (l, r) = (self.camera_x + 8.0, self.camera_x + VIEW_W - 8.0);
+        if self.player.x < l {
+            self.player.x = l;
+            let s = self.player.sensors();
+            let blocked = [s.wall_y0, s.wall_y1].iter().any(|&wy| {
+                self.level
+                    .cell_at(self.player.x + s.wall_x, self.player.y + wy)
+                    .is_solid()
+            });
+            if blocked {
+                self.player.kill();
+                self.events.push(Event::Death);
+            }
+        } else if self.player.x > r {
+            self.player.x = r;
+        }
     }
 
     // ---------------------------------------------------------------- drawing
@@ -4402,6 +4463,22 @@ mod tests {
         let x0 = w.actors[0].x;
         run(&mut w, 0, 50);
         assert!((w.actors[0].x - x0 - 40.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn autoscroll_pushes_the_player() {
+        let mut lvl = Level::flat(120);
+        lvl.autoscroll = 2;
+        let mut w = World::with_level(lvl);
+        let c0 = w.camera_x;
+        run(&mut w, 0, 300);
+        assert!(
+            (w.camera_x - c0 - 300.0).abs() < 2.0,
+            "1 px/frame: {}",
+            w.camera_x - c0
+        );
+        assert!(w.player.x >= w.camera_x + 8.0 - 0.01, "pushed along");
+        assert!(w.player.alive());
     }
 
     #[test]

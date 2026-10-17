@@ -89,7 +89,7 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   rideable Lakitu clouds, POW quake, keys + locked doors; snake blocks (path codes decoded from
   the corpus, multi-segment moving solids, fall-apart), Twisters, swinging claws (grab/release),
   Cheep Cheeps (swim / flop), Bloopers (pulse + sink), Skewers, Magikoopa (+ magic), Rocky Wrench
-  (+ wrenches), Wiggler (segments, anger), lava lifts
+  (+ wrenches), Wiggler (segments, anger), lava lifts; preset autoscroll (push / crush)
 - 🔄 Coverage (`mmk coverage`): 33 of 150 sample SMB1 courses fully playable (was 20); biggest
   blockers now Chain Chomp, tracks, Bowser, clear conditions, swinging claw, grinder, liquids
 - ⬜ 7. Play real courses start to goal; tune against Ryujinx (needs a Ryujinx build with a GDB stub)

@@ -326,6 +326,8 @@ pub struct Level {
     /// Main area (0) rather than the sub-area.
     pub main_area: bool,
     pub timer: i16,
+    /// Area autoscroll: 0 none, 1 slow, 2 normal, 3 fast, 4 custom (themes.md §4).
+    pub autoscroll: u8,
 }
 
 /// Atlas index of a block in SMB1 field atlases (row 0: brick 1, ? 2, hidden 3, note 4, used 5,
@@ -377,8 +379,8 @@ pub fn unsupported_features(course: &Course) -> Vec<String> {
             continue; // unused sub-area
         }
 
-        if h.autoscroll_type != 0 {
-            out.insert("autoscroll".to_string());
+        if h.autoscroll_type == 4 {
+            out.insert("custom autoscroll".to_string());
         }
 
         for o in area.objects.iter() {
@@ -469,6 +471,7 @@ impl Level {
             boundary_type: h.boundary_type,
             vertical: h.orientation != 0,
             main_area: area_index == 0,
+            autoscroll: h.autoscroll_type,
             timer: course.header.timer,
         };
 
@@ -1205,6 +1208,7 @@ impl Level {
             boundary_type: 0,
             vertical: false,
             main_area: true,
+            autoscroll: 0,
             timer: 300,
         };
         lvl.fill_ground(-3, width_tiles + 3, 2);
