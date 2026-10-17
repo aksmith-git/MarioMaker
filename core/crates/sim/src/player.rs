@@ -291,6 +291,10 @@ pub struct Player {
     pub shoe: Option<bool>,
     /// Flying a Koopa Clown Car (its actor id).
     pub clown: Option<u32>,
+    /// Driving a Koopa Troopa Car (its actor id); `car_hit`: a hit landed on the car this frame
+    /// (the world damages the car instead of the player).
+    pub car: Option<u32>,
+    pub car_hit: bool,
     pub style: Style,
     /// Carrying an item (its actor id; not in SMB1).
     pub held: Option<u32>,
@@ -385,6 +389,8 @@ impl Player {
             climb_lock: 0,
             shoe: None,
             clown: None,
+            car: None,
+            car_hit: false,
             style: Style::M1,
             held: None,
             sliding: false,
@@ -498,6 +504,12 @@ impl Player {
     pub fn hurt(&mut self) -> bool {
         if self.invuln > 0 || self.star > 0 || !matches!(self.control, Control::Normal) {
             return false;
+        }
+        if self.car.is_some() {
+            // the car takes the hit [inf from its Damaged animations]
+            self.car_hit = true;
+            self.invuln = INVULN_DAMAGE;
+            return true;
         }
         if self.shoe.take().is_some() {
             // [ext] a hit in the shoe only knocks the shoe off
@@ -1097,6 +1109,7 @@ impl Player {
             },
             shoe: self.shoe.is_some(),
             clown_car: self.clown.is_some(),
+            koopa_car: self.car.is_some(),
             holding_shell: false,
             yoshi: self.yoshi.is_some(),
         }

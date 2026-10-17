@@ -67,6 +67,7 @@ pub struct AtGoal {
     pub form: u8,
     pub shoe: bool,
     pub clown_car: bool,
+    pub koopa_car: bool,
     /// Carrying a Koopa shell.
     pub holding_shell: bool,
     pub yoshi: bool,
@@ -95,6 +96,8 @@ pub enum Goal {
     /// Reach the goal wearing a Goomba's Shoe / flying a Koopa Clown Car.
     Shoe,
     ClownCar,
+    /// Reach the goal driving a Koopa Troopa Car.
+    KoopaCar,
     /// Reach the goal holding a Koopa shell / riding Yoshi.
     HoldingShell,
     Yoshi,
@@ -153,6 +156,7 @@ impl ClearCondition {
                 45 => Goal::Star,
                 58 => Goal::Shoe,
                 62 => Goal::ClownCar,
+                64 => Goal::KoopaCar,
                 72 => Goal::HoldingShell,
                 59 => Goal::Yoshi,
                 _ => Goal::Unsupported(i),
@@ -239,6 +243,7 @@ impl ClearCondition {
             form,
             shoe,
             clown_car,
+            koopa_car,
             holding_shell,
             yoshi,
         } = at;
@@ -256,6 +261,7 @@ impl ClearCondition {
             Goal::Cat => form == 6,
             Goal::Shoe => shoe,
             Goal::ClownCar => clown_car,
+            Goal::KoopaCar => koopa_car,
             Goal::HoldingShell => holding_shell,
             Goal::Yoshi => yoshi,
             Goal::NoDamage | Goal::NoLanding => !self.violated,

@@ -159,6 +159,10 @@ pub enum Kind {
     ClownCar {
         fire: bool,
     },
+    /// Koopa Troopa Car (72, 3D World): phases 0 empty (brakes 0.05/frame), 1 start spin,
+    /// 2 run, 3 turn (30 frames) — the world drives it while the player rides; `hops` = damage
+    /// taken (the third hit breaks it) [inf].
+    KoopaCar,
     /// A coin that moves (wings or a track): collected on touch.
     FloatCoin,
     /// Yoshi's Egg (45 in SMW / NSMBU): hatches into Yoshi; `red` = Red Yoshi [inf: alt flag].
@@ -941,6 +945,7 @@ impl Actor {
             }
             Kind::Lift { width, .. } => width as f32 * 8.0,
             Kind::ClownCar { .. } => 14.0,
+            Kind::KoopaCar => 14.0,
             _ if self.big => 16.0,
             _ => 8.0,
         }
@@ -1526,6 +1531,14 @@ impl Actor {
                 }
             }
             Kind::ClownCar { .. } => self.step_clown_car(level),
+            Kind::KoopaCar => {
+                if self.phase == 0 {
+                    // empty: brakes 0.05 per frame (0x71006cb050)
+                    self.vx -= self.vx.clamp(-0.05, 0.05);
+                    self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+                    self.collide(level);
+                }
+            }
             Kind::ShoeGoomba { .. } => self.step_shoe_goomba(level),
             Kind::Shoe { .. } => {
                 self.vx = 0.0;

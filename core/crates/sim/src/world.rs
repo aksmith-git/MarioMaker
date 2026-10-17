@@ -731,6 +731,128 @@ impl World {
         }
     }
 
+    /// Koopa Troopa Car with the player in it (72-koopa-troopa-car.md): a start spin, then it
+    /// runs on its own — at least 2.0 px/f, 3.0 with the direction of travel held [inf] — and
+    /// the player steers only by turning around (a 30-frame turn). Jump hops the car [inf:
+    /// vy 4.0]; Spin gets out. Enemies it runs into are knocked out; hits on the player damage
+    /// the car (the third breaks it).
+    fn drive_koopa_car(&mut self, input: Input) {
+        let Some(id) = self.player.car else { return };
+        let Some(i) = self.actors.iter().position(|a| a.id == id && a.alive()) else {
+            self.player.car = None;
+            return;
+        };
+        let jump = input.held(input::JUMP);
+        let spin = input.held(input::SPIN);
+        let jump_pressed = jump && !self.clown_prev.0;
+        let spin_pressed = spin && !self.clown_prev.1;
+        self.clown_prev = (jump, spin);
+        if self.player.car_hit {
+            self.player.car_hit = false;
+            let car = &mut self.actors[i];
+            car.hops += 1;
+            self.events.push(Event::PowerDown);
+            if car.hops >= 3 {
+                car.die_fall(car.x);
+                self.player.car = None;
+                self.player.vy = 3.5;
+                self.player.on_ground = false;
+                return;
+            }
+        }
+        if spin_pressed {
+            self.player.car = None;
+            self.actors[i].phase = 0;
+            self.player.vy = 3.5;
+            self.player.on_ground = false;
+            self.events.push(Event::Jump);
+            return;
+        }
+        let dir_in = input.dir_x();
+        let car = &mut self.actors[i];
+        match car.phase {
+            1 => {
+                // start spin: the wheels spin up in place [inf: 20 frames]
+                car.vx -= car.vx.clamp(-0.05, 0.05);
+                car.timer += 1;
+                if car.timer >= 20 {
+                    car.phase = 2;
+                    car.timer = 0;
+                }
+            }
+            3 => {
+                // turning: brake, then set off the other way
+                car.vx -= car.vx.clamp(-0.15, 0.15);
+                car.timer += 1;
+                if car.timer >= 30 {
+                    car.phase = 2;
+                    car.timer = 0;
+                    car.dir = -car.dir;
+                }
+            }
+            _ => {
+                if dir_in == -car.dir {
+                    car.phase = 3;
+                    car.timer = 0;
+                } else {
+                    let target = if dir_in == car.dir { 3.0 } else { 2.0 } * car.dir as f32;
+                    car.vx += (target - car.vx).clamp(-0.075, 0.075);
+                    if car.vx * car.dir as f32 >= 0.0 && car.vx.abs() < 2.0 && car.timer > 0 {
+                        car.vx = 2.0 * car.dir as f32;
+                    }
+                    car.timer = 1;
+                }
+            }
+        }
+        if jump_pressed && car.on_ground {
+            car.vy = 4.0;
+            self.events.push(Event::Jump);
+        }
+        let g = if jump && car.vy > 0.0 { -0.2 } else { -0.4 };
+        car.vy = (car.vy + g).max(crate::actors::MAX_FALL);
+        let before = (car.x, car.y);
+        car.collide(&self.level);
+        car.moved = (car.x - before.0, car.y - before.1);
+        if car.wall && car.phase == 2 {
+            // bumping a wall turns it around [inf]
+            car.phase = 3;
+            car.timer = 0;
+        }
+        let (cx, cy, dir, ground, cb) = (car.x, car.y, car.dir, car.on_ground, car.bbox());
+        let p = &mut self.player;
+        p.x = cx;
+        p.y = cy + 12.0;
+        p.vx = 0.0;
+        p.vy = 0.0;
+        p.on_ground = ground;
+        p.facing = dir;
+        // what the car runs into is knocked out
+        let mut hits = 0;
+        for a in &mut self.actors {
+            if a.id != id
+                && a.kind.is_enemy()
+                && a.alive()
+                && a.solid_contact()
+                && !matches!(
+                    a.kind,
+                    Kind::Bowser { .. }
+                        | Kind::BoomBoom { .. }
+                        | Kind::BowserJr { .. }
+                        | Kind::Boo
+                        | Kind::Thwomp { .. }
+                        | Kind::AngrySun { .. }
+                )
+                && overlap(cb, a.bbox())
+            {
+                a.die_fall(cx);
+                hits += 1;
+            }
+        }
+        for _ in 0..hits {
+            self.events.push(Event::EnemyDown);
+        }
+    }
+
     /// Enemies riding a Koopa Clown Car stay on top of it (same link id, flag 0x200); the car
     /// chases the player while it has a rider.
     fn carry_clown_riders(&mut self) {
@@ -1158,6 +1280,8 @@ impl World {
         let prev_x = self.player.x;
         if self.player.clown.is_some() {
             self.fly_clown_car(input);
+        } else if self.player.car.is_some() {
+            self.drive_koopa_car(input);
         } else {
             self.player.step(input, &self.level);
         }
@@ -2049,6 +2173,29 @@ impl World {
                     self.actors[i].phase = 2;
                     self.player.clown = Some(id);
                     self.player.vy = 0.0;
+                    self.events.push(Event::Pipe);
+                }
+                i += 1;
+                continue;
+            }
+            if a.kind == Kind::KoopaCar {
+                // get in by dropping into an empty car
+                if a.phase == 0
+                    && overlap(contact, ab)
+                    && self.player.vy <= 0.0
+                    && self.player.y >= a.y + 8.0
+                    && self.player.car.is_none()
+                    && self.player.clown.is_none()
+                    && self.player.yoshi.is_none()
+                    && self.player.shoe.is_none()
+                {
+                    let id = a.id;
+                    self.actors[i].phase = 1;
+                    self.actors[i].timer = 0;
+                    self.actors[i].dir = self.player.facing;
+                    self.player.car = Some(id);
+                    self.player.vy = 0.0;
+                    self.clown_prev = (true, true);
                     self.events.push(Event::Pipe);
                 }
                 i += 1;
@@ -4906,6 +5053,21 @@ impl World {
                 32.0,
                 a.dir > 0,
             ),
+            Kind::KoopaCar => (
+                "M1_Enemy_koopacar",
+                match (a.phase, a.hops) {
+                    (0, 0) => "wait.0",
+                    (0, 1) => "damage1.0",
+                    (0, _) => "damage2.0",
+                    (1, _) => "wheelspin.0",
+                    (_, 0) => "run.0",
+                    (_, 1) => "rundamaged1.0",
+                    _ => "rundamaged2.0",
+                },
+                32.0,
+                24.0,
+                a.dir > 0,
+            ),
             Kind::ShoeGoomba { heels } => (
                 if heels {
                     "M1_Enemy_kutsu_kuriboB"
@@ -6859,6 +7021,39 @@ mod tests {
         assert!(w.transit.is_some(), "entered by touch");
         run(&mut w, 0, 200);
         assert_eq!(w.player.x, 100.0);
+    }
+
+    #[test]
+    fn koopa_troopa_car_drives_turns_and_smashes() {
+        let mut lvl = Level::flat(120);
+        lvl.style = "3W".into();
+        lvl.spawns.push(spawn(Kind::KoopaCar, 100.0, 32.0));
+        lvl.spawns.push(spawn(Kind::Goomba, 400.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.style = crate::player::Style::W3;
+        // drop in from above
+        w.player.x = 100.0;
+        w.player.y = 80.0;
+        run(&mut w, 0, 30);
+        assert!(w.player.car.is_some(), "got in");
+        // it runs on its own after the start spin, at least 2.0
+        run(&mut w, 0, 40);
+        let car = w.actors.iter().find(|a| a.kind == Kind::KoopaCar).unwrap();
+        assert!(car.vx >= 2.0, "running: {}", car.vx);
+        assert_eq!(w.player.x, car.x, "the player rides it");
+        // into the Goomba
+        run(&mut w, input::RIGHT, 120);
+        let g = w.actors.iter().find(|a| a.kind == Kind::Goomba);
+        assert!(g.is_none_or(|g| !g.alive()), "ran the Goomba over");
+        // turning around takes 30 frames, then it heads left
+        run(&mut w, input::LEFT, 40);
+        run(&mut w, 0, 20);
+        let car = w.actors.iter().find(|a| a.kind == Kind::KoopaCar).unwrap();
+        assert!(car.vx <= -2.0, "turned: {}", car.vx);
+        assert!(w.player.at_goal().koopa_car);
+        // Spin gets out
+        run(&mut w, input::SPIN, 1);
+        assert!(w.player.car.is_none());
     }
 
     #[test]
