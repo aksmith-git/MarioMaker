@@ -15,4 +15,5 @@ mmk-assets = { path = "../assets" }
 mmk-import = { path = "../import" }
 mmk-sim = { path = "../sim" }
 mmk-formats = { path = "../formats" }
+mmk-ui = { path = "../ui" }
 flate2.workspace = true

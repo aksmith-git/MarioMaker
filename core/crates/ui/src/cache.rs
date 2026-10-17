@@ -1,0 +1,421 @@
+//! The UI asset cache: layouts (with their animations and textures), fonts and messages,
+//! loaded on demand from an imported SMM1 folder (see `mmk_import::smm1` for the layout), or
+//! registered in memory (tests, tools).
+
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use mmk_assets::Mtex;
+use mmk_formats::lyt::{self, Animation, Layout, Pane, PaneKind};
+use serde_json::Value;
+
+use crate::font::FontRes;
+
+#[derive(Debug, thiserror::Error)]
+pub enum UiError {
+    #[error("{path}: {source}")]
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("{0}")]
+    Invalid(String),
+    #[error("layout '{0}' not found")]
+    NoLayout(String),
+}
+
+/// One texture known to the cache. Indices into `UiCache::textures` are stable for the
+/// lifetime of the cache, so a renderer can upload each one once.
+#[derive(Clone, Debug)]
+pub struct TextureEntry {
+    /// `<layout>/<texture stem>` or `font:<font>/<sheet>`.
+    pub name: String,
+    pub texture: Mtex,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TexRef {
+    pub id: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// A flattened pane: its base values (children removed) and tree links.
+#[derive(Clone, Debug)]
+pub struct Node {
+    pub pane: Pane,
+    pub parent: Option<usize>,
+    pub children: Vec<usize>,
+}
+
+/// Everything needed to play one layout.
+#[derive(Clone, Debug)]
+pub struct LayoutRes {
+    pub name: String,
+    pub layout: Layout,
+    pub animations: BTreeMap<String, Animation>,
+    /// Panes in depth-first order (parents first); index 0 is the root.
+    pub nodes: Vec<Node>,
+    pub pane_index: HashMap<String, usize>,
+    pub material_index: HashMap<String, usize>,
+    /// Per `layout.textures` entry.
+    pub textures: Vec<Option<TexRef>>,
+    /// Every texture of the archive by stem (texture-pattern animations use names).
+    pub textures_by_name: HashMap<String, TexRef>,
+    /// Per `layout.fonts` entry (falls back to the default font when the layout's font is a
+    /// system font the game does not ship, e.g. `CafeStd_25`).
+    pub fonts: Vec<Option<Arc<FontRes>>>,
+    /// Message label → plain text (this layout's MSBT file).
+    pub messages: HashMap<String, String>,
+    /// Part layouts by name.
+    pub parts: HashMap<String, Arc<LayoutRes>>,
+}
+
+fn flatten(root: &Pane) -> Vec<Node> {
+    fn go(p: &Pane, parent: Option<usize>, out: &mut Vec<Node>) {
+        let idx = out.len();
+        let mut pane = p.clone();
+        pane.children.clear();
+        out.push(Node {
+            pane,
+            parent,
+            children: Vec::new(),
+        });
+        if let Some(par) = parent {
+            out[par].children.push(idx);
+        }
+        for c in &p.children {
+            go(c, Some(idx), out);
+        }
+    }
+    let mut out = Vec::new();
+    go(root, None, &mut out);
+    out
+}
+
+/// Inputs to build a [`LayoutRes`] without files.
+#[derive(Default)]
+pub struct LayoutSource {
+    pub layout: Layout,
+    pub animations: BTreeMap<String, Animation>,
+    /// Texture stem → texture.
+    pub textures: Vec<(String, Mtex)>,
+}
+
+/// The default font used when a layout names one the cache does not have (the Wii U system
+/// fonts `CafeStd_*` are not part of the game).
+pub const DEFAULT_FONT: &str = "MessageFont";
+/// The game font with the widest character set (kana, kanji, symbols): fallback for characters
+/// missing from the others.
+pub const FALLBACK_FONT: &str = "SpecialFont";
+
+#[derive(Default)]
+pub struct UiCache {
+    root: Option<PathBuf>,
+    pub manifest: Value,
+    pub textures: Vec<TextureEntry>,
+    texture_ids: HashMap<String, u32>,
+    layouts: HashMap<String, Arc<LayoutRes>>,
+    sources: HashMap<String, LayoutSource>,
+    fonts: HashMap<String, Option<Arc<FontRes>>>,
+    messages: HashMap<String, HashMap<String, String>>,
+    message_files: HashMap<String, PathBuf>,
+}
+
+fn read(path: &Path) -> Result<Vec<u8>, UiError> {
+    std::fs::read(path).map_err(|source| UiError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+fn read_json(path: &Path) -> Result<Value, UiError> {
+    serde_json::from_slice(&read(path)?)
+        .map_err(|e| UiError::Invalid(format!("{}: {e}", path.display())))
+}
+
+impl UiCache {
+    /// An empty cache (register layouts and fonts with `add_*`).
+    pub fn in_memory() -> Self {
+        Self::default()
+    }
+
+    /// Open an imported SMM1 folder (the one holding `manifest.json` and `ui/`).
+    pub fn open(dir: impl AsRef<Path>) -> Result<Self, UiError> {
+        let dir = dir.as_ref().to_path_buf();
+        let manifest = read_json(&dir.join("manifest.json"))?;
+        if manifest.get("game").and_then(Value::as_str) != Some("SMM1") {
+            return Err(UiError::Invalid(format!(
+                "{} is not an SMM1 UI import",
+                dir.display()
+            )));
+        }
+        let mut message_files = HashMap::new();
+        // LayoutMsg/<group>/<Layout>.json, keyed by layout name; LayoutMsg wins over CommonMsg
+        for archive in ["CommonMsg", "LayoutMsg"] {
+            let base = dir.join("ui/messages").join(archive);
+            let Ok(groups) = std::fs::read_dir(&base) else {
+                continue;
+            };
+            for g in groups.flatten() {
+                let Ok(files) = std::fs::read_dir(g.path()) else {
+                    continue;
+                };
+                for f in files.flatten() {
+                    let p = f.path();
+                    if p.extension().is_some_and(|e| e == "json") {
+                        let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+                        message_files.insert(stem, p);
+                    }
+                }
+            }
+        }
+        Ok(Self {
+            root: Some(dir),
+            manifest,
+            message_files,
+            ..Default::default()
+        })
+    }
+
+    pub fn root(&self) -> Option<&Path> {
+        self.root.as_deref()
+    }
+
+    /// Names of all importable layouts.
+    pub fn layout_names(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .manifest
+            .get("layouts")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        v.extend(self.sources.keys().cloned());
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    fn add_texture(&mut self, name: String, texture: Mtex) -> TexRef {
+        let r = |id: u32, t: &Mtex| TexRef {
+            id,
+            width: t.width,
+            height: t.height,
+        };
+        if let Some(&id) = self.texture_ids.get(&name) {
+            return r(id, &self.textures[id as usize].texture);
+        }
+        let id = self.textures.len() as u32;
+        let out = r(id, &texture);
+        self.texture_ids.insert(name.clone(), id);
+        self.textures.push(TextureEntry { name, texture });
+        out
+    }
+
+    /// Register a layout from memory (replaces any earlier one with that name).
+    pub fn add_layout(&mut self, src: LayoutSource) {
+        let name = src.layout.name.clone();
+        self.layouts.remove(&name);
+        self.sources.insert(name, src);
+    }
+
+    /// Register a font from memory with its decoded sheets.
+    pub fn add_font(&mut self, name: &str, font: mmk_formats::bffnt::Font, sheets: Vec<Mtex>) {
+        let ids = sheets
+            .into_iter()
+            .enumerate()
+            .map(|(i, t)| self.add_texture(format!("font:{name}/{i}"), t).id)
+            .collect();
+        self.fonts.insert(
+            name.to_string(),
+            Some(Arc::new(FontRes::from_font(name, font, ids))),
+        );
+    }
+
+    /// Register message texts for a layout (label → text).
+    pub fn add_messages(&mut self, layout: &str, messages: HashMap<String, String>) {
+        self.messages.insert(layout.to_string(), messages);
+    }
+
+    /// A font by name, with the fallback font attached (`None` if the cache does not have it).
+    pub fn font(&mut self, name: &str) -> Option<Arc<FontRes>> {
+        if let Some(f) = self.fonts.get(name) {
+            return f.clone();
+        }
+        let mut loaded = self.load_font(name).ok();
+        if name != FALLBACK_FONT
+            && let Some(f) = &loaded
+            && f.fallback.is_none()
+            && let Some(fb) = self.font(FALLBACK_FONT)
+        {
+            let mut with = (**f).clone();
+            with.fallback = Some(fb);
+            loaded = Some(Arc::new(with));
+        }
+        self.fonts.insert(name.to_string(), loaded.clone());
+        loaded
+    }
+
+    fn load_font(&mut self, name: &str) -> Result<Arc<FontRes>, UiError> {
+        let root = self
+            .root
+            .clone()
+            .ok_or_else(|| UiError::Invalid(format!("font {name} not registered")))?;
+        let v = read_json(&root.join(format!("ui/fonts/{name}.json")))?;
+        let sheets = v.get("sheets").and_then(Value::as_u64).unwrap_or(0) as usize;
+        let mut ids = Vec::with_capacity(sheets);
+        for i in 0..sheets {
+            let path = root.join(format!("ui/fonts/{name}/sheet_{i}.mtex"));
+            let t = Mtex::parse(&read(&path)?)
+                .map_err(|e| UiError::Invalid(format!("{}: {e}", path.display())))?;
+            ids.push(self.add_texture(format!("font:{name}/{i}"), t).id);
+        }
+        Ok(Arc::new(FontRes::from_json(name, &v, ids)?))
+    }
+
+    fn messages_for(&mut self, layout: &str) -> HashMap<String, String> {
+        if let Some(m) = self.messages.get(layout) {
+            return m.clone();
+        }
+        let mut out = HashMap::new();
+        if let Some(path) = self.message_files.get(layout)
+            && let Ok(v) = read_json(path)
+            && let Ok(msbt) = mmk_formats::msbt::Msbt::from_json(&v)
+        {
+            for m in &msbt.messages {
+                out.insert(m.label.clone(), m.plain());
+            }
+        }
+        self.messages.insert(layout.to_string(), out.clone());
+        out
+    }
+
+    /// Load (once) a layout with its parts, textures, fonts and messages.
+    pub fn layout(&mut self, name: &str) -> Result<Arc<LayoutRes>, UiError> {
+        self.layout_inner(name, &mut Vec::new())
+    }
+
+    fn layout_inner(
+        &mut self,
+        name: &str,
+        stack: &mut Vec<String>,
+    ) -> Result<Arc<LayoutRes>, UiError> {
+        if let Some(l) = self.layouts.get(name) {
+            return Ok(l.clone());
+        }
+        if stack.iter().any(|s| s == name) {
+            return Err(UiError::Invalid(format!(
+                "part cycle: {} → {name}",
+                stack.join(" → ")
+            )));
+        }
+        let src = match self.sources.remove(name) {
+            Some(s) => s,
+            None => self.load_source(name)?,
+        };
+        stack.push(name.to_string());
+
+        let mut textures_by_name = HashMap::new();
+        for (stem, tex) in &src.textures {
+            let r = self.add_texture(format!("{name}/{stem}"), tex.clone());
+            textures_by_name.insert(stem.clone(), r);
+        }
+        let textures = src
+            .layout
+            .textures
+            .iter()
+            .map(|t| textures_by_name.get(Layout::texture_stem(t)).copied())
+            .collect();
+        let mut fonts = Vec::new();
+        for f in &src.layout.fonts {
+            let stem = f.split('.').next().unwrap_or(f).to_string();
+            let font = self.font(&stem).or_else(|| self.font(DEFAULT_FONT));
+            fonts.push(font);
+        }
+        let messages = self.messages_for(name);
+        let mut parts = HashMap::new();
+        for p in src.layout.panes() {
+            if let PaneKind::Part(part) = &p.kind
+                && !parts.contains_key(&part.layout)
+            {
+                // a missing part layout is drawn as nothing rather than failing the whole screen
+                if let Ok(res) = self.layout_inner(&part.layout, stack) {
+                    parts.insert(part.layout.clone(), res);
+                }
+            }
+        }
+        stack.pop();
+
+        let nodes = flatten(&src.layout.root);
+        let pane_index = nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.pane.name.clone(), i))
+            .collect();
+        let material_index = src
+            .layout
+            .materials
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (m.name.clone(), i))
+            .collect();
+        let res = Arc::new(LayoutRes {
+            name: name.to_string(),
+            layout: src.layout,
+            animations: src.animations,
+            nodes,
+            pane_index,
+            material_index,
+            textures,
+            textures_by_name,
+            fonts,
+            messages,
+            parts,
+        });
+        self.layouts.insert(name.to_string(), res.clone());
+        Ok(res)
+    }
+
+    fn load_source(&mut self, name: &str) -> Result<LayoutSource, UiError> {
+        let root = self
+            .root
+            .clone()
+            .ok_or_else(|| UiError::NoLayout(name.to_string()))?;
+        let path = root.join(format!("ui/layouts/{name}.json"));
+        if !path.is_file() {
+            return Err(UiError::NoLayout(name.to_string()));
+        }
+        let doc = read_json(&path)?;
+        let err = |e: mmk_formats::Error| UiError::Invalid(format!("{}: {e}", path.display()));
+        let layout = lyt::json::layout_from_json(
+            doc.get("layout")
+                .ok_or_else(|| UiError::Invalid(format!("{}: no layout", path.display())))?,
+        )
+        .map_err(err)?;
+        let mut animations = BTreeMap::new();
+        if let Some(a) = doc.get("animations").and_then(Value::as_object) {
+            for (k, v) in a {
+                animations.insert(k.clone(), lyt::json::animation_from_json(v).map_err(err)?);
+            }
+        }
+        let mut textures = Vec::new();
+        if let Some(t) = doc.get("textures").and_then(Value::as_object) {
+            for stem in t.keys() {
+                let p = root.join(format!("ui/textures/{name}/{stem}.mtex"));
+                let tex = Mtex::parse(&read(&p)?)
+                    .map_err(|e| UiError::Invalid(format!("{}: {e}", p.display())))?;
+                textures.push((stem.clone(), tex));
+            }
+        }
+        Ok(LayoutSource {
+            layout,
+            animations,
+            textures,
+        })
+    }
+}

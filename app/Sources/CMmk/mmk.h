@@ -93,3 +93,44 @@ bool mmk_course_info(const MmkAssets *assets, const uint8_t *data, size_t len, M
 bool mmk_import_run(const char *romfs, const char *exefs, const char *update_romfs,
                     const char *update_exefs, const char *out_root,
                     MmkImportProgress progress, void *user);
+
+// --- layout player (core/crates/ffi/src/ui.rs) -------------------------------------------------
+// Draws SMM1 layouts imported by `mmk import-smm1` (BFLYT/BFLAN → quads). Layout units: origin
+// at the centre, y up (1280×720 for full-screen layouts). Shading per quad: t = combine(tex0, tex1)
+// (a missing texture samples as 1), c = mix(black, white, t), out = c * color, blended as flagged.
+
+typedef struct MmkUi MmkUi;
+typedef struct MmkUiLayout MmkUiLayout;
+
+typedef struct {
+    float pos[4][2];            // corners TL, TR, BL, BR
+    float uv0[4][2];            // tex0 coords, (0,0) top-left of the texture
+    float uv1[4][2];            // tex1 coords
+    uint8_t color[4][4];        // per-vertex RGBA (pane alpha folded in)
+    uint8_t black[4];           // material colour for texture value 0
+    uint8_t white[4];           // material colour for texture value 1
+    uint32_t tex0, tex1;        // mmk_ui_texture index, or MMK_TEXTURE_NONE
+    uint32_t flags;             // bits 0-7 wrap s0,t0,s1,t1 (2 bits each: 0 clamp, 1 repeat, 2 mirror)
+                                // bit 8 linear filter; 12-15 colour combine, 16-19 alpha combine
+                                // (0 tex1, 1 multiply, 2 add, 5 subtract, 15 tex0 only);
+                                // 20-23 blend op (0 off, 1 add, 2 sub, 3 rev sub, 4 min, 5 max),
+                                // 24-27 src factor, 28-31 dst factor (0 zero, 1 one, 2 dst colour,
+                                // 3 1-dst colour, 4 src alpha, 5 1-src alpha, 6 dst alpha,
+                                // 7 1-dst alpha, 8 src colour, 9 1-src colour)
+} MmkUiQuad;                                                           // 132 bytes
+
+MmkUi *mmk_ui_open(const char *dir);   // folder with manifest.json + ui/ (e.g. .../smm1-v208)
+void mmk_ui_free(MmkUi *ui);
+size_t mmk_ui_texture_count(const MmkUi *ui);          // grows as layouts are opened
+bool mmk_ui_texture(MmkUi *ui, size_t index, MmkTextureInfo *out);
+
+MmkUiLayout *mmk_ui_layout(MmkUi *ui, const char *name);
+void mmk_ui_layout_free(MmkUiLayout *layout);
+void mmk_ui_layout_size(const MmkUiLayout *layout, float *w, float *h);
+// anim = "[PartPane/…/]Name"; binds it (or moves it) to `frame`
+bool mmk_ui_play(MmkUiLayout *layout, const char *anim, float frame);
+void mmk_ui_stop(MmkUiLayout *layout, const char *anim);   // NULL = all
+float mmk_ui_anim_length(MmkUiLayout *layout, const char *anim);   // frames, -1 if unknown
+bool mmk_ui_set_text(MmkUiLayout *layout, const char *pane, const char *text);
+// valid until the next call on this layout
+size_t mmk_ui_draw_list(MmkUiLayout *layout, const MmkUiQuad **out);

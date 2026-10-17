@@ -17,9 +17,13 @@ struct MMKApp: App {
 
     var body: some Scene {
         Window(AppIdentity.name, id: "main") {
-            RootView()
-                .environmentObject(model)
-                .frame(minWidth: 768, minHeight: 432)
+            if UIPreview.requested {
+                UIPreviewView().frame(minWidth: 768, minHeight: 432)   // MMK_UI_LAYOUT debug view
+            } else {
+                RootView()
+                    .environmentObject(model)
+                    .frame(minWidth: 768, minHeight: 432)
+            }
         }
         .defaultSize(width: 1024, height: 640)
         .commands {
@@ -62,6 +66,7 @@ final class AppModel: ObservableObject {
 
     init() {
         AppPaths.ensureDirectories()
+        if UIPreview.requested { return }   // MMK_UI_LAYOUT: the layout preview replaces the app
         // Smoke tests and debugging: MMK_SCREENSHOT / MMK_COURSE skip the menus and go straight
         // into the game (see Renderer for MMK_SCREENSHOT, MMK_START_X/Y below).
         if env["MMK_SCREENSHOT"] != nil || env["MMK_COURSE"] != nil {

@@ -1,4 +1,5 @@
-//! First-launch importer: the user's own extracted SMM2 RomFS + ExeFS → engine asset cache.
+//! First-launch importer: the user's own extracted SMM2 RomFS + ExeFS → engine asset cache, and
+//! (module [`smm1`]) the SMM1 UI assets (layouts, textures, fonts, text) for the layout player.
 //!
 //! Stages implemented so far (docs/architecture.md §4): identify, course key table, tables,
 //! manifest. Textures, models and audio follow in later steps. Nothing read or written here ever
@@ -14,6 +15,9 @@ use mmk_formats::nso::Nso;
 use mmk_formats::smm2::crypto::{KeyTable, decrypt_bcd};
 use mmk_formats::smm2::keyfind;
 use serde_json::{Value, json};
+
+pub mod smm1;
+pub use smm1::{Smm1Config, Smm1Report, run_smm1};
 
 pub const IMPORTER_VERSION: u32 = 1;
 
