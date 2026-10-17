@@ -96,6 +96,12 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         guard let e = mmk_engine_new(a) else { throw EngineError(String(cString: mmk_last_error())) }
         engine = e
+        // MMK_COURSE=<file>: a course to play (dataset .course.zlib, raw course data or .bcd)
+        if let coursePath = ProcessInfo.processInfo.environment["MMK_COURSE"] {
+            let data = try Data(contentsOf: URL(fileURLWithPath: coursePath))
+            let ok = data.withUnsafeBytes { mmk_engine_load_course(e, $0.bindMemory(to: UInt8.self).baseAddress, data.count) }
+            if !ok { throw EngineError("\(coursePath): \(String(cString: mmk_last_error()))") }
+        }
     }
 
     private func makeTexture(_ t: MmkTextureInfo) -> MTLTexture? {

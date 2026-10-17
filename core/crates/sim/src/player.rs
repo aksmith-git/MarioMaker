@@ -1,54 +1,88 @@
-//! Player movement, SMB1 style. Constants and rules from research/specs/player-physics.md
-//! (behavioural spec); values are px and px/frame at 60 Hz.
+//! Player movement and terrain collision, SMB1 style.
+//!
+//! Implemented from research/specs/player-physics.md (behavioural spec): §1.3 integration, §2.2
+//! ground, §2.3 skid, §2.4 air, §3.1 jump launch, §3.2 gravity, §6.1 terrain sensors.
+//! Units: px, px/frame, 60 Hz, y up; position = feet centre.
 
 use crate::input::{self, Input};
+use crate::level::{Cell, Level, TILE};
 
-pub const WALK_MAX: f32 = 1.5;
-pub const RUN_MAX: f32 = 3.0;
-pub const AIR_CAP: f32 = 3.0;
+/// Speed thresholds T0..T3 (§2.1).
+const T: [f32; 4] = [0.5, 1.5, 2.25, 3.0];
+pub const WALK_MAX: f32 = T[1];
+pub const RUN_MAX: f32 = T[3];
 pub const FALL_CAP: f32 = -4.0;
 
-/// Speed bands used to pick an acceleration: |vx| < 0.5, < 1.5, < 2.25, < 3.0.
-const BANDS: [f32; 4] = [0.5, 1.5, 2.25, 3.0];
-const GROUND_ACCEL_WALK: [f32; 4] = [0.1, 0.03, 0.03, 0.035];
-const GROUND_ACCEL_RUN: [f32; 4] = [0.1, 0.06, 0.029, 0.035];
-const OVER_CAP_DECEL: f32 = 0.75;
-const FRICTION: [f32; 4] = [0.05, 0.05, 0.035, 0.035];
-const TURN_DECEL: f32 = 0.1;
-const SKID_SPEED: f32 = 2.5;
+// Acceleration tables, 6 bands: b0 = reversing, b1..b4 = |v| ≤ T0..T3 in the facing direction,
+// b5 = above T3 (§2.2, §2.4).
+const GROUND_WALK: [f32; 6] = [0.1, 0.1, 0.03, 0.03, 0.035, 0.75];
+const GROUND_RUN: [f32; 6] = [0.1, 0.1, 0.06, 0.029, 0.035, 0.75];
+const GROUND_IDLE: [f32; 6] = [0.07, 0.05, 0.05, 0.035, 0.035, 0.75];
+const AIR_DIR: [f32; 6] = [0.09, 0.08, 0.03, 0.029, 0.021, 0.021];
+const AIR_DIR_RUN: [f32; 6] = [0.09, 0.08, 0.06, 0.029, 0.021, 0.021];
+
+const SKID_ENTER: f32 = 2.5;
 const SKID_DECEL: f32 = 0.12;
-const AIR_ACCEL: [f32; 4] = [0.08, 0.03, 0.029, 0.021];
-const AIR_ACCEL_RUN_BAND1: f32 = 0.06;
-const AIR_TURN: f32 = 0.09;
+const SKID_REACCEL: f32 = 0.25;
 
 const JUMP_BASE: f32 = 3.628;
-/// Launch bonus by |vx|: < 0.7, < 1.5, < 2.8, otherwise.
-const JUMP_BONUS: [(f32, f32); 4] = [(0.7, 0.0), (1.5, 0.18), (2.8, 0.24), (f32::INFINITY, 0.3)];
+const GRAVITY_GROUND: f32 = -0.34;
+// vy band boundaries and gravities (§3.2)
+const VY_BANDS: [f32; 5] = [2.5, 1.5, 0.3, -0.12, -3.0];
+const GRAVITY_HELD: [f32; 6] = [-0.06, -0.25, -0.34, -0.08, -0.31, -0.34];
+const GRAVITY_RELEASED: [f32; 6] = [-0.34, -0.34, -0.34, -0.25, -0.34, -0.34];
 
-fn band(speed: f32) -> usize {
-    BANDS.iter().position(|&b| speed < b).unwrap_or(3)
+/// Terrain sensors, small Mario in M1/M3 (§6.1): feet ±4.9 at y 0, head ±2 at y 12, walls ±7.9
+/// for y 4…8.5.
+pub struct Sensors {
+    pub foot_x: f32,
+    pub head_x: f32,
+    pub head_y: f32,
+    pub wall_y0: f32,
+    pub wall_y1: f32,
+    pub wall_x: f32,
 }
+pub const SMALL_M1: Sensors = Sensors {
+    foot_x: 4.9,
+    head_x: 2.0,
+    head_y: 12.0,
+    wall_y0: 4.0,
+    wall_y1: 8.5,
+    wall_x: 7.9,
+};
 
-/// Gravity while jump is held, by vertical speed (rising fast → floaty, apex hang, then fall).
-fn gravity_held(vy: f32) -> f32 {
-    if vy > 2.5 {
-        -0.06
-    } else if vy > 1.5 {
-        -0.25
-    } else if vy > 0.3 {
-        -0.34
-    } else if vy > -0.12 {
-        -0.08
-    } else if vy > -3.0 {
-        -0.31
+fn jump_bonus(speed: f32) -> f32 {
+    if speed < 0.7 {
+        0.0
+    } else if speed < 1.5 {
+        0.18
+    } else if speed < 2.8 {
+        0.24
     } else {
-        -0.34
+        0.3
     }
 }
 
-/// Gravity with jump released: -0.34, softened to -0.25 near the top of the arc.
-fn gravity_released(vy: f32) -> f32 {
-    if vy.abs() < 0.3 { -0.25 } else { -0.34 }
+fn vy_band(vy: f32) -> usize {
+    VY_BANDS.iter().position(|&b| vy > b).unwrap_or(5)
+}
+
+/// Band for an acceleration table given speed along x and the facing direction.
+fn band(speed_f: f32, facing: i32) -> usize {
+    let s = speed_f.abs();
+    if speed_f != 0.0 && speed_f.signum() as i32 != facing {
+        return if s > T[3] { 5 } else { 0 };
+    }
+    T.iter().position(|&t| s <= t).map(|i| i + 1).unwrap_or(5)
+}
+
+/// Move `v` toward `target` by at most `a` (§1.3 step 4).
+fn approach(v: f32, target: f32, a: f32) -> f32 {
+    if v < target {
+        (v + a).min(target)
+    } else {
+        (v - a).max(target)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,19 +93,27 @@ pub enum Pose {
     Jump,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SkidPhase {
+    None,
+    Braking,
+    Reaccel,
+}
+
 #[derive(Clone, Debug)]
 pub struct Player {
     pub x: f32,
     pub y: f32,
     pub vx: f32,
     pub vy: f32,
-    /// +1 right, -1 left
+    /// +1 right, −1 left
     pub facing: i32,
     pub on_ground: bool,
-    pub jumping: bool,
     pub pose: Pose,
-    /// Accumulated walk-cycle distance (px) for animation.
+    /// Distance walked (px), drives the walk animation.
     pub walk_phase: f32,
+    pub dead: bool,
+    skid: SkidPhase,
     prev_jump: bool,
 }
 
@@ -84,140 +126,205 @@ impl Player {
             vy: 0.0,
             facing: 1,
             on_ground: true,
-            jumping: false,
             pose: Pose::Wait,
             walk_phase: 0.0,
+            dead: false,
+            skid: SkidPhase::None,
             prev_jump: false,
         }
     }
 
-    fn horizontal_ground(&mut self, inp: Input) {
-        let dir = inp.dir_x() as f32;
-        let speed = self.vx.abs();
-        let moving = self.vx.signum();
-        let max = if inp.held(input::RUN) {
-            RUN_MAX
-        } else {
-            WALK_MAX
-        };
-        if dir == 0.0 {
-            // no input: friction towards 0
-            let f = FRICTION[band(speed)];
-            self.vx = if speed <= f {
-                0.0
-            } else {
-                self.vx - moving * f
-            };
-            self.pose = if self.vx == 0.0 {
-                Pose::Wait
-            } else {
-                Pose::Walk
-            };
-        } else if self.vx != 0.0 && dir != moving {
-            // reversing
-            let d = if speed >= SKID_SPEED {
-                SKID_DECEL
-            } else {
-                TURN_DECEL
-            };
-            self.vx += dir * d;
-            self.pose = Pose::Skid;
-            if self.vx.signum() == dir {
-                self.facing = dir as i32;
+    fn ground(&mut self, inp: Input) {
+        let dir = inp.dir_x();
+        let run = inp.held(input::RUN);
+
+        // skid (§2.3): reversing at |v| ≥ 2.5 brakes at 0.12, then re-accelerates at 0.25
+        if self.skid == SkidPhase::None
+            && dir != 0
+            && self.vx != 0.0
+            && dir != self.vx.signum() as i32
+            && self.vx.abs() >= SKID_ENTER
+        {
+            self.skid = SkidPhase::Braking;
+        }
+        match self.skid {
+            SkidPhase::Braking => {
+                self.facing = if dir != 0 { dir } else { self.facing };
+                self.vx = approach(self.vx, 0.0, SKID_DECEL);
+                self.pose = Pose::Skid;
+                if self.vx == 0.0 {
+                    self.skid = if dir != 0 {
+                        SkidPhase::Reaccel
+                    } else {
+                        SkidPhase::None
+                    };
+                }
+                return;
             }
-        } else {
-            self.facing = dir as i32;
-            if speed > max {
-                self.vx = moving * (speed - OVER_CAP_DECEL).max(max);
-            } else {
-                let table = if inp.held(input::RUN) {
-                    &GROUND_ACCEL_RUN
+            SkidPhase::Reaccel => {
+                // [?] end of the second phase is not in the spec: it ends when the stick lets go
+                // or walk speed is reached in the new direction
+                let target = if dir == 0 {
+                    0.0
                 } else {
-                    &GROUND_ACCEL_WALK
+                    dir as f32 * if run { RUN_MAX } else { WALK_MAX }
                 };
-                self.vx = dir * (speed + table[band(speed)]).min(max);
+                self.vx = approach(self.vx, target, SKID_REACCEL);
+                if dir == 0 || self.vx.abs() >= WALK_MAX {
+                    self.skid = SkidPhase::None;
+                }
+                self.pose = Pose::Walk;
+                return;
             }
-            self.pose = Pose::Walk;
+            SkidPhase::None => {}
         }
-    }
 
-    fn horizontal_air(&mut self, inp: Input) {
-        let dir = inp.dir_x() as f32;
-        if dir == 0.0 {
-            return; // momentum kept, no drag
-        }
-        let speed = self.vx.abs();
-        let a = if self.vx != 0.0 && dir != self.vx.signum() {
-            AIR_TURN
-        } else if inp.held(input::RUN) && band(speed) == 1 {
-            AIR_ACCEL_RUN_BAND1
+        let (target, table) = if dir == 0 {
+            (0.0, &GROUND_IDLE)
         } else {
-            AIR_ACCEL[band(speed)]
+            self.facing = dir;
+            (
+                dir as f32 * if run { RUN_MAX } else { WALK_MAX },
+                if run { &GROUND_RUN } else { &GROUND_WALK },
+            )
         };
-        let max = if inp.held(input::RUN) {
-            RUN_MAX
+        self.vx = approach(self.vx, target, table[band(self.vx, self.facing)]);
+        self.pose = if self.vx == 0.0 && dir == 0 {
+            Pose::Wait
         } else {
-            WALK_MAX
-        };
-        let target = (self.vx + dir * a).clamp(-AIR_CAP, AIR_CAP);
-        // accelerate up to the current max; never steal speed that is already above it
-        self.vx = if target.abs() > max && target.abs() > speed {
-            self.vx
-        } else {
-            target
+            Pose::Walk
         };
     }
 
-    /// One tick against a flat floor at `floor_y` (feet position).
-    pub fn step(&mut self, inp: Input, floor_y: f32) {
+    fn air(&mut self, inp: Input) {
+        let dir = inp.dir_x();
+        if dir == 0 {
+            // no direction: accel 0 → momentum preserved
+        } else {
+            let run = inp.held(input::RUN);
+            let s = self.vx.abs();
+            let target = if run {
+                RUN_MAX
+            } else if s > WALK_MAX && self.vx.signum() as i32 == dir {
+                s
+            } else {
+                WALK_MAX
+            } * dir as f32;
+            // SMB1 keeps the take-off facing in the air (§2.6); bands use the movement facing
+            let table = if run { &AIR_DIR_RUN } else { &AIR_DIR };
+            let face = if self.vx == 0.0 {
+                dir
+            } else {
+                self.vx.signum() as i32
+            };
+            let b = if dir != face { 0 } else { band(self.vx, face) };
+            self.vx = approach(self.vx, target, table[b]);
+        }
+        self.vx = self.vx.clamp(-RUN_MAX, RUN_MAX); // hard air cap
+    }
+
+    /// One 60 Hz tick.
+    pub fn step(&mut self, inp: Input, level: &Level) {
+        if self.dead {
+            return;
+        }
         let jump = inp.held(input::JUMP);
         let pressed = jump && !self.prev_jump;
         self.prev_jump = jump;
 
         if self.on_ground {
-            self.horizontal_ground(inp);
+            self.ground(inp);
             if pressed {
-                let speed = self.vx.abs();
-                let bonus = JUMP_BONUS
-                    .iter()
-                    .find(|(limit, _)| speed < *limit)
-                    .map(|b| b.1)
-                    .unwrap_or(0.0);
-                self.vy = JUMP_BASE + bonus;
+                self.vy = JUMP_BASE + jump_bonus(self.vx.abs());
                 self.on_ground = false;
-                self.jumping = true;
+                self.skid = SkidPhase::None;
             }
         } else {
-            self.horizontal_air(inp);
+            self.air(inp);
         }
+
+        // gravity (§3.2): ground uses the fixed −0.34; airborne picks a band each frame
+        let g = if self.on_ground {
+            GRAVITY_GROUND
+        } else if jump {
+            GRAVITY_HELD[vy_band(self.vy)]
+        } else {
+            GRAVITY_RELEASED[vy_band(self.vy)]
+        };
+        self.vy = (self.vy + g).max(FALL_CAP);
+
+        self.move_and_collide(level, &SMALL_M1);
 
         if !self.on_ground {
-            let g = if jump && self.jumping {
-                gravity_held(self.vy)
-            } else {
-                gravity_released(self.vy)
-            };
-            self.vy = (self.vy + g).max(FALL_CAP);
             self.pose = Pose::Jump;
+        } else if self.pose == Pose::Walk {
+            self.walk_phase += self.vx.abs();
         }
+        if self.y < -3.0 * TILE {
+            self.dead = true; // fell into a pit
+        }
+    }
 
+    fn solid(level: &Level, px: f32, py: f32) -> bool {
+        level.cell_at(px, py) == Cell::Solid
+    }
+
+    /// Axis-separated movement against the tile grid using the spec's sensor points.
+    fn move_and_collide(&mut self, level: &Level, s: &Sensors) {
+        // horizontal
         self.x += self.vx;
-        self.y += self.vy;
-        if self.y <= floor_y {
-            self.y = floor_y;
-            self.vy = 0.0;
-            if !self.on_ground {
-                self.on_ground = true;
-                self.jumping = false;
-                self.pose = if self.vx == 0.0 {
-                    Pose::Wait
+        for dir in [-1.0f32, 1.0] {
+            let wx = self.x + dir * s.wall_x;
+            let hit = [s.wall_y0, s.wall_y1]
+                .iter()
+                .any(|&wy| Self::solid(level, wx, self.y + wy));
+            if hit {
+                let tile_edge = if dir > 0.0 {
+                    (wx / TILE).floor() * TILE
                 } else {
-                    Pose::Walk
+                    ((wx / TILE).floor() + 1.0) * TILE
                 };
+                self.x = tile_edge - dir * (s.wall_x + 0.001);
+                if self.vx * dir > 0.0 {
+                    self.vx = 0.0;
+                }
             }
         }
-        if self.pose == Pose::Walk {
-            self.walk_phase += self.vx.abs();
+        self.x = self.x.clamp(level.left + s.wall_x, level.right - s.wall_x);
+
+        // vertical
+        let prev_y = self.y;
+        self.y += self.vy;
+        if self.vy > 0.0 {
+            let hy = self.y + s.head_y;
+            if [-s.head_x, s.head_x]
+                .iter()
+                .any(|&hx| Self::solid(level, self.x + hx, hy))
+            {
+                self.y = (hy / TILE).floor() * TILE - s.head_y - 0.001;
+                self.vy = 0.0;
+            }
+            self.on_ground = false;
+        } else {
+            // feet: land on solid cells, or on one-way tops we were above last frame
+            let mut landed = None;
+            for fx in [-s.foot_x, s.foot_x] {
+                let (px, py) = (self.x + fx, self.y);
+                let top = ((py / TILE).floor() + 1.0) * TILE;
+                let cell = level.cell_at(px, py);
+                let ok = cell == Cell::Solid || (cell == Cell::SemiTop && prev_y >= top - 0.01);
+                if ok {
+                    landed = Some(landed.map_or(top, |t: f32| t.max(top)));
+                }
+            }
+            match landed {
+                Some(top) => {
+                    self.y = top;
+                    self.vy = 0.0;
+                    self.on_ground = true;
+                }
+                None => self.on_ground = false,
+            }
         }
     }
 }
@@ -226,60 +333,109 @@ impl Player {
 mod tests {
     use super::*;
 
-    fn jump_peak(run_frames: usize, run: bool) -> f32 {
-        let mut p = Player::new(0.0, 0.0);
-        let held = |b| Input { buttons: b };
+    fn peak(run_frames: usize, run: bool) -> f32 {
+        let level = Level::flat(400);
+        let mut p = Player::new(56.0, 32.0);
         let mv = input::RIGHT | if run { input::RUN } else { 0 };
         for _ in 0..run_frames {
-            p.step(held(mv), 0.0);
+            p.step(Input { buttons: mv }, &level);
         }
-        let mut peak: f32 = 0.0;
-        for _ in 0..200 {
-            p.step(held(mv | input::JUMP), 0.0);
-            peak = peak.max(p.y);
+        let base = p.y;
+        let mut top: f32 = 0.0;
+        for _ in 0..120 {
+            p.step(
+                Input {
+                    buttons: mv | input::JUMP,
+                },
+                &level,
+            );
+            top = top.max(p.y - base);
         }
-        peak
+        top
     }
 
-    /// Spec check (player-physics.md): held jump peaks ≈ 67.6 px standing, ≈ 86.3 px at full run.
+    /// Spec (player-physics.md §0): held jump peaks ≈ 67.6 px standing, ≈ 86.3 px at full run.
     #[test]
     fn jump_heights_match_spec() {
-        let standing = jump_peak(0, false);
-        assert!((standing - 67.6).abs() < 0.5, "standing peak {standing}");
-        let running = jump_peak(200, true);
-        assert!((running - 86.3).abs() < 0.5, "running peak {running}");
+        let standing = peak(0, false);
+        assert!((standing - 67.6).abs() < 0.6, "standing peak {standing}");
+        let running = peak(150, true);
+        assert!((running - 86.3).abs() < 0.6, "running peak {running}");
     }
 
     #[test]
-    fn walk_and_run_caps() {
-        let mut p = Player::new(0.0, 0.0);
-        for _ in 0..300 {
+    fn walk_run_caps_and_friction() {
+        let level = Level::flat(800);
+        let mut p = Player::new(56.0, 32.0);
+        for _ in 0..120 {
             p.step(
                 Input {
                     buttons: input::RIGHT,
                 },
-                0.0,
+                &level,
             );
         }
         assert_eq!(p.vx, WALK_MAX);
-        for _ in 0..300 {
+        for _ in 0..200 {
             p.step(
                 Input {
                     buttons: input::RIGHT | input::RUN,
                 },
-                0.0,
+                &level,
             );
         }
         assert_eq!(p.vx, RUN_MAX);
-        for _ in 0..300 {
-            p.step(Input::default(), 0.0);
+        for _ in 0..200 {
+            p.step(Input::default(), &level);
         }
         assert_eq!(p.vx, 0.0);
     }
 
     #[test]
+    fn skid_brakes_at_0_12() {
+        let level = Level::flat(800);
+        let mut p = Player::new(56.0, 32.0);
+        for _ in 0..200 {
+            p.step(
+                Input {
+                    buttons: input::RIGHT | input::RUN,
+                },
+                &level,
+            );
+        }
+        p.step(
+            Input {
+                buttons: input::LEFT | input::RUN,
+            },
+            &level,
+        );
+        assert_eq!(p.pose, Pose::Skid);
+        assert!((p.vx - (RUN_MAX - SKID_DECEL)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn stands_on_ground_and_falls_into_pit() {
+        let level = Level::flat(10); // ground ends at x = 160 px
+        let mut p = Player::new(56.0, 32.0);
+        for _ in 0..10 {
+            p.step(Input::default(), &level);
+        }
+        assert!(p.on_ground && p.y == 32.0);
+        for _ in 0..400 {
+            p.step(
+                Input {
+                    buttons: input::RIGHT,
+                },
+                &level,
+            );
+        }
+        assert!(p.x <= level.right - SMALL_M1.wall_x + 0.01);
+    }
+
+    #[test]
     fn deterministic() {
-        let script: Vec<u32> = (0..600)
+        let level = Level::flat(400);
+        let script: Vec<u32> = (0..900)
             .map(|i| {
                 if i % 97 < 50 {
                     input::RIGHT | input::RUN
@@ -289,9 +445,9 @@ mod tests {
             })
             .collect();
         let run = || {
-            let mut p = Player::new(0.0, 0.0);
+            let mut p = Player::new(56.0, 32.0);
             for &b in &script {
-                p.step(Input { buttons: b }, 0.0);
+                p.step(Input { buttons: b }, &level);
             }
             (p.x.to_bits(), p.y.to_bits(), p.vx.to_bits(), p.vy.to_bits())
         };

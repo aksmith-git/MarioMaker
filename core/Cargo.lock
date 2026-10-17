@@ -290,7 +290,9 @@ dependencies = [
 name = "mmk-ffi"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "mmk-assets",
+ "mmk-formats",
  "mmk-sim",
 ]
 
@@ -320,6 +322,9 @@ dependencies = [
 [[package]]
 name = "mmk-sim"
 version = "0.1.0"
+dependencies = [
+ "mmk-formats",
+]
 
 [[package]]
 name = "once_cell_polyfill"

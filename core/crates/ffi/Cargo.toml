@@ -13,3 +13,5 @@ crate-type = ["staticlib", "rlib"]
 [dependencies]
 mmk-assets = { path = "../assets" }
 mmk-sim = { path = "../sim" }
+mmk-formats = { path = "../formats" }
+flate2.workspace = true

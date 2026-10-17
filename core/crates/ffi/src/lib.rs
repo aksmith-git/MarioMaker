@@ -231,6 +231,63 @@ pub unsafe extern "C" fn mmk_engine_free(engine: *mut MmkEngine) {
     }
 }
 
+/// Load a course into the engine (main area). Accepts SMM2 course data (0x5BFC0 bytes, optionally
+/// zlib-compressed) or an encrypted `.bcd` (decrypted with the asset cache's key table).
+/// Returns false and sets the last error on failure.
+///
+/// # Safety
+/// `engine` must be a live handle; `data` must point to `len` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_engine_load_course(
+    engine: *mut MmkEngine,
+    data: *const u8,
+    len: usize,
+) -> bool {
+    guard(false, || {
+        let Some(e) = (unsafe { engine.as_mut() }) else {
+            return false;
+        };
+        if data.is_null() {
+            set_error("data is NULL");
+            return false;
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(data, len) };
+        match decode_course(bytes, unsafe { &*e.assets }) {
+            Ok(course) => {
+                e.world = World::from_course(&course);
+                e.lookup.clear();
+                true
+            }
+            Err(msg) => {
+                set_error(msg);
+                false
+            }
+        }
+    })
+}
+
+fn decode_course(bytes: &[u8], assets: &MmkAssets) -> Result<mmk_formats::smm2::Course, String> {
+    use mmk_formats::smm2::{BCD_SIZE, Course, crypto};
+    use std::io::Read;
+    let mut data = bytes.to_vec();
+    if data.len() > 2 && data[0] == 0x78 {
+        let mut out = Vec::new();
+        flate2::read::ZlibDecoder::new(&data[..])
+            .read_to_end(&mut out)
+            .map_err(|e| format!("zlib: {e}"))?;
+        data = out;
+    }
+    if data.len() == BCD_SIZE {
+        let path = assets.cache.root.join("keys/course_table.bin");
+        let raw = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let table = crypto::table_from_bytes(&raw).map_err(|e| e.to_string())?;
+        data = crypto::decrypt_bcd(&data, &table, true)
+            .map_err(|e| e.to_string())?
+            .body;
+    }
+    Course::parse(&data).map_err(|e| e.to_string())
+}
+
 /// Advance the simulation by exactly one 60 Hz tick.
 ///
 /// # Safety

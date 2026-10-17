@@ -50,5 +50,6 @@ bool mmk_assets_texture(const MmkAssets *assets, size_t index, MmkTextureInfo *o
 
 MmkEngine *mmk_engine_new(const MmkAssets *assets);
 void mmk_engine_free(MmkEngine *engine);
+bool mmk_engine_load_course(MmkEngine *engine, const uint8_t *data, size_t len);
 void mmk_engine_step(MmkEngine *engine, const MmkInput *input);
 void mmk_engine_snapshot(MmkEngine *engine, MmkSnapshot *out);

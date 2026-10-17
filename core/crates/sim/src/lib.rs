@@ -7,6 +7,7 @@
 //! Terrain collision, camera rules and objects follow in steps 5–6.
 
 pub mod input;
+pub mod level;
 pub mod player;
 pub mod render;
 pub mod world;
