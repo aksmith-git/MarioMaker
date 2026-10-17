@@ -1416,9 +1416,13 @@ impl World {
                 }
                 if let Some(start) = s.rail {
                     // the reference point is the object's tile centre (feet + 8)
-                    if let Some(r) =
-                        crate::track::Rail::attach(&self.level.tracks, s.x, s.y + 8.0, start, s.wings)
-                    {
+                    if let Some(r) = crate::track::Rail::attach(
+                        &self.level.tracks,
+                        s.x,
+                        s.y + 8.0,
+                        start,
+                        s.wings,
+                    ) {
                         let p = r.point(&self.level.tracks);
                         a.rail_off = (s.x - p.0, s.y - p.1);
                         a.rail = Some(r);

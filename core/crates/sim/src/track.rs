@@ -20,9 +20,17 @@ pub const SPEED_WINGED: f32 = 1.5;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Seg {
-    Line { a: (f32, f32), b: (f32, f32) },
+    Line {
+        a: (f32, f32),
+        b: (f32, f32),
+    },
     /// Centre, radius, start and end angle (radians).
-    Arc { c: (f32, f32), r: f32, a0: f32, a1: f32 },
+    Arc {
+        c: (f32, f32),
+        r: f32,
+        a0: f32,
+        a1: f32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -83,17 +91,29 @@ impl Tracks {
             let c = ((x + 1) as f32 * TILE + 8.0, (y + 1) as f32 * TILE + 8.0);
             let at = |dx: f32, dy: f32| (c.0 + dx * TILE, c.1 + dy * TILE);
             let seg = match ty {
-                0 => Seg::Line { a: at(-1.0, 0.0), b: at(1.0, 0.0) },
-                1 => Seg::Line { a: at(0.0, -1.0), b: at(0.0, 1.0) },
-                2 => Seg::Line { a: at(-1.0, 1.0), b: at(1.0, -1.0) },
-                3 => Seg::Line { a: at(-1.0, -1.0), b: at(1.0, 1.0) },
+                0 => Seg::Line {
+                    a: at(-1.0, 0.0),
+                    b: at(1.0, 0.0),
+                },
+                1 => Seg::Line {
+                    a: at(0.0, -1.0),
+                    b: at(0.0, 1.0),
+                },
+                2 => Seg::Line {
+                    a: at(-1.0, 1.0),
+                    b: at(1.0, -1.0),
+                },
+                3 => Seg::Line {
+                    a: at(-1.0, -1.0),
+                    b: at(1.0, 1.0),
+                },
                 4..=7 => {
                     use std::f32::consts::{FRAC_PI_2, PI};
                     // (centre corner, start angle, end angle)
                     let (cc, a0, a1) = match ty {
-                        4 => ((-1.0, -1.0), FRAC_PI_2, 0.0),  // (−1,1) → (1,−1), bulging up-right
+                        4 => ((-1.0, -1.0), FRAC_PI_2, 0.0), // (−1,1) → (1,−1), bulging up-right
                         5 => ((1.0, 1.0), PI, 3.0 * FRAC_PI_2), // (−1,1) → (1,−1), bulging down-left
-                        6 => ((1.0, -1.0), PI, FRAC_PI_2),     // (−1,−1) → (1,1), bulging up-left
+                        6 => ((1.0, -1.0), PI, FRAC_PI_2),      // (−1,−1) → (1,1), bulging up-left
                         _ => ((-1.0, 1.0), 3.0 * FRAC_PI_2, 2.0 * PI), // bulging down-right
                     };
                     Seg::Arc {
@@ -151,7 +171,9 @@ impl Tracks {
             .iter()
             .map(|p| {
                 let n = (p.len / 4.0).ceil().max(1.0) as usize;
-                (0..=n).map(|k| p.point(p.len * k as f32 / n as f32)).collect()
+                (0..=n)
+                    .map(|k| p.point(p.len * k as f32 / n as f32))
+                    .collect()
             })
             .collect()
     }
@@ -209,7 +231,11 @@ impl Rail {
         let mut left = self.speed;
         for _ in 0..8 {
             let p = tracks.pieces[self.piece];
-            let to_end = if self.dir > 0.0 { p.len - self.s } else { self.s };
+            let to_end = if self.dir > 0.0 {
+                p.len - self.s
+            } else {
+                self.s
+            };
             if left <= to_end {
                 self.s += left * self.dir;
                 break;
