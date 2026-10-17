@@ -6,8 +6,10 @@ import SwiftUI
 /// cleared, lost or saved. Rules, pools and save data live in the Rust session
 /// (`mmk_challenge_*`); this class sequences the screens and owns the course being played.
 ///
-/// These screens are a functional stand-in: the SMM1 layout player will draw the original world
-/// map, intro card and ending from the owner's SMM1 data when it is imported.
+/// With the owner's SMM1 UI import (`SMM1UI.shared`) the screens are the original layouts
+/// (ChallengeScreens.swift: difficulty tabs over the world map, Mario's walk, intro card, game
+/// over, ending and credits; in-course overlays via `RunOverlay`). Without it the SwiftUI views
+/// below stand in.
 @MainActor
 final class ChallengeFlow: ObservableObject, Identifiable {
     enum Stage {
@@ -37,6 +39,13 @@ final class ChallengeFlow: ObservableObject, Identifiable {
     /// Shown on the ending screen: a difficulty this run unlocked.
     @Published private(set) var unlocked: Int?
     @Published private(set) var credits: [Course] = []
+    /// The layout screen for the current stage (nil while playing, or without the SMM1 import).
+    @Published private(set) var scene: UIScene?
+    let ui = SMM1UI.shared
+    /// Map and title bar handed from the select screen to the MapIn that follows it.
+    var handoff: (WorldMap, UILayout)?
+    /// How the next world-map visit starts (set by start / the last course result).
+    private var entry: MapIntroScene.Entry = .newGame
 
     private let handle: OpaquePointer
     private let assets: EngineAssets
@@ -59,6 +68,40 @@ final class ChallengeFlow: ObservableObject, Identifiable {
                                      UInt8(e.meta.difficultyValue), e.info.theme == 2)
         }
         entries = map
+        makeMenu()
+    }
+
+    private func makeMenu() {
+        handoff = nil
+        scene = ui.flatMap { ChallengeMenuScene(flow: self, ui: $0, difficulty: difficulty) }
+    }
+
+    static func lockedMessage(_ d: Int) -> String {
+        d == 2 ? "Clear a Normal run to unlock Expert." : "Clear an Expert run to unlock Super Expert."
+    }
+
+    /// The Continue record of a difficulty (lives, courses cleared), from the session's save data.
+    func continueInfo(_ d: Int) -> (lives: Int, cleared: Int)? {
+        guard canContinue(d) else { return nil }
+        let n = mmk_challenge_save_json(handle, nil, 0)
+        var buf = [CChar](repeating: 0, count: n + 1)
+        guard mmk_challenge_save_json(handle, &buf, buf.count) == n,
+              let obj = try? JSONSerialization.jsonObject(with: Data(String(cString: buf).utf8)) as? [String: Any],
+              let recs = obj["records"] as? [String: Any],
+              let r = recs[["easy", "normal", "expert", "super_expert"][d]] as? [String: Any]
+        else { return nil }
+        return ((r["lives"] as? NSNumber)?.intValue ?? 100, (r["cleared"] as? [Any])?.count ?? 0)
+    }
+
+    /// What the intro card shows for the current course.
+    func cardInfo() -> RunCardInfo {
+        var info = RunCardInfo(name: course?.name ?? "", maker: course?.maker ?? "", code: nil,
+                               lives: Int(status.lives), number: Int(status.course_number), total: Int(status.total))
+        if let path = course?.path, let id = entries[path]?.meta.dataId {
+            var buf = [CChar](repeating: 0, count: 16)
+            if mmk_smm2_course_code(id, &buf, buf.count) > 0 { info.code = String(cString: buf) }
+        }
+        return info
     }
 
     deinit { mmk_challenge_free(handle) }
@@ -77,6 +120,7 @@ final class ChallengeFlow: ObservableObject, Identifiable {
     func start(_ d: Int, resume: Bool) {
         difficulty = d
         unlocked = nil
+        entry = resume ? .resume : .newGame
         guard mmk_challenge_start(handle, UInt8(d), resume) else {
             message = available(d) == 0
                 ? "There aren't any playable \(Self.difficulties[d]) courses in your library yet."
@@ -93,10 +137,18 @@ final class ChallengeFlow: ObservableObject, Identifiable {
         guard mmk_challenge_course(handle, &c) else {
             message = "The library ran out of courses for this run. Your progress is saved."
             stage = .select
+            makeMenu()
             return
         }
         course = Course(path: Self.str(c.id), name: Self.str(c.name), maker: Self.str(c.maker),
                         difficulty: Int(c.difficulty))
+        let cleared = max(0, Int(status.course_number) - 1)
+        scene = ui.flatMap {
+            MapIntroScene(flow: self, ui: $0, entry: entry, difficulty: difficulty, info: cardInfo(),
+                          cleared: cleared, handoff: handoff)
+        }
+        handoff = nil
+        entry = .direct
         stage = .intro
     }
 
@@ -109,10 +161,12 @@ final class ChallengeFlow: ObservableObject, Identifiable {
             let s = try GameSession(assets: assets, course: data, title: entry?.name ?? course.name,
                                     courseKey: entry?.info.key, saves: saves)
             s.run = self
+            if let ui { s.overlay = RunOverlay(ui: ui) }
             applyCounters(to: s.engine)
             s.onExit = { [weak self] in self?.sessionEnded() }
             mmk_challenge_course_started(handle)
             persist()
+            scene = nil
             stage = .playing(s)
         } catch {
             if mmk_challenge_unloadable(handle) {
@@ -121,6 +175,7 @@ final class ChallengeFlow: ObservableObject, Identifiable {
             } else {
                 message = "\(course.name) couldn't be loaded and no other course is left."
                 stage = .select
+                makeMenu()
             }
         }
     }
@@ -134,6 +189,13 @@ final class ChallengeFlow: ObservableObject, Identifiable {
         mmk_challenge_end(handle)
         refresh()
         stage = .select
+        makeMenu()
+    }
+
+    /// The ending (layout screens) is over: announce an unlock, back to the select screen.
+    func endingFinished() {
+        if let u = unlocked { message = "\(Self.difficulties[u]) is now open!" }
+        backToSelect()
     }
 
     func exit() {
@@ -168,7 +230,17 @@ final class ChallengeFlow: ObservableObject, Identifiable {
         return false
     }
 
+    /// The last clear completed the run (its clear screen leads to the ending).
+    var clearEndsRun: Bool { pendingNext == UInt8(MMK_NEXT_COMPLETE) }
+
+    /// World record of the current course in ms, when the library index has it.
+    var courseWorldRecordMs: Int? { course.flatMap { entries[$0.path]?.meta.worldRecordMs } }
+
+    /// Save & Quit on the course-clear screen: the clear is already saved, leave the run.
+    func saveAndQuitAfterClear() { pendingNext = UInt8(MMK_NEXT_QUIT) }
+
     func cleared(score: UInt32, coins: UInt32) {
+        entry = .afterClear
         pendingNext = mmk_challenge_finish(handle, UInt8(MMK_OUTCOME_CLEARED), score, coins)
         persist()
         refresh()
@@ -176,6 +248,7 @@ final class ChallengeFlow: ObservableObject, Identifiable {
     }
 
     func skipped() {
+        entry = .direct
         pendingNext = mmk_challenge_finish(handle, UInt8(MMK_OUTCOME_SKIPPED), 0, 0)
         persist()
     }
@@ -196,14 +269,54 @@ final class ChallengeFlow: ObservableObject, Identifiable {
         persist()
         switch Int32(n) {
         case Int32(MMK_NEXT_PLAY): showIntro()
-        case Int32(MMK_NEXT_GAME_OVER): refresh(); stage = .gameOver
+        case Int32(MMK_NEXT_GAME_OVER):
+            refresh()
+            scene = ui.flatMap { GameOverScene(flow: self, ui: $0) }
+            stage = .gameOver
         case Int32(MMK_NEXT_COMPLETE):
             let u = mmk_challenge_take_unlock(handle)
             unlocked = u >= 0 ? Int(u) : nil
             persist()
-            stage = .complete
+            showEnding()
         default: backToSelect()
         }
+    }
+
+    private func showEnding() {
+        scene = ui.flatMap {
+            EndingScene(flow: self, ui: $0, difficulty: difficulty, lives: Int(status.lives),
+                        credits: credits.map { ($0.name, $0.maker) })
+        }
+        stage = .complete
+    }
+
+    /// Debug captures (MMK_UI_SCREEN=challenge-ending): the ending with library courses as credits.
+    func debugEnding(_ d: Int, library: [CourseEntry]) {
+        difficulty = d
+        credits = library.prefix(Self.runLengths[d]).map {
+            Course(path: $0.url.path, name: $0.name, maker: $0.meta.maker ?? "", difficulty: 0)
+        }
+        showEnding()
+    }
+
+    /// Debug captures: the map walk after clearing `cleared` courses, or the game-over screen.
+    func debugMap(_ d: Int, entry e: MapIntroScene.Entry, cleared: Int) {
+        difficulty = d
+        var info = RunCardInfo(name: "Course", maker: "Maker", lives: 87, number: cleared + 1,
+                               total: Self.runLengths[d])
+        if let c = entries.values.first { info.name = c.name; info.maker = c.meta.maker ?? "" }
+        scene = ui.flatMap { MapIntroScene(flow: self, ui: $0, entry: e, difficulty: d, info: info, cleared: cleared, handoff: nil) }
+        stage = .intro
+    }
+
+    func debugSelect(_ d: Int) {
+        difficulty = d
+        makeMenu()
+    }
+
+    func debugGameOver() {
+        scene = ui.flatMap { GameOverScene(flow: self, ui: $0) }
+        stage = .gameOver
     }
 
     private func collectCredits() {
@@ -245,12 +358,18 @@ struct ChallengeView: View {
 
     var body: some View {
         Group {
-            switch flow.stage {
-            case .select: DifficultySelect(flow: flow)
-            case .intro: CourseIntro(flow: flow)
-            case .playing(let s): GameView(session: s).id(s.id)
-            case .gameOver: RunEnd(flow: flow, won: false)
-            case .complete: RunEnd(flow: flow, won: true)
+            if case .playing(let s) = flow.stage {
+                GameView(session: s).id(s.id)
+            } else if let scene = flow.scene {
+                UIScreenView(scene: scene).id(ObjectIdentifier(scene))
+            } else {
+                switch flow.stage {
+                case .select: DifficultySelect(flow: flow)
+                case .intro: CourseIntro(flow: flow)
+                case .playing(let s): GameView(session: s).id(s.id)
+                case .gameOver: RunEnd(flow: flow, won: false)
+                case .complete: RunEnd(flow: flow, won: true)
+                }
             }
         }
         .alert(flow.message ?? "", isPresented: Binding(get: { flow.message != nil }, set: { if !$0 { flow.message = nil } })) {

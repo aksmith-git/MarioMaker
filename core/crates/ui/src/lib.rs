@@ -13,9 +13,9 @@ pub mod font;
 pub mod player;
 mod text;
 
-pub use cache::{LayoutRes, TextureEntry, UiCache, UiError};
+pub use cache::{ARG_PLACEHOLDER, LayoutRes, TextureEntry, UiCache, UiError};
 pub use font::FontRes;
-pub use player::LayoutPlayer;
+pub use player::{LayoutPlayer, PaneInfo};
 
 /// `Quad::tex0/tex1` when there is no texture.
 pub const TEXTURE_NONE: u32 = u32::MAX;

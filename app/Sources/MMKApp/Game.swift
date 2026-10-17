@@ -10,6 +10,8 @@ import SwiftUI
 final class GameSession: ObservableObject, Identifiable {
     enum Phase: Equatable {
         case playing, paused, cleared, gameOver
+        /// 100 Mario with the SMM1 layouts: the intro card after a death, the skip's Pass animation.
+        case card, skipping
     }
 
     enum PauseItem: String, CaseIterable {
@@ -23,6 +25,8 @@ final class GameSession: ObservableObject, Identifiable {
     /// Pause menu entries: a challenge run can skip and Save & Quit, and a restart costs a life.
     var pauseItems: [PauseItem] {
         guard let run else { return [.resume, .restart, .exit] }
+        // SMM1 pause menu: close, Start Over, Save & Quit (skipping is the held skip key)
+        if overlay != nil { return [.resume, .restart, .saveQuit] }
         return run.canSkip ? [.resume, .skip, .restart, .saveQuit] : [.resume, .restart, .saveQuit]
     }
 
@@ -50,6 +54,13 @@ final class GameSession: ObservableObject, Identifiable {
     var onExit: (() -> Void)?
     /// The 100 Mario run this course belongs to: it owns lives, and decides what a death means.
     weak var run: ChallengeFlow?
+    /// SMM1 layouts over the game for a run (pause, clear, skip countdown, intro card after a
+    /// death); nil for the stand-in SwiftUI menus. Drawn by the Renderer.
+    var overlay: RunOverlay?
+    /// Debug captures: behave as if the skip key were held.
+    var debugSkipHeld = false
+    private var uiAccumulator = 0.0
+    private var skipDoneTick: Int?
     private var livesGained: UInt32 = 0
     /// Debug/smoke tests: replaces the player's input; given the engine tick.
     var scriptedInput: ((UInt64) -> MmkInput)?
@@ -135,6 +146,13 @@ final class GameSession: ObservableObject, Identifiable {
         let pressed = menu.subtracting(heldMenu)
         heldMenu = menu
         phaseFrames += 1
+        if let o = overlay {
+            uiAccumulator = min(uiAccumulator + dt, 0.25)
+            while uiAccumulator >= Self.tick {
+                uiAccumulator -= Self.tick
+                overlayTick(o)
+            }
+        }
 
         switch phase {
         case .playing:
@@ -153,8 +171,22 @@ final class GameSession: ObservableObject, Identifiable {
             let items = pauseItems
             if pressed.contains(.up) { pauseSelection = (pauseSelection + items.count - 1) % items.count }
             if pressed.contains(.down) { pauseSelection = (pauseSelection + 1) % items.count }
+            if !pressed.intersection([.up, .down]).isEmpty { overlay?.pauseSelect(pauseSelection) }
             if pressed.contains(.back) { resume() }
             else if pressed.contains(.confirm) { choose(items[pauseSelection]) }
+        case .cleared where overlay != nil:
+            guard let o = overlay, o.clearReady else { break }
+            if pressed.contains(.left) { o.clearSelect(0) }
+            if pressed.contains(.right) { o.clearSelect(1) }
+            if pressed.contains(.confirm) {
+                if o.clearFocus == 0 { run?.saveAndQuitAfterClear() }
+                o.pressClear()
+                exit()
+            }
+        case .gameOver where overlay != nil && run != nil:
+            exit()   // the run shows Cmn_GameOver_00 as its own screen
+        case .card, .skipping:
+            break    // driven by overlayTick
         case .cleared, .gameOver:
             // a short beat so a held jump doesn't skip the screen
             if phaseFrames > 30 && !pressed.intersection([.confirm, .back]).isEmpty { exit() }
@@ -172,7 +204,7 @@ final class GameSession: ObservableObject, Identifiable {
         let dying = h.flags & 2 != 0
         if wasDying && !dying, let run {
             // the engine restarted the course; the run decides whether it continues
-            if run.died() { newAttempt() } else { setPhase(.gameOver) }
+            if run.died() { newAttempt(); showRetryCard() } else { setPhase(.gameOver) }
         } else if wasDying && !dying {
             // death sequence over, the course restarted
             if h.lives == 0 {
@@ -188,8 +220,67 @@ final class GameSession: ObservableObject, Identifiable {
             if let courseKey { newBest = saves?.addClear(courseKey, ticks: ticks) ?? false }
             run?.cleared(score: h.score, coins: h.coins)
             setPhase(.cleared)
+            showClearOverlay()
         }
     }
+
+    private func showClearOverlay() {
+        guard let o = overlay, let run else { return }
+        o.showClear(course: run.course?.name ?? title, maker: run.course?.maker ?? "", ticks: clearTicks,
+                    worldRecordMs: run.courseWorldRecordMs, last: run.clearEndsRun)
+    }
+
+    /// In a run with the SMM1 layouts, the intro card (lives after the death) before the retry.
+    private func showRetryCard() {
+        guard let o = overlay, let run else { return }
+        o.showCard(run.cardInfo())
+        setPhase(.card)
+    }
+
+    /// One 60 Hz tick of the overlay: animations, the skip hold, the end of the card / Pass.
+    private func overlayTick(_ o: RunOverlay) {
+        if let f = DebugCapture.freezeTicks, o.mode != .none, o.sinceMode >= f { return }
+        o.step(UIInput())
+        switch phase {
+        case .playing:
+            guard let run, run.canSkip else { break }
+            let held = debugSkipHeld || (scriptedInput == nil && input.skipHeld)
+            if held {
+                if o.mode == .none { o.skipBegin() }
+                if o.mode == .skip && o.sinceMode >= RunOverlay.skipHold {
+                    skipDoneTick = o.tick + o.skipPass()
+                    setPhase(.skipping)
+                }
+            } else if o.mode == .skip {
+                o.skipCancel()
+            }
+        case .skipping:
+            if let t = skipDoneTick, o.tick >= t {
+                skipDoneTick = nil
+                run?.skipped()
+                exit()
+            }
+        case .card:
+            if o.cardDone {
+                o.hideCard()
+                lastTime = CACurrentMediaTime()
+                accumulator = 0
+                setPhase(.playing)
+                heldStart = true
+            }
+        default:
+            break
+        }
+    }
+
+    /// Debug captures: show the clear overlay / the retry card without finishing the course.
+    func debugClear() {
+        clearTicks = 2345
+        setPhase(.cleared)
+        showClearOverlay()
+    }
+
+    func debugCard() { showRetryCard() }
 
     private func newAttempt() {
         attemptTicks = 0
@@ -209,11 +300,17 @@ final class GameSession: ObservableObject, Identifiable {
     func pause() {
         guard phase == .playing else { return }
         pauseSelection = 0
+        if let o = overlay, let run {
+            if o.mode == .skip { o.skipCancel() }
+            o.showPause(modeLine: run.pauseLine, course: run.course?.name ?? title,
+                        maker: run.course?.maker ?? "", selection: 0)
+        }
         setPhase(.paused)
     }
 
     func resume() {
         guard phase == .paused else { return }
+        overlay?.hidePause()
         lastTime = CACurrentMediaTime()
         accumulator = 0
         setPhase(.playing)
@@ -222,6 +319,7 @@ final class GameSession: ObservableObject, Identifiable {
 
     func restart() {
         // in a run, starting over counts as a death
+        overlay?.clearAll()
         if let run, !run.died() {
             setPhase(.gameOver)
             return
@@ -235,6 +333,7 @@ final class GameSession: ObservableObject, Identifiable {
         accumulator = 0
         setPhase(.playing)
         heldStart = true
+        showRetryCard()
     }
 
     func exit() { onExit?() }
@@ -259,12 +358,13 @@ struct GameView: View {
         ZStack {
             MetalView(session: session)
             switch session.phase {
-            case .playing: EmptyView()
+            case .playing, .card, .skipping: EmptyView()
+            case _ where session.overlay != nil: EmptyView()   // SMM1 layouts, drawn by the Renderer
             case .paused: PauseMenu(session: session)
             case .cleared: ResultCard(title: "Course clear!", detail: clearDetail, action: session.run == nil ? "Back to library" : "Next", session: session)
             case .gameOver: ResultCard(title: "Game over", detail: "Out of lives.", action: session.run == nil ? "Back to library" : "Continue", session: session)
             }
-            if let run = session.run, session.phase == .playing { RunBanner(run: run) }
+            if let run = session.run, session.phase == .playing, session.overlay == nil { RunBanner(run: run) }
         }
     }
 

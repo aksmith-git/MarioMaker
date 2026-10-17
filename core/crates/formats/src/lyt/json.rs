@@ -381,6 +381,10 @@ pub fn pane_to_json(p: &Pane) -> Value {
                         "name": p.name, "usage": p.usage, "basic_usage": p.basic_usage,
                         "material_usage": p.material_usage,
                         "pane": p.pane.as_ref().map(|x| pane_to_json(x)),
+                        "basic": p.basic.as_ref().map(|b| json!({
+                            "user_info": b.user_info, "t": b.translate, "r": b.rotate,
+                            "s": b.scale, "size": b.size, "alpha": b.alpha,
+                        })),
                     })).collect::<Vec<_>>(),
                 }),
             );
@@ -465,6 +469,19 @@ pub fn pane_from_json(v: &Value) -> Result<Pane> {
                             material_usage: gu8(e, "material_usage")?,
                             pane: opt(e, "pane")
                                 .map(|x| pane_from_json(x).map(Box::new))
+                                .transpose()?,
+                            // absent in imports made before it was parsed
+                            basic: opt(e, "basic")
+                                .map(|b| -> Result<PartBasicInfo> {
+                                    Ok(PartBasicInfo {
+                                        user_info: gs(b, "user_info")?,
+                                        translate: gfa(b, "t")?,
+                                        rotate: gfa(b, "r")?,
+                                        scale: gfa(b, "s")?,
+                                        size: gfa(b, "size")?,
+                                        alpha: gu8(b, "alpha")?,
+                                    })
+                                })
                                 .transpose()?,
                         })
                     })

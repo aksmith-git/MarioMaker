@@ -54,6 +54,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         return t
     }()
     private var skyColor: UInt32 = 0x5C94FCFF
+    private var debugFrames = 0
     private let session: GameSession
     private var engine: OpaquePointer { session.engine }
     /// Sprites without art (MMK_TEXTURE_NONE) are drawn as coloured boxes in placeholder mode
@@ -272,6 +273,13 @@ final class Renderer: NSObject, MTKViewDelegate {
             enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         }
 
+        // 100 Mario overlays (SMM1 layouts: pause, course clear, skip countdown, intro card)
+        if let o = session.overlay, let ui = SMM1UI.shared {
+            let layers = o.layers
+            for l in layers { l.apply(tick: o.tick) }
+            ui.encode(enc, layers: layers)
+        }
+
         enc.endEncoding()
         if let path = screenshot, snap.tick >= screenshotTicks {
             cmd.commit()
@@ -281,7 +289,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         cmd.present(drawable)
         cmd.commit()
-        if DebugCapture.requested && snap.tick % 10 == 0 {
+        debugFrames += 1
+        if DebugCapture.requested && debugFrames % 10 == 0 {   // also while paused (menus, overlays)
             // keep a copy of the frame: window snapshots can't see Metal layers
             cmd.waitUntilCompleted()
             DebugCapture.lastFrame = image(of: drawable.texture)
@@ -365,16 +374,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         CGImageDestinationFinalize(dest)
     }
 
-    private func image(of tex: MTLTexture) -> CGImage? {
-        let w = tex.width, h = tex.height
-        var bytes = [UInt8](repeating: 0, count: w * h * 4)
-        tex.getBytes(&bytes, bytesPerRow: w * 4, from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0)
-        let info = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
-        guard let ctx = CGContext(data: &bytes, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
-                                  space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: info.rawValue)
-        else { return nil }
-        return ctx.makeImage()
-    }
+    private func image(of tex: MTLTexture) -> CGImage? { DebugCapture.image(of: tex) }
 }
 
 /// Short HUD text for a course's clear condition (our own wording).

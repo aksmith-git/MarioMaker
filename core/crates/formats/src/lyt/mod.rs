@@ -10,8 +10,9 @@ pub mod json;
 
 pub use bflan::{AnimContent, AnimEntry, AnimKey, AnimTag, Animation, CurveType};
 pub use bflyt::{
-    BlendMode, Group, Layout, Material, Pane, PaneKind, Part, PartProperty, Picture, ProjTexGen,
-    TevStage, TexCoordGen, TexMap, TexSrt, Text, UserData, UserDataValue, Window, WindowFrame,
+    BlendMode, Group, Layout, Material, Pane, PaneKind, Part, PartBasicInfo, PartProperty, Picture,
+    ProjTexGen, TevStage, TexCoordGen, TexMap, TexSrt, Text, UserData, UserDataValue, Window,
+    WindowFrame,
 };
 
 use crate::error::{Error, Result};

@@ -34,7 +34,7 @@ extension Notification.Name {
 
 /// Game actions the player can bind.
 enum GameAction: String, CaseIterable, Codable, Identifiable {
-    case left, right, up, down, jump, run, pause
+    case left, right, up, down, jump, run, pause, skip
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -45,6 +45,7 @@ enum GameAction: String, CaseIterable, Codable, Identifiable {
         case .jump: "Jump"
         case .run: "Run / fire"
         case .pause: "Pause"
+        case .skip: "Skip course (hold, 100 Mario)"
         }
     }
 }
@@ -56,6 +57,7 @@ struct KeyBindings: Codable, Equatable {
         .left: [123, 0], .right: [124, 2], .up: [126, 13], .down: [125, 1], // arrows, WASD
         .jump: [6, 49], .run: [7, 56],                                      // Z/Space, X/Shift
         .pause: [53, 35],                                                   // Esc, P
+        .skip: [27, 48],                                                    // − (minus), Tab
     ])
 
     static func load() -> KeyBindings {
@@ -115,10 +117,10 @@ enum PadButton: String, CaseIterable, Codable {
 }
 
 struct PadBindings: Codable, Equatable {
-    static let actions: [GameAction] = [.jump, .run, .pause]
+    static let actions: [GameAction] = [.jump, .run, .pause, .skip]
     var buttons: [GameAction: [PadButton]]
 
-    static let defaults = PadBindings(buttons: [.jump: [.a, .b], .run: [.x, .y], .pause: [.menu]])
+    static let defaults = PadBindings(buttons: [.jump: [.a, .b], .run: [.x, .y], .pause: [.menu], .skip: [.options]])
 
     static func load() -> PadBindings {
         guard let data = UserDefaults.standard.data(forKey: SettingsKey.padBindings),
