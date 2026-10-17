@@ -35,6 +35,7 @@ pub mod enemy {
     pub const FIRE_PIRANHA: u8 = 7;
     pub const MUNCHER: u8 = 8;
     pub const DRY_BONES: u8 = 10;
+    pub const FISH_BONE: u8 = 11;
     pub const ROCKY_WRENCH: u8 = 12;
     pub const MONTY_MOLE: u8 = 13;
     pub const HAMMER_BRO: u8 = 14;

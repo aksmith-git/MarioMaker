@@ -916,7 +916,7 @@ impl World {
             if a.kind == Kind::Lakitu {
                 a.speed = self.player.vx;
             }
-            if let Kind::CheepCheep { .. } = a.kind {
+            if matches!(a.kind, Kind::CheepCheep { .. } | Kind::FishBone) {
                 a.ridden = self
                     .liquid
                     .is_some_and(|l| l.water() && l.covers(a.y + 16.0));
@@ -3932,6 +3932,17 @@ impl World {
             ),
             Kind::Wiggler => ("M1_Enemy_hanachan", "head.0", 16.0, 32.0, a.dir > 0),
             Kind::LavaBubble => ("M1_Enemy_bubble", "wait.0", 16.0, 16.0, false),
+            Kind::FishBone => (
+                "M1_Enemy_fishbone",
+                if a.phase == 2 {
+                    walk_frame(&["attack.0", "attack.1"], a.age, 4)
+                } else {
+                    walk_frame(&["swim.0", "swim.1"], a.age, 10)
+                },
+                16.0,
+                16.0,
+                a.dir > 0,
+            ),
             Kind::MovingBlock { block, .. } => {
                 let i = crate::level::block_atlas(block);
                 let field = self.field_model;
@@ -5163,6 +5174,43 @@ mod tests {
             w.effects
                 .iter()
                 .any(|e| matches!(e, Effect::CoinPop { .. }))
+        );
+    }
+
+    #[test]
+    fn fish_bone_aims_charges_and_shatters() {
+        let mut lvl = Level::flat(40);
+        lvl.liquid = Some(crate::level::LiquidSpec {
+            kind: 1,
+            start: 400.0,
+            end: 400.0,
+            mode: 0,
+            speed: 0,
+            full: true,
+        });
+        // a wall the charge will hit
+        for y in 2..12 {
+            lvl.set(4, y, Cell::Solid);
+        }
+        lvl.spawns.push(spawn(Kind::FishBone, 200.0, 80.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 140.0;
+        w.player.y = 80.0;
+        run(&mut w, 0, 2);
+        let a = &w.actors[0];
+        assert!(
+            a.dir < 0 && a.phase == 1,
+            "spots the player it faces: {} {}",
+            a.dir,
+            a.phase
+        );
+        w.player.x = 300.0; // step aside; it charges along the aim regardless
+        run(&mut w, 0, 41);
+        assert_eq!(w.actors[0].phase, 2);
+        run(&mut w, 0, 120);
+        assert!(
+            w.actors.iter().all(|a| a.kind != Kind::FishBone),
+            "shattered on the wall"
         );
     }
 

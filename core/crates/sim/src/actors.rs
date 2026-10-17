@@ -154,6 +154,8 @@ pub enum Kind {
     ClownCar {
         fire: bool,
     },
+    /// Fish Bone (103): patrols in water, aims and charges; shatters on anything it hits.
+    FishBone,
     /// Lava Bubble (60): leaps from the lava (or the area floor) to its placed height.
     LavaBubble,
     /// Monty Mole (102): buried until the player comes near, then chases.
@@ -200,6 +202,7 @@ impl Kind {
                 | Kind::MontyMole
                 | Kind::AngrySun { moon: false }
                 | Kind::ShoeGoomba { .. }
+                | Kind::FishBone
         )
     }
     /// Clear-condition enemy class (clear.rs) of a defeated actor of this kind.
@@ -224,6 +227,7 @@ impl Kind {
             Kind::SpikeTop => e::SPIKE_TOP,
             Kind::ChainChomp { .. } => e::CHAIN_CHOMP,
             Kind::LavaBubble => e::LAVA_BUBBLE,
+            Kind::FishBone => e::FISH_BONE,
             Kind::MontyMole => e::MONTY_MOLE,
             Kind::AngrySun { moon: false } => e::ANGRY_SUN,
             Kind::Wiggler => e::WIGGLER,
@@ -453,6 +457,7 @@ impl Actor {
                 | Kind::ChainChomp { .. }
                 | Kind::LavaBubble
                 | Kind::AngrySun { .. }
+                | Kind::FishBone
         ) || (matches!(self.kind, Kind::Shell { .. }) && self.buzzy)
     }
 
@@ -1014,6 +1019,11 @@ impl Actor {
                 self.vy = 0.0;
                 true
             }
+            Kind::FishBone => {
+                // it crumbles (DieVanish)
+                self.mode = Mode::Dead;
+                true
+            }
             Kind::ShoeGoomba { .. } => {
                 // the Goomba falls out of its shoe (the world drops the empty shoe)
                 self.die_fall(self.x - self.dir as f32);
@@ -1432,6 +1442,7 @@ impl Actor {
             Kind::Boo => self.step_boo(),
             Kind::ChainChomp { chained } => self.step_chomp(level, chained),
             Kind::LavaBubble => self.step_lava_bubble(),
+            Kind::FishBone => self.step_fish_bone(level),
             Kind::ClownCar { .. } => self.step_clown_car(level),
             Kind::ShoeGoomba { .. } => self.step_shoe_goomba(level),
             Kind::Shoe { .. } => {
@@ -2008,6 +2019,71 @@ impl Actor {
         }
         if self.on_ground && self.vy <= 0.0 && self.timer <= 0 {
             self.timer = 50;
+        }
+    }
+
+    /// Fish Bone (103-fish-bone.md). `ridden` = in water (set by the world). Phases: 0 swim
+    /// (0.5 px/f, 1.0 winged, ±64 px around home, turning at walls; vy decays by
+    /// max(0.1·|vy|, 0.01)), 1 aim (40 frames, stopped), 2 charge (+0.25/frame to 2.0, 6.0 winged,
+    /// along the aim; shatters on a wall, floor, ceiling or leaving the water), 3 fall (out of
+    /// water, −0.1875). Detection: within 80 px (160 winged) on the facing side. Aim in `heading`.
+    fn step_fish_bone(&mut self, level: &Level) {
+        let (px, py) = self.target;
+        let winged = self.wings;
+        if self.age <= 1 {
+            self.home_x = self.x;
+        }
+        match self.phase {
+            0 => {
+                if !self.ridden {
+                    self.phase = 3;
+                    return;
+                }
+                self.vx = if winged { 1.0 } else { 0.5 } * self.dir as f32;
+                self.vy -= self.vy.signum() * (self.vy.abs() * 0.1).max(0.01).min(self.vy.abs());
+                self.collide(level);
+                let past = (self.x - self.home_x) * self.dir as f32 > 64.0;
+                if (self.wall || past) && self.turn_lock == 0 {
+                    self.turn();
+                    self.turn_lock = 8;
+                }
+                let (dx, dy) = (px - self.x, py - self.y);
+                let reach = if winged { 160.0 } else { 80.0 };
+                let facing = dx * self.dir as f32 > 0.0;
+                if facing && (dx * dx + dy * dy).sqrt() <= reach && (!winged || dy.abs() <= 80.0) {
+                    self.phase = 1;
+                    self.timer = 40;
+                    self.heading = dy.atan2(dx).to_degrees();
+                }
+            }
+            1 => {
+                self.vx = 0.0;
+                self.vy = 0.0;
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    self.phase = 2;
+                    self.speed = 0.0;
+                }
+            }
+            2 => {
+                self.speed = (self.speed + 0.25).min(if winged { 6.0 } else { 2.0 });
+                let (s, c) = self.heading.to_radians().sin_cos();
+                self.vx = self.speed * c;
+                self.vy = self.speed * s;
+                let up = self.vy > 0.0;
+                self.collide(level);
+                let ceiling = up && self.vy <= 0.0;
+                if self.wall || ceiling || (self.on_ground && !up) || !self.ridden {
+                    self.mode = Mode::Dead; // shatters
+                }
+            }
+            _ => {
+                self.vy = (self.vy - 0.1875).max(MAX_FALL);
+                self.collide(level);
+                if self.ridden {
+                    self.phase = 0;
+                }
+            }
         }
     }
 

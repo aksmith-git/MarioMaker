@@ -160,6 +160,7 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   [inf]); "goal in a Clown Car" condition
 - ✅ Winged / tracked blocks (brick, ?, hard, ice, cloud) as moving solid actors that release
   their contents when bumped; winged lifts bob; winged Thwomps patrol and bob (12-thwomp.md)
+- ✅ Fish Bone: patrol, 40-frame aim, charge (2 / 6 px/f), shatters on contact; fire-proof
 - ✅ Pink coins: counted once each across both areas; the last one gives the key
 - ✅ Goomba's Shoe / Stiletto: shoe Goomba hops (50-frame pause, 4.5 / 1.5), leaves the empty
   shoe; the player wears it (spikes and Munchers underfoot safe, shoe stomps, a hit knocks it
