@@ -1,0 +1,17 @@
+[package]
+name = "mmk-cli"
+description = "Command-line tool: inspect courses, round-trip checks, (later) import and headless runs"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "mmk"
+path = "src/main.rs"
+
+[dependencies]
+mmk-formats = { path = "../formats" }
+clap.workspace = true
+flate2.workspace = true
+serde_json.workspace = true

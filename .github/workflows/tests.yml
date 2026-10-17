@@ -5,7 +5,29 @@ on:
   pull_request:
 
 jobs:
-  unit:
+  rust:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+      # rustup reads core/rust-toolchain.toml and installs the pinned toolchain
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo build
+      - if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mmk-linux
+          path: core/target/debug/mmk
+
+  python:
+    needs: rust
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -13,5 +35,12 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: mmk-linux
+          path: bin
+      - run: chmod +x bin/mmk
       # Corpus tests skip automatically: CI has no game data or key table.
       - run: python -m unittest discover -s tests -t . -v
+        env:
+          MMK_BIN: bin/mmk
