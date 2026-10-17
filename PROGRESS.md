@@ -290,7 +290,7 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   - ⬜ boot scene, fades, FLCT per-character text, glyph borders; Course World (`Nwk_Title_00`),
     Story Mode map (`Qst_*`), pause, clear / death screens, HUD; title in `mmk-play`
 - 🔄 All five styles (SMB1, SMB3, SMW, NSMBU, 3D World) and all themes (day/night) — all five
-  playable — sample 3D World 39/100; 3D World-only parts (track block, enemies …) ⬜
+  playable — sample 3D World 99/100 (Super Hammer ⬜)
 - ✅ Warp Box (97-warp-box.md): pairs 2k ↔ 2k+1 in the same area, entered by touch (no button),
   player hidden at once, held items dropped, key boxes spend one key and stay open, a used pair
   vanishes (single player); blocked-exit cancel ⬜
