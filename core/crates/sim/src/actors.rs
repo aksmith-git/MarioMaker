@@ -111,6 +111,8 @@ pub enum Kind {
     Pow,
     /// Key: collect to open a locked door.
     Key,
+    /// Twister: walks 0.5 px/frame; its wind column (grows 0.7/frame to 128 px) lifts riders.
+    Twister,
 }
 
 impl Kind {
@@ -1238,6 +1240,18 @@ impl Actor {
                 }
             }
             Kind::Pow | Kind::Key => {}
+            Kind::Twister => {
+                if self.on_ground {
+                    self.vx = 0.5 * self.dir as f32;
+                }
+                self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+                self.collide(level);
+                if self.wall {
+                    self.dir = -self.dir;
+                }
+                // column height in `heading`
+                self.heading = (self.heading + 0.7).clamp(12.0, 128.0);
+            }
             Kind::Cannonball => {
                 self.x += self.vx;
                 self.y += self.vy;

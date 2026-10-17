@@ -300,6 +300,8 @@ pub struct Level {
     pub burners: Vec<Burner>,
     pub firebars: Vec<FireBar>,
     pub cannons: Vec<Cannon>,
+    /// Snake blocks: leftmost tile, row, length, fast, head on the left, path node codes.
+    pub snakes: Vec<(i32, i32, usize, bool, bool, Vec<u16>)>,
     pub liquid: Option<LiquidSpec>,
     /// One-way walls (drawing): centre x, bottom y, orientation.
     pub oneway: Vec<(f32, f32, u8)>,
@@ -363,7 +365,7 @@ pub fn switch_atlas(kind: BlockKind, on: bool) -> u32 {
 pub const SUPPORTED_PARTS: &[i16] = &[
     0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     27, 28, 29, 30, 31, 32, 33, 34, 35, 37, 38, 40, 41, 43, 44, 46, 47, 53, 54, 55, 57, 63, 66, 67,
-    68, 70, 71, 82, 87, 88, 90, 91, 95, 99, 100, 109,
+    68, 70, 71, 76, 82, 84, 87, 88, 90, 91, 95, 99, 100, 109,
 ];
 
 /// Why a course is not fully playable yet: one entry per missing feature (empty = playable).
@@ -451,6 +453,7 @@ impl Level {
             burners: Vec::new(),
             firebars: Vec::new(),
             cannons: Vec::new(),
+            snakes: Vec::new(),
             liquid: None,
             oneway: Vec::new(),
             doors: Vec::new(),
@@ -576,6 +579,7 @@ impl Level {
                     fire: o.flags & 0x4 != 0,
                 }),
                 82 => Some(Kind::Bumper),
+                76 => Some(Kind::Twister),
                 30 => Some(Kind::Lakitu),
                 31 => Some(Kind::Cloud),
                 19 => Some(Kind::Pow),
@@ -734,6 +738,27 @@ impl Level {
                     }
                 }
                 lvl.oneway.push((cx, by, ((o.flags >> 22) & 3) as u8));
+                continue;
+            }
+            if o.id == 84 {
+                // snake block: path from the snake section (index = extended data & 0xF), head on
+                // the left when extended data bit 0x10 ("start from the other end") is set
+                let idx = (o.extended_data & 0xF) as u8;
+                let codes: Vec<u16> = area
+                    .snake_blocks
+                    .slots
+                    .values()
+                    .find(|sb| sb.head.index == idx)
+                    .map(|sb| sb.nodes.iter().map(|n| n.direction).collect())
+                    .unwrap_or_default();
+                lvl.snakes.push((
+                    tx,
+                    ty,
+                    w as usize,
+                    o.flags & 0x4 != 0,
+                    o.extended_data & 0x10 != 0,
+                    codes,
+                ));
                 continue;
             }
             if o.id == 47 {
@@ -1150,6 +1175,7 @@ impl Level {
             burners: Vec::new(),
             firebars: Vec::new(),
             cannons: Vec::new(),
+            snakes: Vec::new(),
             liquid: None,
             oneway: Vec::new(),
             doors: Vec::new(),

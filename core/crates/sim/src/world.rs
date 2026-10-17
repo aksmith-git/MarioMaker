@@ -12,6 +12,10 @@ use crate::camera::{self, Camera};
 use crate::input::{self, Input};
 use crate::level::{Cell, CoinTile, Level, PipeDir, Spawn, TILE, switch_atlas};
 use crate::liquid::Liquid;
+use crate::snake::Snake;
+
+/// Moving-solid owner ids for snake segments: base + snake × 32 + segment.
+const SNAKE_OWNER: u32 = 0x8000_0000;
 use crate::player::{Control, Form, Player, Pose, STAR_FRAMES};
 use crate::render::{Sprite, SpriteImage};
 use crate::warp::{self, SideHold, Transit};
@@ -179,6 +183,8 @@ pub struct World {
     pub keys: u32,
     /// Key-door pairs unlocked: (area, warp id >> 1).
     unlocked_doors: std::collections::BTreeSet<(usize, u8)>,
+    /// Snake blocks in the current area.
+    pub snakes: Vec<Snake>,
 }
 
 impl Default for World {
@@ -278,6 +284,7 @@ impl World {
             cannon_timers: Vec::new(),
             keys: 0,
             unlocked_doors: Default::default(),
+            snakes: Vec::new(),
         };
         w.field_model = Box::leak(field_model(&w.level.style, w.level.theme).into_boxed_str());
         w.reset_course();
@@ -370,6 +377,12 @@ impl World {
         self.effects.clear();
         self.reset_generators();
         self.liquid = self.level.liquid.map(Liquid::new);
+        self.snakes = self
+            .level
+            .snakes
+            .iter()
+            .map(|(l, y, n, fast, rev, codes)| Snake::new(*l, *y, *n, *fast, *rev, codes))
+            .collect();
     }
 
     fn add_actor(&mut self, mut a: Actor) {
@@ -413,6 +426,12 @@ impl World {
                 self.reset_generators();
                 // [?] whether the liquid keeps moving while the player is away; it restarts here
                 self.liquid = self.level.liquid.map(Liquid::new);
+                self.snakes = self
+                    .level
+                    .snakes
+                    .iter()
+                    .map(|(l, y, n, fast, rev, codes)| Snake::new(*l, *y, *n, *fast, *rev, codes))
+                    .collect();
             }
             None => self.load_area_fresh(),
         }
@@ -643,6 +662,7 @@ impl World {
         self.step_blasters();
         self.fire_hazards();
         self.step_cannons();
+        self.twister_lift();
         self.pow_quake();
         self.check_checkpoints();
         self.shell_walls();
@@ -1274,8 +1294,9 @@ impl World {
                     };
                 }
                 a.rng ^= (idx as u32 + 1).wrapping_mul(0x85eb_ca6b);
-                // enemies face the player (left if player.x ≤ x); items face right
-                a.dir = if s.kind.is_enemy() && self.player.x <= s.x {
+                // enemies face the player (left if player.x ≤ x); items face right; a Twister
+                // starts facing left
+                a.dir = if (s.kind.is_enemy() && self.player.x <= s.x) || s.kind == Kind::Twister {
                     -1
                 } else {
                     1
@@ -1529,6 +1550,23 @@ impl World {
         fb.start + fb.dir * 2.8125 * self.tick as f32
     }
 
+    /// Twister wind column: x within ±16 of the twister, from its feet to the column top. The
+    /// player is lifted (vy toward 4.5 at +0.6/frame) [inf: lift speeds live in the player's
+    /// tornado state, not extracted].
+    fn twister_lift(&mut self) {
+        let p = &self.player;
+        let inside = self.actors.iter().any(|a| {
+            a.kind == Kind::Twister
+                && (p.x - a.x).abs() < 16.0
+                && p.y >= a.y - 4.0
+                && p.y <= a.y + a.heading
+        });
+        if inside && self.player.control == Control::Normal {
+            self.player.vy = (self.player.vy + 0.6).min(4.5);
+            self.player.on_ground = false;
+        }
+    }
+
     /// POW block hit from below: every grounded enemy in view is knocked out; the POW is used up.
     fn pow_quake(&mut self) {
         let Some(id) = self.player.head_solid else {
@@ -1657,6 +1695,27 @@ impl World {
                     })
             })
             .collect();
+        // snake blocks
+        for (si, sn) in self.snakes.iter_mut().enumerate() {
+            let base = SNAKE_OWNER + si as u32 * 32;
+            let ridden = ride.is_some_and(|r| r >= base && r < base + 32);
+            sn.step(ridden);
+            for (k, (cx, cy)) in sn.segments().into_iter().enumerate() {
+                let (dx, dy) = sn.moved(k);
+                self.level.solids.push(crate::level::Solid {
+                    x0: cx - 8.0,
+                    y0: cy - 8.0,
+                    x1: cx + 8.0,
+                    y1: cy + 8.0,
+                    dx,
+                    dy,
+                    top_only: false,
+                    owner: base + k as u32,
+                    slope: 0.0,
+                });
+            }
+        }
+        self.snakes.retain(|s| !s.gone());
         if let Some(id) = ride {
             if let Some(s) = self.level.solids.iter().find(|s| s.owner == id) {
                 self.player.x += s.dx;
@@ -2306,6 +2365,27 @@ impl World {
                 x += TILE;
             }
         }
+        for sn in &self.snakes {
+            let model = if sn.fast {
+                "M1_Object_block_snake2"
+            } else {
+                "M1_Object_block_snake"
+            };
+            for (cx, cy) in sn.segments() {
+                if visible(cx, cy) {
+                    out.push(Self::model_sprite(
+                        model,
+                        "wait.0",
+                        cx - 8.0,
+                        cy - 8.0,
+                        16.0,
+                        16.0,
+                        false,
+                        12,
+                    ));
+                }
+            }
+        }
         for c in &self.level.cannons {
             if !visible(c.x, c.y) {
                 continue;
@@ -2801,6 +2881,17 @@ impl World {
                 false,
             ),
             Kind::Seesaw { .. } => return None,
+            Kind::Twister => (
+                "M1_Object_tornado",
+                if (self.tick / 4).is_multiple_of(2) {
+                    "wait.0"
+                } else {
+                    "wait.1"
+                },
+                32.0,
+                a.heading.max(16.0),
+                false,
+            ),
             Kind::Lakitu => (
                 "M1_Enemy_jugem",
                 if a.pause > 0 { "throw.0" } else { "wait.0" },
@@ -3835,6 +3926,34 @@ mod tests {
         assert_eq!(w.keys, 0);
         run(&mut w, 0, 200);
         assert_eq!(w.player.x, 600.0);
+    }
+
+    #[test]
+    fn riding_a_snake_block() {
+        let mut lvl = Level::flat(60);
+        lvl.snakes
+            .push((10, 5, 3, false, false, vec![2, 2, 2, 2, 13]));
+        let mut w = World::with_level(lvl);
+        w.player.x = 11.0 * TILE + 8.0;
+        w.player.y = 6.0 * TILE + 4.0;
+        run(&mut w, 0, 10);
+        assert!(w.player.ride.is_some(), "standing on the snake");
+        let x0 = w.player.x;
+        run(&mut w, 0, 60);
+        assert!(w.player.x > x0 + 25.0, "carried along: {}", w.player.x - x0);
+    }
+
+    #[test]
+    fn twister_lifts_the_player() {
+        let mut lvl = Level::flat(60);
+        lvl.spawns.push(spawn(Kind::Twister, 120.0, 32.0));
+        let mut w = World::with_level(lvl);
+        let mut top: f32 = 0.0;
+        for _ in 0..200 {
+            w.step(Input::default());
+            top = top.max(w.player.y);
+        }
+        assert!(top > 80.0, "lifted to {top}");
     }
 
     #[test]
