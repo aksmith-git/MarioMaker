@@ -223,14 +223,24 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
 - ⬜ Measure object/style/theme frequency in real courses
 - ⬜ Add styles, themes, objects in that order (2.0/3.0 items need the update dump)
 
-### Phase 8 — Every platform: macOS, iOS, Windows, Linux, web ⬜ (owner request 2026-10-18)
+### Phase 8 — Every platform: macOS, iOS, Windows, Linux, web 🔄 (owner request 2026-10-18)
 Approach (DECISIONS.md 2026-10-18, "Cross-platform shell"): the Rust core stays platform-neutral;
 a portable Rust shell runs the game everywhere, the Swift app stays as the Apple-native shell.
-- ⬜ `shell` crate: winit window + wgpu renderer (sprites, layouts) + gilrs gamepads + cpal audio,
-  feature parity with the Swift renderer (same FFI-free core calls)
-- ⬜ Windows and Linux builds of the shell; CI matrix (macOS, Windows, Ubuntu)
-- ⬜ Web: wasm32 build of core + shell (WebGPU, WebGL2 fallback), WebAudio, Gamepad API; asset import
-  from the owner's files through the browser's file picker into OPFS/IndexedDB (nothing uploaded)
+- 🔄 `shell` crate (`mmk-play`, docs/architecture.md §5b): winit window + fixed 60 Hz loop, wgpu
+  renderer (sprites, BFRES quads, layers, flips, sky colour, upside-down view, placeholder boxes;
+  BCn on the GPU or CPU-decoded incl. our own BC7 decoder), keyboard + gilrs gamepads, cpal audio
+  via the shared sound director, minimal HUD (built-in 5×7 font), pause / clear / game over,
+  `--screenshot` headless smoke test. Shared front-end code moved to the new `host` crate (used by
+  `ffi` too). Verified on macOS (M4 Pro, Metal): offscreen frames pixel-identical to the Swift app
+  below the HUD; `--check-textures` agrees with the GPU on every BC texture. Open: layouts
+  (layout player), the SMM font HUD, clear-condition HUD text, menus/library
+- 🔄 Windows and Linux builds of the shell; CI jobs on Windows + Ubuntu (clippy, tests, release
+  binaries) and wasm32 on Ubuntu. Windows type-checks locally (clippy, MSVC target); not yet run
+  on Windows or Linux hardware
+- 🔄 Web: wasm32 build of core + shell runs the demo strip in a canvas (WebGPU, WebGL2 fallback;
+  checked in headless Edge), `scripts/build-web.sh`, `AssetSource` trait for browser-picked files.
+  Open: WebAudio, asset import through the file picker into OPFS/IndexedDB (nothing uploaded),
+  Gamepad API check
 - ⬜ iOS/iPadOS: the Swift app on UIKit/SwiftUI + Metal (shared renderer code), touch controls,
   Files-app import of the owner's dump; installs over Tailscale with the existing tool
 - ⬜ Engine-drawn menus everywhere (layout player), so every platform shows the same screens

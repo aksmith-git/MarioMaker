@@ -395,3 +395,24 @@ the data, so these are inferred and marked [inf] in `ChallengeScreens.swift`:
   the castle flags and the balloon text; the earlier "parent centre" rule floated them), and an
   "influenced alpha" pane fades all its descendants, parts included (Mario's fade-in on the map).
 
+## 2026-10-18 — Portable shell: shared `host` crate, wgpu, our own BC7 decoder
+- **`host` crate:** sprite placement (`place`, the resolver), clear colour, course bytes decoding
+  and the sound director moved out of `ffi` into `core/crates/host`, so the Swift app (through
+  `ffi`) and the Rust shell run the same code. `ffi` re-exports `place`, and `MmkAudio` is now an
+  alias of `host::audio::AudioOut`, so the C ABI is unchanged. New sim events get their sounds in
+  `host/src/audio.rs` (formerly `ffi/src/audio.rs`).
+- **Stack:** winit 0.30 (latest stable; 0.31 is still beta), wgpu 30, gilrs 0.11, cpal 0.18. One
+  wgpu renderer covers Metal, Vulkan, DX12, GL and WebGPU/WebGL2.
+- **BCn fallback:** GPUs without BC support (WebGL2, mobile) get CPU-decoded RGBA8:
+  `formats::bcn` for BC1–5, and a small BC7 decoder of our own in the shell, written from the
+  Khronos format specification, instead of a new dependency. `mmk-play --check-textures` checks
+  it against the GPU (every BC7 texture of the owner's cache matches exactly). BC6H is not
+  decoded; the caches have none.
+
+## 2026-10-18 — CI runs Linux only on push
+GitHub Actions minutes were close to the 2000-minute limit, and macOS minutes bill at 10×.
+Pushes now run only the Linux jobs: Rust fmt, clippy and tests; the Python tests; the
+proprietary guard. The macOS (Rust and the Swift app), Windows and wasm shell jobs run when started
+by hand (`workflow_dispatch`). A newer push cancels the older run. `scripts/check.sh --app`
+still runs every gate locally, macOS app included, before each commit.
+

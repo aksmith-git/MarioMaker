@@ -1,0 +1,34 @@
+[package]
+name = "mmk-shell"
+description = "Portable shell: winit window, wgpu renderer, gilrs gamepads, cpal audio (macOS, Windows, Linux, web)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "mmk-play"
+path = "src/main.rs"
+
+[dependencies]
+mmk-assets = { path = "../assets" }
+mmk-audio = { path = "../audio" }
+mmk-formats = { path = "../formats" }
+mmk-host = { path = "../host" }
+mmk-sim = { path = "../sim" }
+bytemuck = "1.25.2"
+gilrs = "0.11.2"
+wgpu = { version = "30.0.1", features = ["webgl"] }
+winit = "0.30.13"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+clap.workspace = true
+cpal = "0.18.2"
+png = "0.18.1"
+pollster = "1.0.1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1.7"
+wasm-bindgen = "0.2.129"
+wasm-bindgen-futures = "0.4.79"
+web-sys = { version = "0.3.106", features = ["Document", "Element", "HtmlCanvasElement", "Performance", "Window", "console"] }

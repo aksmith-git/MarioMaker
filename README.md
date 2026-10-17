@@ -88,3 +88,21 @@ registered at launch (`SettingsKey.registerDefaults`).
 | `MMK_UI_SCREENSHOT=<png>` [`MMK_UI_SCREENSHOT_DELAY=<s>`] [`MMK_UI_SCREEN=import\|settings`] | capture the window (UI included) and quit; with `MMK_COURSE`, `MMK_UI_PAUSE_TICKS=<n>` pauses after n ticks and `MMK_UI_SCRIPTED=1` uses the scripted run. More screens: `challenge`, `challenge-intro`/`-map`, `-walk`, `-pause`, `-clear`, `-skip`, `-card`, `-gameover`, `-ending` (`DebugCapture.swift`); `MMK_UI_TICKS=<n>` holds SMM1 layout screens at tick n; `MMK_UI_DIFFICULTY=<0-3>`, `MMK_UI_CLEARED=<n>` |
 | `MMK_UI_CACHE=<dir>` | SMM1 UI import to use; `MMK_UI_SMM1=off` = stand-in 100 Mario screens |
 | `MMK_DEBUG_MISSING_ART=1` | draw boxes for sprites whose art isn't in the cache |
+
+## Portable shell (`mmk-play`: Windows, Linux, web, macOS)
+
+A second front end written in Rust (winit + wgpu + gilrs + cpal) that plays a course with the
+same core; see [docs/architecture.md](docs/architecture.md) §5b. Linux needs `libasound2-dev` and
+`libudev-dev` to build.
+
+```sh
+cd core
+cargo run --release -p mmk-shell -- path/to/course.zlib     # window; assets: $MMK_ASSETS or ~/smm-work/cache/smm2-3.0.3
+cargo run --release -p mmk-shell -- --assets placeholder    # demo strip with placeholder art
+cargo run --release -p mmk-shell -- course.zlib --screenshot out.png --ticks 150   # headless smoke test
+cargo run --release -p mmk-shell -- --check-textures        # GPU vs CPU BCn decoding
+../scripts/build-web.sh                                     # wasm build into core/target/web
+```
+
+Keys: arrows/WASD move, Z/Space jump, X/Shift run, Esc/P/Enter pause, R restart. Gamepads:
+d-pad/left stick, south/east jump, west/north run, Start pause.

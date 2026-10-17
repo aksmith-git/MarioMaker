@@ -9,8 +9,10 @@ use std::cell::RefCell;
 use std::ffi::{CStr, CString, c_char};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use mmk_assets::{Cache, Quad};
-use mmk_sim::{Input, Sprite, World};
+use mmk_assets::Cache;
+use mmk_host::SpriteResolver;
+pub use mmk_host::place;
+use mmk_sim::{Input, World};
 
 pub mod challenge;
 pub mod condition;
@@ -178,16 +180,14 @@ pub unsafe extern "C" fn mmk_assets_texture(
 
 // --- engine ----------------------------------------------------------------------------------
 
-/// Texture index and BFRES quad of a (model, texture) name; None if the cache lacks the texture.
-type Resolved = Option<(u32, Option<Quad>)>;
-
 pub struct MmkEngine {
     world: World,
     /// The loaded course, kept for `mmk_engine_restart` (None = built-in demo strip).
     course: Option<mmk_formats::smm2::Course>,
     sprites: Vec<MmkSprite>,
-    /// (model, texture) → resolved once per name.
-    lookup: std::collections::HashMap<(&'static str, &'static str), Resolved>,
+    /// (model, texture) → texture index and quad, resolved once per name.
+    resolver: SpriteResolver,
+    draw: Vec<mmk_host::DrawSprite>,
     assets: *const MmkAssets,
     /// Sends sound commands to an attached `MmkAudio` (see `mmk_engine_set_audio`).
     director: Option<Director>,
@@ -196,7 +196,7 @@ pub struct MmkEngine {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MmkInput {
-    /// Bitmask: 1 left, 2 right, 4 up, 8 down, 16 jump, 32 run, 64 start, 128 spin.
+    /// Bitmask: 1 left, 2 right, 4 up, 8 down, 16 jump, 32 run, 64 start.
     pub buttons: u32,
 }
 
@@ -250,7 +250,8 @@ pub unsafe extern "C" fn mmk_engine_new(assets: *const MmkAssets) -> *mut MmkEng
             world: World::new(),
             course: None,
             sprites: Vec::new(),
-            lookup: Default::default(),
+            resolver: SpriteResolver::default(),
+            draw: Vec::new(),
             assets,
             director: None,
         }))
@@ -291,7 +292,7 @@ pub unsafe extern "C" fn mmk_engine_load_course(
             Ok(course) => {
                 e.world = World::from_course(&course);
                 e.course = Some(course);
-                e.lookup.clear();
+                e.resolver.reset();
                 if let Some(d) = &mut e.director {
                     d.start_course(&e.world);
                 }
@@ -308,33 +309,12 @@ pub unsafe extern "C" fn mmk_engine_load_course(
 /// Course bytes in any accepted form → decrypted course data (0x5BFC0 bytes).
 /// Returns the data and whether it came from an encrypted `.bcd`.
 fn decode_course_data(bytes: &[u8], assets: Option<&MmkAssets>) -> Result<(Vec<u8>, bool), String> {
-    use mmk_formats::smm2::{BCD_SIZE, crypto};
-    use std::io::Read;
-    let mut data = bytes.to_vec();
-    if data.len() > 2 && data[0] == 0x78 {
-        let mut out = Vec::new();
-        flate2::read::ZlibDecoder::new(&data[..])
-            .read_to_end(&mut out)
-            .map_err(|e| format!("zlib: {e}"))?;
-        data = out;
-    }
-    let mut encrypted = false;
-    if data.len() == BCD_SIZE {
-        let assets = assets.ok_or("encrypted course: needs imported game data (key table)")?;
-        let path = assets.cache.root.join("keys/course_table.bin");
-        let raw = std::fs::read(&path).map_err(|e| {
-            format!(
-                "encrypted course: needs imported game data ({}: {e})",
-                path.display()
-            )
-        })?;
-        let table = crypto::table_from_bytes(&raw).map_err(|e| e.to_string())?;
-        data = crypto::decrypt_bcd(&data, &table, true)
-            .map_err(|e| e.to_string())?
-            .body;
-        encrypted = true;
-    }
-    Ok((data, encrypted))
+    mmk_host::course::decode_data(bytes, || {
+        let assets = assets.ok_or_else(|| mmk_host::course::no_key_table("key table"))?;
+        let path = assets.cache.root.join(mmk_host::course::KEY_TABLE);
+        std::fs::read(&path)
+            .map_err(|e| mmk_host::course::no_key_table(format!("{}: {e}", path.display())))
+    })
 }
 
 fn decode_course(bytes: &[u8], assets: &MmkAssets) -> Result<mmk_formats::smm2::Course, String> {
@@ -377,53 +357,6 @@ pub unsafe extern "C" fn mmk_engine_step(engine: *mut MmkEngine, input: *const M
     })
 }
 
-/// Screen rectangle and texture coordinates of a sim sprite: [x, y, w, h, u0, v0, u1, v1].
-///
-/// Tile sprites (`rect` set) draw that part of the texture into the sim's rectangle. Model
-/// sprites (`rect` None) follow the convention that the sim's (x + w/2, y) is the model origin
-/// and (w, h) the texture size times the sim's scale; when the BFRES quad of the texture is known
-/// it is drawn at origin + quad (scaled), mirrored around the origin for `flip_x`, with the
-/// quad's texture coordinates. Without a quad the texture fills the sim's rectangle.
-/// `flip_y` flips the image in place. Horizontal flipping of the image itself is left to the
-/// renderer (`flags` bit 0 swaps u0/u1).
-pub fn place(s: &Sprite, tex_w: f32, tex_h: f32, quad: Option<Quad>) -> [f32; 8] {
-    let mut out = match (s.image.rect, quad) {
-        (Some((x, y, w, h)), _) => [
-            s.x,
-            s.y,
-            s.w,
-            s.h,
-            x / tex_w,
-            y / tex_h,
-            (x + w) / tex_w,
-            (y + h) / tex_h,
-        ],
-        (None, Some(q)) => {
-            let (sx, sy) = (s.w / tex_w, s.h / tex_h);
-            let (ox, oy) = (s.x + s.w / 2.0, s.y);
-            let (mut x0, mut x1) = (q.x0 * sx, q.x1 * sx);
-            if s.flip_x {
-                (x0, x1) = (-x1, -x0);
-            }
-            [
-                ox + x0,
-                oy + q.y0 * sy,
-                x1 - x0,
-                q.height() * sy,
-                q.u0,
-                q.v0,
-                q.u1,
-                q.v1,
-            ]
-        }
-        (None, None) => [s.x, s.y, s.w, s.h, 0.0, 0.0, 1.0, 1.0],
-    };
-    if s.flip_y {
-        out.swap(5, 7);
-    }
-    out
-}
-
 /// Describe the current frame. Pointers stay valid until the next call on this engine.
 ///
 /// # Safety
@@ -435,68 +368,23 @@ pub unsafe extern "C" fn mmk_engine_snapshot(engine: *mut MmkEngine, out: *mut M
             return;
         };
         let assets = unsafe { &*e.assets };
-        let mut sprites = e.world.sprites();
-        sprites.sort_by_key(|s| s.layer);
+        e.resolver.resolve(&e.world, &assets.cache, &mut e.draw);
+        // missing art (placeholder mode, or not imported yet): report the sprite with
+        // MMK_TEXTURE_NONE so the app can draw a stand-in shape
         e.sprites.clear();
-        // the sim names SMB1 models; other styles use the same names with their own prefix
-        // (M3_, MW_, …) and fall back to the SMB1 art where a style has no such model
-        let style = e.world.level.style.clone();
-        for s in sprites {
-            let key = (s.image.model, s.image.texture);
-            let found = *e.lookup.entry(key).or_insert_with(|| {
-                let resolve = |model: &str| {
-                    let i = assets.cache.texture_index(model, key.1)?;
-                    Some((i as u32, assets.cache.sprite_quad(model, key.1)))
-                };
-                let resolve_tex = |model: &str, tex: &str| {
-                    let i = assets.cache.texture_index(model, tex)?;
-                    Some((i as u32, assets.cache.sprite_quad(model, tex)))
-                };
-                let styled = key
-                    .0
-                    .strip_prefix("M1_")
-                    .filter(|_| style != "M1")
-                    .map(|rest| format!("{style}_{rest}"));
-                // a style with fewer animation frames: use its last lower frame ("walk.2" →
-                // "walk.1") rather than mixing in SMB1 art
-                let lower_frame = |model: &str| {
-                    let (stem, n) = key.1.rsplit_once('.')?;
-                    let n: u32 = n.parse().ok()?;
-                    (0..n)
-                        .rev()
-                        .find_map(|k| resolve_tex(model, &format!("{stem}.{k}")))
-                };
-                styled
-                    .as_deref()
-                    .and_then(|m| resolve(m).or_else(|| lower_frame(m)))
-                    .or_else(|| resolve(key.0))
-            });
-            // missing art (placeholder mode, or not imported yet): report the sprite with
-            // MMK_TEXTURE_NONE so the app can draw a stand-in shape
-            let (texture, p) = match found {
-                Some((texture, quad)) => {
-                    let t = &assets.cache.textures[texture as usize].texture;
-                    (texture, place(&s, t.width as f32, t.height as f32, quad))
-                }
-                None => (
-                    MMK_TEXTURE_NONE,
-                    place(&s, s.w.max(1.0), s.h.max(1.0), None),
-                ),
-            };
-            e.sprites.push(MmkSprite {
-                texture,
-                x: p[0],
-                y: p[1],
-                w: p[2],
-                h: p[3],
-                u0: p[4],
-                v0: p[5],
-                u1: p[6],
-                v1: p[7],
-                layer: s.layer,
-                flags: s.flip_x as u32,
-            });
-        }
+        e.sprites.extend(e.draw.iter().map(|d| MmkSprite {
+            texture: d.texture.unwrap_or(MMK_TEXTURE_NONE),
+            x: d.x,
+            y: d.y,
+            w: d.w,
+            h: d.h,
+            u0: d.u0,
+            v0: d.v0,
+            u1: d.u1,
+            v1: d.v1,
+            layer: d.layer,
+            flags: d.flip_x as u32,
+        }));
         *out = MmkSnapshot {
             sprites: e.sprites.as_ptr(),
             sprite_count: e.sprites.len(),
@@ -547,18 +435,7 @@ pub unsafe extern "C" fn mmk_engine_clear_color(engine: *const MmkEngine) -> u32
         let Some(e) = (unsafe { engine.as_ref() }) else {
             return 0x0000_00ff;
         };
-        let Some((model, tex)) = e.world.background() else {
-            return 0x0000_00ff;
-        };
-        let assets = unsafe { &*e.assets };
-        let Some(i) = assets.cache.texture_index(model, tex) else {
-            return 0x0000_00ff;
-        };
-        let t = &assets.cache.textures[i].texture;
-        if t.format != mmk_assets::mtex::MtexFormat::Rgba8 || t.data.len() < 4 {
-            return 0x0000_00ff;
-        }
-        u32::from_be_bytes([t.data[0], t.data[1], t.data[2], 0xff])
+        mmk_host::clear_color(&e.world, &unsafe { &*e.assets }.cache)
     })
 }
 
@@ -625,7 +502,7 @@ pub unsafe extern "C" fn mmk_audio_open(path: *const c_char) -> *mut MmkAudio {
             .to_string_lossy()
             .into_owned();
         match mmk_audio::Bank::load_cache(&path) {
-            Ok(bank) => Box::into_raw(Box::new(MmkAudio::new(bank).with_root(&path))),
+            Ok(bank) => Box::into_raw(Box::new(MmkAudio::new(bank).with_music_dir(&path))),
             Err(e) => {
                 set_error(e.to_string());
                 std::ptr::null_mut()
@@ -701,7 +578,7 @@ pub unsafe extern "C" fn mmk_engine_set_audio(engine: *mut MmkEngine, audio: *co
             return;
         };
         e.director = unsafe { audio.as_ref() }.map(|a| {
-            let mut d = Director::new(a.tx.clone(), &a.bank);
+            let mut d = a.director();
             d.load_music(a, &e.world.level.style, e.world.level.theme);
             d.start_course(&e.world);
             d
@@ -712,80 +589,6 @@ pub unsafe extern "C" fn mmk_engine_set_audio(engine: *mut MmkEngine, audio: *co
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sprite(rect: Option<(f32, f32, f32, f32)>, x: f32, y: f32, w: f32, h: f32) -> Sprite {
-        Sprite {
-            image: mmk_sim::render::SpriteImage {
-                model: "M",
-                texture: "t",
-                rect,
-            },
-            x,
-            y,
-            w,
-            h,
-            flip_x: false,
-            flip_y: false,
-            layer: 0,
-        }
-    }
-
-    const GOOMBA: Quad = Quad {
-        x0: -8.0,
-        y0: -16.0,
-        x1: 8.0,
-        y1: 16.0,
-        u0: 0.0,
-        v0: 0.0,
-        u1: 1.0,
-        v1: 1.0,
-    };
-
-    #[test]
-    fn model_sprite_uses_quad_around_origin() {
-        // origin (100, 32): sim passes x = origin - w/2, y = origin
-        let s = sprite(None, 92.0, 32.0, 16.0, 32.0);
-        assert_eq!(
-            place(&s, 16.0, 32.0, Some(GOOMBA)),
-            [92.0, 16.0, 16.0, 32.0, 0.0, 0.0, 1.0, 1.0]
-        );
-        // big (×2): the sim's size is twice the texture size
-        let s = sprite(None, 84.0, 32.0, 32.0, 64.0);
-        assert_eq!(
-            place(&s, 16.0, 32.0, Some(GOOMBA))[..4],
-            [84.0, 0.0, 32.0, 64.0]
-        );
-        // no quad: fill the sim rectangle
-        let s = sprite(None, 92.0, 32.0, 16.0, 32.0);
-        assert_eq!(place(&s, 16.0, 32.0, None)[..4], [92.0, 32.0, 16.0, 32.0]);
-    }
-
-    #[test]
-    fn flips_mirror_around_origin_and_in_place() {
-        let q = Quad {
-            x0: 0.0,
-            x1: 40.0,
-            y0: 0.0,
-            y1: 40.0,
-            ..GOOMBA
-        };
-        let mut s = sprite(None, 92.0, 0.0, 40.0, 40.0); // origin x = 112
-        s.flip_x = true;
-        assert_eq!(place(&s, 40.0, 40.0, Some(q))[..4], [72.0, 0.0, 40.0, 40.0]);
-        s.flip_x = false;
-        s.flip_y = true;
-        let p = place(&s, 40.0, 40.0, Some(q));
-        assert_eq!((p[5], p[7]), (1.0, 0.0));
-    }
-
-    #[test]
-    fn tile_sprite_uses_atlas_rect() {
-        let s = sprite(Some((16.0, 0.0, 16.0, 16.0)), 5.0, 6.0, 16.0, 16.0);
-        assert_eq!(
-            place(&s, 256.0, 256.0, Some(GOOMBA)),
-            [5.0, 6.0, 16.0, 16.0, 0.0625, 0.0, 0.125, 0.0625]
-        );
-    }
 
     /// Sizes the Swift side relies on (mmk.h).
     #[test]
@@ -858,7 +661,8 @@ mod tests {
             world: World::new(),
             course: None,
             sprites: Vec::new(),
-            lookup: Default::default(),
+            resolver: SpriteResolver::default(),
+            draw: Vec::new(),
             assets: std::ptr::null(),
             director: None,
         };

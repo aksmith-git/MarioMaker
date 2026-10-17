@@ -42,23 +42,41 @@ pub struct Cache {
     sprites: Sprites,
 }
 
+/// Reads one file of a cache, by its full path (`root.join(relative path)`).
+pub type ReadFn<'a> = &'a dyn Fn(&Path) -> std::io::Result<Vec<u8>>;
+
+fn read_with(read: ReadFn, path: &Path) -> Result<Vec<u8>, CacheError> {
+    read(path).map_err(|source| CacheError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
 fn read(path: &Path) -> Result<Vec<u8>, CacheError> {
-    std::fs::read(path).map_err(|source| CacheError::Io {
+    read_with(&|p| std::fs::read(p), path)
+}
+
+fn parse_json(path: &Path, bytes: &[u8]) -> Result<Value, CacheError> {
+    serde_json::from_slice(bytes).map_err(|source| CacheError::Json {
         path: path.to_path_buf(),
         source,
     })
 }
 
 fn read_json(path: &Path) -> Result<Value, CacheError> {
-    serde_json::from_slice(&read(path)?).map_err(|source| CacheError::Json {
-        path: path.to_path_buf(),
-        source,
-    })
+    parse_json(path, &read(path)?)
 }
 
 impl Cache {
     pub fn open(root: impl AsRef<Path>) -> Result<Self, CacheError> {
+        Self::load(root, &|p| std::fs::read(p))
+    }
+
+    /// Open a cache through `read` instead of the file system (e.g. files the user picked in a
+    /// browser). `root` is only joined with relative paths and passed back to `read`.
+    pub fn load(root: impl AsRef<Path>, read: ReadFn) -> Result<Self, CacheError> {
         let root = root.as_ref().to_path_buf();
+        let read_json = |path: &Path| parse_json(path, &read_with(read, path)?);
         let manifest = read_json(&root.join("manifest.json"))?;
         let index = read_json(&root.join("textures/index.json"))?;
         let mut textures = Vec::new();
@@ -73,7 +91,7 @@ impl Cache {
                 tex_names.sort();
                 for name in tex_names {
                     let path = root.join(format!("textures/{model}/{name}.mtex"));
-                    let texture = Mtex::parse(&read(&path)?)
+                    let texture = Mtex::parse(&read_with(read, &path)?)
                         .map_err(|source| CacheError::Mtex { path, source })?;
                     textures.push(TextureEntry {
                         model: model.clone(),
@@ -90,10 +108,15 @@ impl Cache {
             .collect();
         // sprite placement is optional (caches from importer version 1 have none)
         let sprites_path = root.join("sprites.json");
-        let sprites = if sprites_path.is_file() {
-            Sprites::from_json(&read_json(&sprites_path)?)
-        } else {
-            Sprites::default()
+        let sprites = match read(&sprites_path) {
+            Ok(bytes) => Sprites::from_json(&parse_json(&sprites_path, &bytes)?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Sprites::default(),
+            Err(source) => {
+                return Err(CacheError::Io {
+                    path: sprites_path,
+                    source,
+                });
+            }
         };
         Ok(Self {
             root,

@@ -1,20 +1,31 @@
 name: tests
 
+# Actions minutes are limited (macOS bills 10x, Windows 2x): pushes run the Linux jobs only;
+# the macOS, Windows and web jobs run when started by hand (Actions → tests → Run workflow).
+# scripts/check.sh runs every gate locally before each commit.
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   rust:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ github.event_name == 'workflow_dispatch' && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: core
     steps:
       - uses: actions/checkout@v4
+      # the portable shell (mmk-shell) links ALSA (cpal) and libudev (gilrs) on Linux
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config
       # rustup reads core/rust-toolchain.toml and installs the pinned toolchain
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
@@ -26,7 +37,47 @@ jobs:
           name: mmk-linux
           path: core/target/debug/mmk
 
+  # Portable shell (mmk-play) on the platforms the Swift app doesn't cover. macOS builds it in
+  # the rust job above (whole workspace).
+  shell:
+    if: github.event_name == 'workflow_dispatch'
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config
+      - run: cargo clippy -p mmk-shell --all-targets -- -D warnings
+      - run: cargo test -p mmk-shell -p mmk-host
+      - run: cargo build --release -p mmk-shell
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mmk-play-${{ runner.os }}
+          path: |
+            core/target/release/mmk-play
+            core/target/release/mmk-play.exe
+          if-no-files-found: error
+
+  # The shell for the browser (WebGPU / WebGL2): the wasm32 build must compile and pass clippy.
+  shell-web:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo clippy -p mmk-shell --target wasm32-unknown-unknown -- -D warnings
+      - run: cargo build --release -p mmk-shell --target wasm32-unknown-unknown
+
   app:
+    if: github.event_name == 'workflow_dispatch'
     needs: rust
     runs-on: macos-latest
     steps:
