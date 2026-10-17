@@ -1121,6 +1121,8 @@ impl Player {
             shoe: self.shoe.is_some(),
             clown_car: self.clown.is_some(),
             koopa_car: self.car.is_some(),
+            cloud: false,
+            holding_stone: false,
             holding_shell: false,
             yoshi: self.yoshi.is_some(),
         }

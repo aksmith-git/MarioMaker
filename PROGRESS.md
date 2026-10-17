@@ -317,6 +317,10 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   8 segments), Piranha Creeper (path creep, sleeping form) — guesses listed in DECISIONS.md
 - ✅ Fire Bars, Burners, airship Cannons and Bill Blasters on tracks: a carrier actor rides the
   track as the moving solid and the fixed object follows it — sample 550/550 by the coverage check
+- ✅ Story Mode parts: the stone (75, heavy carry: thrown ≤ 0.8 px/f, never breaks), the escort
+  Toad (73, follows 32 px back along the player's path; losing him fails the run [inf]), Toadette
+  at the goal (115, scenery); conditions: shake N trees, goal holding the stone, goal on a Lakitu's
+  Cloud, no swinging claw, no water — built-in courses 159 → 177/180
 - ✅ Super Hammer / Builder Mario (116): item walks like a mushroom [inf]; Run swings the hammer
   (hits enemies and breaks blocks in front), air swing falls ≤ 1.5 and |vx| ≤ 1.125; "goal as
   Builder" condition; drawn with the builder outfit + hammer meshes. Crate building ⬜

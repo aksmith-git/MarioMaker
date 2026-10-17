@@ -190,6 +190,15 @@ pub enum Kind {
         index: u16,
         h: u8,
     },
+    /// Story Mode stone (75-stone.md): carried like a crate but heavy — thrown it slides at most
+    /// 0.8 px/f, slowing 0.1/frame; never breaks; phase 1 = thrown.
+    Stone,
+    /// Story Mode Toad to escort (73-toad.md): follows a point 32 px back along the player's
+    /// path (`target`, set by the world), at 1.5 × the needed speed clamped 0.5–4 [obs], jumping
+    /// where the path rises [inf]. If he's knocked out the run fails.
+    EscortToad,
+    /// Story Mode Toadette waiting at the goal (115): scenery.
+    GoalToadette,
     /// Koopa Troopa Car (72, 3D World): phases 0 empty (brakes 0.05/frame), 1 start spin,
     /// 2 run, 3 turn (30 frames) — the world drives it while the player rides; `hops` = damage
     /// taken (the third hit breaks it) [inf].
@@ -398,6 +407,7 @@ impl Kind {
                 | Kind::TrackBlock { .. }
                 | Kind::TrackMount { .. }
                 | Kind::Crate { .. }
+                | Kind::Stone
                 | Kind::Spring
                 | Kind::Muncher
                 | Kind::Donut
@@ -609,6 +619,9 @@ impl Actor {
             )),
             Kind::TrackBlock { .. } if self.phase != 5 => {
                 Some((self.x - 16.0, self.y, self.x + 16.0, self.y + 32.0, false))
+            }
+            Kind::Stone if !self.held && self.phase == 0 && self.mode == Mode::Normal => {
+                Some((self.x - 8.0, self.y, self.x + 8.0, self.y + 16.0, false))
             }
             Kind::Crate { .. } if !self.held && self.phase == 0 && self.mode == Mode::Normal => {
                 Some((self.x - 8.0, self.y, self.x + 8.0, self.y + 16.0, false))
@@ -1753,6 +1766,44 @@ impl Actor {
                 }
             }
             Kind::TrackMount { .. } => {} // moved by its rail only
+            Kind::GoalToadette => {
+                self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+                self.collide(level);
+            }
+            Kind::EscortToad => {
+                let (tx, ty) = self.target;
+                let dx = tx - self.x;
+                let want = if dx.abs() < 2.0 {
+                    0.0
+                } else {
+                    (1.5 * dx.abs() / 16.0).clamp(0.5, 4.0) * dx.signum()
+                };
+                self.vx += (want - self.vx).clamp(-0.2, 0.2);
+                if dx.abs() >= 2.0 {
+                    self.dir = dx.signum() as i32;
+                }
+                if self.on_ground && (ty > self.y + 12.0 || (self.wall && dx.abs() > 4.0)) {
+                    self.vy = 4.5;
+                    self.on_ground = false;
+                }
+                self.vy = (self.vy - 0.25).max(MAX_FALL);
+                self.collide(level);
+            }
+            Kind::Stone => {
+                if !self.held {
+                    self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+                    if self.phase == 1 {
+                        self.vx = self.vx.clamp(-0.8, 0.8);
+                    }
+                    self.collide(level);
+                    if self.on_ground {
+                        self.vx -= self.vx.clamp(-0.1, 0.1);
+                        if self.vx == 0.0 {
+                            self.phase = 0;
+                        }
+                    }
+                }
+            }
             Kind::Trampoline { moving, range, .. } => {
                 if moving {
                     // a lift swaying around its start [inf]

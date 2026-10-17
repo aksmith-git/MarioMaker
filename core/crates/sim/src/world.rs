@@ -245,6 +245,8 @@ pub struct World {
     tramp_late: i32,
     jump_pressed_now: bool,
     prev_jump_tramp: bool,
+    /// The player's recent path (oldest first), which the escort Toad follows.
+    player_trail: Vec<(f32, f32)>,
     /// ! blocks in the current area.
     pub exclamations: Vec<crate::exclamation::ExclamationBlock>,
     /// Swinging claw holding the player (actor id).
@@ -440,6 +442,7 @@ impl World {
             tramp_late: 0,
             jump_pressed_now: false,
             prev_jump_tramp: false,
+            player_trail: Vec::new(),
             exclamations: Vec::new(),
             held_by: None,
             prev_jump_claw: false,
@@ -481,6 +484,7 @@ impl World {
         self.unlocked_doors.clear();
         self.unlocked_boxes.clear();
         self.gone_boxes.clear();
+        self.player_trail.clear();
         self.trees_shaken.clear();
         self.p_timer = 0;
         self.p_bricks.clear();
@@ -939,7 +943,8 @@ impl World {
         };
         let p = &self.player;
         let (x, y, facing, pvx) = (p.x + p.facing as f32 * 11.0, p.y + 2.0, p.facing, p.vx);
-        let crate_held = matches!(self.actors[i].kind, Kind::Crate { .. });
+        let crate_held = matches!(self.actors[i].kind, Kind::Crate { .. } | Kind::Stone);
+        let heavy = self.actors[i].kind == Kind::Stone;
         let release = !self.run_held
             || !self.player.alive()
             || (self.actors[i].mode != Mode::ShellWait && !crate_held);
@@ -948,8 +953,14 @@ impl World {
             let a = &mut self.actors[i];
             a.held = false;
             a.x = x;
-            a.vx = 3.5 * facing as f32 + 0.5 * pvx;
-            a.vy = 2.0;
+            if heavy {
+                // the stone is heavy: a short slide (≤ 0.8 px/f)
+                a.vx = 0.8 * facing as f32;
+                a.vy = 1.0;
+            } else {
+                a.vx = 3.5 * facing as f32 + 0.5 * pvx;
+                a.vy = 2.0;
+            }
             a.phase = 1;
             a.dir = facing;
             self.player.held = None;
@@ -1002,7 +1013,7 @@ impl World {
         {
             let (px, py, facing) = (p.x, p.y, p.facing);
             if let Some(a) = self.actors.iter_mut().find(|a| {
-                matches!(a.kind, Kind::Crate { .. })
+                matches!(a.kind, Kind::Crate { .. } | Kind::Stone)
                     && a.alive()
                     && !a.held
                     && a.phase == 0
@@ -1591,6 +1602,35 @@ impl World {
         let mut born = Vec::new();
         self.carry_held();
         self.step_crates();
+        // the escort Toad's target: 32 px back along the player's path
+        if self
+            .player_trail
+            .last()
+            .is_none_or(|&(x, y)| (x - px).abs() + (y - py).abs() > 0.5)
+        {
+            self.player_trail.push((px, py));
+            if self.player_trail.len() > 512 {
+                self.player_trail.remove(0);
+            }
+        }
+        let escort_target = {
+            let mut left = 32.0;
+            let mut at = (px, py);
+            for w in self.player_trail.windows(2).rev() {
+                let d = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+                at = w[0];
+                if d >= left {
+                    let k = left / d.max(1e-3);
+                    at = (
+                        w[1].0 + (w[0].0 - w[1].0) * k,
+                        w[1].1 + (w[0].1 - w[1].1) * k,
+                    );
+                    break;
+                }
+                left -= d;
+            }
+            at
+        };
         for a in &mut self.actors {
             if a.held {
                 continue;
@@ -1598,7 +1638,11 @@ impl World {
             if a.kind.is_platform() {
                 continue; // already moved before the player
             }
-            a.target = (px, py);
+            a.target = if a.kind == Kind::EscortToad {
+                escort_target
+            } else {
+                (px, py)
+            };
             a.target_facing = self.player.facing;
             a.camera = (self.camera_x, self.camera_y);
             a.floor_ref = self.liquid.map(|l| l.y).unwrap_or(self.level.bottom - 12.0);
@@ -1651,6 +1695,22 @@ impl World {
             self.clear.damaged();
         }
         self.clear.ground(self.player.on_ground);
+        if self.held_by.is_some() {
+            self.clear.held_by_claw();
+        }
+        if self.player.in_water {
+            self.clear.in_water();
+        }
+        // the escort Toad knocked out: the run fails [inf]
+        if self.player.alive()
+            && self
+                .actors
+                .iter()
+                .any(|a| a.kind == Kind::EscortToad && !a.alive())
+        {
+            self.player.kill();
+            self.events.push(Event::Death);
+        }
 
         // timer: one count per second of play
         if self.time > 0 {
@@ -1809,15 +1869,25 @@ impl World {
     fn shake_trees(&mut self) {
         let (px, py) = (self.player.x, self.player.y);
         let mut out = Vec::new();
+        let mut shaken = 0;
         for (ti, t) in self.level.trees.iter().enumerate() {
             let (bottom, top) = t.canopy();
-            if let Some(c) = t.contents
-                && (px - t.x).abs() <= 26.0
+            if (px - t.x).abs() <= 26.0
                 && py + 16.0 >= bottom + 8.0
                 && py <= top
                 && self.trees_shaken.insert((self.area, ti))
             {
-                out.push((t.x, (bottom + 8.0).max(t.y + 40.0), c));
+                shaken += 1;
+                if let Some(c) = t.contents {
+                    out.push((t.x, (bottom + 8.0).max(t.y + 40.0), c));
+                }
+            }
+        }
+        // "shake N trees" counts each tree once [inf: what counts as a bell-tree action]
+        if self.clear.goal == crate::clear::Goal::BellTrees {
+            for _ in 0..shaken {
+                let r = self.clear.count(None, 1);
+                self.condition_counted(Some(r));
             }
         }
         for (x, y, c) in out {
@@ -4046,8 +4116,20 @@ impl World {
                 .iter()
                 .any(|a| a.id == id && matches!(a.kind, Kind::Shell { .. }) && !a.buzzy)
         });
+        let holding_stone = p.held.is_some_and(|id| {
+            self.actors
+                .iter()
+                .any(|a| a.id == id && a.kind == Kind::Stone)
+        });
+        let cloud = p.ride.is_some_and(|id| {
+            self.actors
+                .iter()
+                .any(|a| a.id == id && a.kind == Kind::Cloud)
+        });
         if !self.clear.met(crate::clear::AtGoal {
             holding_shell: held_shell,
+            holding_stone,
+            cloud,
             ..p.at_goal()
         }) {
             return;
@@ -5516,6 +5598,28 @@ impl World {
                 a.dir > 0,
             ),
             Kind::Crate { .. } => ("M1_Object_woodbox", "woodbox.0", 16.0, 16.0, false),
+            Kind::Stone => ("M1_Object_stone", "wait.0", 16.0, 16.0, false),
+            // Story Mode NPCs: the Toad / Toadette player models (the _3 / _4 variants)
+            Kind::EscortToad => (
+                character_model("M1_Player_MarioMdl", 2),
+                if !a.on_ground {
+                    "jump.0"
+                } else if a.vx.abs() > 0.3 {
+                    ["walk.0", "walk.1", "walk.2"][(a.age as usize / 6) % 3]
+                } else {
+                    "wait.0"
+                },
+                16.0,
+                16.0,
+                a.dir < 0,
+            ),
+            Kind::GoalToadette => (
+                character_model("M1_Player_MarioMdl", 3),
+                "wait.0",
+                16.0,
+                16.0,
+                true,
+            ),
             Kind::TrackBlock { .. } => {
                 // blinking before it vanishes; nothing while gone
                 if a.phase == 5 || (a.phase == 4 && (a.timer / 4) % 2 == 0) {
@@ -7764,6 +7868,57 @@ mod tests {
                 .any(|b| (b.x0 + 8.0 - x1).abs() < 0.01 && !b.top_only),
             "the pivot block moves with it"
         );
+    }
+
+    #[test]
+    fn escort_toad_follows_the_player_and_his_loss_fails_the_run() {
+        let mut lvl = Level::flat(80);
+        lvl.spawns.push(spawn(Kind::EscortToad, 40.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 60.0;
+        run(&mut w, input::RIGHT, 120);
+        let t = w
+            .actors
+            .iter()
+            .find(|a| a.kind == Kind::EscortToad)
+            .unwrap();
+        let gap = w.player.x - t.x;
+        assert!(gap > 16.0 && gap < 60.0, "trails the player: {gap}");
+        // knocked out → the player loses the run
+        let i = w
+            .actors
+            .iter()
+            .position(|a| a.kind == Kind::EscortToad)
+            .unwrap();
+        let x = w.actors[i].x;
+        w.actors[i].die_fall(x);
+        run(&mut w, 0, 1);
+        assert!(!w.player.alive());
+    }
+
+    #[test]
+    fn stone_is_heavy_and_opens_its_goal_condition() {
+        let mut lvl = Level::flat(80);
+        lvl.style = "M3".into();
+        lvl.spawns.push(spawn(Kind::Stone, 120.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.style = crate::player::Style::M3;
+        w.clear.goal = crate::clear::Goal::HoldingStone;
+        w.player.x = 100.0;
+        run(&mut w, input::RIGHT, 8);
+        run(&mut w, input::RUN | input::RIGHT, 4);
+        assert!(w.player.held.is_some(), "picked up");
+        run(&mut w, 0, 1);
+        let s = w.actors.iter().find(|a| a.kind == Kind::Stone).unwrap();
+        assert!(s.vx.abs() <= 0.8 + 1e-4, "heavy throw: {}", s.vx);
+        run(&mut w, 0, 30);
+        let s = w.actors.iter().find(|a| a.kind == Kind::Stone).unwrap();
+        assert_eq!(s.vx, 0.0, "slid to a stop");
+        assert!(s.alive(), "never breaks");
+        assert!(w.clear.met(crate::clear::AtGoal {
+            holding_stone: true,
+            ..w.player.at_goal()
+        }));
     }
 
     #[test]

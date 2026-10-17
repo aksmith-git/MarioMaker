@@ -9,7 +9,7 @@ use crate::{MmkEngine, guard};
 pub struct MmkCondition {
     /// 0 none, 1 defeat N (target = enemy class), 2 collect N 1-Ups, 3 collect N coins (target =
     /// coin value, 0 any), 4 use N POW blocks, 5 press N P Switches, 6 goal while invincible,
-    /// 7 goal as Super, 8 goal as Fire, 9 no damage, 10 no landing, 11 goal in a Goomba's Shoe, 12 in a Koopa Clown Car, 13 as Raccoon, 14 as Cape, 15 as Propeller, 16 holding a shell, 17 on Yoshi, 18 as Cat, 19 in a Koopa Troopa Car, 20 as Builder,
+    /// 7 goal as Super, 8 goal as Fire, 9 no damage, 10 no landing, 11 goal in a Goomba's Shoe, 12 in a Koopa Clown Car, 13 as Raccoon, 14 as Cape, 15 as Propeller, 16 holding a shell, 17 on Yoshi, 18 as Cat, 19 in a Koopa Troopa Car, 20 as Builder, 21 on a Lakitu's Cloud, 22 holding the stone, 23 shake N trees, 24 not held by a claw, 25 no water,
     /// 255 not supported.
     pub kind: u32,
     pub target: u32,
@@ -51,6 +51,11 @@ pub unsafe extern "C" fn mmk_engine_clear_condition(
             Goal::Propeller => (15, 0),
             Goal::Cat => (18, 0),
             Goal::Builder => (20, 0),
+            Goal::Cloud => (21, 0),
+            Goal::HoldingStone => (22, 0),
+            Goal::BellTrees => (23, 0),
+            Goal::NoClaw => (24, 0),
+            Goal::NoWater => (25, 0),
             Goal::HoldingShell => (16, 0),
             Goal::Yoshi => (17, 0),
             Goal::ClownCar => (12, 0),

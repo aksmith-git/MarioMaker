@@ -68,6 +68,10 @@ pub struct AtGoal {
     pub shoe: bool,
     pub clown_car: bool,
     pub koopa_car: bool,
+    /// Standing on a Lakitu's Cloud.
+    pub cloud: bool,
+    /// Carrying the Story Mode stone.
+    pub holding_stone: bool,
     /// Carrying a Koopa shell.
     pub holding_shell: bool,
     pub yoshi: bool,
@@ -97,8 +101,16 @@ pub enum Goal {
     /// Reach the goal wearing a Goomba's Shoe / flying a Koopa Clown Car.
     Shoe,
     ClownCar,
-    /// Reach the goal driving a Koopa Troopa Car.
+    /// Reach the goal driving a Koopa Troopa Car / standing on a Lakitu's Cloud / carrying the
+    /// Story Mode stone.
     KoopaCar,
+    Cloud,
+    HoldingStone,
+    /// Shake N trees (bell-tree actions, count kind 8).
+    BellTrees,
+    /// Reach the goal without being held by a swinging claw / without entering water.
+    NoClaw,
+    NoWater,
     /// Reach the goal holding a Koopa shell / riding Yoshi.
     HoldingShell,
     Yoshi,
@@ -145,6 +157,9 @@ impl ClearCondition {
                 67 if n > 0 => Goal::Coins(10),
                 68 if n > 0 => Goal::Coins(30),
                 69 if n > 0 => Goal::Coins(50),
+                75 if n > 0 => Goal::BellTrees,
+                // the escort Toad: kind 0, no tracking (the Toad itself fails the run)
+                76 => Goal::None,
                 _ => Goal::Unsupported(i),
             },
             (2, Some(i)) => match i {
@@ -161,10 +176,14 @@ impl ClearCondition {
                 64 => Goal::KoopaCar,
                 72 => Goal::HoldingShell,
                 59 => Goal::Yoshi,
+                63 => Goal::Cloud,
+                77 => Goal::HoldingStone,
                 _ => Goal::Unsupported(i),
             },
             (3, Some(70)) => Goal::NoDamage,
             (3, Some(71)) => Goal::NoLanding,
+            (3, Some(73)) => Goal::NoClaw,
+            (3, Some(74)) => Goal::NoWater,
             (_, Some(i)) => Goal::Unsupported(i),
         };
         Self {
@@ -214,6 +233,19 @@ impl ClearCondition {
         }
     }
 
+    /// Per frame: held by a swinging claw / in water (the NoClaw / NoWater rules).
+    pub fn held_by_claw(&mut self) {
+        if self.goal == Goal::NoClaw {
+            self.violated = true;
+        }
+    }
+
+    pub fn in_water(&mut self) {
+        if self.goal == Goal::NoWater {
+            self.violated = true;
+        }
+    }
+
     pub fn damaged(&mut self) {
         if self.goal == Goal::NoDamage {
             self.violated = true;
@@ -246,14 +278,19 @@ impl ClearCondition {
             shoe,
             clown_car,
             koopa_car,
+            cloud,
+            holding_stone,
             holding_shell,
             yoshi,
         } = at;
         match self.goal {
             Goal::None => true,
-            Goal::Defeat(_) | Goal::OneUps | Goal::Coins(_) | Goal::Pow | Goal::PSwitch => {
-                self.count >= self.n
-            }
+            Goal::Defeat(_)
+            | Goal::OneUps
+            | Goal::Coins(_)
+            | Goal::Pow
+            | Goal::PSwitch
+            | Goal::BellTrees => self.count >= self.n,
             Goal::Star => star,
             Goal::Super => form == 1,
             Goal::Fire => form == 2,
@@ -265,9 +302,11 @@ impl ClearCondition {
             Goal::Shoe => shoe,
             Goal::ClownCar => clown_car,
             Goal::KoopaCar => koopa_car,
+            Goal::Cloud => cloud,
+            Goal::HoldingStone => holding_stone,
             Goal::HoldingShell => holding_shell,
             Goal::Yoshi => yoshi,
-            Goal::NoDamage | Goal::NoLanding => !self.violated,
+            Goal::NoDamage | Goal::NoLanding | Goal::NoClaw | Goal::NoWater => !self.violated,
             Goal::Unsupported(_) => false,
         }
     }
