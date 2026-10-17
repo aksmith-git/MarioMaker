@@ -21,6 +21,7 @@ use crate::render::{Sprite, SpriteImage};
 use crate::warp::{self, SideHold, Transit};
 
 mod bosses;
+mod w3;
 
 /// SMM2 shows 24 × 13.5 tiles.
 pub const VIEW_W: f32 = 24.0 * TILE;
@@ -1021,6 +1022,7 @@ impl World {
                     && l.covers(a.y + 2.0)
                     && !a.kind.is_platform()
                     && a.kind != Kind::LavaBubble
+                    && !a.kind.liquid_proof()
                 {
                     a.mode = Mode::Dead;
                 }
@@ -1058,6 +1060,7 @@ impl World {
                     .liquid
                     .is_some_and(|l| l.water() && l.covers(a.y + 16.0));
             }
+            w3::sense(a, self.liquid, &self.player);
             if let Some(n) = a.step_spawning(&self.level) {
                 born.push(n);
             }
@@ -1323,6 +1326,11 @@ impl World {
                 k if k.is_boss() => {
                     a.boss_hit(crate::actors::BossAttack::BlockHit, cx);
                 }
+                k if k.is_w3() && a.w3_block_hit() => {
+                    a.die_fall(cx);
+                    kills += 1;
+                    scores.push((a.x, a.y + 24.0));
+                }
                 k if k.is_item() => {
                     a.vy = 3.0;
                     a.dir = if a.x < cx { -1 } else { 1 };
@@ -1506,7 +1514,11 @@ impl World {
                     if f.kind == Kind::Fireball && e.kind.is_enemy() && f.mode != Mode::Dead {
                         let fx = f.x;
                         f.mode = Mode::Dead;
-                        if e.kind.is_boss() {
+                        if let Some(down) = w3::fire_hit(e, fx) {
+                            if down {
+                                scores.push((SCORE_TABLE[0], e.x, e.y + 24.0));
+                            }
+                        } else if e.kind.is_boss() {
                             let hit = e.boss_hit(crate::actors::BossAttack::Fire, fx);
                             if hit == crate::actors::BossHit::Defeated {
                                 scores.push((SCORE_TABLE[0], e.x, e.y + 24.0));
@@ -1522,6 +1534,9 @@ impl World {
                 }
                 if let Some(score) = bosses::boss_shell_hit(a, b) {
                     scores.extend(score);
+                    continue;
+                }
+                if w3::shell_hit(a, b) {
                     continue;
                 }
                 let walkers = a.kind.is_walker() && b.kind.is_walker();
@@ -1802,6 +1817,13 @@ impl World {
                     }
                 }
                 self.events.push(Event::EnemyDown);
+                i += 1;
+                continue;
+            }
+            if a.kind.is_w3() {
+                if self.w3_contact(i, jump_held) {
+                    return;
+                }
                 i += 1;
                 continue;
             }
@@ -3733,6 +3755,7 @@ impl World {
             }
         }
         self.clown_sprites(&mut out);
+        self.w3_sprites(&mut out);
         // Chain Chomp stakes and chains (the chain is cosmetic: 4 links, stake to Chomp)
         for a in &self.actors {
             if a.kind != (Kind::ChainChomp { chained: true }) || !visible(a.home_x, a.home_y) {
@@ -4534,6 +4557,14 @@ impl World {
             | Kind::BoomBoom { .. }
             | Kind::Shuriken
             | Kind::BowserJr { .. } => a.boss_look()?,
+            Kind::AntTrooper { .. }
+            | Kind::Stingby
+            | Kind::Skipsqueak { .. }
+            | Kind::HopChops
+            | Kind::Porcupuffer
+            | Kind::Bully
+            | Kind::Charvaargh
+            | Kind::PiranhaCreeper { .. } => a.w3_look()?,
             Kind::LavaBubble => ("M1_Enemy_bubble", "wait.0", 16.0, 16.0, false),
             Kind::FloatCoin => {
                 let field = self.field_model;
@@ -4716,7 +4747,7 @@ impl World {
         // model origin = actor origin (feet centre); the front end places the art with the
         // BFRES quad (render.rs). Fireball models have their origin at the centre.
         let mut s = Self::model_sprite(model, tex, a.x - w / 2.0, a.y, w, h, flip_x, layer);
-        if matches!(a.kind, Kind::Fireball | Kind::EnemyFire) {
+        if matches!(a.kind, Kind::Fireball | Kind::EnemyFire) || a.kind.w3_centred() {
             s.y = a.y + a.height() / 2.0;
         }
         if matches!(a.kind, Kind::Piranha { .. }) {

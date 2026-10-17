@@ -8,7 +8,9 @@
 use crate::level::{Cell, Level, PipeDir, TILE};
 
 mod bosses;
+mod w3;
 pub use bosses::{BossAttack, BossHit};
+pub use w3::{CREEP_CELL, W3Look, W3State, creeper_corner, push as bully_push};
 
 pub const WALK_SPEED: f32 = 0.5;
 pub const ENEMY_GRAVITY: f32 = -0.1875;
@@ -201,6 +203,31 @@ pub enum Kind {
         key: bool,
         clown: bool,
     },
+    /// Ant Trooper (96; `horned` = Horned Ant Trooper): crawls along the terrain contour
+    /// (actors/w3.rs, like the other 3D World enemies below).
+    AntTrooper {
+        horned: bool,
+    },
+    /// Stingby (65): a bee that patrols in the air and charges a level player.
+    Stingby,
+    /// Skipsqueak (51; `spiny` = Spiny Skipsqueak): jumps when the player jumps, keeps to home.
+    Skipsqueak {
+        spiny: bool,
+    },
+    /// Hop-Chops (50): patrols in hops, chases a player ahead of it.
+    HopChops,
+    /// Porcupuffer (114): 4-HP spiky fish, swims after the player or patrols the surface.
+    Porcupuffer,
+    /// Bully (117): charges the player; hits only push it back.
+    Bully,
+    /// Charvaargh (86): lava dragon that leaps out at a nearby player.
+    Charvaargh,
+    /// Piranha Creeper (107): a head on a stalk that creeps along path `path` (the area's
+    /// piranha-creeper record of that index); `sleeps` = stays out at the end (alternate).
+    PiranhaCreeper {
+        path: u8,
+        sleeps: bool,
+    },
 }
 
 impl Kind {
@@ -235,7 +262,7 @@ impl Kind {
                 | Kind::AngrySun { moon: false }
                 | Kind::ShoeGoomba { .. }
                 | Kind::FishBone
-        )
+        ) || self.w3_enemy()
     }
     /// Clear-condition enemy class (clear.rs) of a defeated actor of this kind.
     pub fn defeat_class(self, buzzy: bool) -> Option<u8> {
@@ -439,6 +466,8 @@ pub struct Actor {
     /// Lava Bubble leaps from (the liquid surface, else the area bottom − 12).
     pub camera: (f32, f32),
     pub floor_ref: f32,
+    /// 3D World enemy state and what the world senses for them (actors/w3.rs).
+    pub w3: W3State,
 }
 
 impl Actor {
@@ -484,6 +513,7 @@ impl Actor {
             held: false,
             camera: (0.0, 0.0),
             floor_ref: 0.0,
+            w3: W3State::default(),
         }
     }
 
@@ -933,6 +963,7 @@ impl Actor {
             }
             Kind::Lift { width, .. } => width as f32 * 8.0,
             Kind::ClownCar { .. } => 14.0,
+            k if k.is_w3() => self.w3_size().0,
             _ if self.big => 16.0,
             _ => 8.0,
         }
@@ -955,6 +986,7 @@ impl Actor {
             }
             Kind::Piranha { .. } => PIRANHA_H * if self.big { 2.0 } else { 1.0 },
             Kind::Koopa { .. } if !self.big => 16.0, // body box 16×16 (art is 16×32)
+            k if k.is_w3() => self.w3_size().1,
             _ if self.big => 32.0,
             _ => 16.0,
         }
@@ -1461,6 +1493,7 @@ impl Actor {
             match self.kind {
                 Kind::Goomba | Kind::Koopa { .. } | Kind::Thwomp { .. } => {} // their own wing behaviour
                 Kind::Bowser { .. } | Kind::BoomBoom { .. } | Kind::BowserJr { .. } => {}
+                k if k.is_w3() => {} // their own wing behaviour (actors/w3.rs)
                 Kind::Piranha { .. } | Kind::Muncher if self.pipe.is_none() => {
                     self.step_winged_plant(level);
                     return None;
@@ -1494,6 +1527,14 @@ impl Actor {
             Kind::Bowser { .. } => return self.step_bowser(level),
             Kind::BoomBoom { .. } => return self.step_boom_boom(level),
             Kind::BowserJr { .. } => return self.step_bowser_jr(level),
+            Kind::AntTrooper { .. }
+            | Kind::Stingby
+            | Kind::Skipsqueak { .. }
+            | Kind::HopChops
+            | Kind::Porcupuffer
+            | Kind::Bully
+            | Kind::Charvaargh
+            | Kind::PiranhaCreeper { .. } => return self.step_w3(level),
             Kind::BowserFire | Kind::Shuriken => self.step_boss_shot(),
             Kind::ChainChomp { chained } => self.step_chomp(level, chained),
             Kind::LavaBubble => self.step_lava_bubble(),

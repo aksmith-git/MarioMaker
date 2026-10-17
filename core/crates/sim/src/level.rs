@@ -312,6 +312,8 @@ pub struct Level {
     pub snakes: Vec<(i32, i32, usize, bool, bool, Vec<u16>)>,
     /// Track graph (59-track.md).
     pub tracks: crate::track::Tracks,
+    /// Piranha Creeper paths (107): record index and node codes (actors/w3.rs).
+    pub creepers: Vec<(u8, Vec<u8>)>,
     /// Custom autoscroll path (89 nodes): (node number, x, y, speed setting 0–2), in px.
     pub scroll_nodes: Vec<(u8, f32, f32, u8)>,
     /// Blinking blocks (108): tile and phase group (flag 0x4: the opposite group).
@@ -385,9 +387,10 @@ pub fn switch_atlas(kind: BlockKind, on: bool) -> u32 {
 /// (sound effect) are decoration only.
 pub const SUPPORTED_PARTS: &[i16] = &[
     0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
-    27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 52, 53,
-    54, 55, 56, 57, 58, 60, 61, 62, 63, 64, 66, 67, 68, 70, 71, 76, 77, 82, 83, 84, 87, 88, 89, 90,
-    91, 92, 94, 95, 98, 99, 100, 102, 103, 104, 105, 108, 109, 110,
+    27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 50, 51,
+    52, 53, 54, 55, 56, 57, 58, 60, 61, 62, 63, 64, 65, 66, 67, 68, 70, 71, 76, 77, 82, 83, 84, 86,
+    87, 88, 89, 90, 91, 92, 94, 95, 96, 98, 99, 100, 102, 103, 104, 105, 107, 108, 109, 110, 114,
+    117,
 ];
 
 /// Game styles the engine plays.
@@ -396,8 +399,8 @@ pub const PLAYABLE_STYLES: &[&str] = &["M1", "M3", "MW"];
 /// Parts that become actors and so can ride a track (59-track.md).
 const RIDES_TRACKS: &[i16] = &[
     0, 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 15, 18, 19, 20, 22, 23, 25, 28, 30, 31, 32, 33, 34, 35, 36,
-    39, 40, 41, 42, 44, 45, 46, 48, 52, 56, 57, 58, 60, 61, 62, 63, 68, 70, 76, 77, 82, 83, 91, 95,
-    98, 102, 103, 105,
+    39, 40, 41, 42, 44, 45, 46, 48, 50, 51, 52, 56, 57, 58, 60, 61, 62, 63, 65, 68, 70, 76, 77, 82,
+    83, 91, 95, 96, 98, 102, 103, 105, 114, 117,
 ];
 
 /// Why a course is not fully playable yet: one entry per missing feature (empty = playable).
@@ -516,6 +519,7 @@ impl Level {
             pink_coins: Vec::new(),
             vines: Vec::new(),
             tracks: Default::default(),
+            creepers: Vec::new(),
             liquid: None,
             oneway: Vec::new(),
             doors: Vec::new(),
@@ -600,6 +604,12 @@ impl Level {
             ));
         }
 
+        lvl.creepers = area
+            .piranha_creepers
+            .slots
+            .values()
+            .map(|c| (c.head.index, c.nodes.iter().map(|n| n.direction).collect()))
+            .collect();
         lvl.tracks = crate::track::Tracks::new(
             area.tracks
                 .iter()
@@ -728,6 +738,23 @@ impl Level {
                 11 => Some(Kind::Lift {
                     width: o.width.max(1),
                     falling: o.flags & 0x4 != 0,
+                }),
+                // 3D World enemies (actors/w3.rs); the alternate (0x4) is the horned / spiny /
+                // sleeping form; a creeper's path is extended data − 1
+                96 => Some(Kind::AntTrooper {
+                    horned: o.flags & 0x4 != 0,
+                }),
+                65 => Some(Kind::Stingby),
+                51 => Some(Kind::Skipsqueak {
+                    spiny: o.flags & 0x4 != 0,
+                }),
+                50 => Some(Kind::HopChops),
+                114 => Some(Kind::Porcupuffer),
+                117 => Some(Kind::Bully),
+                86 => Some(Kind::Charvaargh),
+                107 => Some(Kind::PiranhaCreeper {
+                    path: o.extended_data.wrapping_sub(1).min(255) as u8,
+                    sleeps: o.flags & 0x4 != 0,
                 }),
                 _ => None,
             };
@@ -1419,6 +1446,7 @@ impl Level {
             pink_coins: Vec::new(),
             vines: Vec::new(),
             tracks: Default::default(),
+            creepers: Vec::new(),
             liquid: None,
             oneway: Vec::new(),
             doors: Vec::new(),

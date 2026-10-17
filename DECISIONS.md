@@ -2,6 +2,39 @@
 
 Newest first. Each entry: what was decided, why, and what would change it.
 
+## 2026-10-18 — 3D World enemies (96, 65, 51, 50, 114, 117, 86, 107): own modules, one state struct
+Ant Trooper, Stingby, Skipsqueak, Hop-Chops, Porcupuffer, Bully, Charvaargh and Piranha Creeper
+live in `actors/w3.rs` and `world/w3.rs`, like the bosses: the shared files only gain variants,
+match arms and one-line hooks. Their extra state is one `W3State` on the actor, which also holds
+what the world senses for them each frame (the liquid, the player's height, wetness and jump).
+Choices the specs leave open, all [inf]:
+- **Ant Trooper:** walks at 0.5 (the crawler walk isn't decoded). It crawls the contour with a
+  square box: walls ahead are climbed, ledges are wrapped at 6°/frame (big 4°), and it only wraps
+  fully solid blocks, so it walks off semisolids. A stomp defeats a plain one (the rows say
+  ReactOnly; the game defeats it). Winged ones use the generic flight.
+- **Stingby:** Turn takes 12 frames and the alert 30. The obs charge speed 0.5 is kept, though it
+  looks slow.
+- **Skipsqueak:** "player jumping" is read as airborne and rising. The crouch takes 6 frames and
+  recovery jumps drift toward home. The third try uses 3.65, then it gives up and stays put.
+  Winged ones hover in place.
+- **Hop-Chops:** hops are timed by the animation windows (9 ground frames, 2 when chasing). Turn
+  takes 16 frames, Lost 30, and the Find hop uses the normal gravity.
+- **Porcupuffer:** it swims on any liquid and survives lava. With no liquid it rests on the
+  ground. The jump window is centred 40 px above its centre. SwimTurn has a 30-frame cooldown
+  and Recover lasts 20 frames.
+- **Bully:** it sees 128 px either side and ±48 px. A fireball pushes it at 1.0, a stomp or spin
+  at 1.75, and a ground pound or shoe stomp at 2.5 followed by 120 frames of HoldOut. Its touch
+  shoves the player (2.0 px/f) without hurting them. Shells bounce off it. It turns at ledges
+  only while walking. Winged ones chase for 300 frames, then fly home.
+- **Charvaargh:** it isn't a generic enemy, so nothing defeats it and a Star only protects the
+  player. It rests with its head 4 px under the surface. The leap is a 64-px half circle at
+  2.5 px/f, and each of its 8 segments touches within 32×32 px. Only the head is drawn; the
+  model's animation shows the body.
+- **Piranha Creeper:** its path node codes were read off the corpus: 1–4 straight, 5–12 corners,
+  13–16 end caps, one 2×2 cell per node. It waits 60 frames at the start and at each end. A stomp
+  tramples the head (harmless for 10 + 130 frames); fire, shells and Stars defeat it. The stalk
+  is harmless and drawn unrotated.
+
 ## 2026-10-18 — Bosses (Bowser, Boom Boom / Pom Pom, Bowser Jr.): HP through one hit path
 Every boss hit goes through `Actor::boss_hit(attack)`, which applies the spec's HP rules. Bowser:
 fire 1, shell 3, 20 HP (big 40), and stomps are Invalid. Boom Boom and Bowser Jr.: 3 HP; a
