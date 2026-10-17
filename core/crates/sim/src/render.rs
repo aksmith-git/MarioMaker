@@ -18,6 +18,7 @@ pub struct Sprite {
     pub w: f32,
     pub h: f32,
     pub flip_x: bool,
+    pub flip_y: bool,
     /// Draw order: lower first.
     pub layer: u32,
 }

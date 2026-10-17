@@ -2,6 +2,25 @@
 
 Newest first. Each entry: what was decided, why, and what would change it.
 
+## 2026-10-18 — Core-object choices where the specs have no number (Phase 5 step 6)
+Values read from the binary are used as-is (bump curve, coin pop, item emergence, walker speeds,
+shell wake 511, kick 2.5 + 0.5·|v|, death 45-frame pose → vy 3.2 / g −0.16 / restart after 140,
+damage Fire → Super → Small with 127 frames of invincibility, goal height score and slide speeds).
+Where nothing was found, these stand-ins are used until the Ryujinx comparison harness can measure
+them:
+- Enemy stomp bounce: the player-vs-player pair 4.128 (jump held) / 3.628.
+- Stomp test: player falling with the feet in the enemy's upper half.
+- Grow/shrink freeze: 48 frames.
+- Off-screen actors are removed when their activation box (32 px half-extents; sliding shells
+  160 × 32) leaves the view + 32 px, and respawn when their home position re-enters the view;
+  killed actors stay dead.
+- Shell kick scores 400; stomp/shell chains use the score-type table 100 … 8000, then 1-UP.
+- Goal pole stands in the goal ground's second column (X0 = left + 24): with the castle door at
+  X0 + 112 the 80-px castle then ends flush with the goal ground's right edge.
+- Pole touch uses body box B (a small player on the base block only touches the box with box A).
+- Sprite art offsets inside textures are measured from the textures (e.g. the Goomba sits in the
+  top half of its 16×32 image) until BFRES quad placement is imported.
+
 ## 2026-10-18 — 100 Mario Challenge uses SMM1's own presentation, like-for-like
 Owner request: title/menu/world map and the before/after screens and animations as in SMM1.
 Assets come from the owner's SMM1 dump at first launch (never committed). Rendered by a layout

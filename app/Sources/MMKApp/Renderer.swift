@@ -1,6 +1,7 @@
 import CMmk
 import ImageIO
 import Metal
+import CoreText
 import MetalKit
 import QuartzCore
 import SwiftUI
@@ -48,6 +49,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     private var accumulator = 0.0
     private var lastSnapshotTick: UInt64 = 0
     private(set) var startupError: String?
+    // placeholder HUD (text rendered with CoreText until the game's own HUD layout is imported)
+    private var hudText = ""
+    private var hudTexture: MTLTexture?
+    private var hudSize = (0, 0)
 
     /// Debug/smoke-test mode: MMK_SCREENSHOT=<png path> [MMK_SCREENSHOT_TICKS=<n>] runs a scripted
     /// input sequence (run right, jump), saves the frame after n ticks and quits.
@@ -101,6 +106,11 @@ final class Renderer: NSObject, MTKViewDelegate {
             let data = try Data(contentsOf: URL(fileURLWithPath: coursePath))
             let ok = data.withUnsafeBytes { mmk_engine_load_course(e, $0.bindMemory(to: UInt8.self).baseAddress, data.count) }
             if !ok { throw EngineError("\(coursePath): \(String(cString: mmk_last_error()))") }
+        }
+        // MMK_START_X=<px> [MMK_START_Y=<px>]: debug, start somewhere else (smoke tests)
+        let env = ProcessInfo.processInfo.environment
+        if let x = env["MMK_START_X"].flatMap(Float.init) {
+            mmk_engine_debug_teleport(e, x, env["MMK_START_Y"].flatMap(Float.init) ?? 32)
         }
     }
 
@@ -252,6 +262,30 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         flush()
 
+        // HUD strip across the top of the view, drawn at drawable resolution
+        var hud = MmkHud()
+        mmk_engine_hud(engine, &hud)
+        let time = hud.time < 0 ? "---" : String(format: "%03d", hud.time)
+        var text = String(format: "MARIO ×%02d    ⦿×%02d    %09d    TIME %@", hud.lives, hud.coins, hud.score, time)
+        if hud.flags & 1 != 0 { text += "    COURSE CLEAR!" }
+        let stripH = 18.0
+        let tw = Int(vw), th = Int(stripH * scale)
+        if text != hudText || hudSize != (tw, th) {
+            hudText = text
+            hudSize = (tw, th)
+            hudTexture = makeTextTexture(text, width: tw, height: th)
+        }
+        if let tex = hudTexture {
+            var ident = SIMD4<Float>(1, 1, 0, 0)
+            enc.setVertexBytes(&ident, length: 16, index: 1)
+            let y0 = Float(1 - 2 * stripH / Double(snap.view_h))
+            let quad: [SIMD4<Float>] = [SIMD4(-1, y0, 0, 1), SIMD4(1, y0, 1, 1), SIMD4(1, 1, 1, 0),
+                                        SIMD4(-1, y0, 0, 1), SIMD4(1, 1, 1, 0), SIMD4(-1, 1, 0, 0)]
+            enc.setFragmentTexture(tex, index: 0)
+            quad.withUnsafeBytes { enc.setVertexBytes($0.baseAddress!, length: $0.count, index: 0) }
+            enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+        }
+
         enc.endEncoding()
         if let path = screenshot, snap.tick >= screenshotTicks {
             cmd.commit()
@@ -261,6 +295,28 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         cmd.present(drawable)
         cmd.commit()
+    }
+
+    private func makeTextTexture(_ text: String, width: Int, height: Int) -> MTLTexture? {
+        guard width > 0, height > 0,
+              let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        let font = CTFontCreateWithName("Menlo-Bold" as CFString, CGFloat(height) * 0.62, nil)
+        func draw(_ color: CGColor, dx: CGFloat, dy: CGFloat) {
+            let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
+            let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attrs))
+            ctx.textPosition = CGPoint(x: CGFloat(height) * 0.5 + dx, y: CGFloat(height) * 0.28 + dy)
+            CTLineDraw(line, ctx)
+        }
+        let px = max(1, CGFloat(height) / 18)
+        draw(CGColor(red: 0, green: 0, blue: 0, alpha: 1), dx: px, dy: -px)
+        draw(CGColor(red: 1, green: 1, blue: 1, alpha: 1), dx: 0, dy: 0)
+        let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm_srgb, width: width, height: height, mipmapped: false)
+        guard let tex = device.makeTexture(descriptor: d), let data = ctx.data else { return nil }
+        tex.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0, withBytes: data, bytesPerRow: width * 4)
+        return tex
     }
 
     private func scriptedInput(tick: UInt64) -> MmkInput {

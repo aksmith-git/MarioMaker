@@ -41,6 +41,13 @@ typedef struct {
     uint64_t tick;
 } MmkSnapshot;                                                         // 40 bytes
 
+typedef struct {
+    uint32_t score, coins, lives;
+    int32_t time;               // seconds left, -1 = no timer
+    uint32_t flags;             // bit 0: course cleared, bit 1: player dying
+    uint32_t events;            // bit n: event n this tick (see mmk_sim::Event)
+} MmkHud;                                                              // 24 bytes
+
 const char *mmk_last_error(void);
 
 MmkAssets *mmk_assets_open(const char *path);
@@ -53,3 +60,5 @@ void mmk_engine_free(MmkEngine *engine);
 bool mmk_engine_load_course(MmkEngine *engine, const uint8_t *data, size_t len);
 void mmk_engine_step(MmkEngine *engine, const MmkInput *input);
 void mmk_engine_snapshot(MmkEngine *engine, MmkSnapshot *out);
+void mmk_engine_hud(const MmkEngine *engine, MmkHud *out);
+void mmk_engine_debug_teleport(MmkEngine *engine, float x, float y);

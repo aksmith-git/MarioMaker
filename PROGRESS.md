@@ -47,12 +47,20 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
 - ✅ Asset facts checked on the dump: textures ~98 % RGBA8 sRGB + BC1/4/5/7 (all native on Apple
   Silicon, need Tegra unswizzle); 2D styles are BFRES quads; audio DSP-ADPCM
 
-### Phase 5 — Vertical slice (SMB1, ground) ⬜
-- ⬜ Engine skeleton, rendering, input, placeholder art
-- ⬜ SMB1 ground asset extraction
-- ⬜ Load and render a real course
-- ⬜ Player physics (tested) · core objects
-- ⬜ Frame-by-frame tuning against Ryujinx
+### Phase 5 — Vertical slice (SMB1, ground) 🔄
+- ✅ 1. Rust workspace (formats, assets, import, sim, ffi, cli) + Swift/Metal app; CI on macOS + Linux
+- ✅ 2. Importer: identifies the game build, finds the course key table, converts tables, exports
+  M1 textures (RGBA8 + BCn, Tegra unswizzle) into a Metal-ready cache outside the repo
+- 🔄 3. Rendering: tiles, sprites, letterboxed integer scaling ✅ · exact BFRES quad placement and
+  animation timing ⬜ (sprite offsets currently measured from the textures)
+- ⬜ 4. Audio (BWAV DSP-ADPCM decode, mixer, music + sound effects)
+- 🔄 5. Terrain: ground, blocks, pipes, semisolids, slopes ✅ · ice ✅ · exact camera rules ⬜
+- ✅ 6. Core objects: coins; ? / brick / hidden / hard / note blocks (bump curve, contents, multi-coin,
+  breaking + debris); Super Mushroom, Fire Flower + fireballs, Star, 1-Up; Goomba (+ Paragoomba),
+  Koopa green/red (+ Paratroopas), shells (kick, slide, chain kills, wake-up); stomp chains, damage
+  (Fire → Super → Small), invincibility, death sequence, restart, lives; course timer + hurry;
+  M1 goal pole (height score, slide, walk to castle, time → score countdown, castle flag)
+- ⬜ 7. Play real courses start to goal; tune against Ryujinx (needs a Ryujinx build with a GDB stub)
 
 ### Phase 5b — Native app (must be done before Phase 6) ⬜
 - ⬜ Signed `.app` bundle with icon

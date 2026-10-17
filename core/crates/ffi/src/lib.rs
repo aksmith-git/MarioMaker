@@ -326,10 +326,13 @@ pub unsafe extern "C" fn mmk_engine_snapshot(engine: *mut MmkEngine, out: *mut M
             let Some(texture) = idx else { continue };
             let t = &assets.cache.textures[texture as usize].texture;
             let (tw, th) = (t.width as f32, t.height as f32);
-            let (u0, v0, u1, v1) = match s.image.rect {
+            let (u0, mut v0, u1, mut v1) = match s.image.rect {
                 Some((x, y, w, h)) => (x / tw, y / th, (x + w) / tw, (y + h) / th),
                 None => (0.0, 0.0, 1.0, 1.0),
             };
+            if s.flip_y {
+                std::mem::swap(&mut v0, &mut v1);
+            }
             e.sprites.push(MmkSprite {
                 texture,
                 x: s.x,
@@ -356,6 +359,60 @@ pub unsafe extern "C" fn mmk_engine_snapshot(engine: *mut MmkEngine, out: *mut M
     })
 }
 
+/// Debug: move the player (feet, px). Used by smoke tests to reach a spot quickly.
+///
+/// # Safety
+/// `engine` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_engine_debug_teleport(engine: *mut MmkEngine, x: f32, y: f32) {
+    guard((), || {
+        if let Some(e) = unsafe { engine.as_mut() } {
+            e.world.player.x = x;
+            e.world.player.y = y;
+            e.world.player.vy = 0.0;
+        }
+    })
+}
+
+/// HUD counters and this tick's events (bit n = `mmk_sim::Event` discriminant n).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MmkHud {
+    pub score: u32,
+    pub coins: u32,
+    pub lives: u32,
+    /// Seconds left, −1 = no timer.
+    pub time: i32,
+    /// bit 0: course cleared; bit 1: player dying
+    pub flags: u32,
+    pub events: u32,
+}
+
+/// # Safety
+/// `engine` must be a live handle and `out` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_engine_hud(engine: *const MmkEngine, out: *mut MmkHud) {
+    guard((), || {
+        let (Some(e), Some(out)) = (unsafe { engine.as_ref() }, unsafe { out.as_mut() }) else {
+            return;
+        };
+        let h = e.world.hud();
+        let events = e
+            .world
+            .events
+            .iter()
+            .fold(0u32, |m, &ev| m | 1 << (ev as u32));
+        *out = MmkHud {
+            score: h.score,
+            coins: h.coins,
+            lives: h.lives,
+            time: h.time,
+            flags: h.cleared as u32 | (!e.world.player.alive() as u32) << 1,
+            events,
+        };
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,5 +424,6 @@ mod tests {
         assert_eq!(size_of::<MmkSprite>(), 44);
         assert_eq!(size_of::<MmkSnapshot>(), 40);
         assert_eq!(size_of::<MmkTextureInfo>(), 48);
+        assert_eq!(size_of::<MmkHud>(), 24);
     }
 }

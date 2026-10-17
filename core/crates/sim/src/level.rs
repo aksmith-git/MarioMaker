@@ -8,6 +8,9 @@
 
 use mmk_formats::smm2::{Area, Course};
 
+use crate::actors::Kind;
+use crate::blocks::{BlockKind, Contents};
+
 pub const TILE: f32 = 16.0;
 const ATLAS_COLS: u32 = 16;
 const GROUND_ATLAS_BASE: u32 = 184;
@@ -85,6 +88,26 @@ impl Slope {
     }
 }
 
+/// A reactive block placed in the course (drawn and animated by the world, solid in the grid).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockPlacement {
+    pub x: i32,
+    pub y: i32,
+    pub kind: BlockKind,
+    pub contents: Option<Contents>,
+}
+
+/// An actor placed in the course: spawned when its position comes into view.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spawn {
+    pub kind: Kind,
+    /// Feet centre (px).
+    pub x: f32,
+    pub y: f32,
+    pub big: bool,
+    pub wings: bool,
+}
+
 /// A coin placed as a tile (collectable).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CoinTile {
@@ -102,6 +125,10 @@ pub struct Level {
     pub tiles: Vec<TileDraw>,
     pub coins: Vec<CoinTile>,
     pub slopes: Vec<Slope>,
+    pub blocks: Vec<BlockPlacement>,
+    pub spawns: Vec<Spawn>,
+    /// Goal pole position (X0, Y0): pole x and the top of its base block (main area only).
+    pub goal: Option<(f32, f32)>,
     pub style: String,
     pub theme: u8,
     pub night: bool,
@@ -114,16 +141,32 @@ pub struct Level {
     pub timer: i16,
 }
 
-/// Atlas indices of tile-like objects in SMB1 field atlases (first rows of the atlas).
-fn object_atlas(id: i16) -> Option<u32> {
+/// Atlas index of a block in SMB1 field atlases (row 0: brick 1, ? 2, hidden 3, note 4, used 5,
+/// hard 6; donut 64; cloud 102; ice 120) — read off the M1 atlas.
+pub fn block_atlas(kind: BlockKind) -> u32 {
+    match kind {
+        BlockKind::Brick => 1,
+        BlockKind::Question => 2,
+        BlockKind::Hidden => 3,
+        BlockKind::Note => 4,
+        BlockKind::Empty => 5,
+        BlockKind::Hard => 6,
+        BlockKind::Donut => 64,
+        BlockKind::Cloud => 102,
+        BlockKind::Ice => 120,
+    }
+}
+
+fn block_kind(id: i16) -> Option<BlockKind> {
     Some(match id {
-        4 => 1,    // brick
-        5 => 2,    // ? block
-        6 => 5,    // hard block
-        23 => 4,   // note block
-        21 => 82,  // donut block
-        22 => 102, // cloud block
-        63 => 120, // ice block
+        4 => BlockKind::Brick,
+        5 => BlockKind::Question,
+        6 => BlockKind::Hard,
+        23 => BlockKind::Note,
+        21 => BlockKind::Donut,
+        22 => BlockKind::Cloud,
+        29 => BlockKind::Hidden,
+        63 => BlockKind::Ice,
         _ => return None,
     })
 }
@@ -147,6 +190,9 @@ impl Level {
             tiles: Vec::new(),
             coins: Vec::new(),
             slopes: Vec::new(),
+            blocks: Vec::new(),
+            spawns: Vec::new(),
+            goal: None,
             style: course.header.game_style.as_str_lossy(),
             theme: h.theme,
             night: h.is_night(),
@@ -175,7 +221,22 @@ impl Level {
             lvl.fill_ground(-3, 10, start_h);
             lvl.start = (56.0, start_h as f32 * TILE); // x = 56 px: [inf] from the battle-start marker
             let goal_left = ((right - 152.0 - 8.0) / TILE).round() as i32;
-            lvl.fill_ground(goal_left, 11, course.header.goal_y as i32);
+            let goal_h = course.header.goal_y as i32;
+            lvl.fill_ground(goal_left, 11, goal_h);
+            // pole on a hard block in the goal ground's second column [inf: walk target X0+112
+            // and the 80-px castle then end flush with the ground's right edge]
+            let pole_tile = goal_left + 1;
+            lvl.blocks.push(BlockPlacement {
+                x: pole_tile,
+                y: goal_h,
+                kind: BlockKind::Hard,
+                contents: None,
+            });
+            lvl.set(pole_tile, goal_h, Cell::Solid);
+            lvl.goal = Some((
+                pole_tile as f32 * TILE + TILE / 2.0,
+                (goal_h + 1) as f32 * TILE,
+            ));
         }
 
         // tile-like objects: (x, y) is the centre of the bottom-left tile [toost LevelDrawer
@@ -187,18 +248,48 @@ impl Level {
             let tx = (left_px / TILE).round() as i32;
             let ty = (bottom_px / TILE).round() as i32;
             let actorish = o.flags & 0x2 != 0 || o.flags & 0x400 != 0; // winged / on track → actor (step 6)
+            let big = o.flags & 0x6000 == 0x4000;
+            let wings = o.flags & 0x2 != 0;
+            let actor = match o.id {
+                0 => Some(Kind::Goomba),
+                1 => Some(Kind::Koopa {
+                    red: o.flags & 0x4 != 0,
+                }),
+                20 | 44 => Some(Kind::Mushroom),
+                34 => Some(Kind::FireFlower),
+                35 => Some(Kind::Star),
+                33 => Some(Kind::OneUp),
+                _ => None,
+            };
+            if let Some(kind) = actor {
+                // actors: x is the horizontal centre, y the centre of the bottom row
+                lvl.spawns.push(Spawn {
+                    kind,
+                    x: o.x as f32 / 10.0,
+                    y: o.y as f32 / 10.0 - 8.0,
+                    big,
+                    wings,
+                });
+                continue;
+            }
             match o.id {
                 8 if !actorish => lvl.coins.push(CoinTile { x: tx, y: ty }),
-                id if !actorish && object_atlas(id).is_some() => {
-                    let atlas = object_atlas(id).unwrap();
-                    let cell = if id == 22 { Cell::SemiTop } else { Cell::Solid };
+                id if !actorish && block_kind(id).is_some() => {
+                    let kind = block_kind(id).unwrap();
+                    let contents = Contents::from_part(o.child_id, o.child_flags);
+                    let cell = match kind {
+                        BlockKind::Cloud => Cell::SemiTop,
+                        BlockKind::Hidden => Cell::Empty,
+                        _ => Cell::Solid,
+                    };
                     for dx in 0..w {
                         for dy in 0..hgt {
                             lvl.set(tx + dx, ty + dy, cell);
-                            lvl.tiles.push(TileDraw {
+                            lvl.blocks.push(BlockPlacement {
                                 x: tx + dx,
                                 y: ty + dy,
-                                atlas,
+                                kind,
+                                contents,
                             });
                         }
                     }
@@ -349,7 +440,7 @@ impl Level {
             .then(|| (y * self.width + gx) as usize)
     }
 
-    fn set(&mut self, x: i32, y: i32, c: Cell) {
+    pub fn set(&mut self, x: i32, y: i32, c: Cell) {
         if let Some(i) = self.index(x, y) {
             self.cells[i] = c;
         }
@@ -367,6 +458,11 @@ impl Level {
         self.cell((px / TILE).floor() as i32, (py / TILE).floor() as i32)
     }
 
+    /// Test helper: make one tile solid.
+    pub fn set_solid(&mut self, x: i32, y: i32) {
+        self.set(x, y, Cell::Solid);
+    }
+
     /// Test helper: add a slope and a solid plateau of `plateau_h` tiles from tile `plateau_x` on.
     pub fn add_test_slope(&mut self, slope: Slope, plateau_x: i32, plateau_h: i32) {
         let right = (self.right / TILE) as i32;
@@ -378,7 +474,75 @@ impl Level {
         self.slopes.push(slope);
     }
 
-    /// A flat test strip (used when no course is loaded).
+    /// A short demo course with one of each core object and a goal (no course loaded; also the
+    /// screenshot smoke test).
+    pub fn demo() -> Self {
+        let mut lvl = Self::flat(80);
+        lvl.timer = 300;
+        let block = |lvl: &mut Level, x: i32, y: i32, kind: BlockKind, contents| {
+            lvl.set(x, y, Cell::Solid);
+            lvl.blocks.push(BlockPlacement {
+                x,
+                y,
+                kind,
+                contents,
+            });
+        };
+        block(
+            &mut lvl,
+            10,
+            5,
+            BlockKind::Question,
+            Some(Contents::Mushroom),
+        );
+        block(&mut lvl, 14, 5, BlockKind::Brick, None);
+        block(&mut lvl, 15, 5, BlockKind::Question, None);
+        block(&mut lvl, 16, 5, BlockKind::Brick, Some(Contents::Coin));
+        block(
+            &mut lvl,
+            15,
+            9,
+            BlockKind::Question,
+            Some(Contents::FireFlower),
+        );
+        for x in 20..23 {
+            lvl.coins.push(CoinTile { x, y: 4 });
+        }
+        lvl.spawns.push(Spawn {
+            kind: Kind::Goomba,
+            x: 26.0 * TILE,
+            y: 32.0,
+            big: false,
+            wings: false,
+        });
+        lvl.spawns.push(Spawn {
+            kind: Kind::Koopa { red: false },
+            x: 40.0 * TILE,
+            y: 32.0,
+            big: false,
+            wings: false,
+        });
+        // pipe
+        for y in 2..4 {
+            for x in 46..48 {
+                lvl.set(x, y, Cell::Solid);
+                let lip = y == 3;
+                let col = if x == 46 { 14 } else { 15 };
+                lvl.tiles.push(TileDraw {
+                    x,
+                    y,
+                    atlas: if lip { col } else { 16 + col },
+                });
+            }
+        }
+        // goal: pole on a hard block 2 tiles from the end, as from a course header
+        let pole = 66;
+        block(&mut lvl, pole, 2, BlockKind::Hard, None);
+        lvl.goal = Some((pole as f32 * TILE + TILE / 2.0, 3.0 * TILE));
+        lvl
+    }
+
+    /// A flat test strip.
     pub fn flat(width_tiles: i32) -> Self {
         let mut lvl = Level {
             min_x: -4,
@@ -388,6 +552,9 @@ impl Level {
             tiles: Vec::new(),
             coins: Vec::new(),
             slopes: Vec::new(),
+            blocks: Vec::new(),
+            spawns: Vec::new(),
+            goal: None,
             style: "M1".into(),
             theme: 0,
             night: false,
