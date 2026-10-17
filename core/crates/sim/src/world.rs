@@ -173,6 +173,8 @@ pub struct World {
     carry: f32,
     /// The current area's liquid level, if any.
     pub liquid: Option<Liquid>,
+    /// Cannon countdowns (current area).
+    cannon_timers: Vec<i32>,
 }
 
 impl Default for World {
@@ -269,6 +271,7 @@ impl World {
             donut_respawn: Vec::new(),
             carry: 0.0,
             liquid: None,
+            cannon_timers: Vec::new(),
         };
         w.field_model = Box::leak(field_model(&w.level.style, w.level.theme).into_boxed_str());
         w.reset_course();
@@ -369,6 +372,7 @@ impl World {
 
     fn reset_generators(&mut self) {
         self.blaster_timers = self.level.blasters.iter().map(|_| (60, 0)).collect();
+        self.cannon_timers = self.level.cannons.iter().map(|_| 60).collect();
         self.gen_timers = self
             .level
             .generators
@@ -618,6 +622,7 @@ impl World {
         self.step_generators();
         self.step_blasters();
         self.fire_hazards();
+        self.step_cannons();
         self.check_checkpoints();
         self.shell_walls();
         self.actor_interactions();
@@ -1020,6 +1025,26 @@ impl World {
                 i += 1;
                 continue;
             }
+            if a.kind == Kind::Grinder {
+                // saw: hurts on touch (radius [inf] 20 px around the centre y + 24)
+                let (cx, cy) = (a.x, a.y + 24.0);
+                let near = overlap(hurt, (cx - 20.0, cy - 20.0, cx + 20.0, cy + 20.0));
+                if near && !star && self.player.hurt() {
+                    self.events.push(if self.player.alive() {
+                        Event::PowerDown
+                    } else {
+                        Event::Death
+                    });
+                    return;
+                }
+                i += 1;
+                continue;
+            }
+            if a.kind == Kind::Bumper {
+                self.bumper_contact(i, jump_held);
+                i += 1;
+                continue;
+            }
             if a.kind == Kind::PSwitch {
                 // pressed by landing on it from above
                 let p = &self.player;
@@ -1393,6 +1418,55 @@ impl World {
         }
     }
 
+    /// Bumper (82-bumper.md): circle of half-size 22 around (x, y + 24). Hit classified by the
+    /// angle from its centre to the player's centre: top → vy 6.0 (9.0 with jump held), vx
+    /// 0.5 + 0.6·|vx| away; bottom → 1.6 × the unit vector away; side → vx 2.0 away, vy 3.0 /
+    /// −0.5 / 5.0 by the player's vy. 16-frame cooldown.
+    fn bumper_contact(&mut self, i: usize, jump_held: bool) {
+        let a = &self.actors[i];
+        if a.timer > 0 {
+            return;
+        }
+        let (cx, cy) = (a.x, a.y + 24.0);
+        let p = &self.player;
+        let (px, py) = (p.x, p.y + 8.0);
+        let (dx, dy) = (px - cx, py - cy);
+        if dx * dx + dy * dy > 30.0 * 30.0 {
+            return;
+        }
+        let ang = dy.atan2(dx).to_degrees().rem_euclid(360.0);
+        let away = if dx < 0.0 { -1.0 } else { 1.0 };
+        let top = if p.vy > 0.0 {
+            (45.0..=135.0).contains(&ang)
+        } else {
+            (22.5..=157.5).contains(&ang)
+        };
+        let bottom = (202.5..=337.5).contains(&ang);
+        let (vx, vy) = if top {
+            (
+                away * (0.5 + 0.6 * p.vx.abs()),
+                if jump_held { 9.0 } else { 6.0 },
+            )
+        } else if bottom {
+            let n = (dx * dx + dy * dy).sqrt().max(0.001);
+            (1.6 * dx / n, 1.6 * dy / n)
+        } else {
+            let vy = if p.vy > 0.0 {
+                3.0
+            } else if p.vy > -5.5 {
+                -0.5
+            } else {
+                5.0
+            };
+            (2.0 * away, vy)
+        };
+        self.player.vx = vx;
+        self.player.vy = vy;
+        self.player.on_ground = false;
+        self.actors[i].timer = 16;
+        self.events.push(Event::Bump);
+    }
+
     // ---------------------------------------------------------------- burners, fire bars
 
     /// Burner flame state from the shared 372-frame counter (54-burner.md): returns the flame
@@ -1415,6 +1489,30 @@ impl World {
     /// [?]; 2.8125°/frame (one turn per 128 frames) is used [inf].
     pub fn firebar_angle(&self, fb: &crate::level::FireBar) -> f32 {
         fb.start + fb.dir * 2.8125 * self.tick as f32
+    }
+
+    /// Cannons (47-cannon.md): first shot 60 frames after spawn, then every 190, while the
+    /// muzzle is on screen; the ball flies 1 px/frame along the barrel.
+    fn step_cannons(&mut self) {
+        let v = self.view_rect(0.0);
+        for ci in 0..self.level.cannons.len() {
+            let c = self.level.cannons[ci];
+            let a = c.angle.to_radians();
+            let (mx, my) = (c.x + 8.0 * a.cos(), c.y + 8.0 + 8.0 * a.sin());
+            if mx < v.0 || mx > v.2 || my < v.1 || my > v.3 {
+                continue;
+            }
+            self.cannon_timers[ci] -= 1;
+            if self.cannon_timers[ci] > 0 {
+                continue;
+            }
+            self.cannon_timers[ci] = 190;
+            let mut b = Actor::new(Kind::Cannonball, mx, my - 8.0);
+            b.vx = a.cos();
+            b.vy = a.sin();
+            self.add_actor(b);
+            self.events.push(Event::Kick);
+        }
     }
 
     /// Hurt the player on Burner flames and Fire Bar fireballs.
@@ -1484,13 +1582,14 @@ impl World {
                         dy: a.moved.1,
                         top_only,
                         owner: a.id,
+                        slope: a.solid_slope(),
                     })
             })
             .collect();
         if let Some(id) = ride {
             if let Some(s) = self.level.solids.iter().find(|s| s.owner == id) {
                 self.player.x += s.dx;
-                self.player.y = s.y1;
+                self.player.y = s.top_at(self.player.x);
             }
             let launch = self
                 .actors
@@ -2129,6 +2228,21 @@ impl World {
                 x += TILE;
             }
         }
+        for c in &self.level.cannons {
+            if !visible(c.x, c.y) {
+                continue;
+            }
+            out.push(Self::model_sprite(
+                "M1_Enemy_senkan_houdai",
+                "senkan_houdai_base",
+                c.x - 8.0,
+                c.y,
+                16.0,
+                16.0,
+                false,
+                11,
+            ));
+        }
         for b in &self.level.burners {
             if !visible(b.x, b.y) {
                 continue;
@@ -2235,6 +2349,42 @@ impl World {
                     false,
                     42,
                 ));
+            }
+            if let Kind::Seesaw { width } = a.kind {
+                // stepped approximation of the tilted plank (sprites don't rotate yet)
+                let hw = width as f32 * 8.0;
+                let slope = a.solid_slope();
+                for i in 0..width {
+                    let cx = a.x - hw + i as f32 * TILE + 8.0;
+                    let tex = if i == 0 {
+                        "seesaw_sideL.00"
+                    } else if i == width - 1 {
+                        "seesaw_sideR.00"
+                    } else {
+                        "seesaw_center.00"
+                    };
+                    out.push(Self::model_sprite(
+                        "M1_Object_seesaw",
+                        tex,
+                        cx - 8.0,
+                        a.y + 8.0 + slope * (cx - a.x),
+                        16.0,
+                        16.0,
+                        false,
+                        15,
+                    ));
+                }
+                out.push(Self::model_sprite(
+                    "M1_Object_seesaw",
+                    "seesaw_point.00",
+                    a.x - 8.0,
+                    a.y + 8.0,
+                    16.0,
+                    16.0,
+                    false,
+                    16,
+                ));
+                continue;
             }
             if let Kind::Lift { width, falling } = a.kind {
                 let x0 = a.x - width as f32 * 8.0;
@@ -2553,6 +2703,26 @@ impl World {
                 a.dir > 0,
             ),
             Kind::BanzaiBill { dir } => ("M1_Enemy_killermagnum", "wait.0", 64.0, 64.0, dir == 0),
+            Kind::Bumper => ("M1_Object_saw", "saw_maru", 48.0, 48.0, false),
+            Kind::Grinder => (
+                "M1_Object_saw",
+                if (self.tick / 4).is_multiple_of(2) {
+                    "wait.0"
+                } else {
+                    "blink.0"
+                },
+                48.0,
+                48.0,
+                (self.tick / 2) % 2 == 1,
+            ),
+            Kind::Cannonball => (
+                "M1_Enemy_senkan_houdai",
+                "senkan_houdai_ball.0",
+                16.0,
+                16.0,
+                false,
+            ),
+            Kind::Seesaw { .. } => return None,
             Kind::Boo => (
                 "M1_Enemy_teresa",
                 if (a.target.0 < a.x) == (a.target_facing > 0) {
@@ -3443,6 +3613,61 @@ mod tests {
             died |= !w.player.alive();
         }
         assert!(died);
+    }
+
+    #[test]
+    fn seesaw_tilts_under_the_rider() {
+        let mut lvl = Level::flat(40);
+        lvl.spawns
+            .push(spawn(Kind::Seesaw { width: 5 }, 200.0, 80.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 230.0; // right end
+        w.player.y = 110.0;
+        run(&mut w, 0, 60);
+        assert!(w.player.ride.is_some());
+        assert!(
+            w.actors[0].heading < -5.0,
+            "tilts right-down: {}",
+            w.actors[0].heading
+        );
+        // the rider is carried down with the plank
+        assert!(w.player.y < 96.0);
+    }
+
+    #[test]
+    fn bumper_bounces_from_above() {
+        let mut lvl = Level::flat(40);
+        lvl.spawns.push(spawn(Kind::Bumper, 200.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 200.0;
+        w.player.y = 90.0;
+        let mut bounced = false;
+        for _ in 0..30 {
+            w.step(Input::default());
+            bounced |= w.player.vy > 5.0;
+        }
+        assert!(bounced);
+    }
+
+    #[test]
+    fn cannon_fires_every_190_frames() {
+        let mut lvl = Level::flat(40);
+        lvl.cannons.push(crate::level::Cannon {
+            x: 200.0,
+            y: 32.0,
+            angle: 180.0,
+        });
+        let mut w = World::with_level(lvl);
+        w.player.x = 300.0; // behind the cannon (it fires left)
+        let mut shots = Vec::new();
+        for f in 0..450 {
+            w.step(Input::default());
+            if w.events.contains(&Event::Kick) {
+                shots.push(f);
+            }
+        }
+        assert_eq!(shots.len(), 3);
+        assert_eq!(shots[1] - shots[0], 190);
     }
 
     #[test]

@@ -114,6 +114,10 @@ them:
   1 tile (plus) for terrain and 32 px for actors/player [inf].
 - Fire Bar rotation 2.8125°/frame (the shared counter's step was not located); Burner flame
   12 px wide × 48 px (texture length); one-way walls are drawn nowhere yet (no M1 texture found).
+- Seesaw rider weight = 1 per px of lever arm; Grinder hurt radius 20 px; cannon diagonal
+  facings (odd values of (flags >> 24) & 7) mapped as 1 down-left, 3 down-right, 5 up-left,
+  7 up-right [inf]. Sprites don't rotate yet: seesaw drawn as stepped tiles, cannon barrels not
+  drawn.
 - Sprite art offsets inside textures are measured from the textures (e.g. the Goomba sits in the
   top half of its 16×32 image) until BFRES quad placement is imported. (Superseded: BFRES quads,
   see the Phase 5 step 3 entry.)

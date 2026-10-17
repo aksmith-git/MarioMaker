@@ -90,6 +90,16 @@ pub enum Kind {
     BanzaiBill {
         dir: u8,
     },
+    /// Bumper: bounces the player (82-bumper.md).
+    Bumper,
+    /// Grinder (saw): hazard circle around (x, y + 24).
+    Grinder,
+    /// Seesaw plank `width` tiles wide pivoting at its centre (91-seesaw.md).
+    Seesaw {
+        width: u8,
+    },
+    /// Airship cannonball: straight line at 1 px/frame (velocity in vx, vy).
+    Cannonball,
 }
 
 impl Kind {
@@ -102,6 +112,7 @@ impl Kind {
                 | Kind::Piranha { .. }
                 | Kind::BulletBill
                 | Kind::BanzaiBill { .. }
+                | Kind::Cannonball
                 | Kind::Spiny
                 | Kind::Buzzy
                 | Kind::SpikeTop
@@ -148,7 +159,12 @@ impl Kind {
     pub fn is_platform(self) -> bool {
         matches!(
             self,
-            Kind::Thwomp { .. } | Kind::Lift { .. } | Kind::Spring | Kind::Muncher | Kind::Donut
+            Kind::Thwomp { .. }
+                | Kind::Lift { .. }
+                | Kind::Spring
+                | Kind::Muncher
+                | Kind::Donut
+                | Kind::Seesaw { .. }
         )
     }
     pub fn is_item(self) -> bool {
@@ -306,6 +322,10 @@ impl Actor {
             Kind::Muncher if self.mode == Mode::Normal => {
                 Some((self.x - 8.0, self.y, self.x + 8.0, self.y + 16.0, false))
             }
+            Kind::Seesaw { width } => {
+                let hw = width as f32 * 8.0;
+                Some((self.x - hw, self.y + 8.0, self.x + hw, self.y + 16.0, true))
+            }
             Kind::Donut => Some((
                 self.x - 8.0,
                 self.y + 8.0,
@@ -318,6 +338,54 @@ impl Actor {
                 Some((self.x - 8.0, top - 4.0, self.x + 8.0, top, true))
             }
             _ => None,
+        }
+    }
+
+    /// Top-surface slope of a platform (seesaw tilt: `heading` in degrees).
+    pub fn solid_slope(&self) -> f32 {
+        match self.kind {
+            Kind::Seesaw { .. } => self.heading.to_radians().tan(),
+            _ => 0.0,
+        }
+    }
+
+    /// Seesaw (91-seesaw.md): riders' lever arm tilts the plank. Tip speed ω (`speed`) gains
+    /// lever / (6·64·W²) per frame (at least 0.0015), the angle advances 2·asin(ω/16); limits
+    /// ±45° with bounce e = (W + 3)/36; free damping ω × 0.95 and a slow return to level.
+    /// Rider weight 1 per px of lever arm [inf].
+    fn step_seesaw(&mut self, width: u8) {
+        let w = width as f32;
+        let lever = if self.ridden {
+            self.target.0 - self.x
+        } else {
+            0.0
+        };
+        if lever.abs() > 0.5 {
+            // positive lever (rider on the right) pushes the right end down (negative angle)
+            let mut a = lever / (6.0 * 64.0 * w * w);
+            if a.abs() < 0.0015 {
+                a = 0.0015 * a.signum();
+            }
+            self.speed -= a;
+        } else {
+            self.speed *= 0.95;
+            let th = self.heading.abs().min(25.0);
+            let back = (0.0025 * th / 25.0).max(0.001);
+            if self.heading > 0.0 {
+                self.speed -= back;
+            } else if self.heading < 0.0 {
+                self.speed += back;
+            }
+            if self.heading.abs() < 0.125 && self.speed.abs() < 0.00075 {
+                self.heading = 0.0;
+                self.speed = 0.0;
+            }
+        }
+        self.speed = self.speed.clamp(-8.0, 8.0);
+        self.heading += (2.0 * (self.speed / 16.0).clamp(-1.0, 1.0).asin()).to_degrees();
+        if self.heading.abs() > 45.0 {
+            self.heading = 45.0 * self.heading.signum();
+            self.speed = -self.speed * (w + 3.0) / 36.0;
         }
     }
 
@@ -536,7 +604,7 @@ impl Actor {
                 self.die_fall(self.x - self.dir as f32);
                 true
             }
-            Kind::BulletBill | Kind::BanzaiBill { .. } => {
+            Kind::BulletBill | Kind::BanzaiBill { .. } | Kind::Cannonball => {
                 // DieStamp for a Bullet Bill: it drops away
                 self.mode = Mode::DieFall;
                 self.vx = 0.0;
@@ -1060,6 +1128,17 @@ impl Actor {
                 self.vy = (self.vy - 0.1875).max(-2.0);
                 self.y += self.vy;
             }
+            Kind::Seesaw { width } => self.step_seesaw(width),
+            Kind::Cannonball => {
+                self.x += self.vx;
+                self.y += self.vy;
+            }
+            Kind::Bumper => {
+                if self.timer > 0 {
+                    self.timer -= 1;
+                }
+            }
+            Kind::Grinder => {}
             Kind::PSwitch => {
                 if self.phase > 0 {
                     // pressed: squash animation, then removed (PushReserve 2 + DelWait 2 + anim)

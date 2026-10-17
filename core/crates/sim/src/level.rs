@@ -51,6 +51,16 @@ pub struct Solid {
     pub top_only: bool,
     /// Actor id.
     pub owner: u32,
+    /// Top-surface slope (dy/dx about the box centre; seesaws). 0 = flat.
+    pub slope: f32,
+}
+
+impl Solid {
+    /// Height of the top surface at x.
+    pub fn top_at(&self, x: f32) -> f32 {
+        let cx = (self.x0 + self.x1) / 2.0;
+        self.y1 + self.slope * (x.clamp(self.x0, self.x1) - cx)
+    }
 }
 
 /// A tile to draw: grid position and atlas index (row-major, 16 per row).
@@ -142,6 +152,15 @@ pub struct Spawn {
     pub pipe: Option<(PipeDir, f32, f32)>,
     /// Drifts down under a parachute (flag 0x8000).
     pub parachute: bool,
+}
+
+/// An airship cannon (47): block origin, barrel angle (degrees), next shot timer kept by the
+/// world.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cannon {
+    pub x: f32,
+    pub y: f32,
+    pub angle: f32,
 }
 
 /// The area's liquid (themes.md §3): kind 1 water, 2 lava, 3 poison; heights in px
@@ -280,6 +299,7 @@ pub struct Level {
     pub conveyors: Vec<(i32, i32, i32, f32)>,
     pub burners: Vec<Burner>,
     pub firebars: Vec<FireBar>,
+    pub cannons: Vec<Cannon>,
     pub liquid: Option<LiquidSpec>,
     /// One-way walls (drawing): centre x, bottom y, orientation.
     pub oneway: Vec<(f32, f32, u8)>,
@@ -342,8 +362,8 @@ pub fn switch_atlas(kind: BlockKind, on: bool) -> u32 {
 /// (sound effect) are decoration only.
 pub const SUPPORTED_PARTS: &[i16] = &[
     0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27,
-    28, 29, 32, 33, 34, 35, 37, 38, 40, 41, 43, 44, 46, 53, 54, 55, 57, 63, 66, 67, 70, 71, 87, 88,
-    90, 99, 100, 109,
+    28, 29, 32, 33, 34, 35, 37, 38, 40, 41, 43, 44, 46, 47, 53, 54, 55, 57, 63, 66, 67, 68, 70, 71,
+    82, 87, 88, 90, 91, 99, 100, 109,
 ];
 
 /// Why a course is not fully playable yet: one entry per missing feature (empty = playable).
@@ -430,6 +450,7 @@ impl Level {
             conveyors: Vec::new(),
             burners: Vec::new(),
             firebars: Vec::new(),
+            cannons: Vec::new(),
             liquid: None,
             oneway: Vec::new(),
             doors: Vec::new(),
@@ -553,6 +574,11 @@ impl Level {
                 33 => Some(Kind::OneUp),
                 2 => Some(Kind::Piranha {
                     fire: o.flags & 0x4 != 0,
+                }),
+                82 => Some(Kind::Bumper),
+                68 => Some(Kind::Grinder),
+                91 => Some(Kind::Seesaw {
+                    width: o.width.max(2),
                 }),
                 32 => Some(Kind::BanzaiBill {
                     dir: ((o.flags >> 22) & 3) as u8,
@@ -704,6 +730,27 @@ impl Level {
                     }
                 }
                 lvl.oneway.push((cx, by, ((o.flags >> 22) & 3) as u8));
+                continue;
+            }
+            if o.id == 47 {
+                // cannon: solid block; barrel direction from the facing field (flags >> 24) & 7
+                // (even values left/right/down/up as for Piranha Plants; odd = diagonals [inf])
+                lvl.set(tx, ty, Cell::Solid);
+                let angle = match (o.flags >> 24) & 7 {
+                    0 => 180.0,
+                    1 => 225.0,
+                    2 => 0.0,
+                    3 => 315.0,
+                    4 => 270.0,
+                    5 => 135.0,
+                    6 => 90.0,
+                    _ => 45.0,
+                };
+                lvl.cannons.push(Cannon {
+                    x: tx as f32 * TILE + 8.0,
+                    y: ty as f32 * TILE,
+                    angle,
+                });
                 continue;
             }
             if o.id == 54 {
@@ -1098,6 +1145,7 @@ impl Level {
             conveyors: Vec::new(),
             burners: Vec::new(),
             firebars: Vec::new(),
+            cannons: Vec::new(),
             liquid: None,
             oneway: Vec::new(),
             doors: Vec::new(),

@@ -925,13 +925,18 @@ impl Player {
             let mut ride = None;
             for b in &level.solids {
                 let over = self.x + s.foot_x > b.x0 && self.x - s.foot_x < b.x1;
-                let reach = if was_on_ground { 2.0 } else { 0.0 };
+                let reach = if was_on_ground {
+                    2.0 + b.slope.abs() * 2.0
+                } else {
+                    0.0
+                };
+                let top = b.top_at(self.x);
                 if over
-                    && self.y <= b.y1 + reach
-                    && prev_y >= b.y1 - b.dy.abs() - 1.0
-                    && landed.is_none_or(|t| b.y1 >= t)
+                    && self.y <= top + reach
+                    && prev_y >= top - b.dy.abs() - 1.0 - b.slope.abs() * 2.0
+                    && landed.is_none_or(|t| top >= t)
                 {
-                    landed = Some(b.y1);
+                    landed = Some(top);
                     ride = Some(b.owner);
                     on_slope = None;
                 }
