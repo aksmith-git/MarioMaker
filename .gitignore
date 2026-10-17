@@ -36,3 +36,6 @@ __pycache__/
 
 # Swift
 /app/.build/
+
+# agent worktrees (local only)
+/.claude/worktrees/
