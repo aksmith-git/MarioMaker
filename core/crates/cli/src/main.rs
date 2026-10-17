@@ -47,6 +47,13 @@ enum Cmd {
         #[arg(long)]
         wav: Option<PathBuf>,
     },
+    /// Report which SMM2 courses the engine can fully play and which missing features block the
+    /// rest (zlib or raw course data). Prints a summary, or one JSON line per course with --each.
+    Coverage {
+        files: Vec<PathBuf>,
+        #[arg(long)]
+        each: bool,
+    },
     /// Import the user's own extracted SMM2 RomFS + ExeFS into an engine asset cache.
     Import {
         #[arg(long)]
@@ -301,6 +308,64 @@ fn main() -> ExitCode {
             } else {
                 ExitCode::SUCCESS
             }
+        }
+        Cmd::Coverage { files, each } => {
+            let mut blockers: std::collections::BTreeMap<String, usize> = Default::default();
+            let (mut total, mut ok) = (0usize, 0usize);
+            let mut by_style: std::collections::BTreeMap<String, (usize, usize)> =
+                Default::default();
+            for f in &files {
+                let Ok(raw) = std::fs::read(f) else { continue };
+                let data = if raw.len() == mmk_formats::smm2::COURSE_SIZE {
+                    raw
+                } else {
+                    let mut out = Vec::new();
+                    if flate2::read::ZlibDecoder::new(&raw[..])
+                        .read_to_end(&mut out)
+                        .is_err()
+                    {
+                        continue;
+                    }
+                    out
+                };
+                let Ok(c) = mmk_formats::smm2::Course::parse(&data) else {
+                    continue;
+                };
+                let style = c.header.game_style.as_str_lossy();
+                let mut missing = mmk_sim::level::unsupported_features(&c);
+                if style != "M1" {
+                    missing.insert(0, format!("style {style}"));
+                }
+                total += 1;
+                let e = by_style.entry(style.clone()).or_default();
+                e.0 += 1;
+                if missing.is_empty() {
+                    ok += 1;
+                    e.1 += 1;
+                }
+                if each {
+                    println!(
+                        "{}",
+                        serde_json::json!({"file": f.display().to_string(), "style": style, "missing": missing})
+                    );
+                }
+                // a course counts toward a blocker only when it's the only thing missing … and
+                // toward every blocker otherwise (weighted view below)
+                for m in &missing {
+                    *blockers.entry(m.clone()).or_default() += 1;
+                }
+            }
+            println!("{ok} of {total} courses fully playable");
+            for (s, (n, k)) in &by_style {
+                println!("  {s}: {k}/{n}");
+            }
+            let mut v: Vec<_> = blockers.into_iter().collect();
+            v.sort_by(|a, b| b.1.cmp(&a.1));
+            println!("most common blockers (courses affected):");
+            for (m, n) in v.iter().take(40) {
+                println!("  {n:5}  {m}");
+            }
+            ExitCode::SUCCESS
         }
         Cmd::Byml { file } => {
             let res = std::fs::read(&file)

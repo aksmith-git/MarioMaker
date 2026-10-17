@@ -292,6 +292,7 @@ dependencies = [
  "flate2",
  "mmk-formats",
  "mmk-import",
+ "mmk-sim",
  "serde_json",
 ]
 

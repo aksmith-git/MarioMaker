@@ -90,7 +90,7 @@ pub fn course_info(bytes: &[u8], assets: Option<&MmkAssets>) -> Result<MmkCourse
     let c = Course::parse(&data).map_err(|e| e.to_string())?;
     let h = &c.header;
     let style = h.game_style.as_str_lossy();
-    let unsupported = 0;
+    let unsupported = mmk_sim::level::unsupported_features(&c).len() as u32;
     let mut info = MmkCourseInfo {
         theme: c.main.header.theme,
         sub_theme: c.sub.header.theme,

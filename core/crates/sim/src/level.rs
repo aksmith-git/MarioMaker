@@ -291,6 +291,53 @@ pub fn switch_atlas(kind: BlockKind, on: bool) -> u32 {
     }
 }
 
+/// Course part ids the engine implements (fully or in a documented simplified form). Ids 26/27/
+/// 37/38 (start/goal ground, goal, start sign) come from the header; 66 (arrow sign) and 109
+/// (sound effect) are decoration only.
+pub const SUPPORTED_PARTS: &[i16] = &[
+    0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 25, 26, 27, 28,
+    29, 33, 34, 35, 37, 38, 40, 41, 43, 44, 46, 53, 55, 57, 63, 66, 70, 71, 87, 88, 90, 99, 100,
+    109,
+];
+
+/// Why a course is not fully playable yet: one entry per missing feature (empty = playable).
+pub fn unsupported_features(course: &Course) -> Vec<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for (ai, area) in course.areas().iter().enumerate() {
+        let h = &area.header;
+        if ai == 1 && area.objects.is_empty() && area.ground.is_empty() {
+            continue; // unused sub-area
+        }
+        if h.theme == 4 {
+            out.insert("theme: underwater (swimming)".to_string());
+        }
+        if h.autoscroll_type != 0 {
+            out.insert("autoscroll".to_string());
+        }
+        if h.liquid_mode != 0 || h.liquid_start_height != 0 {
+            out.insert("rising/still liquid (lava, poison, water)".to_string());
+        }
+        if h.orientation != 0 {
+            out.insert("vertical area".to_string());
+        }
+        for o in area.objects.iter() {
+            if !SUPPORTED_PARTS.contains(&o.id) {
+                out.insert(format!("part {}", o.id));
+            } else if o.flags & 0x400 != 0 {
+                out.insert("objects on tracks".to_string());
+            } else if o.flags & 0x8000 != 0 {
+                out.insert("parachutes".to_string());
+            } else if o.flags & 0x2 != 0 && !matches!(o.id, 0 | 1 | 8) {
+                out.insert(format!("wings on part {}", o.id));
+            }
+        }
+    }
+    if course.header.clear_condition != 0 {
+        out.insert("clear condition".to_string());
+    }
+    out.into_iter().collect()
+}
+
 fn pipe_dir(flags: u32) -> PipeDir {
     match (flags >> 5) & 3 {
         0 => PipeDir::Right,
