@@ -1,0 +1,21 @@
+# --- Proprietary game dumps, keys and extracted data: NEVER commit ---
+/Super Mario Maker (USA) (En,Fr,Es) (Rev 5)/
+*.wux
+*.wud
+*.xci
+*.nsp
+*.nca
+*.nso
+*.rpx
+*.rpl
+*keys*.txt
+*.keys
+prod.keys
+title.keys
+MeloCafe-*.zip
+
+# Private reverse-engineering notes
+/research/
+
+# macOS
+.DS_Store

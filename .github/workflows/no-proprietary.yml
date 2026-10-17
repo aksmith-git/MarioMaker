@@ -1,0 +1,18 @@
+name: no-proprietary-content
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Guard self-tests
+        run: python -m unittest scripts/test_check_no_proprietary.py -v
+      - name: Scan tracked files
+        run: python scripts/check_no_proprietary.py
