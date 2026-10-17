@@ -39,6 +39,52 @@ impl TileDraw {
     }
 }
 
+/// A slope object (87 gentle 2n×n, 88 steep (n+1)×n), in tiles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Slope {
+    pub left: i32,
+    pub bottom: i32,
+    pub width: i32,
+    pub height: i32,
+    /// true: low on the left, high on the right ("/")
+    pub rising: bool,
+    pub steep: bool,
+}
+
+impl Slope {
+    pub fn covers(&self, px: f32) -> bool {
+        let x0 = self.left as f32 * TILE;
+        px >= x0 && px < x0 + self.width as f32 * TILE
+    }
+
+    /// Surface height (px) at x. Gentle: straight line over the full width. Steep: 45° with a
+    /// half-tile flat at each end ([inf]: the extra column of the (n+1)×n footprint).
+    pub fn surface(&self, px: f32) -> f32 {
+        let (x0, w, h) = (
+            self.left as f32 * TILE,
+            self.width as f32 * TILE,
+            self.height as f32 * TILE,
+        );
+        let mut t = ((px - x0) / w).clamp(0.0, 1.0);
+        if !self.rising {
+            t = 1.0 - t;
+        }
+        let rise = if self.steep {
+            let d = t * w - TILE / 2.0;
+            d.clamp(0.0, h)
+        } else {
+            t * h
+        };
+        self.bottom as f32 * TILE + rise
+    }
+
+    /// Steepness index for the slope physics tables (player-physics.md §5.2): gentle → 1,
+    /// steep → 3 ([inf] mapping).
+    pub fn steepness(&self) -> usize {
+        if self.steep { 3 } else { 1 }
+    }
+}
+
 /// A coin placed as a tile (collectable).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CoinTile {
@@ -55,6 +101,7 @@ pub struct Level {
     cells: Vec<Cell>,
     pub tiles: Vec<TileDraw>,
     pub coins: Vec<CoinTile>,
+    pub slopes: Vec<Slope>,
     pub style: String,
     pub theme: u8,
     pub night: bool,
@@ -99,6 +146,7 @@ impl Level {
             cells: vec![Cell::Empty; (width * height) as usize],
             tiles: Vec::new(),
             coins: Vec::new(),
+            slopes: Vec::new(),
             style: course.header.game_style.as_str_lossy(),
             theme: h.theme,
             night: h.is_night(),
@@ -130,10 +178,11 @@ impl Level {
             lvl.fill_ground(goal_left, 11, course.header.goal_y as i32);
         }
 
-        // tile-like objects
+        // tile-like objects: (x, y) is the centre of the bottom-left tile [toost LevelDrawer
+        // semisolid/pipe placement; course-loading.md: tile parts always sit on tile centres]
         for o in area.objects.iter() {
             let (w, hgt) = (o.width.max(1) as i32, o.height.max(1) as i32);
-            let left_px = o.x as f32 / 10.0 - w as f32 * 8.0;
+            let left_px = o.x as f32 / 10.0 - 8.0;
             let bottom_px = o.y as f32 / 10.0 - 8.0;
             let tx = (left_px / TILE).round() as i32;
             let ty = (bottom_px / TILE).round() as i32;
@@ -202,10 +251,82 @@ impl Level {
                         });
                     }
                 }
+                87 | 88 => {
+                    // slopes: bit 20 = 0 rises to the right ("/"), 1 falls to the right ("\")
+                    let rising = (o.flags >> 20) & 1 == 0;
+                    let steep = o.id == 88;
+                    let slope = Slope {
+                        left: tx,
+                        bottom: ty,
+                        width: w,
+                        height: hgt,
+                        rising,
+                        steep,
+                    };
+                    for dx in 0..w {
+                        for dy in 0..hgt {
+                            // cells entirely under the surface are solid; surface cells are
+                            // resolved against the slope line
+                            let (cx0, cx1) = ((tx + dx) as f32 * TILE, (tx + dx + 1) as f32 * TILE);
+                            let low = slope.surface(cx0).min(slope.surface(cx1 - 0.01));
+                            let cell_top = (ty + dy + 1) as f32 * TILE;
+                            if cell_top <= low + 0.01 {
+                                lvl.set(tx + dx, ty + dy, Cell::Solid);
+                            }
+                        }
+                    }
+                    lvl.draw_slope(&slope);
+                    lvl.slopes.push(slope);
+                }
                 _ => {}
             }
         }
         lvl
+    }
+
+    /// Slope art from the field atlas: per column, the cell holding the surface gets a 45° piece
+    /// (atlas row 24) or a lower/upper 2:1 half piece (row 28); cells below get interior ground.
+    /// [inf] atlas positions read off the M1 atlas; to be checked against the game.
+    fn draw_slope(&mut self, sl: &Slope) {
+        for dx in 0..sl.width {
+            let x = sl.left + dx;
+            let (x0, x1) = (x as f32 * TILE, (x + 1) as f32 * TILE - 0.01);
+            let (s0, s1) = (sl.surface(x0), sl.surface(x1));
+            let (lo, hi) = (s0.min(s1), s0.max(s1));
+            if hi - lo < 1.0 {
+                continue; // flat part (steep slope ends): interior below, nothing on top
+            }
+            let row = (lo / TILE).floor() as i32;
+            for y in sl.bottom..row {
+                self.tiles.push(TileDraw {
+                    x,
+                    y,
+                    atlas: GROUND_ATLAS_BASE + 12,
+                });
+            }
+            let rising = s1 > s0;
+            let atlas = if hi - lo > 12.0 {
+                if rising { 24 * 16 } else { 24 * 16 + 1 }
+            } else {
+                let upper = lo - row as f32 * TILE >= 7.9;
+                match (rising, upper) {
+                    (true, false) => 28 * 16,
+                    (true, true) => 28 * 16 + 1,
+                    (false, true) => 28 * 16 + 2,
+                    (false, false) => 28 * 16 + 3,
+                }
+            };
+            self.tiles.push(TileDraw { x, y: row, atlas });
+        }
+    }
+
+    /// Highest slope surface at x (px), if any slope covers x.
+    pub fn slope_at(&self, px: f32) -> Option<(f32, &Slope)> {
+        self.slopes
+            .iter()
+            .filter(|s| s.covers(px))
+            .map(|s| (s.surface(px), s))
+            .max_by(|a, b| a.0.total_cmp(&b.0))
     }
 
     fn fill_ground(&mut self, left: i32, width: i32, height: i32) {
@@ -246,6 +367,17 @@ impl Level {
         self.cell((px / TILE).floor() as i32, (py / TILE).floor() as i32)
     }
 
+    /// Test helper: add a slope and a solid plateau of `plateau_h` tiles from tile `plateau_x` on.
+    pub fn add_test_slope(&mut self, slope: Slope, plateau_x: i32, plateau_h: i32) {
+        let right = (self.right / TILE) as i32;
+        for x in plateau_x..right {
+            for y in 0..plateau_h {
+                self.set(x, y, Cell::Solid);
+            }
+        }
+        self.slopes.push(slope);
+    }
+
     /// A flat test strip (used when no course is loaded).
     pub fn flat(width_tiles: i32) -> Self {
         let mut lvl = Level {
@@ -255,6 +387,7 @@ impl Level {
             cells: vec![Cell::Empty; ((width_tiles + 5) * 28) as usize],
             tiles: Vec::new(),
             coins: Vec::new(),
+            slopes: Vec::new(),
             style: "M1".into(),
             theme: 0,
             night: false,

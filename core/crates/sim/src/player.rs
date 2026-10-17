@@ -5,7 +5,7 @@
 //! Units: px, px/frame, 60 Hz, y up; position = feet centre.
 
 use crate::input::{self, Input};
-use crate::level::{Cell, Level, TILE};
+use crate::level::{Cell, Level, Slope, TILE};
 
 /// Speed thresholds T0..T3 (§2.1).
 const T: [f32; 4] = [0.5, 1.5, 2.25, 3.0];
@@ -20,6 +20,16 @@ const GROUND_RUN: [f32; 6] = [0.1, 0.1, 0.06, 0.029, 0.035, 0.75];
 const GROUND_IDLE: [f32; 6] = [0.07, 0.05, 0.05, 0.035, 0.035, 0.75];
 const AIR_DIR: [f32; 6] = [0.09, 0.08, 0.03, 0.029, 0.021, 0.021];
 const AIR_DIR_RUN: [f32; 6] = [0.09, 0.08, 0.06, 0.029, 0.021, 0.021];
+
+// Slopes, by steepness index 0..4 (§5.2)
+const SLOPE_TARGET_DOWN: [f32; 5] = [1.0, 1.25, 1.25, 1.44, 1.62];
+const SLOPE_TARGET_UP: [f32; 5] = [1.0, 0.6875, 0.6875, 0.5, 0.3];
+const SLOPE_ACCEL_DOWN: [f32; 5] = [0.033, 0.044, 0.055, 0.077, 0.187];
+const SLOPE_ACCEL_UP: [f32; 5] = [0.027, 0.027, 0.04, 0.108, 0.153];
+const SLOPE_DECEL_DOWN: [f32; 5] = [0.035, 0.0315, 0.028, 0.021, 0.014];
+const SLOPE_DECEL_UP: [f32; 5] = [0.035, 0.046, 0.06, 0.123, 0.175];
+/// How far the feet may snap up/down to follow a slope surface while grounded (px). [inf]
+const SLOPE_SNAP: f32 = 6.0;
 
 const SKID_ENTER: f32 = 2.5;
 const SKID_DECEL: f32 = 0.12;
@@ -113,6 +123,9 @@ pub struct Player {
     /// Distance walked (px), drives the walk animation.
     pub walk_phase: f32,
     pub dead: bool,
+    /// Slope under the feet while grounded: (steepness index, +1 if the surface rises to the
+    /// right / −1 if it falls).
+    pub slope: Option<(usize, i32)>,
     skid: SkidPhase,
     prev_jump: bool,
 }
@@ -129,6 +142,7 @@ impl Player {
             pose: Pose::Wait,
             walk_phase: 0.0,
             dead: false,
+            slope: None,
             skid: SkidPhase::None,
             prev_jump: false,
         }
@@ -271,8 +285,19 @@ impl Player {
 
     /// Axis-separated movement against the tile grid using the spec's sensor points.
     fn move_and_collide(&mut self, level: &Level, s: &Sensors) {
-        // horizontal
-        self.x += self.vx;
+        // horizontal: on a slope, ground speed is along the surface (x scaled by |cos θ|, §1.3)
+        let cos = match self.slope {
+            Some((steep, _)) if self.on_ground => {
+                if steep >= 3 {
+                    std::f32::consts::FRAC_1_SQRT_2
+                } else {
+                    0.894_427_2
+                }
+            }
+            _ => 1.0,
+        };
+        let was_on_ground = self.on_ground;
+        self.x += self.vx * cos;
         for dir in [-1.0f32, 1.0] {
             let wx = self.x + dir * s.wall_x;
             let hit = [s.wall_y0, s.wall_y1]
@@ -305,6 +330,7 @@ impl Player {
                 self.vy = 0.0;
             }
             self.on_ground = false;
+            self.slope = None;
         } else {
             // feet: land on solid cells, or on one-way tops we were above last frame
             let mut landed = None;
@@ -317,13 +343,32 @@ impl Player {
                     landed = Some(landed.map_or(top, |t: f32| t.max(top)));
                 }
             }
+            // slope surfaces under either foot (and the centre, for the slope state)
+            let mut on_slope: Option<&Slope> = None;
+            for fx in [-s.foot_x, 0.0, s.foot_x] {
+                if let Some((surf, slope)) = level.slope_at(self.x + fx) {
+                    let reach = if was_on_ground { SLOPE_SNAP } else { 0.0 };
+                    let can_land = self.y <= surf + reach && prev_y >= surf - SLOPE_SNAP;
+                    if can_land && landed.is_none_or(|t| surf >= t) {
+                        landed = Some(surf);
+                        if fx == 0.0 || on_slope.is_none() {
+                            on_slope = Some(slope);
+                        }
+                    }
+                }
+            }
             match landed {
                 Some(top) => {
                     self.y = top;
                     self.vy = 0.0;
                     self.on_ground = true;
+                    self.slope =
+                        on_slope.map(|sl| (sl.steepness(), if sl.rising { 1 } else { -1 }));
                 }
-                None => self.on_ground = false,
+                None => {
+                    self.on_ground = false;
+                    self.slope = None;
+                }
             }
         }
     }
@@ -430,6 +475,46 @@ mod tests {
             );
         }
         assert!(p.x <= level.right - SMALL_M1.wall_x + 0.01);
+    }
+
+    #[test]
+    fn walks_up_and_down_a_slope() {
+        // flat ground with a gentle "/" slope from tile 10 (2 wide, 1 high) onto a raised plateau
+        let mut level = Level::flat(60);
+        level.add_test_slope(
+            Slope {
+                left: 10,
+                bottom: 2,
+                width: 4,
+                height: 2,
+                rising: true,
+                steep: false,
+            },
+            14,
+            4,
+        );
+        let mut p = Player::new(56.0, 32.0);
+        let mut max_y: f32 = 0.0;
+        for _ in 0..400 {
+            p.step(
+                Input {
+                    buttons: input::RIGHT,
+                },
+                &level,
+            );
+            max_y = max_y.max(p.y);
+            assert!(!p.dead);
+        }
+        assert!(
+            p.x > 15.0 * TILE,
+            "should have walked past the slope, x = {}",
+            p.x
+        );
+        assert!(
+            (max_y - 4.0 * TILE).abs() < 0.01,
+            "should end up on the plateau, y = {max_y}"
+        );
+        assert!(p.on_ground);
     }
 
     #[test]
