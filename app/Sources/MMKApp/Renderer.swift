@@ -186,6 +186,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         // world px → NDC: x' = x * sx + tx (camera snapped to whole pixels)
         let camX = Float(snap.camera_x.rounded()), camY = Float(snap.camera_y.rounded())
         var xform = SIMD4<Float>(2 / snap.view_w, 2 / snap.view_h, -1 - 2 * camX / snap.view_w, -1 - 2 * camY / snap.view_h)
+        if mmk_engine_view_flags(engine) & 1 != 0 {
+            // underground night: the course is shown upside down
+            xform.y = -xform.y
+            xform.w = -xform.w
+        }
 
         enc.setRenderPipelineState(pipeline)
         enc.setFragmentSamplerState(sampler, index: 0)

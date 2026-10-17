@@ -495,6 +495,17 @@ pub unsafe extern "C" fn mmk_engine_debug_teleport(engine: *mut MmkEngine, x: f3
     })
 }
 
+/// View flags: bit 0 = draw upside down (underground night).
+///
+/// # Safety
+/// `engine` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_engine_view_flags(engine: *const MmkEngine) -> u32 {
+    guard(0, || {
+        unsafe { engine.as_ref() }.map_or(0, |e| e.world.upside_down() as u32)
+    })
+}
+
 /// Background clear colour (0xRRGGBBAA): the theme background's top-left pixel when the cache has
 /// it as RGBA8, black otherwise (underground, castle, placeholder art).
 ///

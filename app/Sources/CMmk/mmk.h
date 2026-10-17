@@ -86,6 +86,8 @@ void mmk_engine_snapshot(MmkEngine *engine, MmkSnapshot *out);
 void mmk_engine_hud(const MmkEngine *engine, MmkHud *out);
 // Background clear colour 0xRRGGBBAA (theme sky; black when the theme has no background art)
 uint32_t mmk_engine_clear_color(const MmkEngine *engine);
+// View flags: bit 0 = draw upside down (underground night)
+uint32_t mmk_engine_view_flags(const MmkEngine *engine);
 void mmk_engine_restart(MmkEngine *engine);
 void mmk_engine_debug_teleport(MmkEngine *engine, float x, float y);
 

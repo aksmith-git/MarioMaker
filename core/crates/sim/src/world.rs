@@ -189,6 +189,9 @@ pub struct World {
     pub snakes: Vec<Snake>,
     /// Swinging claw holding the player (actor id).
     held_by: Option<u32>,
+    /// Desert-night wind: level, frame counter.
+    pub wind: f32,
+    wind_n: i32,
     prev_jump_claw: bool,
 }
 
@@ -298,6 +301,8 @@ impl World {
             snakes: Vec::new(),
             held_by: None,
             prev_jump_claw: false,
+            wind: 0.0,
+            wind_n: 0,
         };
         w.field_model = Box::leak(field_model(&w.level.style, w.level.theme).into_boxed_str());
         w.reset_course();
@@ -509,6 +514,17 @@ impl World {
     }
 
     pub fn step(&mut self, input: Input) {
+        let input = if self.upside_down() {
+            // swap Up and Down
+            let b = input.buttons & !(input::UP | input::DOWN);
+            let up = input.held(input::UP);
+            let down = input.held(input::DOWN);
+            Input {
+                buttons: b | if up { input::DOWN } else { 0 } | if down { input::UP } else { 0 },
+            }
+        } else {
+            input
+        };
         self.events.clear();
         self.tick += 1;
 
@@ -544,6 +560,9 @@ impl World {
         let was_ground = self.player.on_ground;
         let jump_held = input.held(input::JUMP);
         self.player.on_ice = self.ice_under_player();
+        self.player.low_gravity = self.level.theme == 8 && self.level.night;
+        self.step_wind();
+        self.player.wind = if self.player.alive() { self.wind } else { 0.0 };
         if let Some(l) = &mut self.liquid {
             l.step();
         }
@@ -1739,6 +1758,33 @@ impl World {
             m.timer = 600;
             self.add_actor(m);
         }
+    }
+
+    /// Desert-night wind, SMB1 pattern (themes.md §2): period 600 frames, wind (toward −1, i.e.
+    /// left) during the last 240, w eased by 0.1 per frame.
+    fn step_wind(&mut self) {
+        if !(self.level.theme == 7 && self.level.night) {
+            self.wind = 0.0;
+            return;
+        }
+        const P: i32 = 600;
+        const A: i32 = 240;
+        if self.wind_n > 0 {
+            self.wind_n -= 1;
+        }
+        if self.wind_n < A {
+            self.wind = (self.wind - 0.1).max(-1.0);
+            if self.wind_n == 0 {
+                self.wind_n = P;
+            }
+        } else if self.wind < 0.0 {
+            self.wind = (self.wind + 0.1).min(0.0);
+        }
+    }
+
+    /// Underground night shows the course upside down with Up and Down swapped (themes.md §1.1).
+    pub fn upside_down(&self) -> bool {
+        self.level.theme == 1 && self.level.night
     }
 
     /// Twister wind column: x within ±16 of the twister, from its feet to the column top. The
@@ -4519,6 +4565,38 @@ mod tests {
         );
         assert!(w.player.x >= w.camera_x + 8.0 - 0.01, "pushed along");
         assert!(w.player.alive());
+    }
+
+    #[test]
+    fn sky_night_low_gravity_floats_longer() {
+        let airtime = |night: bool| {
+            let mut lvl = Level::flat(40);
+            lvl.theme = 8;
+            lvl.night = night;
+            let mut w = World::with_level(lvl);
+            run(&mut w, 0, 2);
+            run(&mut w, input::JUMP, 1);
+            let mut n = 1;
+            while !w.player.on_ground && n < 1000 {
+                w.step(Input {
+                    buttons: input::JUMP,
+                });
+                n += 1;
+            }
+            n
+        };
+        assert!(airtime(true) > airtime(false) * 2);
+    }
+
+    #[test]
+    fn desert_night_wind_pushes_left() {
+        let mut lvl = Level::flat(80);
+        lvl.theme = 7;
+        lvl.night = true;
+        let mut w = World::with_level(lvl);
+        w.player.x = 600.0;
+        run(&mut w, 0, 120);
+        assert!(w.player.x < 600.0 - 50.0, "x {}", w.player.x);
     }
 
     #[test]

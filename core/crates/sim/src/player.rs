@@ -228,6 +228,10 @@ pub struct Player {
     pub spiked: bool,
     /// Below a water surface (set by the world each frame): swim physics.
     pub in_water: bool,
+    /// Sky theme at night: gravity × 0.2, max fall × 0.5, jumps × 0.7 (≤ 2.7) (§1.3, §3.1).
+    pub low_gravity: bool,
+    /// Desert-night wind level w (−1…1): the position moves w px per frame (themes.md §2).
+    pub wind: f32,
     /// Moving solid the head bonked this frame (POW blocks react).
     pub head_solid: Option<u32>,
     was_in_water: bool,
@@ -264,6 +268,8 @@ impl Player {
             ride: None,
             spiked: false,
             in_water: false,
+            low_gravity: false,
+            wind: 0.0,
             head_solid: None,
             was_in_water: false,
             exit_window: 0,
@@ -658,6 +664,9 @@ impl Player {
                 self.ground(inp);
                 if pressed {
                     self.vy = JUMP_BASE + jump_bonus(self.vx.abs());
+                    if self.low_gravity {
+                        self.vy = (self.vy * 0.7).min(2.7);
+                    }
                     self.on_ground = false;
                     self.skid = SkidPhase::None;
                 }
@@ -673,9 +682,14 @@ impl Player {
             } else {
                 GRAVITY_RELEASED[vy_band(self.vy)]
             };
-            self.vy = (self.vy + g).max(FALL_CAP);
+            if self.low_gravity && !self.on_ground {
+                self.vy = (self.vy + 0.2 * g).max(0.5 * FALL_CAP);
+            } else {
+                self.vy = (self.vy + g).max(FALL_CAP);
+            }
         }
         self.was_in_water = self.in_water;
+        self.x += self.wind;
 
         let sensors = self.sensors();
         self.move_and_collide(level, sensors);
