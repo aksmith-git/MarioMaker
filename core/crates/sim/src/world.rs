@@ -3084,7 +3084,15 @@ impl World {
             return;
         }
         // a clear condition not met: the goal lets the player pass
-        if !self.clear.met(p.at_goal()) {
+        let held_shell = p.held.is_some_and(|id| {
+            self.actors
+                .iter()
+                .any(|a| a.id == id && matches!(a.kind, Kind::Shell { .. }) && !a.buzzy)
+        });
+        if !self.clear.met(crate::clear::AtGoal {
+            holding_shell: held_shell,
+            ..p.at_goal()
+        }) {
             return;
         }
         // grab: snap to the pole, score by height

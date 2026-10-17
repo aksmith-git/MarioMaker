@@ -949,6 +949,7 @@ impl Player {
             },
             shoe: self.shoe.is_some(),
             clown_car: self.clown.is_some(),
+            holding_shell: false,
         }
     }
 

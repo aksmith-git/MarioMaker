@@ -407,6 +407,7 @@ enum ClearConditionText {
         case 13: return "\(mark) goal as Raccoon"
         case 14: return "\(mark) goal with a cape"
         case 15: return "\(mark) goal as Propeller"
+        case 16: return "\(mark) goal holding a shell"
         default: return "⚑ condition not supported"
         }
     }

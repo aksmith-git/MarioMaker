@@ -67,6 +67,8 @@ pub struct AtGoal {
     pub form: u8,
     pub shoe: bool,
     pub clown_car: bool,
+    /// Carrying a Koopa shell.
+    pub holding_shell: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,6 +93,8 @@ pub enum Goal {
     /// Reach the goal wearing a Goomba's Shoe / flying a Koopa Clown Car.
     Shoe,
     ClownCar,
+    /// Reach the goal holding a Koopa shell.
+    HoldingShell,
     /// Reach the goal without taking damage / without landing after leaving the ground.
     NoDamage,
     NoLanding,
@@ -145,6 +149,7 @@ impl ClearCondition {
                 45 => Goal::Star,
                 58 => Goal::Shoe,
                 62 => Goal::ClownCar,
+                72 => Goal::HoldingShell,
                 _ => Goal::Unsupported(i),
             },
             (3, Some(70)) => Goal::NoDamage,
@@ -229,6 +234,7 @@ impl ClearCondition {
             form,
             shoe,
             clown_car,
+            holding_shell,
         } = at;
         match self.goal {
             Goal::None => true,
@@ -243,6 +249,7 @@ impl ClearCondition {
             Goal::Propeller => form == 5,
             Goal::Shoe => shoe,
             Goal::ClownCar => clown_car,
+            Goal::HoldingShell => holding_shell,
             Goal::NoDamage | Goal::NoLanding => !self.violated,
             Goal::Unsupported(_) => false,
         }
