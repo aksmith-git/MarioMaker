@@ -1,23 +1,28 @@
 //! First-launch importer: the user's own extracted SMM2 RomFS + ExeFS → engine asset cache.
 //!
 //! Stages implemented so far (docs/architecture.md §4): identify, course key table, tables,
-//! textures, audio, manifest. Models follow in a later step. Nothing read or written here ever
-//! goes into the repository; the cache lives in the user's Application Support folder.
+//! textures, audio, sprites (2D quad placement + texture-pattern timing), manifest. 3D models
+//! follow in a later step. Nothing read or written here ever goes into the repository; the cache
+//! lives in the user's Application Support folder.
 
 pub mod audio;
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use mmk_assets::{Mtex, MtexFormat, MtexVariant};
 use mmk_formats::archive::{self, Sarc};
+use mmk_formats::bfres;
 use mmk_formats::bntx::{self, PixelFormat, Variant};
 use mmk_formats::nso::Nso;
 use mmk_formats::smm2::crypto::{KeyTable, decrypt_bcd};
 use mmk_formats::smm2::keyfind;
 use serde_json::{Value, json};
 
-pub const IMPORTER_VERSION: u32 = 2;
+pub mod sprites;
+
+pub const IMPORTER_VERSION: u32 = 3;
 
 /// Builds this importer knows, identified by the NSO module id (first 16 bytes; the rest is 0).
 pub const KNOWN_BUILDS: &[(&str, &str)] = &[
@@ -61,6 +66,8 @@ pub struct ImportReport {
     pub tables: usize,
     pub textures: usize,
     pub sounds: usize,
+    /// Textures with a known sprite quad.
+    pub sprites: usize,
     pub builtin_courses_verified: usize,
 }
 
@@ -204,17 +211,24 @@ fn collect_models(romfs: &Path) -> Result<Vec<(String, Vec<u8>)>> {
     Ok(models)
 }
 
-fn import_textures(cfg: &ImportConfig, out: &Path, progress: Progress) -> Result<usize> {
+/// Textures and sprite data of every model of the imported styles. Returns (textures, sprites).
+fn import_models(cfg: &ImportConfig, out: &Path, progress: Progress) -> Result<(usize, usize)> {
     let models = collect_models(&cfg.romfs)?;
     let mut index = serde_json::Map::new();
-    let mut count = 0;
+    let mut sprite_index = serde_json::Map::new();
+    let (mut count, mut sprite_count) = (0, 0);
     for (i, (model, data)) in models.iter().enumerate() {
         progress("textures", i, models.len());
         let ctx = cfg.romfs.join("Model").join(model);
         let sarc = Sarc::parse(archive::unwrap(data.clone()).map_err(fmt_err(&ctx))?)
             .map_err(fmt_err(&ctx))?;
         let mut entry = serde_json::Map::new();
+        let mut sizes = HashMap::new();
+        let mut bfres = None;
         for (_, member) in sarc.files() {
+            if member.starts_with(b"FRES") {
+                bfres = Some(bfres::parse(member).map_err(fmt_err(&ctx))?);
+            }
             let Some(b) = bntx::find_embedded(member) else {
                 continue;
             };
@@ -228,11 +242,19 @@ fn import_textures(cfg: &ImportConfig, out: &Path, progress: Progress) -> Result
                     t.name.clone(),
                     json!({ "w": m.width, "h": m.height, "format": m.format.name(), "srgb": m.variant == MtexVariant::Srgb }),
                 );
+                sizes.insert(t.name.clone(), (m.width, m.height));
                 count += 1;
             }
         }
         if !entry.is_empty() {
             index.insert(model.clone(), Value::Object(entry));
+        }
+        if let Some(f) = bfres {
+            let s = sprites::model_sprites(&f, &sizes);
+            sprite_count += s.quads.len();
+            if !s.quads.is_empty() || !s.anims.is_empty() {
+                sprite_index.insert(model.clone(), s.to_json());
+            }
         }
     }
     progress("textures", models.len(), models.len());
@@ -240,7 +262,13 @@ fn import_textures(cfg: &ImportConfig, out: &Path, progress: Progress) -> Result
         &out.join("textures/index.json"),
         serde_json::to_string(&index).unwrap().as_bytes(),
     )?;
-    Ok(count)
+    write(
+        &out.join("sprites.json"),
+        serde_json::to_string(&json!({ "version": 1, "models": sprite_index }))
+            .unwrap()
+            .as_bytes(),
+    )?;
+    Ok((count, sprite_count))
 }
 
 pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
@@ -294,8 +322,9 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
     }
     progress("tables", mush.len(), mush.len());
 
-    // 4. textures of every model of the imported styles
-    let texture_count = import_textures(cfg, &out, progress)?;
+    // 4. textures and sprite data (quads, texture-pattern timing) of every model of the
+    //    imported styles
+    let (texture_count, sprite_count) = import_models(cfg, &out, progress)?;
 
     // 5. sounds of the imported styles
     let sound_count = audio::import_audio(&cfg.romfs, &out, STYLES, audio::M1_SOUNDS, progress)?;
@@ -306,10 +335,11 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
         "game": "SMM2",
         "build": build,
         "module_id": nso.module_id_hex(),
-        "stages": ["identify", "keys", "tables", "textures", "audio"],
+        "stages": ["identify", "keys", "tables", "textures", "audio", "sprites"],
         "texture_styles": STYLES,
         "textures": texture_count,
         "sounds": sound_count,
+        "sprites": sprite_count,
         "tables": tables,
         "builtin_courses": courses.len(),
     });
@@ -325,6 +355,7 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
         tables: tables.len(),
         textures: texture_count,
         sounds: sound_count,
+        sprites: sprite_count,
         builtin_courses_verified: courses.len(),
     })
 }

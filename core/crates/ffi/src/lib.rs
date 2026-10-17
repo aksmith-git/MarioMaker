@@ -9,8 +9,8 @@ use std::cell::RefCell;
 use std::ffi::{CStr, CString, c_char};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use mmk_assets::Cache;
-use mmk_sim::{Input, World};
+use mmk_assets::{Cache, Quad};
+use mmk_sim::{Input, Sprite, World};
 
 pub mod course_info;
 pub mod import;
@@ -175,13 +175,16 @@ pub unsafe extern "C" fn mmk_assets_texture(
 
 // --- engine ----------------------------------------------------------------------------------
 
+/// Texture index and BFRES quad of a (model, texture) name; None if the cache lacks the texture.
+type Resolved = Option<(u32, Option<Quad>)>;
+
 pub struct MmkEngine {
     world: World,
     /// The loaded course, kept for `mmk_engine_restart` (None = built-in demo strip).
     course: Option<mmk_formats::smm2::Course>,
     sprites: Vec<MmkSprite>,
-    /// (model, texture) → texture index, resolved once per name.
-    lookup: std::collections::HashMap<(&'static str, &'static str), Option<u32>>,
+    /// (model, texture) → resolved once per name.
+    lookup: std::collections::HashMap<(&'static str, &'static str), Resolved>,
     assets: *const MmkAssets,
     /// Sends sound commands to an attached `MmkAudio` (see `mmk_engine_set_audio`).
     director: Option<Director>,
@@ -371,6 +374,53 @@ pub unsafe extern "C" fn mmk_engine_step(engine: *mut MmkEngine, input: *const M
     })
 }
 
+/// Screen rectangle and texture coordinates of a sim sprite: [x, y, w, h, u0, v0, u1, v1].
+///
+/// Tile sprites (`rect` set) draw that part of the texture into the sim's rectangle. Model
+/// sprites (`rect` None) follow the convention that the sim's (x + w/2, y) is the model origin
+/// and (w, h) the texture size times the sim's scale; when the BFRES quad of the texture is known
+/// it is drawn at origin + quad (scaled), mirrored around the origin for `flip_x`, with the
+/// quad's texture coordinates. Without a quad the texture fills the sim's rectangle.
+/// `flip_y` flips the image in place. Horizontal flipping of the image itself is left to the
+/// renderer (`flags` bit 0 swaps u0/u1).
+pub fn place(s: &Sprite, tex_w: f32, tex_h: f32, quad: Option<Quad>) -> [f32; 8] {
+    let mut out = match (s.image.rect, quad) {
+        (Some((x, y, w, h)), _) => [
+            s.x,
+            s.y,
+            s.w,
+            s.h,
+            x / tex_w,
+            y / tex_h,
+            (x + w) / tex_w,
+            (y + h) / tex_h,
+        ],
+        (None, Some(q)) => {
+            let (sx, sy) = (s.w / tex_w, s.h / tex_h);
+            let (ox, oy) = (s.x + s.w / 2.0, s.y);
+            let (mut x0, mut x1) = (q.x0 * sx, q.x1 * sx);
+            if s.flip_x {
+                (x0, x1) = (-x1, -x0);
+            }
+            [
+                ox + x0,
+                oy + q.y0 * sy,
+                x1 - x0,
+                q.height() * sy,
+                q.u0,
+                q.v0,
+                q.u1,
+                q.v1,
+            ]
+        }
+        (None, None) => [s.x, s.y, s.w, s.h, 0.0, 0.0, 1.0, 1.0],
+    };
+    if s.flip_y {
+        out.swap(5, 7);
+    }
+    out
+}
+
 /// Describe the current frame. Pointers stay valid until the next call on this engine.
 ///
 /// # Safety
@@ -387,37 +437,32 @@ pub unsafe extern "C" fn mmk_engine_snapshot(engine: *mut MmkEngine, out: *mut M
         e.sprites.clear();
         for s in sprites {
             let key = (s.image.model, s.image.texture);
-            let idx = *e
-                .lookup
-                .entry(key)
-                .or_insert_with(|| assets.cache.texture_index(key.0, key.1).map(|i| i as u32));
+            let found = *e.lookup.entry(key).or_insert_with(|| {
+                let i = assets.cache.texture_index(key.0, key.1)?;
+                Some((i as u32, assets.cache.sprite_quad(key.0, key.1)))
+            });
             // missing art (placeholder mode, or not imported yet): report the sprite with
             // MMK_TEXTURE_NONE so the app can draw a stand-in shape
-            let (texture, (u0, mut v0, u1, mut v1)) = match idx {
-                Some(texture) => {
+            let (texture, p) = match found {
+                Some((texture, quad)) => {
                     let t = &assets.cache.textures[texture as usize].texture;
-                    let (tw, th) = (t.width as f32, t.height as f32);
-                    let uv = match s.image.rect {
-                        Some((x, y, w, h)) => (x / tw, y / th, (x + w) / tw, (y + h) / th),
-                        None => (0.0, 0.0, 1.0, 1.0),
-                    };
-                    (texture, uv)
+                    (texture, place(&s, t.width as f32, t.height as f32, quad))
                 }
-                None => (MMK_TEXTURE_NONE, (0.0, 0.0, 1.0, 1.0)),
+                None => (
+                    MMK_TEXTURE_NONE,
+                    place(&s, s.w.max(1.0), s.h.max(1.0), None),
+                ),
             };
-            if s.flip_y {
-                std::mem::swap(&mut v0, &mut v1);
-            }
             e.sprites.push(MmkSprite {
                 texture,
-                x: s.x,
-                y: s.y,
-                w: s.w,
-                h: s.h,
-                u0,
-                v0,
-                u1,
-                v1,
+                x: p[0],
+                y: p[1],
+                w: p[2],
+                h: p[3],
+                u0: p[4],
+                v0: p[5],
+                u1: p[6],
+                v1: p[7],
                 layer: s.layer,
                 flags: s.flip_x as u32,
             });
@@ -596,6 +641,80 @@ pub unsafe extern "C" fn mmk_engine_set_audio(engine: *mut MmkEngine, audio: *co
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sprite(rect: Option<(f32, f32, f32, f32)>, x: f32, y: f32, w: f32, h: f32) -> Sprite {
+        Sprite {
+            image: mmk_sim::render::SpriteImage {
+                model: "M",
+                texture: "t",
+                rect,
+            },
+            x,
+            y,
+            w,
+            h,
+            flip_x: false,
+            flip_y: false,
+            layer: 0,
+        }
+    }
+
+    const GOOMBA: Quad = Quad {
+        x0: -8.0,
+        y0: -16.0,
+        x1: 8.0,
+        y1: 16.0,
+        u0: 0.0,
+        v0: 0.0,
+        u1: 1.0,
+        v1: 1.0,
+    };
+
+    #[test]
+    fn model_sprite_uses_quad_around_origin() {
+        // origin (100, 32): sim passes x = origin - w/2, y = origin
+        let s = sprite(None, 92.0, 32.0, 16.0, 32.0);
+        assert_eq!(
+            place(&s, 16.0, 32.0, Some(GOOMBA)),
+            [92.0, 16.0, 16.0, 32.0, 0.0, 0.0, 1.0, 1.0]
+        );
+        // big (×2): the sim's size is twice the texture size
+        let s = sprite(None, 84.0, 32.0, 32.0, 64.0);
+        assert_eq!(
+            place(&s, 16.0, 32.0, Some(GOOMBA))[..4],
+            [84.0, 0.0, 32.0, 64.0]
+        );
+        // no quad: fill the sim rectangle
+        let s = sprite(None, 92.0, 32.0, 16.0, 32.0);
+        assert_eq!(place(&s, 16.0, 32.0, None)[..4], [92.0, 32.0, 16.0, 32.0]);
+    }
+
+    #[test]
+    fn flips_mirror_around_origin_and_in_place() {
+        let q = Quad {
+            x0: 0.0,
+            x1: 40.0,
+            y0: 0.0,
+            y1: 40.0,
+            ..GOOMBA
+        };
+        let mut s = sprite(None, 92.0, 0.0, 40.0, 40.0); // origin x = 112
+        s.flip_x = true;
+        assert_eq!(place(&s, 40.0, 40.0, Some(q))[..4], [72.0, 0.0, 40.0, 40.0]);
+        s.flip_x = false;
+        s.flip_y = true;
+        let p = place(&s, 40.0, 40.0, Some(q));
+        assert_eq!((p[5], p[7]), (1.0, 0.0));
+    }
+
+    #[test]
+    fn tile_sprite_uses_atlas_rect() {
+        let s = sprite(Some((16.0, 0.0, 16.0, 16.0)), 5.0, 6.0, 16.0, 16.0);
+        assert_eq!(
+            place(&s, 256.0, 256.0, Some(GOOMBA)),
+            [5.0, 6.0, 16.0, 16.0, 0.0625, 0.0, 0.125, 0.0625]
+        );
+    }
 
     /// Sizes the Swift side relies on (mmk.h).
     #[test]

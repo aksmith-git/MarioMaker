@@ -66,6 +66,24 @@ release). Checked identical in v3.0.3. Inferred until the Ryujinx harness can me
   the goal strategy (5 px/frame vertical cap).
 - Player velocity for the followers is the player's vx/vy (the game adds a carrying platform's speed).
 
+## 2026-10-18 — 2D sprites are placed by their BFRES quads; the sim passes model origins (Phase 5 step 3)
+The importer reads each M1 model's BFRES (own minimal reader for version 0.9: skeleton rest pose,
+materials and sampler wraps, shape vertices, texture-pattern animations) and writes
+`sprites.json`: per texture the quad in model space (1 unit = 1 px, origin = actor origin) and
+its texture coordinates; per animation the frame keys. Convention: for model sprites the sim's
+(x + w/2, y) is the model origin and (w, h) the texture size times the scale; the FFI snapshot
+draws the texture at origin + quad (mirrored around the origin for flip_x, flipped in place for
+flip_y). The sim stays asset-free and no longer carries art offsets. Without quad data (old
+caches) the texture fills the sim's rectangle as before.
+Consequences taken from the data as-is: enemies sit 1 px into the ground (Goomba art offset and
+Koopa bone offset agree; Mario does not), the goal flag is mirrored (mirror-repeat sampler),
+the fireball is drawn 16×16 around its centre, the castle flag rests on top of the tower.
+Texture-to-quad matching when several models share a material name (Koopa walk vs shell): the
+quad of the texture's own size wins. Frame timings are exposed (`Cache::anim`); the sim uses them
+only for the Goomba/Koopa walk (10 frames per texture at play rate 1.0 from EnemyModelParams).
+What would change it: Ryujinx captures showing different placement, or code that offsets models
+or scales animation rates (player walk-rate scaling is not known yet).
+
 ## 2026-10-18 — Core-object choices where the specs have no number (Phase 5 step 6)
 Values read from the binary are used as-is (bump curve, coin pop, item emergence, walker speeds,
 shell wake 511, kick 2.5 + 0.5·|v|, death 45-frame pose → vy 3.2 / g −0.16 / restart after 140,
@@ -95,7 +113,8 @@ them:
   blocks; Hammer Bro alternates a 5.5 jump with a 2.5 hop (no drop-through); Bob-omb blast radius
   1 tile (plus) for terrain and 32 px for actors/player [inf].
 - Sprite art offsets inside textures are measured from the textures (e.g. the Goomba sits in the
-  top half of its 16×32 image) until BFRES quad placement is imported.
+  top half of its 16×32 image) until BFRES quad placement is imported. (Superseded: BFRES quads,
+  see the Phase 5 step 3 entry.)
 
 ## 2026-10-18 — 100 Mario Challenge uses SMM1's own presentation, like-for-like
 Owner request: title/menu/world map and the before/after screens and animations as in SMM1.

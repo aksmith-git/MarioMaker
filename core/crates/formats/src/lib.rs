@@ -7,6 +7,7 @@
 pub mod aes_modes;
 pub mod archive;
 pub mod audio;
+pub mod bfres;
 pub mod bntx;
 pub mod byml;
 pub mod course_id;

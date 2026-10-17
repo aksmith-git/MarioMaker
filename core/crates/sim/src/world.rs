@@ -2150,11 +2150,13 @@ impl World {
             9,
         ));
         let cx = x0 + 112.0;
+        // the flag's model rests on top of the tower (BFRES quad y 80…96 above the tower origin
+        // at y0 − 16); tower_flag is its offset from there (−24 = hidden, 0 = raised)
         out.push(Self::model_sprite(
             "M1_Object_tower",
             "flag",
             cx - 8.0,
-            y0 + 64.0 + self.tower_flag,
+            y0 - 16.0 + self.tower_flag,
             16.0,
             16.0,
             false,
@@ -2173,6 +2175,9 @@ impl World {
     }
 
     fn actor_sprite(&self, a: &Actor) -> Option<Sprite> {
+        // [obs] M1 Goomba/Koopa `walk_ftp`: 20 frames, walk.0 at 0, walk.1 at 10 (play rate 1.0
+        // in their EnemyModelParams)
+        const WALK_FRAMES: u32 = 10;
         let walk2 = |rate: u32| {
             if (a.age / rate).is_multiple_of(2) {
                 "walk.0"
@@ -2188,12 +2193,13 @@ impl World {
         let scale = if a.big { 2.0 } else { 1.0 };
         let (model, tex, w, h, flip_x) = match a.kind {
             Kind::Goomba => {
+                // walk.1 is walk.0 mirrored: the texture swap alone animates it
                 let t = if a.mode == Mode::Stomped {
                     "damage.0"
                 } else {
-                    walk2(8)
+                    walk2(WALK_FRAMES)
                 };
-                ("M1_Enemy_kuribo", t, 16.0, 32.0, (a.age / 8) % 2 == 1)
+                ("M1_Enemy_kuribo", t, 16.0, 32.0, false)
             }
             Kind::Koopa { red } => (
                 if red {
@@ -2201,7 +2207,7 @@ impl World {
                 } else {
                     "M1_Enemy_nokonokoA"
                 },
-                walk2(8),
+                walk2(WALK_FRAMES),
                 16.0,
                 32.0,
                 a.dir > 0,
@@ -2363,16 +2369,11 @@ impl World {
             ),
         };
         let (w, h) = (w * scale, h * scale);
-        // [inf] art placement inside the texture, measured from the textures (the BFRES quad
-        // offsets are not imported yet): the Goomba fills the upper 16 rows of its 16×32 image
-        let dy = match a.kind {
-            Kind::Goomba => -15.0 * scale,
-            Kind::Piranha { fire: true } => -4.0 * scale,
-            _ => 0.0,
-        };
-        let mut s = Self::model_sprite(model, tex, a.x - w / 2.0, a.y + dy, w, h, flip_x, layer);
-        if a.kind == Kind::Fireball {
-            s.y = a.y;
+        // model origin = actor origin (feet centre); the front end places the art with the
+        // BFRES quad (render.rs). Fireball models have their origin at the centre.
+        let mut s = Self::model_sprite(model, tex, a.x - w / 2.0, a.y, w, h, flip_x, layer);
+        if matches!(a.kind, Kind::Fireball | Kind::EnemyFire) {
+            s.y = a.y + a.height() / 2.0;
         }
         if matches!(a.kind, Kind::Piranha { .. }) {
             // in a pipe: behind the pipe; a down-facing pipe hangs the plant upside down
@@ -2381,7 +2382,7 @@ impl World {
             }
             if let Some((PipeDir::Down, ..)) = a.pipe {
                 s.flip_y = true;
-                s.y = a.y - h - dy;
+                s.y = a.y - h;
             }
         }
         if matches!(a.mode, Mode::DokanOut { .. }) {

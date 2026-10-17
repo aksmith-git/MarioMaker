@@ -373,11 +373,12 @@ fn main() -> ExitCode {
             match mmk_import::run(&cfg, &mut progress) {
                 Ok(r) => {
                     println!(
-                        "imported SMM2 {} ({} tables, {} textures, {} sounds, {} built-in courses verified) into {}",
+                        "imported SMM2 {} ({} tables, {} textures, {} sounds, {} sprite quads, {} built-in courses verified) into {}",
                         r.build,
                         r.tables,
                         r.textures,
                         r.sounds,
+                        r.sprites,
                         r.builtin_courses_verified,
                         r.out_dir.display()
                     );

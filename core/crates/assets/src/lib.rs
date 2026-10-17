@@ -11,10 +11,13 @@
 //! textures/<model>/<tex>.mtex  one texture (see `Mtex`)
 //! audio/index.json             { sound id: {file, game, gain, group, rate, channels, samples, loop} }
 //! audio/<id>.bwav              one sound, the game's BWAV unchanged (read by `mmk-audio`)
+//! sprites.json                 2D sprite quads + texture-pattern timing (see `sprites`)
 //! ```
 
 pub mod cache;
 pub mod mtex;
+pub mod sprites;
 
 pub use cache::{Cache, CacheError, TextureEntry};
 pub use mtex::{Mtex, MtexFormat, MtexVariant};
+pub use sprites::{Anim, Quad};
