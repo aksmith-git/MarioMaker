@@ -10,6 +10,9 @@ struct CourseMeta: Hashable, Sendable {
     /// Nintendo's SMM2 difficulty bucket 0 easy … 3 super expert, if known.
     var bucket: Int?
     var maker: String?
+    /// Server data id (SMM2 course code source) and world record in ms, when the index has them.
+    var dataId: UInt32?
+    var worldRecordMs: Int?
 
     /// 100 Mario difficulty value 0–100: the fail rate (100 − clear %), as SMM1's bands use it.
     /// Falls back to a value inside the SMM2 bucket, then to an easy value for unknown courses
@@ -35,7 +38,9 @@ struct CourseMeta: Hashable, Sendable {
                 let path = dir.appendingPathComponent(file).standardizedFileURL.path
                 out[path] = CourseMeta(clearRate: (c["clear_rate"] as? NSNumber)?.doubleValue,
                                        bucket: (c["difficulty"] as? NSNumber)?.intValue,
-                                       maker: c["maker"] as? String)
+                                       maker: c["maker"] as? String,
+                                       dataId: (c["data_id"] as? NSNumber)?.uint32Value,
+                                       worldRecordMs: (c["world_record"] as? NSNumber)?.intValue)
             }
         }
         return out

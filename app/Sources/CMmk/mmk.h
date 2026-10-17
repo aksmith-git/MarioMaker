@@ -95,6 +95,8 @@ void mmk_engine_debug_teleport(MmkEngine *engine, float x, float y);
 
 // assets may be NULL (then encrypted .bcd files fail). Thread-safe.
 bool mmk_course_info(const MmkAssets *assets, const uint8_t *data, size_t len, MmkCourseInfo *out);
+// SMM2 course code "XXX-XXX-XXX" of a server data id; returns its length (cap 0 sizes it)
+size_t mmk_smm2_course_code(uint32_t data_id, char *buf, size_t cap);
 
 // Blocks until done; run off the main thread. update_* may be NULL. Writes <out_root>/smm2-<build>/.
 bool mmk_import_run(const char *romfs, const char *exefs, const char *update_romfs,
@@ -189,3 +191,17 @@ float mmk_ui_anim_length(MmkUiLayout *layout, const char *anim);   // frames, -1
 bool mmk_ui_set_text(MmkUiLayout *layout, const char *pane, const char *text);
 // valid until the next call on this layout
 size_t mmk_ui_draw_list(MmkUiLayout *layout, const MmkUiQuad **out);
+typedef struct {
+    float translate[3];         // in the parent pane's space, layout units, y up
+    float rotate[3];            // degrees
+    float scale[2];
+    float size[2];
+    float alpha;                // 0-255
+    uint32_t visible;
+} MmkUiPane;                                                           // 48 bytes
+// visible: 0 hide, 1 show (over animations), -1 back to the animations
+bool mmk_ui_set_visible(MmkUiLayout *layout, const char *pane, int32_t visible);
+// pane values with the bound animations applied
+bool mmk_ui_pane(const MmkUiLayout *layout, const char *pane, MmkUiPane *out);
+// message by label (own table, else a part's); value tags become U+FFFC. Length; 0 = none
+size_t mmk_ui_message(const MmkUiLayout *layout, const char *label, char *buf, size_t cap);

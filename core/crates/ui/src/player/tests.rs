@@ -389,3 +389,105 @@ fn window_with_one_frame_draws_content_corners_and_edges() {
     assert!(close(q[2].uv0[0], [1.0, 0.0]));
     assert!(close(q[2].pos[0], [42.0, 25.0]));
 }
+
+fn part_pane(name: &str, sub: &str, props: Vec<mmk_formats::lyt::PartProperty>) -> Pane {
+    Pane {
+        kind: PaneKind::Part(Part {
+            layout: sub.into(),
+            magnify: [1.0, 1.0],
+            properties: props,
+        }),
+        name: name.into(),
+        size: [4.0, 4.0],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn caller_visibility_and_pane_info() {
+    let mut c = UiCache::in_memory();
+    add(
+        &mut c,
+        layout("V", vec![picture("P_A", 0, [3.0, 4.0], [8.0, 8.0], vec![])]),
+    );
+    let mut p = LayoutPlayer::new(c.layout("V").unwrap());
+    assert_eq!(p.draw_list().len(), 1);
+    assert!(p.set_visible("P_A", Some(false)));
+    assert!(p.draw_list().is_empty());
+    let info = p.pane_info("P_A").unwrap();
+    assert_eq!(info.translate, [3.0, 4.0, 0.0]);
+    assert!(!info.visible);
+    assert!(p.set_visible("P_A", None));
+    assert_eq!(p.draw_list().len(), 1);
+    assert!(!p.set_visible("P_Missing", Some(true)));
+    assert!(p.pane_info("P_Missing").is_none());
+}
+
+#[test]
+fn part_properties_override_basic_values_and_picture_material() {
+    use mmk_formats::lyt::{PartBasicInfo, PartProperty};
+    let mut c = UiCache::in_memory();
+    add(
+        &mut c,
+        layout(
+            "Dot",
+            vec![
+                picture("P_Num", 0, [0.0, 0.0], [10.0, 10.0], vec![]),
+                picture("P_Hide", 0, [0.0, 0.0], [10.0, 10.0], vec![]),
+            ],
+        ),
+    );
+    // the screen has a second material with its own texture, used by the dot's P_Num
+    let mut screen = layout(
+        "Map",
+        vec![part_pane(
+            "L_Dot_00",
+            "Dot",
+            vec![
+                PartProperty {
+                    name: "P_Num".into(),
+                    basic_usage: 16, // size
+                    basic: Some(PartBasicInfo {
+                        size: [20.0, 6.0],
+                        ..Default::default()
+                    }),
+                    pane: Some(Box::new(picture("P_Num", 1, [0.0, 0.0], [1.0, 1.0], vec![]))),
+                    ..Default::default()
+                },
+                PartProperty {
+                    name: "P_Hide".into(),
+                    basic_usage: 1, // visibility override, value 0
+                    ..Default::default()
+                },
+            ],
+        )],
+    );
+    screen.textures.push("U.bflim".into());
+    let mut m = plain_material("M2");
+    m.tex_maps[0].texture = 1;
+    screen.materials.push(m);
+    c.add_layout(LayoutSource {
+        layout: screen,
+        animations: BTreeMap::new(),
+        textures: vec![("T".into(), tex(16, 16)), ("U".into(), tex(2, 2))],
+    });
+    let p = LayoutPlayer::new(c.layout("Map").unwrap());
+    let q = p.draw_list();
+    assert_eq!(q.len(), 1, "P_Hide is hidden by the property");
+    let screen_u = c.layout("Map").unwrap().textures[1].unwrap().id;
+    assert_eq!(q[0].tex0, screen_u);
+    assert!(close(q[0].pos[0], [-10.0, 3.0]));
+    let info = p.pane_info("L_Dot_00/P_Num").unwrap();
+    assert_eq!(info.size, [20.0, 6.0]);
+}
+
+#[test]
+fn messages_by_label() {
+    let mut c = sample_cache();
+    let mut msgs = HashMap::new();
+    msgs.insert("T_A".to_string(), "plain".to_string());
+    c.add_messages("Sample", msgs);
+    let p = LayoutPlayer::new(c.layout("Sample").unwrap());
+    assert_eq!(p.message("T_A").as_deref(), Some("plain"));
+    assert!(p.message("T_None").is_none());
+}

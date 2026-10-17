@@ -68,6 +68,9 @@ pub struct LayoutRes {
     pub fonts: Vec<Option<Arc<FontRes>>>,
     /// Message label → plain text (this layout's MSBT file).
     pub messages: HashMap<String, String>,
+    /// Message label → text with each value tag (numbers, names: tag groups 2 and 4) replaced
+    /// by [`ARG_PLACEHOLDER`], for callers that fill in values (`LayoutPlayer::message`).
+    pub templates: HashMap<String, String>,
     /// Part layouts by name.
     pub parts: HashMap<String, Arc<LayoutRes>>,
 }
@@ -103,6 +106,9 @@ pub struct LayoutSource {
     pub textures: Vec<(String, Mtex)>,
 }
 
+/// Stands for one value tag in [`LayoutRes::templates`].
+pub const ARG_PLACEHOLDER: char = '\u{FFFC}';
+
 /// The default font used when a layout names one the cache does not have (the Wii U system
 /// fonts `CafeStd_*` are not part of the game).
 pub const DEFAULT_FONT: &str = "MessageFont";
@@ -120,6 +126,7 @@ pub struct UiCache {
     sources: HashMap<String, LayoutSource>,
     fonts: HashMap<String, Option<Arc<FontRes>>>,
     messages: HashMap<String, HashMap<String, String>>,
+    templates: HashMap<String, HashMap<String, String>>,
     message_files: HashMap<String, PathBuf>,
 }
 
@@ -278,21 +285,36 @@ impl UiCache {
         Ok(Arc::new(FontRes::from_json(name, &v, ids)?))
     }
 
-    fn messages_for(&mut self, layout: &str) -> HashMap<String, String> {
+    /// (plain texts, templates) of a layout's message table.
+    fn messages_for(&mut self, layout: &str) -> (HashMap<String, String>, HashMap<String, String>) {
         if let Some(m) = self.messages.get(layout) {
-            return m.clone();
+            let t = self.templates.get(layout).cloned().unwrap_or_else(|| m.clone());
+            return (m.clone(), t);
         }
         let mut out = HashMap::new();
+        let mut templates = HashMap::new();
         if let Some(path) = self.message_files.get(layout)
             && let Ok(v) = read_json(path)
             && let Ok(msbt) = mmk_formats::msbt::Msbt::from_json(&v)
         {
+            use mmk_formats::msbt::MsgPart;
             for m in &msbt.messages {
                 out.insert(m.label.clone(), m.plain());
+                let t: String = m
+                    .parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        MsgPart::Text(t) => Some(t.clone()),
+                        MsgPart::Tag { group: 2 | 4, .. } => Some(ARG_PLACEHOLDER.to_string()),
+                        _ => None,
+                    })
+                    .collect();
+                templates.insert(m.label.clone(), t);
             }
         }
         self.messages.insert(layout.to_string(), out.clone());
-        out
+        self.templates.insert(layout.to_string(), templates.clone());
+        (out, templates)
     }
 
     /// Load (once) a layout with its parts, textures, fonts and messages.
@@ -337,7 +359,7 @@ impl UiCache {
             let font = self.font(&stem).or_else(|| self.font(DEFAULT_FONT));
             fonts.push(font);
         }
-        let messages = self.messages_for(name);
+        let (messages, templates) = self.messages_for(name);
         let mut parts = HashMap::new();
         for p in src.layout.panes() {
             if let PaneKind::Part(part) = &p.kind
@@ -375,6 +397,7 @@ impl UiCache {
             textures_by_name,
             fonts,
             messages,
+            templates,
             parts,
         });
         self.layouts.insert(name.to_string(), res.clone());

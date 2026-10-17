@@ -12,7 +12,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use mmk_formats::lyt::{AnimTag, Material, PaneKind, TexSrt, Window, WindowFrame};
+use mmk_formats::lyt::{
+    AnimTag, Material, Pane, PaneKind, PartBasicInfo, TexSrt, Window, WindowFrame,
+};
 
 use crate::cache::{LayoutRes, TexRef};
 use crate::text;
@@ -166,6 +168,27 @@ pub struct LayoutPlayer {
     /// with the text stored alongside (used when no table has the id).
     text_ids: HashMap<String, (String, String)>,
     parts: HashMap<usize, LayoutPlayer>,
+    /// Visibility set by the caller (`set_visible`), by node index; wins over animations.
+    visibility: HashMap<usize, bool>,
+    /// Basic-value overrides from the enclosing part pane's properties: pane name → (usage
+    /// bits, values). See [`PartBasicInfo`] for the bits.
+    basic_overrides: HashMap<String, (u8, Option<PartBasicInfo>)>,
+    /// Picture panes whose content (material, texture coordinates, colours) the enclosing
+    /// layout replaces: pane name → (enclosing layout, its replacement pane). The material is
+    /// one of the enclosing layout's (e.g. the number on each world-map course dot).
+    pane_overrides: HashMap<String, (Arc<LayoutRes>, Pane)>,
+}
+
+/// A pane's values after the bound animations (`LayoutPlayer::pane_info`), in its parent's space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PaneInfo {
+    pub translate: [f32; 3],
+    pub rotate: [f32; 3],
+    pub scale: [f32; 2],
+    pub size: [f32; 2],
+    /// 0–255.
+    pub alpha: f32,
+    pub visible: bool,
 }
 
 /// Message tables of the enclosing layouts, outermost (the screen) first.
@@ -193,6 +216,18 @@ impl LayoutPlayer {
                 && let Some(sub) = res.parts.get(&p.layout)
             {
                 let mut inst = LayoutPlayer::new(sub.clone());
+                for prop in &p.properties {
+                    if prop.basic_usage != 0 {
+                        inst.basic_overrides
+                            .insert(prop.name.clone(), (prop.basic_usage, prop.basic.clone()));
+                    }
+                    if let Some(pane) = &prop.pane
+                        && matches!(pane.kind, PaneKind::Picture(_))
+                    {
+                        inst.pane_overrides
+                            .insert(prop.name.clone(), (res.clone(), (**pane).clone()));
+                    }
+                }
                 // text overrides carried by the part pane's properties: a message id that the
                 // screen's message table (or an enclosing layout's) resolves when drawing
                 for prop in &p.properties {
@@ -217,6 +252,9 @@ impl LayoutPlayer {
             texts: HashMap::new(),
             text_ids: HashMap::new(),
             parts,
+            visibility: HashMap::new(),
+            basic_overrides: HashMap::new(),
+            pane_overrides: HashMap::new(),
         }
     }
 
@@ -240,6 +278,14 @@ impl LayoutPlayer {
         };
         let idx = *self.res.pane_index.get(*first)?;
         self.parts.get_mut(&idx)?.part_mut(rest)
+    }
+
+    fn part_ref(&self, path: &[&str]) -> Option<&LayoutPlayer> {
+        let Some((first, rest)) = path.split_first() else {
+            return Some(self);
+        };
+        let idx = *self.res.pane_index.get(*first)?;
+        self.parts.get(&idx)?.part_ref(rest)
     }
 
     fn split(path: &str) -> (Vec<&str>, &str) {
@@ -304,6 +350,52 @@ impl LayoutPlayer {
         }
     }
 
+    /// Force a pane (`[PartPane/…/]Pane`) visible or hidden over its animations, or give it back
+    /// to them (`None`). False if there is no such pane.
+    pub fn set_visible(&mut self, path: &str, visible: Option<bool>) -> bool {
+        let (parts, name) = Self::split(path);
+        let Some(p) = self.part_mut(&parts) else {
+            return false;
+        };
+        let Some(&i) = p.res.pane_index.get(name) else {
+            return false;
+        };
+        match visible {
+            Some(v) => p.visibility.insert(i, v),
+            None => p.visibility.remove(&i),
+        };
+        true
+    }
+
+    /// A pane's values (`[PartPane/…/]Pane`) with the bound animations applied.
+    pub fn pane_info(&self, path: &str) -> Option<PaneInfo> {
+        let (parts, name) = Self::split(path);
+        let p = self.part_ref(&parts)?;
+        let &i = p.res.pane_index.get(name)?;
+        let (mut panes, mut mats) = p.base_states();
+        p.apply_animations(&mut panes, &mut mats);
+        let st = &panes[i];
+        Some(PaneInfo {
+            translate: st.t,
+            rotate: st.r,
+            scale: st.s,
+            size: st.size,
+            alpha: st.alpha,
+            visible: p.visibility.get(&i).copied().unwrap_or(st.visible),
+        })
+    }
+
+    /// Message `label` with [`crate::ARG_PLACEHOLDER`] for each value it takes, from this
+    /// layout's table or else its part layouts' (depth first).
+    pub fn message(&self, label: &str) -> Option<String> {
+        if let Some(t) = self.res.templates.get(label) {
+            return Some(t.clone());
+        }
+        let mut keys: Vec<&usize> = self.parts.keys().collect();
+        keys.sort();
+        keys.into_iter().find_map(|k| self.parts[k].message(label))
+    }
+
     fn base_states(&self) -> (Vec<PaneState>, Vec<MatState>) {
         let panes = self
             .res
@@ -326,20 +418,35 @@ impl LayoutPlayer {
                     colors,
                 }
             })
-            .collect();
-        let mats = self
-            .res
-            .layout
-            .materials
-            .iter()
-            .map(|m| MatState {
-                black: rgba_f(m.black),
-                white: rgba_f(m.white),
-                srts: m.tex_srts.clone(),
-                pattern: vec![None; m.tex_maps.len()],
-            })
-            .collect();
-        (panes, mats)
+            .collect::<Vec<_>>();
+        let mut panes = panes;
+        for (name, (usage, info)) in &self.basic_overrides {
+            let Some(&i) = self.res.pane_index.get(name) else {
+                continue;
+            };
+            let st = &mut panes[i];
+            if usage & 1 != 0 {
+                st.visible = usage & 2 != 0;
+            }
+            if let Some(b) = info {
+                if usage & 8 != 0 {
+                    st.t = b.translate;
+                }
+                if usage & 16 != 0 {
+                    st.size = b.size;
+                }
+                if usage & 32 != 0 {
+                    st.s = b.scale;
+                }
+                if usage & 64 != 0 {
+                    st.r = b.rotate;
+                }
+                if usage & 128 != 0 {
+                    st.alpha = b.alpha as f32;
+                }
+            }
+        }
+        (panes, base_mats(&self.res))
     }
 
     fn apply_animations(&self, panes: &mut [PaneState], mats: &mut [MatState]) {
@@ -453,6 +560,9 @@ impl LayoutPlayer {
     ) {
         let (mut panes, mut mats) = self.base_states();
         self.apply_animations(&mut panes, &mut mats);
+        for (&i, &v) in &self.visibility {
+            panes[i].visible = v;
+        }
         let n = self.res.nodes.len();
         let mut mtx = vec![Mtx::IDENTITY; n];
         let mut alpha = vec![1f32; n]; // global alpha of each pane
@@ -490,8 +600,23 @@ impl LayoutPlayer {
             ctx.pane_size.set(st.size);
             match &node.pane.kind {
                 PaneKind::Picture(pic) => {
-                    let colors = vertex_colors(&st.colors, alpha[i]);
-                    ctx.picture(pic.material, &pic.tex_coords, rect, &mtx[i], colors, out);
+                    match self.pane_overrides.get(&node.pane.name) {
+                        Some((owner, Pane { kind: PaneKind::Picture(op), .. })) => {
+                            let owner_mats = base_mats(owner);
+                            let octx = Ctx {
+                                res: owner,
+                                mats: &owner_mats,
+                                pane_size: std::cell::Cell::new(st.size),
+                            };
+                            let colors =
+                                vertex_colors(&op.vertex_colors.map(rgba_f), alpha[i]);
+                            octx.picture(op.material, &op.tex_coords, rect, &mtx[i], colors, out);
+                        }
+                        _ => {
+                            let colors = vertex_colors(&st.colors, alpha[i]);
+                            ctx.picture(pic.material, &pic.tex_coords, rect, &mtx[i], colors, out);
+                        }
+                    }
                 }
                 PaneKind::Window(w) => {
                     let colors = vertex_colors(&st.colors, alpha[i]);
@@ -536,6 +661,20 @@ impl LayoutPlayer {
             }
         }
     }
+}
+
+/// A layout's materials as authored (no animation).
+fn base_mats(res: &LayoutRes) -> Vec<MatState> {
+    res.layout
+        .materials
+        .iter()
+        .map(|m| MatState {
+            black: rgba_f(m.black),
+            white: rgba_f(m.white),
+            srts: m.tex_srts.clone(),
+            pattern: vec![None; m.tex_maps.len()],
+        })
+        .collect()
 }
 
 fn apply_pane_tag(st: &mut PaneState, tag: &AnimTag, frame: f32) {

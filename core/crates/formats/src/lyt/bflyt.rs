@@ -285,6 +285,21 @@ pub struct PartProperty {
     pub material_usage: u8,
     /// Replacement pane (when the override carries one).
     pub pane: Option<Box<Pane>>,
+    /// Basic-info override values (which ones apply is given by `basic_usage`).
+    pub basic: Option<PartBasicInfo>,
+}
+
+/// Basic values a part property can override on a part's pane. `basic_usage` bits [inf, from
+/// the data]: 0 visibility override on, 1 visible value, 2 user info, 3 translate, 4 size,
+/// 5 scale, 6 rotate, 7 alpha.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PartBasicInfo {
+    pub user_info: String,
+    pub translate: [f32; 3],
+    pub rotate: [f32; 3],
+    pub scale: [f32; 2],
+    pub size: [f32; 2],
+    pub alpha: u8,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -674,12 +689,28 @@ pub(crate) fn parse_pane(r: &Reader, o: usize, size: usize) -> Result<Pane> {
                 } else {
                     None
                 };
+                let basic_off = r.u32(p + 36)? as usize;
+                let basic = if basic_off != 0 && basic_off + 52 <= size {
+                    let b = o + basic_off;
+                    let f = |i: usize| r.f32(b + 8 + i * 4);
+                    Some(PartBasicInfo {
+                        user_info: r.fixed_str(b, 8)?,
+                        translate: [f(0)?, f(1)?, f(2)?],
+                        rotate: [f(3)?, f(4)?, f(5)?],
+                        scale: [f(6)?, f(7)?],
+                        size: [f(8)?, f(9)?],
+                        alpha: r.u8(b + 48)?,
+                    })
+                } else {
+                    None
+                };
                 part.properties.push(PartProperty {
                     name: r.fixed_str(p, 24)?,
                     usage: r.u8(p + 24)?,
                     basic_usage: r.u8(p + 25)?,
                     material_usage: r.u8(p + 26)?,
                     pane,
+                    basic,
                 });
             }
             part.layout = r.cstr(props + count * 40)?;

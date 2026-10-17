@@ -111,6 +111,27 @@ pub fn course_info(bytes: &[u8], assets: Option<&MmkAssets>) -> Result<MmkCourse
     Ok(info)
 }
 
+/// The SMM2 course code ("XXX-XXX-XXX") of server data id `data_id`, NUL-terminated into
+/// `buf` (12 bytes are enough). Returns the code's length; `cap` 0 sizes it.
+///
+/// # Safety
+/// `buf` must be writable for `cap` bytes (or NULL with `cap` 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_smm2_course_code(data_id: u32, buf: *mut c_char, cap: usize) -> usize {
+    guard(0, || {
+        let code = mmk_formats::course_id::smm2_data_id_to_code(data_id, false);
+        if !buf.is_null() && cap > 0 {
+            let out = unsafe { std::slice::from_raw_parts_mut(buf, cap) };
+            let n = code.len().min(cap - 1); // ASCII: any cut is a character boundary
+            for (o, &b) in out.iter_mut().zip(&code.as_bytes()[..n]) {
+                *o = b as c_char;
+            }
+            out[n] = 0;
+        }
+        code.len()
+    })
+}
+
 /// Read a course file's summary. Accepts the same inputs as `mmk_engine_load_course`;
 /// `assets` (may be NULL) supplies the key table for encrypted `.bcd` files.
 /// Returns false and sets the last error if the data is not a course. Thread-safe.

@@ -215,6 +215,121 @@ pub unsafe extern "C" fn mmk_ui_set_text(
     })
 }
 
+/// A pane's values after the bound animations (`MmkUiPane` in mmk.h, 48 bytes), in its parent's
+/// space (layout units, y up).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MmkUiPane {
+    pub translate: [f32; 3],
+    pub rotate: [f32; 3],
+    pub scale: [f32; 2],
+    pub size: [f32; 2],
+    pub alpha: f32,
+    pub visible: u32,
+}
+
+/// Force pane `pane` (`[PartPane/…/]Pane`) hidden (0) or shown (1) over its animations, or hand
+/// it back to them (−1). False (and an error) if there is no such pane.
+///
+/// # Safety
+/// `layout` must be a live handle; `pane` a valid NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_ui_set_visible(
+    layout: *mut MmkUiLayout,
+    pane: *const c_char,
+    visible: i32,
+) -> bool {
+    guard(false, || {
+        let (Some(l), Some(pane)) = (unsafe { layout.as_mut() }, unsafe { str_arg(pane, "pane") })
+        else {
+            return false;
+        };
+        let v = match visible {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        };
+        let ok = l.player.set_visible(pane, v);
+        if !ok {
+            set_error(format!("no pane '{pane}'"));
+        }
+        ok
+    })
+}
+
+/// Fill `out` with pane `pane`'s values (`[PartPane/…/]Pane`) under the bound animations.
+/// False if there is no such pane.
+///
+/// # Safety
+/// `layout` must be a live handle; `pane` a valid NUL-terminated string; `out` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_ui_pane(
+    layout: *const MmkUiLayout,
+    pane: *const c_char,
+    out: *mut MmkUiPane,
+) -> bool {
+    guard(false, || {
+        let (Some(l), Some(pane), Some(out)) = (
+            unsafe { layout.as_ref() },
+            unsafe { str_arg(pane, "pane") },
+            unsafe { out.as_mut() },
+        ) else {
+            return false;
+        };
+        match l.player.pane_info(pane) {
+            Some(p) => {
+                *out = MmkUiPane {
+                    translate: p.translate,
+                    rotate: p.rotate,
+                    scale: p.scale,
+                    size: p.size,
+                    alpha: p.alpha,
+                    visible: p.visible as u32,
+                };
+                true
+            }
+            None => {
+                set_error(format!("no pane '{pane}'"));
+                false
+            }
+        }
+    })
+}
+
+/// Copy message `label` (from this layout's text table, else a part layout's) as UTF-8 into
+/// `buf` (NUL-terminated, truncated to `cap`), each value it takes (number, name) replaced by
+/// U+FFFC. Returns the full length in bytes, or 0 if there is no such message; `cap` 0 sizes it.
+///
+/// # Safety
+/// `layout` must be a live handle; `label` a valid NUL-terminated string; `buf` writable for
+/// `cap` bytes (or NULL with `cap` 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_ui_message(
+    layout: *const MmkUiLayout,
+    label: *const c_char,
+    buf: *mut c_char,
+    cap: usize,
+) -> usize {
+    guard(0, || {
+        let (Some(l), Some(label)) = (unsafe { layout.as_ref() }, unsafe { str_arg(label, "label") })
+        else {
+            return 0;
+        };
+        let Some(text) = l.player.message(label) else {
+            return 0;
+        };
+        let bytes = text.as_bytes();
+        if !buf.is_null() && cap > 0 {
+            let n = bytes.len().min(cap - 1);
+            unsafe {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, n);
+                *buf.add(n) = 0;
+            }
+        }
+        bytes.len()
+    })
+}
+
 /// Evaluate the layout with its bound animations and return the quads to draw, back to front.
 /// `*out` stays valid until the next call on this layout.
 ///
@@ -302,6 +417,8 @@ mod tests {
         assert_eq!(std::mem::offset_of!(MmkUiQuad, white), 116);
         assert_eq!(std::mem::offset_of!(MmkUiQuad, tex0), 120);
         assert_eq!(std::mem::offset_of!(MmkUiQuad, flags), 128);
+        assert_eq!(size_of::<MmkUiPane>(), 48);
+        assert_eq!(std::mem::offset_of!(MmkUiPane, alpha), 40);
     }
 
     #[test]
