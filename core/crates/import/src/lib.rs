@@ -2,8 +2,8 @@
 //! (module [`smm1`]) the SMM1 UI assets (layouts, textures, fonts, text) for the layout player.
 //!
 //! Stages implemented so far (docs/architecture.md §4): identify, course key table, tables,
-//! textures, audio, sprites (2D quad placement + texture-pattern timing), manifest. 3D models
-//! follow in a later step. Nothing read or written here ever goes into the repository; the cache
+//! textures, audio, sprites (2D quad placement + texture-pattern timing), meshes (NSMBU / 3D
+//! World models and animations, module [`meshes`]), manifest. Nothing read or written here ever goes into the repository; the cache
 //! lives in the user's Application Support folder.
 
 pub mod audio;
@@ -21,9 +21,11 @@ use mmk_formats::smm2::crypto::{KeyTable, decrypt_bcd};
 use mmk_formats::smm2::keyfind;
 use serde_json::{Value, json};
 
+pub mod meshes;
 pub mod sprites;
 
-pub const IMPORTER_VERSION: u32 = 4;
+/// 5: mesh stage (meshes/, anims/), StaticModel.pack models of the 3D styles.
+pub const IMPORTER_VERSION: u32 = 5;
 pub mod smm1;
 pub use smm1::{Smm1Config, Smm1Report, run_smm1};
 
@@ -71,6 +73,9 @@ pub struct ImportReport {
     pub sounds: usize,
     /// Textures with a known sprite quad.
     pub sprites: usize,
+    /// Mesh files and animations written by the mesh stage.
+    pub meshes: usize,
+    pub anims: usize,
     pub builtin_courses_verified: usize,
 }
 
@@ -183,7 +188,8 @@ fn model_name(path: &str) -> String {
     file.split('.').next().unwrap_or(file).to_string()
 }
 
-/// Every model of the imported styles: `Model/<style>_*.zs` and members of `Pack/<style>_Model.pack`.
+/// Every model of the imported styles: `Model/<style>_*.zs`, members of `Pack/<style>_Model.pack`
+/// and the 3D styles' members of `Pack/StaticModel.pack` (3D World blocks, coins, pipes, ...).
 fn collect_models(romfs: &Path) -> Result<Vec<(String, Vec<u8>)>> {
     let mut models = Vec::new();
     let dir = romfs.join("Model");
@@ -211,17 +217,41 @@ fn collect_models(romfs: &Path) -> Result<Vec<(String, Vec<u8>)>> {
             }
         }
     }
+    let static_pack = romfs.join("Pack/StaticModel.pack");
+    if static_pack.is_file() {
+        for (name, data) in open_sarc(&static_pack)?.files() {
+            let model = model_name(name);
+            if name.ends_with(".zs") && meshes::wants_mesh(&model) {
+                models.push((model, data.to_vec()));
+            }
+        }
+    }
+    // stable sort: a style pack's copy wins over StaticModel.pack's
     models.sort_by(|a, b| a.0.cmp(&b.0));
     models.dedup_by(|a, b| a.0 == b.0);
     Ok(models)
 }
 
-/// Textures and sprite data of every model of the imported styles. Returns (textures, sprites).
-fn import_models(cfg: &ImportConfig, out: &Path, progress: Progress) -> Result<(usize, usize)> {
+/// What `import_models` wrote.
+#[derive(Clone, Copy, Debug, Default)]
+struct ModelCounts {
+    textures: usize,
+    sprites: usize,
+    meshes: meshes::MeshCounts,
+}
+
+/// Textures, sprite data and (3D styles) meshes + animations of every model of the imported
+/// styles.
+fn import_models(cfg: &ImportConfig, out: &Path, progress: Progress) -> Result<ModelCounts> {
     let models = collect_models(&cfg.romfs)?;
     let mut index = serde_json::Map::new();
     let mut sprite_index = serde_json::Map::new();
     let (mut count, mut sprite_count) = (0, 0);
+    let mut mesh_counts = meshes::MeshCounts::default();
+    for dir in ["meshes", "anims"] {
+        // stale files of an earlier import would otherwise linger
+        let _ = fs::remove_dir_all(out.join(dir));
+    }
     for (i, (model, data)) in models.iter().enumerate() {
         progress("textures", i, models.len());
         let ctx = cfg.romfs.join("Model").join(model);
@@ -255,6 +285,12 @@ fn import_models(cfg: &ImportConfig, out: &Path, progress: Progress) -> Result<(
             index.insert(model.clone(), Value::Object(entry));
         }
         if let Some(f) = bfres {
+            if meshes::wants_mesh(model) {
+                let c = meshes::export(&f, model, out)?;
+                mesh_counts.meshes += c.meshes;
+                mesh_counts.anims += c.anims;
+                mesh_counts.vertices += c.vertices;
+            }
             let s = sprites::model_sprites(&f, &sizes);
             sprite_count += s.quads.len();
             if !s.quads.is_empty() || !s.anims.is_empty() {
@@ -273,7 +309,11 @@ fn import_models(cfg: &ImportConfig, out: &Path, progress: Progress) -> Result<(
             .unwrap()
             .as_bytes(),
     )?;
-    Ok((count, sprite_count))
+    Ok(ModelCounts {
+        textures: count,
+        sprites: sprite_count,
+        meshes: mesh_counts,
+    })
 }
 
 pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
@@ -328,8 +368,9 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
     progress("tables", mush.len(), mush.len());
 
     // 4. textures and sprite data (quads, texture-pattern timing) of every model of the
-    //    imported styles
-    let (texture_count, sprite_count) = import_models(cfg, &out, progress)?;
+    //    imported styles; meshes and animations of the 3D styles
+    let counts = import_models(cfg, &out, progress)?;
+    let (texture_count, sprite_count) = (counts.textures, counts.sprites);
 
     // 5. sounds of the imported styles
     let sound_count =
@@ -341,11 +382,15 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
         "game": "SMM2",
         "build": build,
         "module_id": nso.module_id_hex(),
-        "stages": ["identify", "keys", "tables", "textures", "audio", "sprites"],
+        "stages": ["identify", "keys", "tables", "textures", "audio", "sprites", "meshes"],
         "texture_styles": STYLES,
+        "mesh_styles": meshes::MESH_STYLES,
         "textures": texture_count,
         "sounds": sound_count,
         "sprites": sprite_count,
+        "meshes": counts.meshes.meshes,
+        "anims": counts.meshes.anims,
+        "mesh_vertices": counts.meshes.vertices,
         "tables": tables,
         "builtin_courses": courses.len(),
     });
@@ -362,6 +407,8 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
         textures: texture_count,
         sounds: sound_count,
         sprites: sprite_count,
+        meshes: counts.meshes.meshes,
+        anims: counts.meshes.anims,
         builtin_courses_verified: courses.len(),
     })
 }

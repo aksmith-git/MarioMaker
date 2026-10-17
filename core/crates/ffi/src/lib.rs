@@ -16,6 +16,7 @@ pub mod challenge;
 pub mod condition;
 pub mod course_info;
 pub mod import;
+pub mod mesh;
 pub mod ui;
 
 pub use course_info::{MmkCourseInfo, mmk_course_info};
@@ -59,6 +60,8 @@ pub extern "C" fn mmk_last_error() -> *const c_char {
 pub struct MmkAssets {
     cache: Cache,
     names: Vec<(CString, CString)>,
+    /// 3D meshes and animations, loaded on demand (`mesh` module).
+    meshes: std::sync::Mutex<mesh::MeshStore>,
 }
 
 #[repr(C)]
@@ -102,7 +105,12 @@ pub unsafe extern "C" fn mmk_assets_open(path: *const c_char) -> *mut MmkAssets 
                         )
                     })
                     .collect();
-                Box::into_raw(Box::new(MmkAssets { cache, names }))
+                let meshes = std::sync::Mutex::new(mesh::MeshStore::new(cache.root.clone()));
+                Box::into_raw(Box::new(MmkAssets {
+                    cache,
+                    names,
+                    meshes,
+                }))
             }
             Err(e) => {
                 set_error(e.to_string());
@@ -120,6 +128,7 @@ pub extern "C" fn mmk_assets_placeholder() -> *mut MmkAssets {
     Box::into_raw(Box::new(MmkAssets {
         cache: Cache::default(),
         names: Vec::new(),
+        meshes: Default::default(),
     }))
 }
 
@@ -191,6 +200,13 @@ pub struct MmkEngine {
     assets: *const MmkAssets,
     /// Sends sound commands to an attached `MmkAudio` (see `mmk_engine_set_audio`).
     director: Option<Director>,
+    /// This frame's mesh draws (3D styles), see `mmk_engine_meshes`.
+    meshes: Vec<mesh::MmkMeshDraw>,
+    /// (model, frame) → mesh plan, and (field model, atlas index) → tile plan; None = sprite.
+    mesh_plans: std::collections::HashMap<(&'static str, &'static str), Option<mesh::MeshPlan>>,
+    tile_plans: std::collections::HashMap<(&'static str, u32), Option<mesh::MeshPlan>>,
+    /// Draw the 3D styles' models as meshes (default on; `mmk_engine_set_meshes`).
+    mesh_mode: bool,
 }
 
 #[repr(C)]
@@ -253,6 +269,10 @@ pub unsafe extern "C" fn mmk_engine_new(assets: *const MmkAssets) -> *mut MmkEng
             lookup: Default::default(),
             assets,
             director: None,
+            meshes: Vec::new(),
+            mesh_plans: Default::default(),
+            tile_plans: Default::default(),
+            mesh_mode: true,
         }))
     })
 }
@@ -292,6 +312,8 @@ pub unsafe extern "C" fn mmk_engine_load_course(
                 e.world = World::from_course(&course);
                 e.course = Some(course);
                 e.lookup.clear();
+                e.mesh_plans.clear();
+                e.tile_plans.clear();
                 if let Some(d) = &mut e.director {
                     d.start_course(&e.world);
                 }
@@ -441,8 +463,37 @@ pub unsafe extern "C" fn mmk_engine_snapshot(engine: *mut MmkEngine, out: *mut M
         // the sim names SMB1 models; other styles use the same names with their own prefix
         // (M3_, MW_, …) and fall back to the SMB1 art where a style has no such model
         let style = e.world.level.style.clone();
+        e.meshes.clear();
+        let mut store = (e.mesh_mode && mesh::mesh_style(&style))
+            .then(|| assets.meshes.lock().unwrap_or_else(|p| p.into_inner()))
+            .filter(|s| s.available());
+        let tick = e.world.tick as f32;
         for s in sprites {
             let key = (s.image.model, s.image.texture);
+            if let Some(store) = store.as_deref_mut() {
+                let plan = match s.image.rect {
+                    // 3D World terrain and blocks are models per field-atlas cell
+                    Some((rx, ry, _, _)) if style == "3W" && key.0.starts_with("3W_Field_") => {
+                        let idx = (ry / 16.0) as u32 * 16 + (rx / 16.0) as u32;
+                        e.tile_plans
+                            .entry((key.0, idx))
+                            .or_insert_with(|| store.plan_tile(key.0, idx))
+                            .as_ref()
+                    }
+                    Some(_) => None,
+                    None => e
+                        .mesh_plans
+                        .entry(key)
+                        .or_insert_with(|| store.plan_model(&assets.cache, &style, key.0, key.1))
+                        .as_ref(),
+                };
+                if let Some(plan) = plan {
+                    let order = e.sprites.len() as u32;
+                    let tile = s.image.rect.is_some();
+                    store.emit(&assets.cache, plan, &s, tile, tick, order, &mut e.meshes);
+                    continue;
+                }
+            }
             let found = *e.lookup.entry(key).or_insert_with(|| {
                 let resolve = |model: &str| {
                     let i = assets.cache.texture_index(model, key.1)?;
@@ -466,10 +517,16 @@ pub unsafe extern "C" fn mmk_engine_snapshot(engine: *mut MmkEngine, out: *mut M
                         .rev()
                         .find_map(|k| resolve_tex(model, &format!("{stem}.{k}")))
                 };
+                // 3D World tiles without a model (pipes, note blocks, …): the NSMBU atlas
+                let wu_field = key
+                    .0
+                    .strip_prefix("3W_Field_")
+                    .map(|t| format!("WU_Field_{t}"));
                 styled
                     .as_deref()
                     .and_then(|m| resolve(m).or_else(|| lower_frame(m)))
                     .or_else(|| resolve(key.0))
+                    .or_else(|| wu_field.as_deref().and_then(|m| resolve_tex(m, m)))
             });
             // missing art (placeholder mode, or not imported yet): report the sprite with
             // MMK_TEXTURE_NONE so the app can draw a stand-in shape
@@ -860,6 +917,10 @@ mod tests {
             lookup: Default::default(),
             assets: std::ptr::null(),
             director: None,
+            meshes: Vec::new(),
+            mesh_plans: Default::default(),
+            tile_plans: Default::default(),
+            mesh_mode: true,
         };
         unsafe {
             mmk_engine_set_audio(&mut engine, audio);

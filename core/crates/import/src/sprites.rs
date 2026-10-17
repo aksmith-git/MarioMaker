@@ -313,6 +313,7 @@ mod tests {
             scale: [1.0; 3],
             rotation: [0.0; 4],
             translation: [0.0, y, 0.0],
+            ..Default::default()
         }
     }
 
@@ -347,6 +348,7 @@ mod tests {
                     ],
                 },
             ],
+            ..Default::default()
         }
     }
 
@@ -396,6 +398,7 @@ mod tests {
                 [-8.0, 0.0, 8.0, 32.0],
                 [0.0, 0.0, 1.0, 1.0],
             )],
+            ..Default::default()
         };
         let shell = Model {
             name: "shell_model".into(),
@@ -407,6 +410,7 @@ mod tests {
                 [-8.0, 0.0, 8.0, 16.0],
                 [0.0, 0.0, 1.0, 1.0],
             )],
+            ..Default::default()
         };
         Bfres {
             name: "output".into(),
@@ -427,6 +431,7 @@ mod tests {
                     &["shell.0", "shell.1"],
                 ),
             ],
+            ..Default::default()
         }
     }
 
@@ -476,8 +481,10 @@ mod tests {
                     [-8.0, 0.0, 8.0, 16.0],
                     [1.0, 0.0, 2.0, 1.0],
                 )],
+                ..Default::default()
             }],
             material_anims: vec![],
+            ..Default::default()
         };
         let s = model_sprites(&f, &sizes(&[("flag", 16, 16), ("other", 16, 16)]));
         assert_eq!(s.quads["flag"].uv, Some([1.0, 0.0, 0.0, 1.0]));

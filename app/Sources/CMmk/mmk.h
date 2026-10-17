@@ -216,3 +216,73 @@ bool mmk_ui_set_visible(MmkUiLayout *layout, const char *pane, int32_t visible);
 bool mmk_ui_pane(const MmkUiLayout *layout, const char *pane, MmkUiPane *out);
 // message by label (own table, else a part's); value tags become U+FFFC. Length; 0 = none
 size_t mmk_ui_message(const MmkUiLayout *layout, const char *label, char *buf, size_t cap);
+
+// --- meshes (core/crates/ffi/src/mesh.rs) ------------------------------------------------------
+// NSMBU / 3D World models from the asset cache (meshes/, anims/), loaded on first use and kept
+// with the assets handle (mesh pointers stay valid until mmk_assets_free). Model units = world px,
+// y up, z toward the viewer. Vertices are in the bind pose: skin them with mmk_mesh_pose's
+// matrices (sum of weight * skin[joint] * position). One render thread.
+
+typedef struct {
+    float position[3], normal[3], uv[2];   // uv (0,0) = top-left of the texture
+    uint16_t joints[4];                    // bone indices
+    float weights[4];
+} MmkMeshVertex;                                                       // 56 bytes
+
+typedef struct {
+    const char *name;
+    const MmkMeshVertex *vertices;
+    size_t vertex_count;
+    const uint32_t *indices;               // triangle list
+    size_t index_count;
+    uint32_t bone_count, shape_count;
+    float bounds[6];                       // rest pose: min xyz, max xyz
+} MmkMeshModel;                                                        // 72 bytes
+
+enum { MMK_MESH_UNLIT = 1 };
+typedef struct {
+    uint32_t first_index, index_count, material, bone;
+    uint32_t flags;             // bit 0 unlit (pre-rendered card); bits 8-9 wrap u, 10-11 wrap v
+                                // (0 repeat, 1 mirror, 2 clamp)
+} MmkMeshShape;                                                        // 20 bytes
+
+typedef struct {
+    const float *skin;          // bone_count x 12 floats (row-major 3x4)
+    const uint32_t *shape_texture;   // per shape: texture index or MMK_TEXTURE_NONE
+    const uint8_t *shape_visible;    // per shape: 1 / 0
+    uint32_t bone_count, shape_count;
+} MmkMeshPose;                                                         // 32 bytes
+
+enum { MMK_MESH_DRAW_CARD = 1, MMK_MESH_DRAW_TILE = 2 };
+typedef struct {
+    int32_t mesh;
+    uint32_t model;
+    int32_t anim;               // -1 = rest pose
+    float time;                 // frames since the animation started
+    float transform[12];        // model -> world px, row-major 3x4
+    uint32_t layer;
+    uint32_t order;             // draw before snapshot sprite #order
+    uint32_t flags;             // MMK_MESH_DRAW_*
+    uint32_t variant;           // pass to mmk_mesh_pose (1 = ".1" textures, e.g. Fire Mario)
+} MmkMeshDraw;                                                         // 80 bytes
+
+int32_t mmk_mesh_find(const MmkAssets *assets, const char *name);    // -1 = no mesh
+size_t mmk_mesh_model_count(const MmkAssets *assets, int32_t mesh);
+bool mmk_mesh_model(const MmkAssets *assets, int32_t mesh, size_t model, MmkMeshModel *out);
+int32_t mmk_mesh_model_index(const MmkAssets *assets, int32_t mesh, const char *name);
+bool mmk_mesh_shape(const MmkAssets *assets, int32_t mesh, size_t model, size_t shape, MmkMeshShape *out);
+int32_t mmk_mesh_anim(const MmkAssets *assets, int32_t mesh, const char *name);   // -1 = none
+size_t mmk_mesh_anim_count(const MmkAssets *assets, int32_t mesh);
+size_t mmk_mesh_anim_name(const MmkAssets *assets, int32_t mesh, size_t index, char *buf, size_t cap);
+float mmk_mesh_anim_frames(const MmkAssets *assets, int32_t anim);
+// anim -1 = rest; buffers valid until the next pose call on this assets handle
+bool mmk_mesh_pose(const MmkAssets *assets, int32_t mesh, size_t model, int32_t anim, float time,
+                   uint32_t variant, MmkMeshPose *out);
+// This frame's mesh draws (3D styles; filled by mmk_engine_snapshot), valid until the next snapshot
+size_t mmk_engine_meshes(const MmkEngine *engine, const MmkMeshDraw **out);
+void mmk_engine_set_meshes(MmkEngine *engine, bool enabled);          // default on
+// Model viewer: the draws the engine makes for a sim sprite (model "M1_…", frame "walk.0") in
+// style "WU"/"3W", origin (x, y) px, scale x SMB1 size, facing right unless flip_x. 0 = a sprite.
+size_t mmk_mesh_sprite_draws(const MmkAssets *assets, const char *style, const char *model,
+                             const char *frame, float x, float y, float scale, bool flip_x,
+                             float tick, const MmkMeshDraw **out);
