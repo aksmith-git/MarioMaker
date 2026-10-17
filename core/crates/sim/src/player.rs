@@ -210,6 +210,7 @@ pub enum Pose {
     Fire,
     Swim,
     Climb,
+    Slide,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -276,6 +277,8 @@ pub struct Player {
     pub style: Style,
     /// Carrying an item (its actor id; not in SMB1).
     pub held: Option<u32>,
+    /// Sliding down a slope on the backside (Slip; not in SMB1).
+    pub sliding: bool,
     /// Climbing a vine: its centre x and the side the player hangs on (−1 left, +1 right).
     pub climbing: Option<(f32, i32)>,
     /// Frames before a vine can be grabbed again (after jumping off).
@@ -322,6 +325,7 @@ impl Player {
             clown: None,
             style: Style::M1,
             held: None,
+            sliding: false,
         }
     }
 
@@ -696,9 +700,23 @@ impl Player {
             return;
         }
 
+        // slope slide (player-physics.md §5.2 Slip; not in SMB1): crouch on a slope
+        if self.style != Style::M1 && self.on_ground && !self.in_water && !self.sliding {
+            let on_slope = level
+                .slope_at(self.x)
+                .is_some_and(|(sy, _)| (self.y - sy).abs() < 6.0);
+            if on_slope && inp.held(input::DOWN) && self.held.is_none() {
+                self.sliding = true;
+                self.crouch = false;
+            }
+        }
+        if self.sliding && (!self.on_ground || self.in_water) && self.vy > 0.0 {
+            self.sliding = false;
+        }
+
         // crouch: big forms on the ground with Down held (kept through a crouch jump)
         if self.on_ground {
-            let want = self.big() && inp.held(input::DOWN);
+            let want = self.big() && inp.held(input::DOWN) && !self.sliding;
             if want != self.crouch && (want || self.can_stand(level)) {
                 self.crouch = want;
             }
@@ -722,8 +740,13 @@ impl Player {
                 self.vy = 3.5;
             }
             if self.on_ground {
-                self.ground(inp);
+                if self.sliding {
+                    self.slide(level);
+                } else {
+                    self.ground(inp);
+                }
                 if pressed {
+                    self.sliding = false;
                     self.vy = JUMP_BASE + jump_bonus(self.vx.abs());
                     if self.low_gravity {
                         self.vy = (self.vy * 0.7).min(2.7);
@@ -791,6 +814,34 @@ impl Player {
             shoe: self.shoe.is_some(),
             clown_car: self.clown.is_some(),
         }
+    }
+
+    /// Slip: downhill toward 4.0 px/f with the slide accel of the slope (gentle 0.05, steep
+    /// 0.17 [inf: steepness index for the two slope kinds]); on flat ground it slows by 0.09
+    /// and ends at rest.
+    fn slide(&mut self, level: &Level) {
+        let slope = level
+            .slope_at(self.x)
+            .filter(|(sy, _)| (self.y - sy).abs() < 6.0)
+            .map(|(_, s)| {
+                (
+                    if s.rising { -1.0 } else { 1.0 },
+                    if s.steep { 0.17 } else { 0.05 },
+                )
+            });
+        match slope {
+            Some((down, acc)) => self.vx = approach(self.vx, 4.0 * down, acc),
+            None => {
+                self.vx = approach(self.vx, 0.0, 0.09);
+                if self.vx == 0.0 {
+                    self.sliding = false;
+                }
+            }
+        }
+        if self.vx != 0.0 {
+            self.facing = self.vx.signum() as i32;
+        }
+        self.pose = Pose::Slide;
     }
 
     fn vine_at(level: &Level, x: f32, y: f32) -> Option<(f32, f32, f32)> {
@@ -1270,6 +1321,50 @@ mod tests {
             "should end up on the plateau, y = {max_y}"
         );
         assert!(p.on_ground);
+    }
+
+    #[test]
+    fn crouching_on_a_slope_slides_down_outside_smb1() {
+        // a steep "\" slope from a plateau at tile 10..14 down to the floor
+        let mut level = Level::flat(60);
+        for x in 6..10 {
+            for y in 0..6 {
+                level.set(x, y, Cell::Solid);
+            }
+        }
+        level.slopes.push(Slope {
+            left: 10,
+            bottom: 2,
+            width: 4,
+            height: 4,
+            rising: false,
+            steep: true,
+        });
+        for style in [Style::M3, Style::M1] {
+            let mut p = Player::new(10.0 * TILE + 8.0, 6.0 * TILE);
+            p.style = style;
+            for _ in 0..10 {
+                p.step(Input { buttons: 0 }, &level);
+            }
+            for _ in 0..20 {
+                p.step(
+                    Input {
+                        buttons: input::DOWN,
+                    },
+                    &level,
+                );
+            }
+            if style == Style::M1 {
+                assert!(!p.sliding);
+                continue;
+            }
+            assert!(p.sliding && p.pose == Pose::Slide);
+            assert!(p.vx > 1.0, "accelerates downhill: {}", p.vx);
+            for _ in 0..200 {
+                p.step(Input { buttons: 0 }, &level);
+            }
+            assert!(!p.sliding, "stops on the flat");
+        }
     }
 
     #[test]

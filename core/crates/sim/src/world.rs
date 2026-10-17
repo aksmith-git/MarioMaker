@@ -1668,7 +1668,22 @@ impl World {
             }
             let p = &self.player;
             let (ax, ay, ah) = (a.x, a.y, a.height());
-            if star && a.kind != Kind::EnemyFire {
+            // a slide knocks out enemies it runs into (not bosses or the indestructible)
+            let slide_hit = self.player.sliding
+                && !matches!(
+                    a.kind,
+                    Kind::Thwomp { .. }
+                        | Kind::Boo
+                        | Kind::AngrySun { .. }
+                        | Kind::EnemyFire
+                        | Kind::Hammer
+                        | Kind::Magic
+                        | Kind::Wrench
+                        | Kind::Bowser { .. }
+                        | Kind::BoomBoom { .. }
+                        | Kind::BowserJr { .. }
+                );
+            if (star && a.kind != Kind::EnemyFire) || slide_hit {
                 let px = p.x;
                 self.actors[i].die_fall(px);
                 let n = self.player.stomp_chain;
@@ -4377,6 +4392,7 @@ impl World {
                 }
             }
             Pose::Pole => "climb.0",
+            Pose::Slide => "slip.0",
             Pose::Climb => {
                 if ((p.walk_phase / 8.0) as i32) % 2 == 0 {
                     "climb.0"
