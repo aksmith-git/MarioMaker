@@ -426,9 +426,9 @@ pub const PLAYABLE_STYLES: &[&str] = &["M1", "M3", "MW", "WU", "3W"];
 
 /// Parts that become actors and so can ride a track (59-track.md).
 const RIDES_TRACKS: &[i16] = &[
-    0, 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 15, 18, 19, 20, 22, 23, 25, 28, 30, 31, 32, 33, 34, 35, 36,
-    39, 40, 41, 42, 44, 45, 46, 48, 50, 51, 52, 56, 57, 58, 60, 61, 62, 63, 65, 68, 70, 76, 77, 82,
-    83, 91, 95, 96, 98, 102, 103, 105, 114, 117,
+    0, 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 13, 15, 24, 47, 54, 18, 19, 20, 22, 23, 25, 28, 30, 31, 32,
+    33, 34, 35, 36, 39, 40, 41, 42, 44, 45, 46, 48, 50, 51, 52, 56, 57, 58, 60, 61, 62, 63, 65, 68,
+    70, 76, 77, 82, 83, 91, 95, 96, 98, 102, 103, 105, 114, 117,
 ];
 
 /// Why a course is not fully playable yet: one entry per missing feature (empty = playable).
@@ -440,20 +440,14 @@ pub fn unsupported_features(course: &Course) -> Vec<String> {
     if !PLAYABLE_STYLES.contains(&style.as_str()) {
         out.insert(format!("style {style}"));
     }
+    // (custom autoscroll without nodes plays with the usual camera [inf: the uploader cleared
+    // such a course, so the camera can't have stopped])
     for (ai, area) in course.areas().iter().enumerate() {
-        let h = &area.header;
         if ai == 1 && area.objects.is_empty() && area.ground.is_empty() {
             continue; // unused sub-area
         }
 
-        if h.autoscroll_type == 4 && !area.objects.iter().any(|o| o.id == 89) {
-            out.insert("custom autoscroll without nodes".to_string());
-        }
-
         for o in area.objects.iter() {
-            // style-specific parts the engine doesn't have yet: the style power-up (44: Super
-            // Leaf in SMB3, Cape Feather in SMW, Propeller in NSMBU, Super Bell in 3D World) and
-            // Yoshi's Egg (45 in SMW / NSMBU)
             if !SUPPORTED_PARTS.contains(&o.id) {
                 out.insert(format!("part {}", o.id));
             } else if o.flags & 0x400 != 0 && !RIDES_TRACKS.contains(&o.id) {
@@ -879,10 +873,32 @@ impl Level {
                 });
                 continue;
             }
+            let on_track = o.flags & 0x400 != 0;
+            // a fixed object on a track: an actor carries it (Kind::TrackMount)
+            let mount = |lvl: &mut Level, what: u8, index: usize, h: i32| {
+                lvl.spawns.push(Spawn {
+                    kind: Kind::TrackMount {
+                        what,
+                        index: index as u16,
+                        h: h as u8,
+                    },
+                    x: tx as f32 * TILE + 8.0,
+                    y: ty as f32 * TILE,
+                    big: false,
+                    wings: false,
+                    pipe: None,
+                    parachute: false,
+                    rail: Some(((o.flags >> 20) & 3) as u8),
+                    link: o.link_id,
+                    clown: false,
+                });
+            };
             if o.id == 13 {
                 // Bill Blaster: a solid column, anchored at its bottom tile
-                for dy in 0..hgt {
-                    lvl.set(tx, ty + dy, Cell::Solid);
+                if !on_track {
+                    for dy in 0..hgt {
+                        lvl.set(tx, ty + dy, Cell::Solid);
+                    }
                 }
                 let contents = match o.child_id {
                     0 => Some(Kind::Goomba),
@@ -897,6 +913,10 @@ impl Level {
                     h: hgt.max(2),
                     contents,
                 });
+                if on_track {
+                    let i = lvl.blasters.len() - 1;
+                    mount(&mut lvl, 3, i, hgt.max(2));
+                }
                 continue;
             }
             if o.id == 89 {
@@ -1057,7 +1077,9 @@ impl Level {
             if o.id == 47 {
                 // cannon: solid block; barrel direction from the facing field (flags >> 24) & 7
                 // (even values left/right/down/up as for Piranha Plants; odd = diagonals [inf])
-                lvl.set(tx, ty, Cell::Solid);
+                if !on_track {
+                    lvl.set(tx, ty, Cell::Solid);
+                }
                 let angle = match (o.flags >> 24) & 7 {
                     0 => 180.0,
                     1 => 225.0,
@@ -1073,10 +1095,16 @@ impl Level {
                     y: ty as f32 * TILE,
                     angle,
                 });
+                if on_track {
+                    let i = lvl.cannons.len() - 1;
+                    mount(&mut lvl, 2, i, 1);
+                }
                 continue;
             }
             if o.id == 54 {
-                lvl.set(tx, ty, Cell::Solid);
+                if !on_track {
+                    lvl.set(tx, ty, Cell::Solid);
+                }
                 let (bx, by) = (tx as f32 * TILE + 8.0, ty as f32 * TILE);
                 let dir = match (o.flags >> 25) & 3 {
                     0 => 0,
@@ -1090,12 +1118,18 @@ impl Level {
                     dir,
                     alt: o.flags & 0x4 != 0,
                 });
+                if on_track {
+                    let i = lvl.burners.len() - 1;
+                    mount(&mut lvl, 1, i, 1);
+                }
                 continue;
             }
             if o.id == 24 {
                 // pivot block: solid; length bits 22–24, direction bit 3, start angle in the
                 // extended data (5° units) [ext docs/formats/smm2-course.md]
-                lvl.set(tx, ty, Cell::Solid);
+                if !on_track {
+                    lvl.set(tx, ty, Cell::Solid);
+                }
                 lvl.firebars.push(FireBar {
                     x: tx as f32 * TILE + 8.0,
                     y: ty as f32 * TILE + 8.0,
@@ -1103,6 +1137,10 @@ impl Level {
                     start: (o.extended_data & 0xFF) as f32 * 5.0,
                     dir: if (o.flags >> 3) & 1 == 1 { 1.0 } else { -1.0 },
                 });
+                if on_track {
+                    let i = lvl.firebars.len() - 1;
+                    mount(&mut lvl, 0, i, 1);
+                }
                 continue;
             }
             if o.id == 43 {

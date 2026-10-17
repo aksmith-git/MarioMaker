@@ -182,6 +182,14 @@ pub enum Kind {
         path: u8,
         alt: bool,
     },
+    /// A fixed object riding a track (59-track.md): Fire Bar (`what` 0), Burner (1), airship
+    /// Cannon (2) or Bill Blaster (3, `h` tiles tall). The actor is the moving solid block; the
+    /// world moves the level's object (index `index` in its list) along with it.
+    TrackMount {
+        what: u8,
+        index: u16,
+        h: u8,
+    },
     /// Koopa Troopa Car (72, 3D World): phases 0 empty (brakes 0.05/frame), 1 start spin,
     /// 2 run, 3 turn (30 frames) — the world drives it while the player rides; `hops` = damage
     /// taken (the third hit breaks it) [inf].
@@ -388,6 +396,7 @@ impl Kind {
                 | Kind::Lift { .. }
                 | Kind::Trampoline { .. }
                 | Kind::TrackBlock { .. }
+                | Kind::TrackMount { .. }
                 | Kind::Crate { .. }
                 | Kind::Spring
                 | Kind::Muncher
@@ -591,6 +600,13 @@ impl Actor {
                 let hw = width as f32 * 8.0;
                 Some((self.x - hw, self.y + 8.0, self.x + hw, self.y + 16.0, true))
             }
+            Kind::TrackMount { h, .. } => Some((
+                self.x - 8.0,
+                self.y,
+                self.x + 8.0,
+                self.y + h as f32 * TILE,
+                false,
+            )),
             Kind::TrackBlock { .. } if self.phase != 5 => {
                 Some((self.x - 16.0, self.y, self.x + 16.0, self.y + 32.0, false))
             }
@@ -1019,6 +1035,7 @@ impl Actor {
             Kind::KoopaCar => 14.0,
             Kind::Trampoline { width, .. } => width as f32 * 8.0,
             Kind::TrackBlock { .. } => 16.0,
+            Kind::TrackMount { .. } => 8.0,
             k if k.is_w3() => self.w3_size().0,
             _ if self.big => 16.0,
             _ => 8.0,
@@ -1042,6 +1059,7 @@ impl Actor {
             }
             Kind::Piranha { .. } => PIRANHA_H * if self.big { 2.0 } else { 1.0 },
             Kind::Koopa { .. } if !self.big => 16.0, // body box 16×16 (art is 16×32)
+            Kind::TrackMount { h, .. } => h as f32 * TILE,
             k if k.is_w3() => self.w3_size().1,
             _ if self.big => 32.0,
             _ => 16.0,
@@ -1734,6 +1752,7 @@ impl Actor {
                     self.wing_bob(amp);
                 }
             }
+            Kind::TrackMount { .. } => {} // moved by its rail only
             Kind::Trampoline { moving, range, .. } => {
                 if moving {
                     // a lift swaying around its start [inf]

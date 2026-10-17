@@ -315,6 +315,8 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   Stingby (patrol, alert, charge), Skipsqueak (+ Spiny; jumps with the player), Hop-Chops,
   Porcupuffer (4 HP, homing, surface patrol), Bully (push-back, stun), Charvaargh (lava leap with
   8 segments), Piranha Creeper (path creep, sleeping form) — guesses listed in DECISIONS.md
+- ✅ Fire Bars, Burners, airship Cannons and Bill Blasters on tracks: a carrier actor rides the
+  track as the moving solid and the fixed object follows it — sample 550/550 by the coverage check
 - ✅ Super Hammer / Builder Mario (116): item walks like a mushroom [inf]; Run swings the hammer
   (hits enemies and breaks blocks in front), air swing falls ≤ 1.5 and |vx| ≤ 1.125; "goal as
   Builder" condition; drawn with the builder outfit + hammer meshes. Crate building ⬜

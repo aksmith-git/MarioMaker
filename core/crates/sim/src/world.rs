@@ -3578,6 +3578,35 @@ impl World {
             }
             a.step_spawning(&self.level);
         }
+        // fixed objects riding tracks follow their carrier
+        for a in &self.actors {
+            let Kind::TrackMount { what, index, .. } = a.kind else {
+                continue;
+            };
+            let i = index as usize;
+            match what {
+                0 => {
+                    if let Some(f) = self.level.firebars.get_mut(i) {
+                        (f.x, f.y) = (a.x, a.y + 8.0);
+                    }
+                }
+                1 => {
+                    if let Some(b) = self.level.burners.get_mut(i) {
+                        (b.x, b.y) = (a.x, a.y);
+                    }
+                }
+                2 => {
+                    if let Some(c) = self.level.cannons.get_mut(i) {
+                        (c.x, c.y) = (a.x, a.y);
+                    }
+                }
+                _ => {
+                    if let Some(b) = self.level.blasters.get_mut(i) {
+                        (b.x, b.y) = (a.x, a.y);
+                    }
+                }
+            }
+        }
         self.level.solids = self
             .actors
             .iter()
@@ -5494,7 +5523,7 @@ impl World {
                 }
                 ("M1_Object_block_orbit", "wait.0", 16.0, 16.0, false)
             }
-            Kind::Trampoline { .. } => return None,
+            Kind::Trampoline { .. } | Kind::TrackMount { .. } => return None,
             // 3D World only: the mesh is drawn at its own size (16 = no scaling)
             Kind::KoopaCar => (
                 "M1_Enemy_koopacar",
@@ -7697,6 +7726,44 @@ mod tests {
         assert!(!w.actors[gi].alive(), "hammer hit");
         assert_eq!(w.player.form, Form::Builder, "not hurt");
         assert_eq!(w.player.at_goal().form, 7);
+    }
+
+    #[test]
+    fn fire_bar_rides_a_track() {
+        let mut lvl = Level::flat(60);
+        // two joined horizontal pieces centred on tiles (10, 4) and (12, 4)
+        lvl.tracks = crate::track::Tracks::new([(9, 3, 0), (11, 3, 0)]);
+        lvl.firebars.push(crate::level::FireBar {
+            x: 168.0,
+            y: 72.0,
+            n: 4,
+            start: 0.0,
+            dir: 1.0,
+        });
+        let mut s = spawn(
+            Kind::TrackMount {
+                what: 0,
+                index: 0,
+                h: 1,
+            },
+            168.0,
+            64.0,
+        );
+        s.rail = Some(1);
+        lvl.spawns.push(s);
+        let mut w = World::with_level(lvl);
+        run(&mut w, 0, 2);
+        let x0 = w.level.firebars[0].x;
+        run(&mut w, 0, 20);
+        let x1 = w.level.firebars[0].x;
+        assert!((x1 - x0 - 15.0).abs() < 1.0, "carried at 0.75: {}", x1 - x0);
+        assert!(
+            w.level
+                .solids
+                .iter()
+                .any(|b| (b.x0 + 8.0 - x1).abs() < 0.01 && !b.top_only),
+            "the pivot block moves with it"
+        );
     }
 
     #[test]
