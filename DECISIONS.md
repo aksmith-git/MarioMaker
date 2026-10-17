@@ -2,6 +2,14 @@
 
 Newest first. Each entry: what was decided, why, and what would change it.
 
+## 2026-10-18 — Engine architecture: Rust core + thin Swift shell (Option B)
+Owner's choice from docs/architecture-options.md. Rust core (formats, importer, deterministic
+60 Hz sim, audio mixer, modes) behind a C ABI; Swift app for window, Metal rendering,
+GameController input, audio output and SwiftUI menus. Reason: native Mac app quality plus a
+portable, independently testable core that leaves a Windows/Linux port open. Cost accepted: two
+languages and an FFI boundary. Design: docs/architecture.md. Toolchain: Rust 1.99.0 (pinned),
+Swift 6.4 / Xcode 27, macOS 14+ Apple Silicon.
+
 ## 2026-10-18 — Behavioural specs stay private; the engine is written from them
 Phase 3 specs (`research/specs/`) describe behaviour in prose, tables and maths with evidence tags,
 never decompiled code. They stay gitignored because they cite addresses and quote game data values

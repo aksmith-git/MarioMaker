@@ -38,10 +38,14 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
 - ⬜ Left for later phases: enemy stomp bounce speed, activation range, 44 style power-up and 42 clown
   car specs, remaining 51 rarer/2.0+ object ids (Phase 7)
 
-### Phase 4 — Engine architecture ⬜
-- ⬜ 2–3 native options (all native Apple Silicon `.app`, Metal-backed) with trade-offs
-- ⬜ First-launch asset-import design + placeholder-art fallback
-- ⬜ Owner chooses → DECISIONS.md
+### Phase 4 — Engine architecture ✅ (awaiting go-ahead)
+- ✅ Options with trade-offs: [docs/architecture-options.md](docs/architecture-options.md)
+- ✅ Owner chose **B: Rust core + thin Swift shell**
+- ✅ Working design: [docs/architecture.md](docs/architecture.md) — crates, threads, determinism rules,
+  FFI shape, importer pipeline (RomFS/ExeFS folder in, Metal-ready cache out), placeholder pack,
+  testing, dependencies, Phase 5 order of work
+- ✅ Asset facts checked on the dump: textures ~98 % RGBA8 sRGB + BC1/4/5/7 (all native on Apple
+  Silicon, need Tegra unswizzle); 2D styles are BFRES quads; audio DSP-ADPCM
 
 ### Phase 5 — Vertical slice (SMB1, ground) ⬜
 - ⬜ Engine skeleton, rendering, input, placeholder art
