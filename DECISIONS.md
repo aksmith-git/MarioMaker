@@ -2,6 +2,12 @@
 
 Newest first. Each entry: what was decided, why, and what would change it.
 
+## 2026-10-17 — v3.0.3 is the behavioural target; v1.0.0 is the mapping aid
+The engine targets SMM2 3.0.3 (final) behaviour and assets. Community RE notes (e.g. Treeki's
+SMM2Reversing, July 2019) were written against v1.0.x, so Phase 3 maps functions in the v1.0.0
+binary first and carries names across to 3.0.3 by function matching. The first-launch importer
+will take the base dump plus an optional update dump.
+
 ## 2026-10-17 — Native app milestone (Phase 5b) before the 100 Mario Challenge
 Owner wants a proper native macOS app before the 100 Mario Challenge work starts. Phase 5b adds the
 app bundle, import screen, course library, pause menu, settings, save data and per-course

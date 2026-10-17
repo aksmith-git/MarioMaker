@@ -6,7 +6,7 @@
 ### Phase 1 — Environment and extraction ✅
 - ✅ Dumps gitignored; provenance checked; toolchain pinned; CI + pre-commit guard
 - ✅ SMM1 decrypted (base v16 + update v208); SMM2 v1.0.0 extracted; inventories; 550-course sample
-- ⏳ SMM2 update v3.0.3 as `.nsp` (current file is an incomplete 7z) — needed for Phase 7
+- ✅ SMM2 update v3.0.3 extracted (patched RomFS + ExeFS); both executables converted to ELF
 
 ### Phase 2 — Course formats 🔄
 - 🔄 Gather community format docs (SMM1, SMM2)
@@ -117,7 +117,11 @@ water, haunted house.
 Styles: `M1` SMB1, `M3` SMB3, `MW` SMW, `WU` NSMBU, `3W` SM3DW. Themes: plain, underground, castle,
 airship, water, hauntedhouse, snow, desert, athletic (sky), woods.
 
+- **SMM2 update v3.0.3** (`Mario Maker2 Updatev3.0.3.nsp`, patch title `01009B90006DC800`, NACP display
+  version 3.0.3) applied over the v1.0.0 base:
+  - `~/smm-work/extracted/smm2-v303-romfs/` (3801 files, 2.8 GiB; adds `MyWorld/`, +22 models, +3 packs,
+    +344 sound files, +123 layouts) and `~/smm-work/extracted/smm2-v303-exefs/` (`main` 20 MiB NSO)
+  - ELFs for analysis: `/Volumes/SSD/smm-work/extracted/smm2-v100-main.elf`, `smm2-v303-main.elf`
+
 ### Open
-- SMM2 update (v3.0.x) not dumped. Courses made after Dec 2019 can use 2.0/3.0 items that v1.0.0 has
-  no assets or code for. Needed before Phase 7 and for a realistic 100 Mario Challenge pool.
 - Owner's own saved courses: not yet exported from the Switch; the dataset sample covers Phase 2 for now.
