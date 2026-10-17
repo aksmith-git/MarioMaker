@@ -1182,6 +1182,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mmk-editor"
+version = "0.1.0"
+dependencies = [
+ "mmk-formats",
+ "mmk-sim",
+]
+
+[[package]]
 name = "mmk-ffi"
 version = "0.1.0"
 dependencies = [

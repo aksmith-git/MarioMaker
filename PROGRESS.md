@@ -259,8 +259,10 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   feature switches per style already specced
 - ⬜ Every part (0–132, incl. 2.0/3.0 items from the update dump), Yoshi, shoes, clown cars,
   power-ups per style, Koopalings, Master Sword, etc.
-- ⬜ Course Maker (editor): placement, erase, copy, sub-areas, pipes/doors links, paths, tracks,
-  settings, test play, save/load to the library
+- 🔄 Course Maker (editor): core crate `editor` ✅ (place / erase parts with default sizes, child items,
+  flags, ground painting auto-tiled from a corpus-derived table, theme / night / timer / autoscroll /
+  style / name / length, undo-redo, save; tests play the saved course in the sim) · maker UI, copy,
+  sub-area links, pipes/doors, paths, tracks, test play ⬜
 - ⬜ Story Mode (Peach's castle jobs, built-in courses from the owner's dump), Coursebot, Lessons
 - ⬜ Endless Challenge (SMM2's successor to 100 Mario) alongside the SMM1-style 100 Mario Challenge
 - ⬜ Ninji speedruns / event courses (offline with local data), records and medals

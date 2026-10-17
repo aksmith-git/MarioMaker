@@ -1,0 +1,13 @@
+[package]
+name = "mmk-editor"
+description = "Course Maker core: place and erase parts, paint ground, course settings, undo/redo"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+mmk-formats = { path = "../formats" }
+
+[dev-dependencies]
+mmk-sim = { path = "../sim" }
