@@ -1,0 +1,10 @@
+[package]
+name = "mmk-modes"
+description = "Game modes: the 100 Mario Challenge run manager, course pools, Continue/unlock save data"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json.workspace = true

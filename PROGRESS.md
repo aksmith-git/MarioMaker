@@ -119,7 +119,11 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
 - ⬜ SMM1 asset import (owner's disc dump): BFLYT/BFLAN layouts, GX2 textures, BFFNT fonts,
   BFSTM/BARS audio, MSBT text (English first)
 - ⬜ Layout player (panes, text, keyframed animations) — shared with the app menus
-- ⬜ Mode logic per research/specs (lives cap 100, ≤3 banked lives/course, free skip, unlocks, rewards)
+- ✅ Mode logic (`core/crates/modes`): run lengths 8/16/16/6 (10 Mario 8), 100 lives = cap, ≤3
+  banked extra lives paid on clear (+1 refund in 100 Mario), death retries from the course-start
+  state, free skip (100 Mario only), Save & Quit, game over, completion; course pools by
+  difficulty band with SMM1's shuffle and castle search; Continue records, unlock rules, stats ·
+  costume reward selection ⬜ (category table not read)
 - ⬜ Course pool: local library + pluggable remote source (SmmServer/SMMDB-style), difficulty tiers
 - ⬜ Pool limited to courses marked playable; grows with Phase 7
 - ⬜ SMM1 → SMM2 course import design + documented losses

@@ -15,7 +15,8 @@ core/                       Cargo workspace (Rust, toolchain pinned in rust-tool
     assets/                 runtime asset-cache format: reader, writer, placeholder-pack builder
     sim/                    deterministic simulation (world, player, actors, camera, rules)
     audio/                  mixer: voices, loops, effects → interleaved f32 PCM
-    modes/                  normal play, 100 Mario run manager, CourseSource trait + adapters
+    modes/                  100 Mario / 10 Mario run manager, course pools (CourseSource trait),
+                            Continue/unlock save data (implemented: hundred.rs, pool.rs, save.rs)
     ffi/                    C ABI static library for the Swift app (cbindgen header)
     cli/                    `mmk` tool: import, inspect, headless run/replay, golden dumps
 app/                        Xcode project (Swift 6, SwiftUI + Metal + GameController + AVAudioEngine)

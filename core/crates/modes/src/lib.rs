@@ -1,0 +1,39 @@
+//! Game modes around the course engine.
+//!
+//! - [`hundred`]: the 100 Mario Challenge run manager (and 10 Mario), written from the private
+//!   behaviour specs `research/specs/100-mario-challenge.md` and `smm1-100mario-code.md`: lives,
+//!   banked extra lives, skipping, results, run completion.
+//! - [`pool`]: picking courses for a run by difficulty band from a pluggable course source.
+//! - [`save`]: Continue records per difficulty, unlocks and statistics (JSON).
+//!
+//! Deterministic: randomness comes from a caller-seeded generator so runs can be replayed.
+
+pub mod hundred;
+pub mod pool;
+pub mod save;
+
+/// Small deterministic generator (xorshift64*), seeded by the caller.
+#[derive(Clone, Debug)]
+pub struct Rng(u64);
+
+impl Rng {
+    pub fn new(seed: u64) -> Self {
+        Self(seed.max(1))
+    }
+    pub fn next_u32(&mut self) -> u32 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        (x.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 32) as u32
+    }
+    /// Uniform in [0, n).
+    pub fn below(&mut self, n: u32) -> u32 {
+        if n == 0 {
+            0
+        } else {
+            ((self.next_u32() as u64 * n as u64) >> 32) as u32
+        }
+    }
+}
