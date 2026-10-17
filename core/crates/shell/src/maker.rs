@@ -55,6 +55,9 @@ pub struct Maker {
     pub cursor: Option<(i32, i32)>,
     pub path: Option<PathBuf>,
     pub message: String,
+    /// Course server for Ctrl+U uploads (`--server`).
+    pub server: Option<String>,
+    pub maker_name: String,
     world: World,
     dirty: bool,
 }
@@ -69,6 +72,8 @@ impl Maker {
             cursor: None,
             path,
             message: String::new(),
+            server: None,
+            maker_name: "anonymous".into(),
             world,
             dirty: true,
         }
@@ -201,6 +206,22 @@ impl Maker {
             }
             Ok(Err(e)) => format!("save failed: {e}"),
             Err(e) => format!("save failed: {e:?}"),
+        };
+    }
+
+    /// Upload the course to the course server (Ctrl+U); the message shows its code.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn upload(&mut self) {
+        let Some(server) = self.server.clone() else {
+            self.message = "no --server given".into();
+            return;
+        };
+        self.message = match self.editor.save() {
+            Ok(b) => match mmk_online::Client::new(server).upload(&b, &self.maker_name) {
+                Ok(l) => format!("uploaded: {}", l.code),
+                Err(e) => format!("upload failed: {e}"),
+            },
+            Err(e) => format!("upload failed: {e:?}"),
         };
     }
 

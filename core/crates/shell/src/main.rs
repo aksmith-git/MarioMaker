@@ -71,6 +71,15 @@ mod native {
         /// Play the smoke-test script in the window instead of reading input.
         #[arg(long)]
         scripted: bool,
+        /// Course server (open-source mmk-server) for --code and the maker's Ctrl+U upload.
+        #[arg(long)]
+        server: Option<String>,
+        /// Download this course code from --server and play it.
+        #[arg(long)]
+        code: Option<String>,
+        /// Maker name for uploads.
+        #[arg(long, default_value = "anonymous")]
+        maker: String,
         /// Online play (2 players, rollback over UDP): our address, e.g. 0.0.0.0:7000.
         #[arg(long)]
         net_bind: Option<String>,
@@ -115,7 +124,17 @@ mod native {
         };
         let source = assets_dir.as_ref().map(|d| DirSource::new(d.clone()));
         let source_ref = source.as_ref().map(|s| s as &dyn AssetSource);
+        let downloaded = match (&args.code, &args.server) {
+            (Some(code), Some(server)) => Some(
+                mmk_online::Client::new(server.clone())
+                    .download(code)
+                    .map_err(|e| format!("{code}: {e}"))?,
+            ),
+            (Some(_), None) => return Err("--code needs --server".into()),
+            _ => None,
+        };
         let course = match &args.course {
+            _ if downloaded.is_some() => downloaded.clone(),
             Some(p) if args.edit && !p.exists() => None,
             Some(p) => Some(std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?),
             None => None,
@@ -136,7 +155,10 @@ mod native {
                     e
                 }
             };
-            game.maker = Some(mmk_shell::maker::Maker::new(editor, args.course.clone()));
+            let mut m = mmk_shell::maker::Maker::new(editor, args.course.clone());
+            m.server = args.server.clone();
+            m.maker_name = args.maker.clone();
+            game.maker = Some(m);
             game.editing = true;
         }
         match &assets_dir {

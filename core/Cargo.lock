@@ -1340,6 +1340,7 @@ dependencies = [
  "mmk-formats",
  "mmk-host",
  "mmk-netplay",
+ "mmk-online",
  "mmk-sim",
  "png",
  "pollster",

@@ -314,6 +314,8 @@ impl App {
             KeyCode::KeyZ if ctrl => m.undo(),
             KeyCode::KeyY if ctrl => m.redo(),
             KeyCode::KeyS if ctrl => m.save(),
+            #[cfg(not(target_arch = "wasm32"))]
+            KeyCode::KeyU if ctrl => m.upload(),
             KeyCode::KeyW if !ctrl => m.modify('w'),
             KeyCode::KeyB => m.modify('b'),
             KeyCode::KeyF => m.modify('f'),
