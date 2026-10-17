@@ -438,11 +438,25 @@ pub unsafe extern "C" fn mmk_engine_snapshot(engine: *mut MmkEngine, out: *mut M
         let mut sprites = e.world.sprites();
         sprites.sort_by_key(|s| s.layer);
         e.sprites.clear();
+        // the sim names SMB1 models; other styles use the same names with their own prefix
+        // (M3_, MW_, …) and fall back to the SMB1 art where a style has no such model
+        let style = e.world.level.style.clone();
         for s in sprites {
             let key = (s.image.model, s.image.texture);
             let found = *e.lookup.entry(key).or_insert_with(|| {
-                let i = assets.cache.texture_index(key.0, key.1)?;
-                Some((i as u32, assets.cache.sprite_quad(key.0, key.1)))
+                let resolve = |model: &str| {
+                    let i = assets.cache.texture_index(model, key.1)?;
+                    Some((i as u32, assets.cache.sprite_quad(model, key.1)))
+                };
+                let styled = key
+                    .0
+                    .strip_prefix("M1_")
+                    .filter(|_| style != "M1")
+                    .map(|rest| format!("{style}_{rest}"));
+                styled
+                    .as_deref()
+                    .and_then(resolve)
+                    .or_else(|| resolve(key.0))
             });
             // missing art (placeholder mode, or not imported yet): report the sprite with
             // MMK_TEXTURE_NONE so the app can draw a stand-in shape
