@@ -169,6 +169,15 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   off); "goal in a shoe" condition · shoe ground-pound, Yoshi (SMW/NSMBU) ⬜ — SMB1 sample 93/150
 - ✅ Vines: climb areas with tile art from the course data; climbing (1.0 / 1.5 px/f, 6 px
   hang, side switch, jump off with 30-frame lock) · vines sprouting from blocks ⬜
+
+- ✅ Bowser: 20 HP (big 40; fire 1, shell 3; star / POW / lava kill), ±64 px patrol facing the
+  player, middle jumps and SMB1 Fly, fire every 40–79 frames + breath with level lane flames; SMB3
+  big jump + hip drop; key drop · hip-drop quake, water timers, helper modes ⬜
+- ✅ Boom Boom: 3 HP + fireball counter 5 / 10, run 0.75 / 0.75 / 1.5, wall jumps (3 per side),
+  charge → Defend spin, DamageDown 70, winged cruise + swoop; Pom Pom (3D World alternate) [inf]
+- ✅ Bowser Jr.: 3 HP + fireball counter, wait / walk ±24 / fire / hammer / hop / shift jump →
+  hover → hip drop, DamageDown → shell slide; Clown Car riders for all three [inf] — SMB1 sample
+  77 → 97 playable
 - ✅ Lava Bubble (hide / cosine rise / fall), Monty Mole (buried, mound, leap, chase), Angry Sun
   (corner wait, spin, half-ellipse swoop) and Moon (wipes on-screen enemies)
 - ✅ Tracks: graph from track records (lines + quarter arcs), rail follower (0.75 / 1.5 px/f),

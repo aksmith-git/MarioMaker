@@ -149,9 +149,10 @@ pub fn parse(bntx: &[u8]) -> Result<Vec<Texture>> {
             6 => Variant::Srgb,
             v => Variant::Other(v as u8),
         };
-        let (bpe, ew) = format
-            .element()
-            .ok_or_else(|| bad(format!("{name}: unsupported format {fmt:#x}")))?;
+        // formats the engine doesn't draw (e.g. two-channel normal maps, 0x902) are skipped
+        let Some((bpe, ew)) = format.element() else {
+            continue;
+        };
         let (w_el, h_el) = (width.div_ceil(ew), height.div_ceil(ew));
         let data = unswizzle(
             &bntx[mip0.min(bntx.len())..],

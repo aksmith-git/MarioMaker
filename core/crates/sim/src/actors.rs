@@ -7,6 +7,9 @@
 
 use crate::level::{Cell, Level, PipeDir, TILE};
 
+mod bosses;
+pub use bosses::{BossAttack, BossHit};
+
 pub const WALK_SPEED: f32 = 0.5;
 pub const ENEMY_GRAVITY: f32 = -0.1875;
 pub const MAX_FALL: f32 = -4.0;
@@ -172,6 +175,28 @@ pub enum Kind {
     LavaLift {
         fast: bool,
     },
+    /// Bowser (62): 20 HP (big 40), paces around home, jumps and breathes fire (actors/bosses.rs).
+    /// `key`: holds a Key (child object 95) that drops on defeat; `clown`: rides a Koopa Clown
+    /// Car (flag 0x200).
+    Bowser {
+        key: bool,
+        clown: bool,
+    },
+    /// Bowser's (and Bowser Jr.'s) flame: flies level, settling onto its lane (`home_y`).
+    BowserFire,
+    /// Boom Boom (77): 3 HP plus a fireball counter; `pom` = Pom Pom (the 3D World alternate).
+    BoomBoom {
+        key: bool,
+        clown: bool,
+        pom: bool,
+    },
+    /// Pom Pom's shuriken: flies straight (velocity in vx, vy).
+    Shuriken,
+    /// Bowser Jr. (98): 3 HP plus a fireball counter.
+    BowserJr {
+        key: bool,
+        clown: bool,
+    },
 }
 
 impl Kind {
@@ -179,6 +204,9 @@ impl Kind {
         matches!(
             self,
             Kind::Goomba
+                | Kind::Bowser { .. }
+                | Kind::BoomBoom { .. }
+                | Kind::BowserJr { .. }
                 | Kind::Koopa { .. }
                 | Kind::Shell { .. }
                 | Kind::Piranha { .. }
@@ -210,6 +238,10 @@ impl Kind {
         use crate::clear::enemy as e;
         Some(match self {
             Kind::Goomba | Kind::ShoeGoomba { .. } => e::GOOMBA,
+            Kind::Bowser { .. } => e::BOWSER,
+            Kind::BoomBoom { pom: true, .. } => e::POM_POM,
+            Kind::BoomBoom { .. } => e::BOOM_BOOM,
+            Kind::BowserJr { .. } => e::BOWSER_JR,
             Kind::Koopa { .. } => e::KOOPA,
             Kind::Shell { .. } if buzzy => e::BUZZY,
             Kind::Shell { .. } => e::KOOPA,
@@ -263,6 +295,9 @@ impl Kind {
         matches!(
             self,
             Kind::Piranha { .. }
+                | Kind::Bowser { .. }
+                | Kind::BowserFire
+                | Kind::Shuriken
                 | Kind::EnemyFire
                 | Kind::Spiny
                 | Kind::SpikeTop
@@ -876,6 +911,10 @@ impl Actor {
     pub fn half_w(&self) -> f32 {
         match self.kind {
             Kind::Fireball | Kind::EnemyFire => 4.0,
+            Kind::Bowser { .. } | Kind::BoomBoom { .. } if self.big => 32.0,
+            Kind::Bowser { .. } | Kind::BoomBoom { .. } => 16.0,
+            Kind::BowserFire => 12.0,
+            Kind::Shuriken => 4.0,
             Kind::BigCoin { .. } => 15.0,
             Kind::BanzaiBill { .. } => 32.0,
             Kind::Thwomp { .. } => {
@@ -895,6 +934,9 @@ impl Actor {
     pub fn height(&self) -> f32 {
         match self.kind {
             Kind::Fireball | Kind::EnemyFire => 8.0,
+            Kind::Bowser { .. } | Kind::BoomBoom { .. } if self.big => 64.0,
+            Kind::Bowser { .. } | Kind::BoomBoom { .. } => 32.0,
+            Kind::BowserFire | Kind::Shuriken => 8.0,
             Kind::BigCoin { .. } => 30.0,
             Kind::BanzaiBill { .. } => 64.0,
             Kind::Thwomp { .. } => {
@@ -941,6 +983,7 @@ impl Actor {
     pub fn solid_contact(&self) -> bool {
         matches!(self.mode, Mode::Normal | Mode::ShellWait | Mode::ShellSlide)
             && !(matches!(self.kind, Kind::LavaBubble | Kind::MontyMole) && self.phase == 0)
+            && !self.boss_hidden()
             && !(matches!(self.kind, Kind::Piranha { .. }) && self.piranha_hidden())
     }
 
@@ -1410,6 +1453,7 @@ impl Actor {
         if self.wings {
             match self.kind {
                 Kind::Goomba | Kind::Koopa { .. } | Kind::Thwomp { .. } => {} // their own wing behaviour
+                Kind::Bowser { .. } | Kind::BoomBoom { .. } | Kind::BowserJr { .. } => {}
                 Kind::Piranha { .. } | Kind::Muncher if self.pipe.is_none() => {
                     self.step_winged_plant(level);
                     return None;
@@ -1440,6 +1484,10 @@ impl Actor {
                 self.y += self.vy;
             }
             Kind::Boo => self.step_boo(),
+            Kind::Bowser { .. } => return self.step_bowser(level),
+            Kind::BoomBoom { .. } => return self.step_boom_boom(level),
+            Kind::BowserJr { .. } => return self.step_bowser_jr(level),
+            Kind::BowserFire | Kind::Shuriken => self.step_boss_shot(),
             Kind::ChainChomp { chained } => self.step_chomp(level, chained),
             Kind::LavaBubble => self.step_lava_bubble(),
             Kind::FishBone => self.step_fish_bone(level),

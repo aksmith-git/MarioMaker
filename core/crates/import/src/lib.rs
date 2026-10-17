@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 
 pub mod sprites;
 
-pub const IMPORTER_VERSION: u32 = 3;
+pub const IMPORTER_VERSION: u32 = 4;
 pub mod smm1;
 pub use smm1::{Smm1Config, Smm1Report, run_smm1};
 
@@ -145,8 +145,10 @@ fn builtin_bcds(romfs: &Path) -> Result<Vec<(String, Vec<u8>)>> {
     Ok(out)
 }
 
-/// Game styles whose models are imported. Phase 5 needs SMB1 only; widen as styles are added.
-pub const STYLES: &[&str] = &["M1"];
+/// Game styles whose models are imported: all five (SMB1, SMB3, SMW, NSMBU, 3D World).
+pub const STYLES: &[&str] = &["M1", "M3", "MW", "WU", "3W"];
+/// Styles whose sounds are imported (the sound tables are mapped for SMB1 so far).
+pub const SOUND_STYLES: &[&str] = &["M1"];
 
 fn to_mtex(t: &bntx::Texture) -> Option<Mtex> {
     let format = match t.format {
@@ -330,7 +332,8 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
     let (texture_count, sprite_count) = import_models(cfg, &out, progress)?;
 
     // 5. sounds of the imported styles
-    let sound_count = audio::import_audio(&cfg.romfs, &out, STYLES, audio::M1_SOUNDS, progress)?;
+    let sound_count =
+        audio::import_audio(&cfg.romfs, &out, SOUND_STYLES, audio::M1_SOUNDS, progress)?;
 
     // 6. manifest
     let manifest: Value = json!({
