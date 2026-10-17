@@ -17,7 +17,9 @@ struct MMKApp: App {
 
     var body: some Scene {
         Window(AppIdentity.name, id: "main") {
-            if UIPreview.requested {
+            if MeshPreview.requested {
+                MeshPreviewView().frame(minWidth: 768, minHeight: 432)   // MMK_MESH_PREVIEW model viewer
+            } else if UIPreview.requested {
                 UIPreviewView().frame(minWidth: 768, minHeight: 432)   // MMK_UI_LAYOUT debug view
             } else {
                 RootView()
@@ -71,7 +73,7 @@ final class AppModel: ObservableObject {
 
     init() {
         AppPaths.ensureDirectories()
-        if UIPreview.requested { return }   // MMK_UI_LAYOUT: the layout preview replaces the app
+        if UIPreview.requested || MeshPreview.requested { return }   // debug views replace the app
         // Smoke tests and debugging: MMK_SCREENSHOT / MMK_COURSE skip the menus and go straight
         // into the game (see Renderer for MMK_SCREENSHOT, MMK_START_X/Y below).
         if env["MMK_SCREENSHOT"] != nil || env["MMK_COURSE"] != nil {

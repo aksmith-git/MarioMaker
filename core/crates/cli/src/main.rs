@@ -114,6 +114,17 @@ enum Cmd {
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
+    /// Summarise a BFRES model file as JSON: models (bones, shapes, LODs, materials) and
+    /// skeletal / visibility / material animations. Accepts a model `.zs`, a raw BFRES, or a
+    /// `Pack/*.pack` with `--member <model name>`.
+    Bfres {
+        file: PathBuf,
+        #[arg(long)]
+        member: Option<String>,
+        /// Also print every curve of every skeletal animation.
+        #[arg(long)]
+        curves: bool,
+    },
     /// Write a texture as PNG for inspection: an engine `.mtex` file, a Wii U `.bflim`, or one
     /// glyph sheet of a `.bffnt` (`--sheet`, optional GX2 `--swizzle` 0-7 to experiment).
     TexPng {
@@ -394,6 +405,97 @@ fn dump_lyt(file: &PathBuf) -> Result<Value, String> {
         Some(b"MsgS") => mmk_formats::msbt::Msbt::parse(&data).map_err(e)?.to_json(),
         _ => return Err("not a BFLYT, BFLAN, BFFNT or MSBT file".into()),
     })
+}
+
+/// BFRES bytes from a model `.zs`, a raw BFRES, or a pack member.
+fn load_bfres(file: &PathBuf, member: Option<&str>) -> Result<Vec<u8>, String> {
+    use mmk_formats::archive::{self, Sarc};
+    let e = |x: mmk_formats::Error| x.to_string();
+    let mut data = archive::unwrap(std::fs::read(file).map_err(|e| e.to_string())?).map_err(e)?;
+    for _ in 0..3 {
+        if data.starts_with(b"FRES") {
+            return Ok(data);
+        }
+        let sarc = Sarc::parse(data).map_err(e)?;
+        let next = match member {
+            Some(m) => sarc
+                .files()
+                .find(|(n, _)| n.rsplit('/').next().and_then(|f| f.split('.').next()) == Some(m))
+                .map(|(_, d)| d.to_vec()),
+            None => None,
+        }
+        .or_else(|| {
+            sarc.files()
+                .find(|(_, d)| d.starts_with(b"FRES"))
+                .map(|(_, d)| d.to_vec())
+        })
+        .ok_or("no BFRES (or --member) in the archive")?;
+        data = archive::unwrap(next).map_err(e)?;
+    }
+    Err("archive nesting too deep".into())
+}
+
+fn dump_bfres(file: &PathBuf, member: Option<&str>, curves: bool) -> Result<Value, String> {
+    use mmk_formats::bfres;
+    let f = bfres::parse(&load_bfres(file, member)?).map_err(|e| e.to_string())?;
+    let models: Vec<Value> = f
+        .models
+        .iter()
+        .map(|m| {
+            json!({
+                "name": m.name,
+                "skeleton": { "flags": m.skeleton.flags, "smooth": m.skeleton.smooth_count,
+                              "rigid": m.skeleton.rigid_count, "matrix_to_bone": m.skeleton.matrix_to_bone },
+                "bones": m.bones.iter().map(|b| json!([b.name, b.parent, format!("{:#x}", b.flags),
+                    b.smooth_index, b.rigid_index, b.scale, b.rotation, b.translation])).collect::<Vec<_>>(),
+                "materials": m.materials.iter().map(|x| json!({"name": x.name, "textures": x.textures,
+                    "samplers": x.samplers.iter().map(|s| s.name.clone()).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+                "shapes": m.shapes.iter().map(|s| json!({
+                    "name": s.name, "material": s.material, "bone": s.bone, "skin": s.skin_count,
+                    "vertices": s.vertex_count,
+                    "attributes": s.attributes.iter().map(|a| format!("{}:{:#06x}", a.name, a.format)).collect::<Vec<_>>(),
+                    "lods": s.lods.iter().map(|l| json!([l.primitive, l.indices.len()])).collect::<Vec<_>>(),
+                    "skin_bones": s.skin_bones,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let curve_json = |c: &bfres::Curve| {
+        json!({"target": format!("{:#x}", c.target), "kind": format!("{:?}", c.kind), "start": c.start,
+               "end": c.end, "frames": c.frames, "keys": c.keys})
+    };
+    let ska: Vec<Value> = f
+        .skeletal_anims
+        .iter()
+        .map(|a| {
+            let mut v = json!({"name": a.name, "flags": format!("{:#x}", a.flags), "frames": a.frame_count,
+                "bones": a.bone_anims.len(),
+                "curves": a.bone_anims.iter().map(|b| b.curves.len()).sum::<usize>()});
+            if curves {
+                v["tracks"] = a.bone_anims.iter().map(|b| json!({"bone": b.name, "flags": format!("{:#x}", b.flags),
+                    "S": b.base_scale, "R": b.base_rotate, "T": b.base_translate,
+                    "curves": b.curves.iter().map(curve_json).collect::<Vec<_>>()})).collect();
+            }
+            v
+        })
+        .collect();
+    let vis: Vec<Value> = f
+        .visibility_anims
+        .iter()
+        .map(|a| json!({"name": a.name, "flags": format!("{:#x}", a.flags), "frames": a.frame_count,
+            "hidden": a.bones.iter().filter(|b| !b.1).map(|b| b.0.clone()).collect::<Vec<_>>(),
+            "curves": a.curves.iter().map(|c| json!([a.bones.get(c.target as usize).map(|b| b.0.clone()),
+                format!("{:?}", c.kind), c.frames, c.keys.iter().map(|k| k[0]).collect::<Vec<_>>()])).collect::<Vec<_>>()}))
+        .collect();
+    let fmaa: Vec<Value> = f
+        .material_anims
+        .iter()
+        .map(|a| json!({"name": a.name, "frames": a.frame_count, "textures": a.textures.len()}))
+        .collect();
+    Ok(
+        json!({"name": f.name, "models": models, "skeletal_anims": ska, "visibility_anims": vis,
+              "material_anims": fmaa}),
+    )
 }
 
 fn load(path: &PathBuf) -> std::io::Result<Vec<u8>> {
@@ -751,6 +853,20 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Cmd::Bfres {
+            file,
+            member,
+            curves,
+        } => match dump_bfres(&file, member.as_deref(), curves) {
+            Ok(v) => {
+                println!("{}", serde_json::to_string_pretty(&v).unwrap());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{}: {e}", file.display());
+                ExitCode::FAILURE
+            }
+        },
         Cmd::Lyt { file } => match dump_lyt(&file) {
             Ok(v) => {
                 println!("{}", serde_json::to_string_pretty(&v).unwrap());
@@ -781,12 +897,14 @@ fn main() -> ExitCode {
             match mmk_import::run(&cfg, &mut progress) {
                 Ok(r) => {
                     println!(
-                        "imported SMM2 {} ({} tables, {} textures, {} sounds, {} sprite quads, {} built-in courses verified) into {}",
+                        "imported SMM2 {} ({} tables, {} textures, {} sounds, {} sprite quads, {} meshes, {} animations, {} built-in courses verified) into {}",
                         r.build,
                         r.tables,
                         r.textures,
                         r.sounds,
                         r.sprites,
+                        r.meshes,
+                        r.anims,
                         r.builtin_courses_verified,
                         r.out_dir.display()
                     );

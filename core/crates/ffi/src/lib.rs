@@ -18,6 +18,7 @@ pub mod challenge;
 pub mod condition;
 pub mod course_info;
 pub mod import;
+pub mod mesh;
 pub mod ui;
 
 pub use course_info::{MmkCourseInfo, mmk_course_info};
@@ -61,6 +62,8 @@ pub extern "C" fn mmk_last_error() -> *const c_char {
 pub struct MmkAssets {
     cache: Cache,
     names: Vec<(CString, CString)>,
+    /// 3D meshes and animations, loaded on demand (`mesh` module).
+    meshes: std::sync::Mutex<mesh::MeshStore>,
 }
 
 #[repr(C)]
@@ -104,7 +107,12 @@ pub unsafe extern "C" fn mmk_assets_open(path: *const c_char) -> *mut MmkAssets 
                         )
                     })
                     .collect();
-                Box::into_raw(Box::new(MmkAssets { cache, names }))
+                let meshes = std::sync::Mutex::new(mesh::MeshStore::new(cache.root.clone()));
+                Box::into_raw(Box::new(MmkAssets {
+                    cache,
+                    names,
+                    meshes,
+                }))
             }
             Err(e) => {
                 set_error(e.to_string());
@@ -122,6 +130,7 @@ pub extern "C" fn mmk_assets_placeholder() -> *mut MmkAssets {
     Box::into_raw(Box::new(MmkAssets {
         cache: Cache::default(),
         names: Vec::new(),
+        meshes: Default::default(),
     }))
 }
 
@@ -188,10 +197,16 @@ pub struct MmkEngine {
     sprites: Vec<MmkSprite>,
     /// (model, texture) → texture index and quad, resolved once per name.
     resolver: SpriteResolver,
-    draw: Vec<mmk_host::DrawSprite>,
     assets: *const MmkAssets,
     /// Sends sound commands to an attached `MmkAudio` (see `mmk_engine_set_audio`).
     director: Option<Director>,
+    /// This frame's mesh draws (3D styles), see `mmk_engine_meshes`.
+    meshes: Vec<mesh::MmkMeshDraw>,
+    /// (model, frame) → mesh plan, and (field model, atlas index) → tile plan; None = sprite.
+    mesh_plans: std::collections::HashMap<(&'static str, &'static str), Option<mesh::MeshPlan>>,
+    tile_plans: std::collections::HashMap<(&'static str, u32), Option<mesh::MeshPlan>>,
+    /// Draw the 3D styles' models as meshes (default on; `mmk_engine_set_meshes`).
+    mesh_mode: bool,
 }
 
 #[repr(C)]
@@ -252,9 +267,12 @@ pub unsafe extern "C" fn mmk_engine_new(assets: *const MmkAssets) -> *mut MmkEng
             course: None,
             sprites: Vec::new(),
             resolver: SpriteResolver::default(),
-            draw: Vec::new(),
             assets,
             director: None,
+            meshes: Vec::new(),
+            mesh_plans: Default::default(),
+            tile_plans: Default::default(),
+            mesh_mode: true,
         }))
     })
 }
@@ -294,6 +312,8 @@ pub unsafe extern "C" fn mmk_engine_load_course(
                 e.world = World::from_course(&course);
                 e.course = Some(course);
                 e.resolver.reset();
+                e.mesh_plans.clear();
+                e.tile_plans.clear();
                 if let Some(d) = &mut e.director {
                     d.start_course(&e.world);
                 }
@@ -411,23 +431,58 @@ pub unsafe extern "C" fn mmk_engine_snapshot(engine: *mut MmkEngine, out: *mut M
             return;
         };
         let assets = unsafe { &*e.assets };
-        e.resolver.resolve(&e.world, &assets.cache, &mut e.draw);
-        // missing art (placeholder mode, or not imported yet): report the sprite with
-        // MMK_TEXTURE_NONE so the app can draw a stand-in shape
+        let mut sprites = e.world.sprites();
+        sprites.sort_by_key(|s| s.layer);
+        let style = e.world.level.style.clone();
+        e.meshes.clear();
         e.sprites.clear();
-        e.sprites.extend(e.draw.iter().map(|d| MmkSprite {
-            texture: d.texture.unwrap_or(MMK_TEXTURE_NONE),
-            x: d.x,
-            y: d.y,
-            w: d.w,
-            h: d.h,
-            u0: d.u0,
-            v0: d.v0,
-            u1: d.u1,
-            v1: d.v1,
-            layer: d.layer,
-            flags: d.flip_x as u32,
-        }));
+        let mut store = (e.mesh_mode && mesh::mesh_style(&style))
+            .then(|| assets.meshes.lock().unwrap_or_else(|p| p.into_inner()))
+            .filter(|s| s.available());
+        let tick = e.world.tick as f32;
+        for s in sprites {
+            let key = (s.image.model, s.image.texture);
+            if let Some(store) = store.as_deref_mut() {
+                let plan = match s.image.rect {
+                    // 3D World terrain and blocks are models per field-atlas cell
+                    Some((rx, ry, _, _)) if style == "3W" && key.0.starts_with("3W_Field_") => {
+                        let idx = (ry / 16.0) as u32 * 16 + (rx / 16.0) as u32;
+                        e.tile_plans
+                            .entry((key.0, idx))
+                            .or_insert_with(|| store.plan_tile(key.0, idx))
+                            .as_ref()
+                    }
+                    Some(_) => None,
+                    None => e
+                        .mesh_plans
+                        .entry(key)
+                        .or_insert_with(|| store.plan_model(&assets.cache, &style, key.0, key.1))
+                        .as_ref(),
+                };
+                if let Some(plan) = plan {
+                    let order = e.sprites.len() as u32;
+                    let tile = s.image.rect.is_some();
+                    store.emit(&assets.cache, plan, &s, tile, tick, order, &mut e.meshes);
+                    continue;
+                }
+            }
+            // missing art (placeholder mode, or not imported yet): report the sprite with
+            // MMK_TEXTURE_NONE so the app can draw a stand-in shape
+            let d = e.resolver.resolve_one(&style, &s, &assets.cache);
+            e.sprites.push(MmkSprite {
+                texture: d.texture.unwrap_or(MMK_TEXTURE_NONE),
+                x: d.x,
+                y: d.y,
+                w: d.w,
+                h: d.h,
+                u0: d.u0,
+                v0: d.v0,
+                u1: d.u1,
+                v1: d.v1,
+                layer: d.layer,
+                flags: d.flip_x as u32,
+            });
+        }
         *out = MmkSnapshot {
             sprites: e.sprites.as_ptr(),
             sprite_count: e.sprites.len(),
@@ -705,9 +760,12 @@ mod tests {
             course: None,
             sprites: Vec::new(),
             resolver: SpriteResolver::default(),
-            draw: Vec::new(),
             assets: std::ptr::null(),
             director: None,
+            meshes: Vec::new(),
+            mesh_plans: Default::default(),
+            tile_plans: Default::default(),
+            mesh_mode: true,
         };
         unsafe {
             mmk_engine_set_audio(&mut engine, audio);

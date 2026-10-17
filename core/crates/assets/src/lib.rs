@@ -12,9 +12,12 @@
 //! audio/index.json             { sound id: {file, game, gain, group, rate, channels, samples, loop} }
 //! audio/<id>.bwav              one sound, the game's BWAV unchanged (read by `mmk-audio`)
 //! sprites.json                 2D sprite quads + texture-pattern timing (see `sprites`)
+//! meshes/<model>.mmesh         3D models of the NSMBU / 3D World styles (see `mesh`)
+//! anims/<model>/index.json     their animations: list, then one `<anim>.mskel` each
 //! ```
 
 pub mod cache;
+pub mod mesh;
 pub mod mtex;
 pub mod sprites;
 

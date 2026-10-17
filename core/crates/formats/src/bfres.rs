@@ -1,9 +1,10 @@
 //! BFRES model files (Switch, version 0.9 as used by SMM2): a read-only subset.
 //!
-//! Enough for the 2D styles, whose sprites are textured quads: models → skeleton (bone rest
-//! transforms), materials (texture names, sampler wrap modes), shapes (vertex attributes and the
-//! bone they are bound to) and material animations (texture-pattern tracks). Index buffers,
-//! LODs, shader parameters, skeletal animations and user data are not read.
+//! Models → skeleton (bone rest transforms, smooth/rigid matrix tables, inverse model matrices),
+//! materials (texture names, sampler wrap modes), shapes (vertex attributes incl. skinning, the
+//! bone they are bound to, index buffers per LOD); skeletal animations (scale/rotate/translate
+//! curves), bone visibility animations and material animations (texture-pattern tracks). Shader
+//! parameters, render info, shape keys and user data are not read.
 //!
 //! All offsets in the file are absolute; strings are a u16 length followed by the bytes.
 //! Layout notes: `docs/formats/bfres.md`.
@@ -45,19 +46,113 @@ pub fn apply(m: &Affine, p: [f32; 3]) -> [f32; 3] {
     [f(0), f(1), f(2)]
 }
 
+/// Inverse of an affine transform (general 3×3 part); identity if singular.
+pub fn invert(m: &Affine) -> Affine {
+    let a = |r: usize, c: usize| m[r][c];
+    let det = a(0, 0) * (a(1, 1) * a(2, 2) - a(1, 2) * a(2, 1))
+        - a(0, 1) * (a(1, 0) * a(2, 2) - a(1, 2) * a(2, 0))
+        + a(0, 2) * (a(1, 0) * a(2, 1) - a(1, 1) * a(2, 0));
+    if det.abs() < 1e-12 {
+        return IDENTITY;
+    }
+    let inv_det = 1.0 / det;
+    let mut r = [[0.0f32; 4]; 3];
+    r[0][0] = (a(1, 1) * a(2, 2) - a(1, 2) * a(2, 1)) * inv_det;
+    r[0][1] = (a(0, 2) * a(2, 1) - a(0, 1) * a(2, 2)) * inv_det;
+    r[0][2] = (a(0, 1) * a(1, 2) - a(0, 2) * a(1, 1)) * inv_det;
+    r[1][0] = (a(1, 2) * a(2, 0) - a(1, 0) * a(2, 2)) * inv_det;
+    r[1][1] = (a(0, 0) * a(2, 2) - a(0, 2) * a(2, 0)) * inv_det;
+    r[1][2] = (a(0, 2) * a(1, 0) - a(0, 0) * a(1, 2)) * inv_det;
+    r[2][0] = (a(1, 0) * a(2, 1) - a(1, 1) * a(2, 0)) * inv_det;
+    r[2][1] = (a(0, 1) * a(2, 0) - a(0, 0) * a(2, 1)) * inv_det;
+    r[2][2] = (a(0, 0) * a(1, 1) - a(0, 1) * a(1, 0)) * inv_det;
+    for row in r.iter_mut() {
+        row[3] = -(row[0] * m[0][3] + row[1] * m[1][3] + row[2] * m[2][3]);
+    }
+    r
+}
+
+/// Rotation matrix of Euler XYZ angles (radians): R = Rz · Ry · Rx.
+pub fn euler_matrix(x: f32, y: f32, z: f32) -> [[f32; 3]; 3] {
+    let (sx, cx) = x.sin_cos();
+    let (sy, cy) = y.sin_cos();
+    let (sz, cz) = z.sin_cos();
+    [
+        [cy * cz, sx * sy * cz - cx * sz, cx * sy * cz + sx * sz],
+        [cy * sz, sx * sy * sz + cx * cz, cx * sy * sz - sx * cz],
+        [-sy, sx * cy, cx * cy],
+    ]
+}
+
+/// Rotation matrix of a quaternion (x, y, z, w); normalised first.
+pub fn quat_matrix(q: [f32; 4]) -> [[f32; 3]; 3] {
+    let n = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+    let [x, y, z, w] = if n > 1e-8 {
+        q.map(|v| v / n)
+    } else {
+        [0.0, 0.0, 0.0, 1.0]
+    };
+    [
+        [
+            1.0 - 2.0 * (y * y + z * z),
+            2.0 * (x * y - z * w),
+            2.0 * (x * z + y * w),
+        ],
+        [
+            2.0 * (x * y + z * w),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z - x * w),
+        ],
+        [
+            2.0 * (x * z - y * w),
+            2.0 * (y * z + x * w),
+            1.0 - 2.0 * (x * x + y * y),
+        ],
+    ]
+}
+
+/// T · R · S as an affine transform.
+pub fn compose(scale: [f32; 3], rotation: [[f32; 3]; 3], translation: [f32; 3]) -> Affine {
+    let mut m = [[0.0; 4]; 3];
+    for row in 0..3 {
+        for col in 0..3 {
+            m[row][col] = rotation[row][col] * scale[col];
+        }
+        m[row][3] = translation[row];
+    }
+    m
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Bfres {
     pub name: String,
     pub models: Vec<Model>,
     pub material_anims: Vec<MaterialAnim>,
+    pub skeletal_anims: Vec<SkeletalAnim>,
+    pub visibility_anims: Vec<VisibilityAnim>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct Model {
     pub name: String,
     pub bones: Vec<Bone>,
+    pub skeleton: Skeleton,
     pub materials: Vec<Material>,
     pub shapes: Vec<Shape>,
+}
+
+/// Skeleton-wide data besides the bones.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Skeleton {
+    /// Scaling mode (bits 8–9: 1 standard, 2 Maya) and rotation mode (bit 12: Euler).
+    pub flags: u32,
+    /// Matrix palette → bone: entries `0..smooth_count` are the smooth-skinning matrices, then
+    /// `rigid_count` rigid ones. Vertex bone indices (`_i0`) index this list.
+    pub matrix_to_bone: Vec<u16>,
+    pub smooth_count: usize,
+    pub rigid_count: usize,
+    /// Inverse rest-pose model matrix of each smooth matrix (bind pose → bone space).
+    pub inverse_model: Vec<Affine>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -69,56 +164,55 @@ pub struct Bone {
     /// Euler angles in radians (x, y, z, unused) when `euler()`, else a quaternion (x, y, z, w).
     pub rotation: [f32; 4],
     pub translation: [f32; 3],
+    /// Index into the skeleton's matrix palette for smooth / rigid skinning (−1 = none).
+    pub smooth_index: i16,
+    pub rigid_index: i16,
 }
 
+impl Default for Bone {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            parent: None,
+            flags: BONE_VISIBLE,
+            scale: [1.0; 3],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            translation: [0.0; 3],
+            smooth_index: -1,
+            rigid_index: -1,
+        }
+    }
+}
+
+/// Bone flag: visible in the rest pose.
+pub const BONE_VISIBLE: u32 = 0x1;
 /// Bone flag: rotation is stored as Euler XYZ angles rather than a quaternion.
 pub const BONE_EULER: u32 = 0x1000;
+/// Bone flag: segment scale compensation — the parent's scale does not carry over (Maya).
+pub const BONE_SEGMENT_SCALE_COMPENSATE: u32 = 0x0080_0000;
 
 impl Bone {
     pub fn euler(&self) -> bool {
         self.flags & BONE_EULER != 0
     }
 
+    pub fn visible(&self) -> bool {
+        self.flags & BONE_VISIBLE != 0
+    }
+
+    pub fn segment_scale_compensate(&self) -> bool {
+        self.flags & BONE_SEGMENT_SCALE_COMPENSATE != 0
+    }
+
     /// Rest transform relative to the parent: T · R · S, with Euler rotation R = Rz · Ry · Rx.
     pub fn local(&self) -> Affine {
         let r = if self.euler() {
             let [x, y, z, _] = self.rotation;
-            let (sx, cx) = x.sin_cos();
-            let (sy, cy) = y.sin_cos();
-            let (sz, cz) = z.sin_cos();
-            [
-                [cy * cz, sx * sy * cz - cx * sz, cx * sy * cz + sx * sz],
-                [cy * sz, sx * sy * sz + cx * cz, cx * sy * sz - sx * cz],
-                [-sy, sx * cy, cx * cy],
-            ]
+            euler_matrix(x, y, z)
         } else {
-            let [x, y, z, w] = self.rotation;
-            [
-                [
-                    1.0 - 2.0 * (y * y + z * z),
-                    2.0 * (x * y - z * w),
-                    2.0 * (x * z + y * w),
-                ],
-                [
-                    2.0 * (x * y + z * w),
-                    1.0 - 2.0 * (x * x + z * z),
-                    2.0 * (y * z - x * w),
-                ],
-                [
-                    2.0 * (x * z - y * w),
-                    2.0 * (y * z + x * w),
-                    1.0 - 2.0 * (x * x + y * y),
-                ],
-            ]
+            quat_matrix(self.rotation)
         };
-        let mut m = [[0.0; 4]; 3];
-        for row in 0..3 {
-            for col in 0..3 {
-                m[row][col] = r[row][col] * self.scale[col];
-            }
-            m[row][3] = self.translation[row];
-        }
-        m
+        compose(self.scale, r, self.translation)
     }
 }
 
@@ -169,17 +263,36 @@ pub struct Attribute {
     pub values: Vec<[f32; 4]>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Shape {
     pub name: String,
     pub material: usize,
-    /// Bone the shape is bound to (applies when `skin_count == 0`).
+    /// Bone the shape is bound to (applies when `skin_count == 0`; also the bone whose
+    /// visibility switches the shape on and off).
     pub bone: usize,
-    /// Bone influences per vertex; 0 = rigid, the whole shape follows `bone`.
+    /// Bone influences per vertex; 0 = rigid, the whole shape follows `bone`; 1 = each vertex
+    /// follows one bone and is stored in that bone's space; 2+ = smooth skinning, vertices in
+    /// model space (bind pose). `_i0` indexes `Skeleton::matrix_to_bone`, `_w0` are the weights.
     pub skin_count: u8,
     pub vertex_count: usize,
     pub attributes: Vec<Attribute>,
+    /// Bones the skinned vertices use (informational; `_i0` indexes the matrix palette).
+    pub skin_bones: Vec<u16>,
+    /// Index buffers, most detailed first (LOD 0).
+    pub lods: Vec<Lod>,
 }
+
+/// One level of detail: a triangle list into the shape's vertex buffer.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Lod {
+    /// Primitive type as stored (3 = triangle list, the only kind seen in SMM2).
+    pub primitive: u32,
+    /// Vertex indices (the stored first-vertex offset already added).
+    pub indices: Vec<u32>,
+}
+
+/// `Lod::primitive` of triangle lists.
+pub const PRIMITIVE_TRIANGLES: u32 = 3;
 
 impl Shape {
     pub fn attribute(&self, name: &str) -> Option<&Attribute> {
@@ -281,6 +394,218 @@ impl MaterialAnim {
     }
 }
 
+/// How a curve interpolates between its keys.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CurveKind {
+    /// Per segment v(t) = c0 + c1·t + c2·t² + c3·t³, t = 0…1 across the segment.
+    Cubic,
+    /// v(t) = c0 + c1·t.
+    Linear,
+    /// One value per frame from the start frame.
+    BakedFloat,
+    /// Value held until the next key (integers, e.g. texture indices).
+    StepInt,
+    BakedInt,
+    /// Booleans (visibility), held until the next key.
+    StepBool,
+    BakedBool,
+    Other(u16),
+}
+
+impl CurveKind {
+    fn from_raw(v: u16) -> Self {
+        match v {
+            0 => Self::Cubic,
+            1 => Self::Linear,
+            2 => Self::BakedFloat,
+            4 => Self::StepInt,
+            5 => Self::BakedInt,
+            6 => Self::StepBool,
+            7 => Self::BakedBool,
+            v => Self::Other(v),
+        }
+    }
+
+    /// Stored coefficients per key.
+    fn coefficients(self) -> usize {
+        match self {
+            Self::Cubic => 4,
+            Self::Linear => 2,
+            _ => 1,
+        }
+    }
+}
+
+/// Behaviour outside a curve's [start, end] frame range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CurveWrap {
+    Clamp,
+    Repeat,
+    Mirror,
+    RelativeRepeat,
+}
+
+impl CurveWrap {
+    fn from_raw(v: u16) -> Self {
+        match v {
+            1 => Self::Repeat,
+            2 => Self::Mirror,
+            3 => Self::RelativeRepeat,
+            _ => Self::Clamp,
+        }
+    }
+}
+
+/// An animation curve with its keys decoded: stored values × scale + offset (the offset goes to
+/// the constant coefficient only).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Curve {
+    /// What the curve drives: a byte offset into the target's animation data (bone animations:
+    /// 0x04/0x08/0x0C scale, 0x10/0x14/0x18 translate, 0x20…0x2C rotate x/y/z/w) or an index
+    /// (visibility and texture-pattern tracks).
+    pub target: u32,
+    pub kind: CurveKind,
+    pub start: f32,
+    pub end: f32,
+    pub pre_wrap: CurveWrap,
+    pub post_wrap: CurveWrap,
+    /// Value change from start to end (for relative repeat).
+    pub delta: f32,
+    pub frames: Vec<f32>,
+    /// Up to 4 coefficients per key (see `CurveKind`); booleans are 0.0 / 1.0.
+    pub keys: Vec<[f32; 4]>,
+}
+
+impl Curve {
+    /// Frame mapped into [start, end] by the wrap modes; also the number of whole periods
+    /// skipped (for relative repeat).
+    fn wrap_frame(&self, frame: f32) -> (f32, f32) {
+        let len = self.end - self.start;
+        if len <= 0.0 {
+            return (self.start, 0.0);
+        }
+        let (mode, outside) = if frame < self.start {
+            (self.pre_wrap, true)
+        } else if frame > self.end {
+            (self.post_wrap, true)
+        } else {
+            (CurveWrap::Clamp, false)
+        };
+        if !outside {
+            return (frame, 0.0);
+        }
+        let rel = frame - self.start;
+        let periods = (rel / len).floor();
+        let inner = rel - periods * len;
+        match mode {
+            CurveWrap::Clamp => (frame.clamp(self.start, self.end), 0.0),
+            CurveWrap::Repeat => (self.start + inner, 0.0),
+            CurveWrap::RelativeRepeat => (self.start + inner, periods),
+            CurveWrap::Mirror => {
+                if (periods as i64).rem_euclid(2) == 1 {
+                    (self.end - inner, 0.0)
+                } else {
+                    (self.start + inner, 0.0)
+                }
+            }
+        }
+    }
+
+    /// Value at `frame`.
+    pub fn eval(&self, frame: f32) -> f32 {
+        if self.keys.is_empty() {
+            return 0.0;
+        }
+        let (f, periods) = self.wrap_frame(frame);
+        let v = match self.kind {
+            CurveKind::BakedFloat | CurveKind::BakedInt | CurveKind::BakedBool => {
+                let i = ((f - self.start).max(0.0).round() as usize).min(self.keys.len() - 1);
+                self.keys[i][0]
+            }
+            _ => {
+                // last key at or before f
+                let i = self
+                    .frames
+                    .iter()
+                    .rposition(|&k| k <= f)
+                    .unwrap_or(0)
+                    .min(self.keys.len() - 1);
+                let c = &self.keys[i];
+                match self.kind {
+                    CurveKind::Cubic | CurveKind::Linear if i + 1 < self.frames.len() => {
+                        let (f0, f1) = (self.frames[i], self.frames[i + 1]);
+                        let t = if f1 > f0 {
+                            ((f - f0) / (f1 - f0)).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        ((c[3] * t + c[2]) * t + c[1]) * t + c[0]
+                    }
+                    _ if self.frames.first().is_some_and(|&f0| f < f0) => self.keys[0][0],
+                    _ => c[0],
+                }
+            }
+        };
+        v + periods * self.delta
+    }
+}
+
+/// A skeletal animation (FSKA): per bone, base values and curves.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SkeletalAnim {
+    pub name: String,
+    /// bit 2 looping; bits 8–9 scaling mode; bit 12 Euler rotation (else quaternion).
+    pub flags: u32,
+    pub frame_count: u32,
+    pub bone_anims: Vec<BoneAnim>,
+}
+
+/// Skeletal animation flag: rotations are Euler XYZ angles.
+pub const ANIM_EULER: u32 = 0x1000;
+
+impl SkeletalAnim {
+    pub fn looping(&self) -> bool {
+        self.flags & ANIM_LOOPING != 0
+    }
+    pub fn euler(&self) -> bool {
+        self.flags & ANIM_EULER != 0
+    }
+}
+
+/// The animation of one bone (matched to the skeleton by name).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BoneAnim {
+    pub name: String,
+    pub flags: u32,
+    pub base_scale: Option<[f32; 3]>,
+    pub base_rotate: Option<[f32; 4]>,
+    pub base_translate: Option<[f32; 3]>,
+    pub curves: Vec<Curve>,
+}
+
+/// Bone animation flags: which base values are stored.
+pub const BONE_ANIM_BASE_SCALE: u32 = 0x08;
+pub const BONE_ANIM_BASE_ROTATE: u32 = 0x10;
+pub const BONE_ANIM_BASE_TRANSLATE: u32 = 0x20;
+
+/// A bone visibility animation (FBVS).
+#[derive(Clone, Debug, PartialEq)]
+pub struct VisibilityAnim {
+    pub name: String,
+    pub flags: u32,
+    pub frame_count: u32,
+    /// Bone names, with each one's value at frame 0 (when it has no curve).
+    pub bones: Vec<(String, bool)>,
+    /// Curves; `target` is the index into `bones`.
+    pub curves: Vec<Curve>,
+}
+
+impl VisibilityAnim {
+    pub fn looping(&self) -> bool {
+        self.flags & ANIM_LOOPING != 0
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 
 struct R<'a>(&'a [u8]);
@@ -363,6 +688,10 @@ const MATERIAL_ANIM_SIZE: usize = 0x70;
 const MATERIAL_ANIM_DATA_SIZE: usize = 0x40;
 const PATTERN_INFO_SIZE: usize = 0x10;
 const CURVE_SIZE: usize = 0x30;
+const MESH_SIZE: usize = 0x38;
+const SKELETAL_ANIM_SIZE: usize = 0x50;
+const BONE_ANIM_SIZE: usize = 0x38;
+const VISIBILITY_ANIM_SIZE: usize = 0x60;
 
 /// Animation flag: the animation loops.
 pub const ANIM_LOOPING: u32 = 1 << 2;
@@ -403,10 +732,24 @@ pub fn parse(data: &[u8]) -> Result<Bfres> {
         .map(|i| parse_material_anim(&r, anims_at + i * MATERIAL_ANIM_SIZE))
         .collect::<Result<Vec<_>>>()?;
 
+    let ska_count = r.dict_names(r.off(0x60)?)?.len();
+    let ska_at = r.off(0x58)?;
+    let skeletal_anims = (0..ska_count)
+        .map(|i| parse_skeletal_anim(&r, ska_at + i * SKELETAL_ANIM_SIZE))
+        .collect::<Result<Vec<_>>>()?;
+
+    let vis_count = r.dict_names(r.off(0x80)?)?.len();
+    let vis_at = r.off(0x78)?;
+    let visibility_anims = (0..vis_count)
+        .map(|i| parse_visibility_anim(&r, vis_at + i * VISIBILITY_ANIM_SIZE))
+        .collect::<Result<Vec<_>>>()?;
+
     Ok(Bfres {
         name,
         models,
         material_anims,
+        skeletal_anims,
+        visibility_anims,
     })
 }
 
@@ -421,15 +764,16 @@ fn parse_model(r: &R, m: usize, buffer_base: usize) -> Result<Model> {
     let shape_count = r.u16(m + 0x6A)? as usize;
     let material_count = r.u16(m + 0x6C)? as usize;
 
-    let bones = if skeleton != 0 {
+    let (bones, skel) = if skeleton != 0 {
         r.magic(skeleton, b"FSKL")?;
         let names = r.dict_names(r.off(skeleton + 0x08)?)?;
         let at = r.off(skeleton + 0x10)?;
-        (0..names.len())
+        let bones = (0..names.len())
             .map(|i| parse_bone(r, at + i * BONE_SIZE))
-            .collect::<Result<Vec<_>>>()?
+            .collect::<Result<Vec<_>>>()?;
+        (bones, parse_skeleton(r, skeleton)?)
     } else {
-        Vec::new()
+        (Vec::new(), Skeleton::default())
     };
 
     let materials = (0..material_count)
@@ -449,6 +793,24 @@ fn parse_model(r: &R, m: usize, buffer_base: usize) -> Result<Model> {
             .get(vb)
             .cloned()
             .ok_or_else(|| bad(format!("shape {i}: vertex buffer {vb} out of range")))?;
+        let skin_bone_count = r.u16(s + 0x58)? as usize;
+        let skin_bones_at = r.off(s + 0x20)?;
+        let skin_bones = if skin_bones_at != 0 {
+            (0..skin_bone_count)
+                .map(|k| r.u16(skin_bones_at + 2 * k))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
+        let mesh_count = r.u8(s + 0x5B)? as usize;
+        let meshes_at = r.off(s + 0x18)?;
+        let lods = if meshes_at != 0 {
+            (0..mesh_count)
+                .map(|k| parse_mesh(r, meshes_at + k * MESH_SIZE, buffer_base, vertex_count))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
         let shape = Shape {
             name: r.name(s + 0x08)?,
             material: r.u16(s + 0x52)? as usize,
@@ -456,6 +818,8 @@ fn parse_model(r: &R, m: usize, buffer_base: usize) -> Result<Model> {
             skin_count: r.u8(s + 0x5A)?,
             vertex_count,
             attributes,
+            skin_bones,
+            lods,
         };
         if shape.material >= materials.len() || (shape.bone >= bones.len() && !bones.is_empty()) {
             return Err(bad(format!(
@@ -469,9 +833,72 @@ fn parse_model(r: &R, m: usize, buffer_base: usize) -> Result<Model> {
     Ok(Model {
         name,
         bones,
+        skeleton: skel,
         materials,
         shapes,
     })
+}
+
+fn parse_skeleton(r: &R, sk: usize) -> Result<Skeleton> {
+    let flags = r.u32(sk + 0x04)?;
+    let mtb_at = r.off(sk + 0x18)?;
+    let inv_at = r.off(sk + 0x20)?;
+    let smooth_count = r.u16(sk + 0x3A)? as usize;
+    let rigid_count = r.u16(sk + 0x3C)? as usize;
+    let matrix_to_bone = if mtb_at != 0 {
+        (0..smooth_count + rigid_count)
+            .map(|k| r.u16(mtb_at + 2 * k))
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
+    let inverse_model = if inv_at != 0 {
+        (0..smooth_count)
+            .map(|k| {
+                let v = r.f32x::<12>(inv_at + 48 * k)?;
+                Ok([
+                    [v[0], v[1], v[2], v[3]],
+                    [v[4], v[5], v[6], v[7]],
+                    [v[8], v[9], v[10], v[11]],
+                ])
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
+    Ok(Skeleton {
+        flags,
+        matrix_to_bone,
+        smooth_count,
+        rigid_count,
+        inverse_model,
+    })
+}
+
+/// One LOD's index buffer (`face offset` is relative to the GPU data block).
+fn parse_mesh(r: &R, m: usize, buffer_base: usize, vertex_count: usize) -> Result<Lod> {
+    let face_offset = r.u32(m + 0x20)? as usize;
+    let primitive = r.u32(m + 0x24)?;
+    let format = r.u32(m + 0x28)?;
+    let count = r.u32(m + 0x2C)? as usize;
+    let first = r.u32(m + 0x30)?;
+    let at = buffer_base + face_offset;
+    let indices = (0..count)
+        .map(|k| {
+            let v = match format {
+                0 => r.u8(at + k)? as u32,
+                1 => r.u16(at + 2 * k)? as u32,
+                2 => r.u32(at + 4 * k)?,
+                f => return Err(bad(format!("index format {f}"))),
+            };
+            let v = v + first;
+            if v as usize >= vertex_count {
+                return Err(bad(format!("index {v} ≥ vertex count {vertex_count}")));
+            }
+            Ok(v)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Lod { primitive, indices })
 }
 
 fn parse_bone(r: &R, b: usize) -> Result<Bone> {
@@ -483,6 +910,8 @@ fn parse_bone(r: &R, b: usize) -> Result<Bone> {
         scale: r.f32x::<3>(b + 0x38)?,
         rotation: r.f32x::<4>(b + 0x44)?,
         translation: r.f32x::<3>(b + 0x54)?,
+        smooth_index: r.i16(b + 0x2C)?,
+        rigid_index: r.i16(b + 0x2E)?,
     })
 }
 
@@ -714,6 +1143,180 @@ fn parse_step_curve(r: &R, c: usize) -> Result<PatternTrack> {
         keys.push((frame, offset + raw));
     }
     Ok(PatternTrack::Steps(keys))
+}
+
+/// Any curve, keys decoded to floats (see `Curve`).
+fn parse_curve(r: &R, c: usize) -> Result<Curve> {
+    let frames_at = r.off(c)?;
+    let keys_at = r.off(c + 0x08)?;
+    let flags = r.u16(c + 0x10)?;
+    let count = r.u16(c + 0x12)? as usize;
+    let target = r.u32(c + 0x14)?;
+    let start = r.f32(c + 0x18)?;
+    let end = r.f32(c + 0x1C)?;
+    let scale = r.f32(c + 0x20)?;
+    let (frame_type, key_type) = (flags & 3, (flags >> 2) & 3);
+    let kind = CurveKind::from_raw((flags >> 4) & 7);
+    let pre_wrap = CurveWrap::from_raw((flags >> 8) & 3);
+    let post_wrap = CurveWrap::from_raw((flags >> 12) & 3);
+    let delta = r.f32(c + 0x28)?;
+    let baked = matches!(
+        kind,
+        CurveKind::BakedFloat | CurveKind::BakedInt | CurveKind::BakedBool
+    );
+    let frames = if baked || frames_at == 0 {
+        Vec::new()
+    } else {
+        (0..count)
+            .map(|i| {
+                Ok(match frame_type {
+                    0 => r.f32(frames_at + 4 * i)?,
+                    1 => r.i16(frames_at + 2 * i)? as f32 / 32.0,
+                    _ => r.u8(frames_at + i)? as f32,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
+    let mut keys = Vec::with_capacity(count);
+    match kind {
+        CurveKind::StepBool | CurveKind::BakedBool => {
+            for i in 0..count {
+                let word = r.u32(keys_at + 4 * (i / 32))?;
+                let bit = (word >> (i % 32)) & 1;
+                keys.push([bit as f32, 0.0, 0.0, 0.0]);
+            }
+        }
+        CurveKind::StepInt | CurveKind::BakedInt => {
+            let offset = r.i32(c + 0x24)?;
+            for i in 0..count {
+                let raw = match key_type {
+                    0 => r.i32(keys_at + 4 * i)?,
+                    1 => r.i16(keys_at + 2 * i)? as i32,
+                    _ => r.u8(keys_at + i)? as i8 as i32,
+                };
+                keys.push([(raw + offset) as f32, 0.0, 0.0, 0.0]);
+            }
+        }
+        _ => {
+            let offset = r.f32(c + 0x24)?;
+            let n = kind.coefficients();
+            // float keys are stored as values; integer keys are quantised (× scale + offset)
+            let (scale, offset) = if key_type == 0 && scale == 0.0 {
+                (1.0, 0.0)
+            } else {
+                (scale, offset)
+            };
+            for i in 0..count {
+                let mut k = [0.0f32; 4];
+                for (j, v) in k.iter_mut().take(n).enumerate() {
+                    let e = i * n + j;
+                    let raw = match key_type {
+                        0 => r.f32(keys_at + 4 * e)?,
+                        1 => r.i16(keys_at + 2 * e)? as f32,
+                        _ => r.u8(keys_at + e)? as i8 as f32,
+                    };
+                    *v = raw * scale + if j == 0 { offset } else { 0.0 };
+                }
+                keys.push(k);
+            }
+        }
+    }
+    Ok(Curve {
+        target,
+        kind,
+        start,
+        end,
+        pre_wrap,
+        post_wrap,
+        delta,
+        frames,
+        keys,
+    })
+}
+
+fn parse_skeletal_anim(r: &R, a: usize) -> Result<SkeletalAnim> {
+    r.magic(a, b"FSKA")?;
+    let flags = r.u32(a + 0x04)?;
+    let name = r.name(a + 0x08)?;
+    let bone_anims_at = r.off(a + 0x28)?;
+    let frame_count = r.i32(a + 0x40)?.max(0) as u32;
+    let bone_anim_count = r.u16(a + 0x4C)? as usize;
+    let bone_anims = (0..bone_anim_count)
+        .map(|i| parse_bone_anim(r, bone_anims_at + i * BONE_ANIM_SIZE))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(SkeletalAnim {
+        name,
+        flags,
+        frame_count,
+        bone_anims,
+    })
+}
+
+fn parse_bone_anim(r: &R, b: usize) -> Result<BoneAnim> {
+    let name = r.name(b)?;
+    let curves_at = r.off(b + 0x08)?;
+    let mut base = r.off(b + 0x10)?;
+    let flags = r.u32(b + 0x28)?;
+    let curve_count = r.u8(b + 0x2E)? as usize;
+    let mut take = |present: bool, n: usize| -> Result<Option<Vec<f32>>> {
+        if !present || base == 0 {
+            return Ok(None);
+        }
+        let v = (0..n)
+            .map(|k| r.f32(base + 4 * k))
+            .collect::<Result<Vec<_>>>()?;
+        base += 4 * n;
+        Ok(Some(v))
+    };
+    let base_scale = take(flags & BONE_ANIM_BASE_SCALE != 0, 3)?.map(|v| [v[0], v[1], v[2]]);
+    let base_rotate =
+        take(flags & BONE_ANIM_BASE_ROTATE != 0, 4)?.map(|v| [v[0], v[1], v[2], v[3]]);
+    let base_translate =
+        take(flags & BONE_ANIM_BASE_TRANSLATE != 0, 3)?.map(|v| [v[0], v[1], v[2]]);
+    let curves = (0..curve_count)
+        .map(|i| parse_curve(r, curves_at + i * CURVE_SIZE))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(BoneAnim {
+        name,
+        flags,
+        base_scale,
+        base_rotate,
+        base_translate,
+        curves,
+    })
+}
+
+fn parse_visibility_anim(r: &R, a: usize) -> Result<VisibilityAnim> {
+    r.magic(a, b"FBVS")?;
+    let flags = r.u32(a + 0x04)?;
+    let name = r.name(a + 0x08)?;
+    let curves_at = r.off(a + 0x28)?;
+    let base_at = r.off(a + 0x30)?;
+    let names_at = r.off(a + 0x38)?;
+    let frame_count = r.i32(a + 0x50)?.max(0) as u32;
+    let count = r.u16(a + 0x58)? as usize;
+    let curve_count = r.u16(a + 0x5A)? as usize;
+    let bones = (0..count)
+        .map(|i| {
+            let name = if names_at != 0 {
+                r.name(names_at + 8 * i)?
+            } else {
+                String::new()
+            };
+            let on = base_at != 0 && (r.u8(base_at + i / 8)? >> (i % 8)) & 1 != 0;
+            Ok((name, on))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let curves = (0..curve_count)
+        .map(|i| parse_curve(r, curves_at + i * CURVE_SIZE))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(VisibilityAnim {
+        name,
+        flags,
+        frame_count,
+        bones,
+        curves,
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1038,6 +1641,434 @@ pub(crate) mod tests {
         }
     }
 
+    impl Builder {
+        /// Writes `strings` and the GPU block (`gpu`, with `patches` = (u32 field, offset into
+        /// gpu)) and returns the file.
+        fn finish(mut self, gpu: Vec<u8>, patches: Vec<(usize, usize)>) -> Vec<u8> {
+            let strings = std::mem::take(&mut self.strings);
+            for (s, refs) in strings {
+                self.align(2);
+                let at = self.at();
+                self.buf.extend_from_slice(&(s.len() as u16).to_le_bytes());
+                self.buf.extend_from_slice(s.as_bytes());
+                self.buf.push(0);
+                for f in refs {
+                    self.put_off(f, at);
+                }
+            }
+            self.align(8);
+            let info = self.zeros(16);
+            self.align(0x100);
+            let gpu_at = self.at();
+            self.buf.extend_from_slice(&gpu);
+            self.put_u32(info + 4, gpu.len() as u32);
+            self.put_off(info + 8, gpu_at);
+            self.put_off(0xB0, info);
+            for (field, rel) in patches {
+                self.put_u32(field, rel as u32);
+            }
+            self.buf
+        }
+
+        /// A curve record with u8 frames and i16 keys (`coefs` per key), returns its offset.
+        fn curve(
+            &mut self,
+            kind: u16,
+            target: u32,
+            frames: &[u8],
+            keys: &[i16],
+            scale: f32,
+            offset: f32,
+        ) -> usize {
+            self.align(8);
+            let c = self.zeros(CURVE_SIZE);
+            let fr = self.zeros(frames.len().next_multiple_of(8));
+            for (k, f) in frames.iter().enumerate() {
+                self.put_u8(fr + k, *f);
+            }
+            let ks = self.zeros((2 * keys.len()).next_multiple_of(8));
+            for (k, v) in keys.iter().enumerate() {
+                self.put_u16(ks + 2 * k, *v as u16);
+            }
+            self.put_off(c, fr);
+            self.put_off(c + 8, ks);
+            // u8 frames (2), i16 keys (1 << 2), curve kind
+            self.put_u16(c + 0x10, 2 | (1 << 2) | (kind << 4));
+            self.put_u16(c + 0x12, frames.len() as u16);
+            self.put_u32(c + 0x14, target);
+            self.put_f32(c + 0x18, frames[0] as f32);
+            self.put_f32(c + 0x1C, *frames.last().unwrap() as f32);
+            self.put_f32(c + 0x20, scale);
+            self.put_f32(c + 0x24, offset);
+            c
+        }
+    }
+
+    /// A skinned two-bone model ("root" at the origin, "tip" 10 up), one smooth-skinned shape
+    /// (two triangles, u16 indices), a skeletal animation moving "tip" with a cubic curve and a
+    /// linear one, and a visibility animation with a step-bool track.
+    pub fn skinned_sample() -> Vec<u8> {
+        let mut b = Builder::default();
+        b.zeros(0xF0);
+        b.buf[..8].copy_from_slice(b"FRES    ");
+        b.put_u32(0x08, 0x0009_0000);
+        b.put_u16(0x0C, 0xFEFF);
+        b.str_ref(0x20, "skinned");
+        let mut gpu = Vec::new();
+        let mut patches = Vec::new();
+
+        let mo = b.zeros(MODEL_SIZE);
+        let mdict = b.dict(&["body"]);
+        b.put_off(0x28, mo);
+        b.put_off(0x30, mdict);
+        b.put_magic(mo, b"FMDL");
+        b.str_ref(mo + 0x08, "body");
+        // skeleton: root (smooth 0), tip (smooth 1, rigid 2)
+        b.align(8);
+        let sk = b.zeros(0x48);
+        b.put_magic(sk, b"FSKL");
+        b.put_u32(sk + 4, 0x1200);
+        let bones_at = b.zeros(BONE_SIZE * 2);
+        for (i, (name, parent, ty)) in [("root", -1i16, 0.0f32), ("tip", 0, 10.0)]
+            .into_iter()
+            .enumerate()
+        {
+            let o = bones_at + i * BONE_SIZE;
+            b.str_ref(o, name);
+            b.put_u16(o + 0x28, i as u16);
+            b.put_u16(o + 0x2A, parent as u16);
+            b.put_u16(o + 0x2C, i as u16);
+            b.put_u16(o + 0x2E, if i == 1 { 2 } else { 0xFFFF });
+            b.put_u32(
+                o + 0x34,
+                BONE_VISIBLE
+                    | BONE_EULER
+                    | if i == 1 {
+                        BONE_SEGMENT_SCALE_COMPENSATE
+                    } else {
+                        0
+                    },
+            );
+            for k in 0..3 {
+                b.put_f32(o + 0x38 + 4 * k, 1.0);
+            }
+            b.put_f32(o + 0x50, 1.0);
+            b.put_f32(o + 0x58, ty);
+        }
+        let bdict = b.dict(&["root", "tip"]);
+        let mtb = b.zeros(8);
+        for (k, v) in [0u16, 1, 1].iter().enumerate() {
+            b.put_u16(mtb + 2 * k, *v);
+        }
+        let inv = b.zeros(96);
+        for k in 0..2 {
+            for d in 0..3 {
+                b.put_f32(inv + 48 * k + 20 * d, 1.0);
+            }
+        }
+        b.put_f32(inv + 48 + 28, -10.0); // tip: inverse translation y
+        b.put_off(sk + 0x08, bdict);
+        b.put_off(sk + 0x10, bones_at);
+        b.put_off(sk + 0x18, mtb);
+        b.put_off(sk + 0x20, inv);
+        b.put_u16(sk + 0x38, 2);
+        b.put_u16(sk + 0x3A, 2);
+        b.put_u16(sk + 0x3C, 1);
+        b.put_off(mo + 0x18, sk);
+        // material
+        let mat = b.zeros(MATERIAL_SIZE);
+        b.put_magic(mat, b"FMAT");
+        b.str_ref(mat + 8, "skin");
+        let tn = b.zeros(8);
+        b.str_ref(tn, "skin_Alb");
+        let sm = b.zeros(SAMPLER_SIZE);
+        let sd = b.dict(&["_a0"]);
+        b.put_off(mat + 0x30, tn);
+        b.put_off(mat + 0x40, sm);
+        b.put_off(mat + 0x48, sd);
+        b.put_u8(mat + 0x9C, 1);
+        b.put_u8(mat + 0x9D, 1);
+        b.put_off(mo + 0x38, mat);
+        // index buffer first in the GPU block, then the vertex buffers
+        let indices: [u16; 6] = [0, 1, 2, 2, 1, 3];
+        for i in indices {
+            gpu.extend_from_slice(&i.to_le_bytes());
+        }
+        while gpu.len() % 8 != 0 {
+            gpu.push(0);
+        }
+        // vertex buffer: _p0 f32×3 (buffer 0), _i0 u8×2 + _w0 unorm8×2 (buffer 1, stride 4)
+        let vb = b.zeros(VERTEX_BUFFER_SIZE);
+        b.put_magic(vb, b"FVTX");
+        let attrs = b.zeros(ATTRIBUTE_SIZE * 3);
+        b.str_ref(attrs, "_p0");
+        b.put_u16(attrs + 8, 0x1805);
+        b.str_ref(attrs + 0x10, "_i0");
+        b.put_u16(attrs + 0x18, 0x0903);
+        b.put_u16(attrs + 0x1E, 1);
+        b.str_ref(attrs + 0x20, "_w0");
+        b.put_u16(attrs + 0x28, 0x0901);
+        b.put_u16(attrs + 0x2C, 2);
+        b.put_u16(attrs + 0x2E, 1);
+        let sizes = b.zeros(32);
+        let strides = b.zeros(32);
+        b.put_u32(sizes, 48);
+        b.put_u32(sizes + 16, 16);
+        b.put_u32(strides, 12);
+        b.put_u32(strides + 16, 4);
+        b.put_off(vb + 0x08, attrs);
+        b.put_off(vb + 0x30, sizes);
+        b.put_off(vb + 0x38, strides);
+        patches.push((vb + 0x48, gpu.len()));
+        b.put_u8(vb + 0x4C, 3);
+        b.put_u8(vb + 0x4D, 2);
+        b.put_u32(vb + 0x50, 4);
+        for p in [
+            [-4.0f32, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [-4.0, 10.0, 0.0],
+            [4.0, 10.0, 0.0],
+        ] {
+            for v in p {
+                gpu.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        // bottom vertices follow root, top ones half root / half tip
+        for iw in [
+            [0u8, 1, 255, 0],
+            [0, 1, 255, 0],
+            [1, 0, 128, 127],
+            [1, 0, 128, 127],
+        ] {
+            gpu.extend_from_slice(&iw);
+        }
+        b.put_off(mo + 0x20, vb);
+        // shape with one LOD
+        let sh = b.zeros(SHAPE_SIZE);
+        b.put_magic(sh, b"FSHP");
+        b.str_ref(sh + 8, "skin__skin");
+        let mesh = b.zeros(MESH_SIZE);
+        b.put_u32(mesh + 0x20, 0);
+        b.put_u32(mesh + 0x24, PRIMITIVE_TRIANGLES);
+        b.put_u32(mesh + 0x28, 1);
+        b.put_u32(mesh + 0x2C, 6);
+        let skin_bones = b.zeros(8);
+        b.put_u16(skin_bones, 0);
+        b.put_u16(skin_bones + 2, 1);
+        b.put_off(sh + 0x18, mesh);
+        b.put_off(sh + 0x20, skin_bones);
+        b.put_u16(sh + 0x58, 2);
+        b.put_u8(sh + 0x5A, 2);
+        b.put_u8(sh + 0x5B, 1);
+        b.put_off(mo + 0x28, sh);
+        b.put_u16(mo + 0x68, 1);
+        b.put_u16(mo + 0x6A, 1);
+        b.put_u16(mo + 0x6C, 1);
+
+        // skeletal animation: "tip" translate y = cubic 10 → 20 over 10 frames (i16 keys ×
+        // 0.5, offset 10), rotate z linear 0 → 1 rad
+        b.align(8);
+        let ska = b.zeros(SKELETAL_ANIM_SIZE);
+        let skd = b.dict(&["Walk"]);
+        b.put_off(0x58, ska);
+        b.put_off(0x60, skd);
+        b.put_magic(ska, b"FSKA");
+        b.put_u32(ska + 4, ANIM_EULER | ANIM_LOOPING);
+        b.str_ref(ska + 8, "Walk");
+        let ba = b.zeros(BONE_ANIM_SIZE);
+        b.str_ref(ba, "tip");
+        let base = b.zeros(40);
+        for (k, v) in [1.0f32, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 10.0, 0.0]
+            .iter()
+            .enumerate()
+        {
+            b.put_f32(base + 4 * k, *v);
+        }
+        // cubic: one segment 0..10 with v(t) = 10 + 10·(3t² − 2t³) (smoothstep), then hold
+        let c0 = b.curve(0, 0x14, &[0, 10], &[0, 0, 60, -40, 20, 0, 0, 0], 0.5, 10.0);
+        let c1 = b.curve(1, 0x28, &[0, 10], &[0, 100, 100, 0], 0.01, 0.0);
+        // a bone animation's curve records are contiguous: copy them together
+        let curves = b.zeros(2 * CURVE_SIZE);
+        let (src0, src1) = (c0, c1);
+        let rec0 = b.buf[src0..src0 + CURVE_SIZE].to_vec();
+        let rec1 = b.buf[src1..src1 + CURVE_SIZE].to_vec();
+        b.buf[curves..curves + CURVE_SIZE].copy_from_slice(&rec0);
+        b.buf[curves + CURVE_SIZE..curves + 2 * CURVE_SIZE].copy_from_slice(&rec1);
+        b.put_off(ba + 0x08, curves);
+        b.put_off(ba + 0x10, base);
+        b.put_u32(
+            ba + 0x28,
+            BONE_ANIM_BASE_SCALE | BONE_ANIM_BASE_ROTATE | BONE_ANIM_BASE_TRANSLATE,
+        );
+        b.put_u8(ba + 0x2E, 2);
+        b.put_off(ska + 0x28, ba);
+        b.put_u32(ska + 0x40, 10);
+        b.put_u32(ska + 0x44, 2);
+        b.put_u16(ska + 0x4C, 1);
+
+        // visibility: root shown, tip hidden at frame 0 and shown from frame 4
+        b.align(8);
+        let vis = b.zeros(VISIBILITY_ANIM_SIZE);
+        let vd = b.dict(&["Walk"]);
+        b.put_off(0x78, vis);
+        b.put_off(0x80, vd);
+        b.put_magic(vis, b"FBVS");
+        b.put_u32(vis + 4, ANIM_LOOPING);
+        b.str_ref(vis + 8, "Walk");
+        let names = b.zeros(16);
+        b.str_ref(names, "root");
+        b.str_ref(names + 8, "tip");
+        let bits = b.zeros(8);
+        b.put_u8(bits, 0b01);
+        let vc = b.zeros(CURVE_SIZE);
+        let vf = b.zeros(8);
+        b.put_u8(vf, 0);
+        b.put_u8(vf + 1, 4);
+        let vk = b.zeros(8);
+        b.put_u32(vk, 0b10);
+        b.put_off(vc, vf);
+        b.put_off(vc + 8, vk);
+        b.put_u16(vc + 0x10, 2 | (6 << 4));
+        b.put_u16(vc + 0x12, 2);
+        b.put_u32(vc + 0x14, 1);
+        b.put_f32(vc + 0x1C, 10.0);
+        b.put_off(vis + 0x28, vc);
+        b.put_off(vis + 0x30, bits);
+        b.put_off(vis + 0x38, names);
+        b.put_u32(vis + 0x50, 10);
+        b.put_u16(vis + 0x58, 2);
+        b.put_u16(vis + 0x5A, 1);
+        b.finish(gpu, patches)
+    }
+
+    #[test]
+    fn parses_skinned_shapes_and_skeleton_tables() {
+        let f = parse(&skinned_sample()).unwrap();
+        let m = &f.models[0];
+        assert_eq!(m.skeleton.matrix_to_bone, vec![0, 1, 1]);
+        assert_eq!((m.skeleton.smooth_count, m.skeleton.rigid_count), (2, 1));
+        assert_eq!(m.bones[1].smooth_index, 1);
+        assert_eq!(m.bones[1].rigid_index, 2);
+        assert!(m.bones[1].segment_scale_compensate());
+        // inverse model matrix of "tip" undoes its rest transform
+        let id = mul(&m.bone_world(1), &m.skeleton.inverse_model[1]);
+        assert!(close(&id, &IDENTITY, 1e-6));
+        assert!(close(
+            &invert(&m.bone_world(1)),
+            &m.skeleton.inverse_model[1],
+            1e-6
+        ));
+        let s = &m.shapes[0];
+        assert_eq!(s.skin_count, 2);
+        assert_eq!(s.skin_bones, vec![0, 1]);
+        assert_eq!(s.lods.len(), 1);
+        assert_eq!(s.lods[0].indices, vec![0, 1, 2, 2, 1, 3]);
+        assert_eq!(s.attribute("_p0").unwrap().values[3][..3], [4.0, 10.0, 0.0]);
+        assert_eq!(s.attribute("_i0").unwrap().values[2][..2], [1.0, 0.0]);
+        let w = s.attribute("_w0").unwrap().values[2];
+        assert!((w[0] + w[1] - 1.0).abs() < 1e-6 && (w[0] - 128.0 / 255.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parses_skeletal_and_visibility_anims() {
+        let f = parse(&skinned_sample()).unwrap();
+        let a = &f.skeletal_anims[0];
+        assert_eq!((a.name.as_str(), a.frame_count), ("Walk", 10));
+        assert!(a.looping() && a.euler());
+        let tip = &a.bone_anims[0];
+        assert_eq!(tip.name, "tip");
+        assert_eq!(tip.base_translate, Some([0.0, 10.0, 0.0]));
+        assert_eq!(tip.base_rotate, Some([0.0, 0.0, 0.0, 1.0]));
+        let ty = &tip.curves[0];
+        assert_eq!((ty.target, ty.kind), (0x14, CurveKind::Cubic));
+        assert_eq!(ty.frames, vec![0.0, 10.0]);
+        // keys × 0.5, offset on the constant term only
+        assert_eq!(ty.keys[0], [10.0, 0.0, 30.0, -20.0]);
+        assert_eq!(ty.eval(0.0), 10.0);
+        assert!((ty.eval(5.0) - 15.0).abs() < 1e-5);
+        assert_eq!(ty.eval(10.0), 20.0);
+        assert_eq!(ty.eval(12.0), 20.0); // clamped after the end
+        let rz = &tip.curves[1];
+        assert_eq!(rz.kind, CurveKind::Linear);
+        assert!((rz.eval(2.5) - 0.25).abs() < 1e-6);
+        let v = &f.visibility_anims[0];
+        assert_eq!(
+            v.bones,
+            vec![("root".to_string(), true), ("tip".to_string(), false)]
+        );
+        let c = &v.curves[0];
+        assert_eq!((c.target, c.kind), (1, CurveKind::StepBool));
+        assert_eq!(c.eval(0.0), 0.0);
+        assert_eq!(c.eval(3.9), 0.0);
+        assert_eq!(c.eval(4.0), 1.0);
+    }
+
+    fn curve(kind: CurveKind, frames: &[f32], keys: &[[f32; 4]]) -> Curve {
+        Curve {
+            target: 0,
+            kind,
+            start: frames.first().copied().unwrap_or(0.0),
+            end: frames.last().copied().unwrap_or(keys.len() as f32 - 1.0),
+            pre_wrap: CurveWrap::Clamp,
+            post_wrap: CurveWrap::Clamp,
+            delta: 0.0,
+            frames: frames.to_vec(),
+            keys: keys.to_vec(),
+        }
+    }
+
+    #[test]
+    fn curve_kinds_and_wrapping() {
+        let step = curve(CurveKind::StepInt, &[0.0, 5.0], &[[1.0; 4], [2.0; 4]]);
+        assert_eq!(
+            (step.eval(4.9), step.eval(5.0), step.eval(99.0)),
+            (1.0, 2.0, 2.0)
+        );
+        let baked = curve(CurveKind::BakedFloat, &[], &[[0.0; 4], [3.0; 4], [6.0; 4]]);
+        assert_eq!(
+            (baked.eval(1.0), baked.eval(1.4), baked.eval(9.0)),
+            (3.0, 3.0, 6.0)
+        );
+        let mut lin = curve(
+            CurveKind::Linear,
+            &[0.0, 10.0],
+            &[[0.0, 10.0, 0.0, 0.0], [10.0, 0.0, 0.0, 0.0]],
+        );
+        lin.post_wrap = CurveWrap::Repeat;
+        assert!((lin.eval(13.0) - 3.0).abs() < 1e-5);
+        lin.post_wrap = CurveWrap::RelativeRepeat;
+        lin.delta = 10.0;
+        assert!((lin.eval(13.0) - 13.0).abs() < 1e-5);
+        lin.post_wrap = CurveWrap::Mirror;
+        assert!((lin.eval(13.0) - 7.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn invert_affine() {
+        let b = Bone {
+            rotation: [0.3, -1.1, 2.0, 0.0],
+            translation: [1.0, 2.0, 3.0],
+            scale: [2.0, 1.0, 0.5],
+            flags: BONE_EULER,
+            ..Default::default()
+        };
+        let m = b.local();
+        assert!(close(&mul(&m, &invert(&m)), &IDENTITY, 1e-5));
+        // quaternion bones: 90° about Z maps x to y
+        let q = Bone {
+            rotation: [
+                0.0,
+                0.0,
+                std::f32::consts::FRAC_1_SQRT_2,
+                std::f32::consts::FRAC_1_SQRT_2,
+            ],
+            flags: 0,
+            ..Default::default()
+        };
+        let p = apply(&q.local(), [1.0, 0.0, 0.0]);
+        assert!(p[0].abs() < 1e-6 && (p[1] - 1.0).abs() < 1e-6);
+    }
+
     pub fn quad(x0: f32, y0: f32, x1: f32, y1: f32) -> (Vec<[f32; 2]>, Vec<[u8; 2]>) {
         (
             vec![[x0, y0], [x1, y0], [x0, y1], [x1, y1]],
@@ -1197,6 +2228,179 @@ pub(crate) mod tests {
         let mut v = sample();
         v.truncate(0x200);
         assert!(parse(&v).is_err());
+    }
+
+    /// The owner's RomFS (`MMK_ROMFS`, else the usual extraction folders); None in CI.
+    pub fn owner_romfs() -> Option<std::path::PathBuf> {
+        let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+        std::env::var_os("MMK_ROMFS")
+            .map(std::path::PathBuf::from)
+            .into_iter()
+            .chain([
+                "/Volumes/SSD/smm-work/extracted/smm2-update-v303/romfs".into(),
+                home.join("smm-work/extracted/smm2-v303-romfs"),
+            ])
+            .find(|p| p.join("Pack/3W_Model.pack").is_file())
+    }
+
+    /// BFRES of `model` from `Pack/<style>_Model.pack` or `Pack/StaticModel.pack`.
+    pub fn owner_model(romfs: &std::path::Path, model: &str) -> Vec<u8> {
+        use crate::archive::{Sarc, unwrap};
+        let style = model.split('_').next().unwrap();
+        for pack in [format!("{style}_Model.pack"), "StaticModel.pack".into()] {
+            let data = std::fs::read(romfs.join("Pack").join(pack)).unwrap();
+            let sarc = Sarc::parse(unwrap(data).unwrap()).unwrap();
+            let found = sarc.files().find(|(n, _)| {
+                n.rsplit('/').next().and_then(|f| f.split('.').next()) == Some(model)
+            });
+            if let Some((_, d)) = found {
+                let inner = Sarc::parse(unwrap(d.to_vec()).unwrap()).unwrap();
+                let (_, f) = inner.files().find(|(_, d)| d.starts_with(b"FRES")).unwrap();
+                return f.to_vec();
+            }
+        }
+        panic!("{model} not found");
+    }
+
+    fn close(a: &Affine, b: &Affine, eps: f32) -> bool {
+        a.iter()
+            .flatten()
+            .zip(b.iter().flatten())
+            .all(|(x, y)| (x - y).abs() < eps)
+    }
+
+    /// Real files: skeleton matrices agree with the rest pose, skin indices stay in the matrix
+    /// palette, smooth weights sum to 1, cubic curves are continuous across keys and start at
+    /// the stored base value, visibility tracks name real bones.
+    #[test]
+    fn owner_dump_3d_models() {
+        let Some(romfs) = owner_romfs() else {
+            eprintln!("skipped: no RomFS");
+            return;
+        };
+        for name in [
+            "3W_Enemy_kuribo",
+            "3W_Enemy_nokonokoA",
+            "3W_Player_Mario",
+            "WU_Player_MarioMdl",
+            "WU_Enemy_koopa",
+            "3W_Object_block_renga",
+        ] {
+            let f = parse(&owner_model(&romfs, name)).unwrap();
+            for m in &f.models {
+                let sk = &m.skeleton;
+                assert_eq!(sk.matrix_to_bone.len(), sk.smooth_count + sk.rigid_count);
+                for (k, inv) in sk.inverse_model.iter().enumerate() {
+                    let b = sk.matrix_to_bone[k] as usize;
+                    assert_eq!(m.bones[b].smooth_index, k as i16, "{name} bone {b}");
+                    let id = mul(&m.bone_world(b), inv);
+                    assert!(
+                        close(&id, &IDENTITY, 2e-3),
+                        "{name}/{}: {id:?}",
+                        m.bones[b].name
+                    );
+                }
+                for s in &m.shapes {
+                    let lod = &s.lods[0];
+                    assert_eq!(lod.primitive, PRIMITIVE_TRIANGLES, "{name}/{}", s.name);
+                    assert_eq!(lod.indices.len() % 3, 0);
+                    if s.skin_count > 0 {
+                        let idx = s.attribute("_i0").unwrap();
+                        let n = s.skin_count as usize;
+                        for v in &idx.values {
+                            for &i in &v[..n] {
+                                assert!(
+                                    (i as usize) < sk.matrix_to_bone.len(),
+                                    "{name}/{}",
+                                    s.name
+                                );
+                            }
+                        }
+                    }
+                    if s.skin_count > 1 {
+                        let w = s.attribute("_w0").unwrap();
+                        for v in &w.values {
+                            let sum: f32 = v[..s.skin_count as usize].iter().sum();
+                            assert!((sum - 1.0).abs() < 0.02, "{name}/{}: {v:?}", s.name);
+                        }
+                    }
+                }
+            }
+            for a in &f.skeletal_anims {
+                for b in &a.bone_anims {
+                    for c in &b.curves {
+                        assert!(
+                            c.frames.windows(2).all(|w| w[0] < w[1]),
+                            "{name}/{}",
+                            a.name
+                        );
+                        if c.kind == CurveKind::Cubic {
+                            for i in 0..c.keys.len().saturating_sub(1) {
+                                let k = c.keys[i];
+                                let end = k[0] + k[1] + k[2] + k[3];
+                                let next = c.keys[i + 1][0];
+                                assert!(
+                                    (end - next).abs() < 1e-2 * (1.0 + next.abs()),
+                                    "{name}/{}/{} target {:#x}: {end} vs {next}",
+                                    a.name,
+                                    b.name,
+                                    c.target
+                                );
+                            }
+                        }
+                        // the base value is the curve's value at frame 0
+                        let base = match c.target {
+                            0x04..=0x0C => b.base_scale.map(|v| v[(c.target as usize - 4) / 4]),
+                            0x10..=0x18 => {
+                                b.base_translate.map(|v| v[(c.target as usize - 0x10) / 4])
+                            }
+                            0x20..=0x2C => b.base_rotate.map(|v| v[(c.target as usize - 0x20) / 4]),
+                            t => panic!("{name}: curve target {t:#x}"),
+                        };
+                        if let (Some(base), true) = (base, c.start == 0.0) {
+                            let mut d = c.eval(0.0) - base;
+                            if c.target >= 0x20 && a.euler() {
+                                // equal angles modulo a full turn
+                                let tau = std::f32::consts::TAU;
+                                d -= (d / tau).round() * tau;
+                            }
+                            let v = base + d;
+                            assert!(
+                                d.abs() < 1e-2 * (1.0 + base.abs()),
+                                "{name}/{}/{} {:#x}: base {base} vs {v}",
+                                a.name,
+                                b.name,
+                                c.target
+                            );
+                        }
+                    }
+                }
+            }
+            if let Some(m) = f.models.first() {
+                for v in &f.visibility_anims {
+                    // tracks may also name bones of attached models (e.g. wings)
+                    assert!(
+                        v.bones
+                            .iter()
+                            .any(|(bone, _)| m.bones.iter().any(|b| &b.name == bone)),
+                        "{name}/{}",
+                        v.name
+                    );
+                    for c in &v.curves {
+                        assert!((c.target as usize) < v.bones.len());
+                    }
+                }
+            }
+        }
+        // the player animations live in their own files
+        let anims = parse(&owner_model(&romfs, "WU_Player_CommonAnm")).unwrap();
+        assert!(anims.skeletal_anims.len() > 200);
+        let walk = anims
+            .skeletal_anims
+            .iter()
+            .find(|a| a.name == "walk")
+            .unwrap();
+        assert!(walk.looping() && walk.frame_count > 0);
     }
 
     #[test]

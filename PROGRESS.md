@@ -178,7 +178,22 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
 - ✅ Styles: all five styles' art imported (importer v4); SMB3 and SMW courses play with their own
   art (SMB1 fallback per model/frame); carrying shells, slope slide (not SMB1), SMW spin jump (new
   Spin button: C / R / ZR); the sim owns the playable-style gate — sample 319/550 (M1 148, M3 94,
-  MW 77) · Yoshi, cape dive flight, NSMBU/3D World (3D mesh renderer) ⬜
+  MW 77) · Yoshi, cape dive flight ⬜
+- 🔄 NSMBU / 3D World rendering (3D mesh renderer; the sim's style gate still holds them back):
+  - ✅ BFRES reader: shapes with index buffers per LOD and skinning attributes, skeleton matrix
+    palette + inverse bind matrices, skeletal animations (cubic / linear / step / baked curves,
+    wrap modes), bone visibility animations; real files checked in tests
+  - ✅ Importer v5 mesh stage: 354 `meshes/*.mmesh`, 3500 `anims/*/*.mskel` (all WU_/3W_ models,
+    StaticModel.pack included) in ~12 s total import
+  - ✅ FFI: mesh data, animation lookup, posing (`mmk_mesh_*`), per-frame mesh draws from the sim's
+    sprites (`mmk_engine_meshes`); Metal path with GPU skinning (`MeshRenderer.swift`), model
+    viewer `MMK_MESH_PREVIEW`
+  - ✅ Drawn: 3D World Goomba, Koopa (+ shell), Mario (body, face, eyes, hands; small, super,
+    Fire), blocks, coins, items, terrain as per-cell meshes; NSMBU Mario (body + head) and the
+    pre-rendered enemy / item / object cards; NSMBU terrain stays the atlas
+  - ⬜ Per-actor animation clocks and transitions (time = world tick), 3D World neighbour variants
+    for terrain edges, pipes / note blocks as models, small 3D World Mario's cap, material render
+    state (translucency, emission), the 3D styles' backgrounds, camera angle vs the game
 - ✅ Super Leaf (Raccoon: tail swing hits enemies/blocks, P-meter 63 frames → 240-frame flight,
   flaps vy 1.5 × 18 f, slow fall ≥ −1 × 15 f) and Cape Feather (cape spin both sides, glide ≥ −1,
   simplified meter launch); goal-as-Raccoon / Cape conditions
@@ -260,7 +275,8 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
 - ⬜ SMM2 layouts: Switch BFLYT/BFLAN + BNTX textures through the same layout player; title
   screen, main menu, Course World, Story Mode map, pause, clear/death screens, HUD
 - ⬜ All five styles (SMB1, SMB3, SMW, NSMBU, 3D World) and all themes (day/night) — physics
-  feature switches per style already specced
+  feature switches per style already specced; NSMBU / 3D World art drawn by the 3D mesh
+  renderer (Phase 7, 🔄)
 - ⬜ Every part (0–132, incl. 2.0/3.0 items from the update dump), Yoshi, shoes, clown cars,
   power-ups per style, Koopalings, Master Sword, etc.
 - 🔄 Course Maker (editor): core crate `editor` ✅ (place / erase parts with default sizes, child items,

@@ -94,58 +94,69 @@ impl SpriteResolver {
         sprites.sort_by_key(|s| s.layer);
         out.clear();
         out.reserve(sprites.len());
-        // the sim names SMB1 models; other styles use the same names with their own prefix
-        // (M3_, MW_, …) and fall back to the SMB1 art where a style has no such model
         let style = world.level.style.as_str();
         for s in sprites {
-            let key = (s.image.model, s.image.texture);
-            let found = *self.lookup.entry(key).or_insert_with(|| {
-                let resolve_tex = |model: &str, tex: &str| {
-                    let i = cache.texture_index(model, tex)?;
-                    Some((i as u32, cache.sprite_quad(model, tex)))
-                };
-                let styled = key
-                    .0
-                    .strip_prefix("M1_")
-                    .filter(|_| style != "M1")
-                    .map(|rest| format!("{style}_{rest}"));
-                // a style with fewer animation frames: use its last lower frame ("walk.2" →
-                // "walk.1") rather than mixing in SMB1 art
-                let lower_frame = |model: &str| {
-                    let (stem, n) = key.1.rsplit_once('.')?;
-                    let n: u32 = n.parse().ok()?;
-                    (0..n)
-                        .rev()
-                        .find_map(|k| resolve_tex(model, &format!("{stem}.{k}")))
-                };
-                styled
-                    .as_deref()
-                    .and_then(|m| resolve_tex(m, key.1).or_else(|| lower_frame(m)))
-                    .or_else(|| resolve_tex(key.0, key.1))
-            });
-            let (texture, p) = match found {
-                Some((texture, quad)) => {
-                    let t = &cache.textures[texture as usize];
-                    (
-                        Some(texture),
-                        place(&s, t.width as f32, t.height as f32, quad),
-                    )
-                }
-                None => (None, place(&s, s.w.max(1.0), s.h.max(1.0), None)),
+            out.push(self.resolve_one(style, &s, cache));
+        }
+    }
+
+    /// One sprite of a course in `style`, placed for drawing.
+    pub fn resolve_one(&mut self, style: &str, s: &Sprite, cache: &Cache) -> DrawSprite {
+        let key = (s.image.model, s.image.texture);
+        let found = *self.lookup.entry(key).or_insert_with(|| {
+            let resolve_tex = |model: &str, tex: &str| {
+                let i = cache.texture_index(model, tex)?;
+                Some((i as u32, cache.sprite_quad(model, tex)))
             };
-            out.push(DrawSprite {
-                texture,
-                x: p[0],
-                y: p[1],
-                w: p[2],
-                h: p[3],
-                u0: p[4],
-                v0: p[5],
-                u1: p[6],
-                v1: p[7],
-                layer: s.layer,
-                flip_x: s.flip_x,
-            });
+            // the sim names SMB1 models; other styles use the same names with their own prefix
+            // (M3_, MW_, …) and fall back to the SMB1 art where a style has no such model
+            let styled = key
+                .0
+                .strip_prefix("M1_")
+                .filter(|_| style != "M1")
+                .map(|rest| format!("{style}_{rest}"));
+            // a style with fewer animation frames: use its last lower frame ("walk.2" →
+            // "walk.1") rather than mixing in SMB1 art
+            let lower_frame = |model: &str| {
+                let (stem, n) = key.1.rsplit_once('.')?;
+                let n: u32 = n.parse().ok()?;
+                (0..n)
+                    .rev()
+                    .find_map(|k| resolve_tex(model, &format!("{stem}.{k}")))
+            };
+            // 3D World tiles without a model (pipes, note blocks, …): the NSMBU atlas
+            let wu_field = key
+                .0
+                .strip_prefix("3W_Field_")
+                .map(|t| format!("WU_Field_{t}"));
+            styled
+                .as_deref()
+                .and_then(|m| resolve_tex(m, key.1).or_else(|| lower_frame(m)))
+                .or_else(|| resolve_tex(key.0, key.1))
+                .or_else(|| wu_field.as_deref().and_then(|m| resolve_tex(m, m)))
+        });
+        let (texture, p) = match found {
+            Some((texture, quad)) => {
+                let t = &cache.textures[texture as usize];
+                (
+                    Some(texture),
+                    place(s, t.width as f32, t.height as f32, quad),
+                )
+            }
+            None => (None, place(s, s.w.max(1.0), s.h.max(1.0), None)),
+        };
+        DrawSprite {
+            texture,
+            x: p[0],
+            y: p[1],
+            w: p[2],
+            h: p[3],
+            u0: p[4],
+            v0: p[5],
+            u1: p[6],
+            v1: p[7],
+            layer: s.layer,
+            flip_x: s.flip_x,
         }
     }
 }

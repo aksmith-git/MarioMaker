@@ -1206,6 +1206,7 @@ dependencies = [
 name = "mmk-assets"
 version = "0.1.0"
 dependencies = [
+ "mmk-formats",
  "serde_json",
  "thiserror 2.0.21",
 ]

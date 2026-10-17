@@ -16,6 +16,8 @@ struct MetalView: NSViewRepresentable {
         let view = GameMTKView()
         view.device = context.coordinator.device
         view.colorPixelFormat = .bgra8Unorm_srgb
+        view.depthStencilPixelFormat = Renderer.depthFormat   // meshes (3D styles)
+        view.clearDepth = 1
         view.preferredFramesPerSecond = 120
         view.delegate = context.coordinator
         view.framebufferOnly = context.coordinator.screenshot == nil && !DebugCapture.requested
@@ -45,6 +47,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     private lazy var queue = device.makeCommandQueue()!
     private var pipeline: MTLRenderPipelineState?
     private var sampler: MTLSamplerState?
+    static let depthFormat: MTLPixelFormat = .depth32Float
+    private lazy var spriteDepth = MeshRenderer.spriteDepthState(device)
+    /// NSMBU / 3D World models (created when a frame first has mesh draws).
+    private var meshRenderer: MeshRenderer?
     private lazy var skyTexture: MTLTexture? = {
         let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm_srgb, width: 1, height: 1, mipmapped: false)
         let t = device.makeTexture(descriptor: d)
@@ -80,37 +86,13 @@ final class Renderer: NSObject, MTKViewDelegate {
             fatalError("Metal pipeline: \(error)")
         }
         if screenshot != nil { session.scriptedInput = Self.scriptedInput }
+        // MMK_NO_MESH=1: draw the 3D styles with sprites only (comparison, debugging)
+        if ProcessInfo.processInfo.environment["MMK_NO_MESH"] == "1" { mmk_engine_set_meshes(session.engine, false) }
     }
 
     // MARK: setup
 
-    private func makeTexture(_ t: MmkTextureInfo) -> MTLTexture? {
-        let srgb = t.variant == 2
-        let (format, blockBytes, blockSize): (MTLPixelFormat, Int, Int) = switch t.format {
-        case 1: (srgb ? .rgba8Unorm_srgb : .rgba8Unorm, 4, 1)
-        case 2: (srgb ? .bc1_rgba_srgb : .bc1_rgba, 8, 4)
-        case 3: (srgb ? .bc2_rgba_srgb : .bc2_rgba, 16, 4)
-        case 4: (srgb ? .bc3_rgba_srgb : .bc3_rgba, 16, 4)
-        case 5: (t.variant == 1 ? .bc4_rSnorm : .bc4_rUnorm, 8, 4)
-        case 6: (t.variant == 1 ? .bc5_rgSnorm : .bc5_rgUnorm, 16, 4)
-        case 7: (.bc6H_rgbuFloat, 16, 4)
-        case 8: (srgb ? .bc7_rgbaUnorm_srgb : .bc7_rgbaUnorm, 16, 4)
-        default: (.invalid, 0, 0)
-        }
-        guard format != .invalid, let data = t.data else { return nil }
-        let w = Int(t.width), h = Int(t.height)
-        let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: w, height: h, mipmapped: false)
-        desc.usage = .shaderRead
-        let sel = t.channel_select
-        func swz(_ c: UInt8) -> MTLTextureSwizzle {
-            switch c { case 0: .zero; case 1: .one; case 2: .red; case 3: .green; case 4: .blue; default: .alpha }
-        }
-        desc.swizzle = MTLTextureSwizzleChannels(red: swz(sel.0), green: swz(sel.1), blue: swz(sel.2), alpha: swz(sel.3))
-        guard let tex = device.makeTexture(descriptor: desc) else { return nil }
-        let bytesPerRow = (w + blockSize - 1) / blockSize * blockBytes
-        tex.replace(region: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0, withBytes: data, bytesPerRow: bytesPerRow)
-        return tex
-    }
+    private func makeTexture(_ t: MmkTextureInfo) -> MTLTexture? { GPUTexture.make(device, t) }
 
     private static let shaderSource = """
     #include <metal_stdlib>
@@ -133,6 +115,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         desc.vertexFunction = lib.makeFunction(name: "vmain")
         desc.fragmentFunction = lib.makeFunction(name: "fmain")
         desc.colorAttachments[0].pixelFormat = .bgra8Unorm_srgb
+        desc.depthAttachmentPixelFormat = Self.depthFormat
         let ca = desc.colorAttachments[0]!
         ca.isBlendingEnabled = true
         ca.sourceRGBBlendFactor = .sourceAlpha
@@ -160,6 +143,14 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         var snap = MmkSnapshot()
         mmk_engine_snapshot(engine, &snap)
+        var meshPtr: UnsafePointer<MmkMeshDraw>?
+        let meshCount = mmk_engine_meshes(engine, &meshPtr)
+        if meshCount > 0 && meshRenderer == nil {
+            meshRenderer = try? MeshRenderer(device: device, assets: session.assets.handle,
+                                             colorFormat: .bgra8Unorm_srgb, depthFormat: Self.depthFormat)
+            meshRenderer?.texture = { [weak self] i in self?.texture(forBatch: i) }
+        }
+        let meshFrame = meshCount > 0 ? meshRenderer?.prepare(UnsafeBufferPointer(start: meshPtr, count: meshCount)) : nil
 
         // black bars outside the game view; the sky is drawn inside it below
         pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
@@ -185,6 +176,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         enc.setRenderPipelineState(pipeline)
         enc.setFragmentSamplerState(sampler, index: 0)
+        enc.setDepthStencilState(spriteDepth)
 
         // clear colour behind the theme background (black for underground/castle)
         let clear = mmk_engine_clear_color(engine)
@@ -225,7 +217,25 @@ final class Renderer: NSObject, MTKViewDelegate {
             batchStart = verts.count
         }
 
-        for s in sprites {
+        // meshes go before the sprite their `order` names (both lists follow the sim's layers)
+        var nextMesh = 0
+        func drawMeshes(before order: Int) {
+            guard let meshFrame, let meshRenderer, nextMesh < meshFrame.posed.count,
+                  Int(meshFrame.posed[nextMesh].draw.order) <= order else { return }
+            flush()
+            var end = nextMesh
+            while end < meshFrame.posed.count && Int(meshFrame.posed[end].draw.order) <= order { end += 1 }
+            meshRenderer.encode(enc, frame: meshFrame, range: nextMesh..<end, view: xform)
+            nextMesh = end
+            enc.setRenderPipelineState(pipeline)
+            enc.setFragmentSamplerState(sampler, index: 0)
+            enc.setDepthStencilState(spriteDepth)
+            enc.setVertexBytes(&xform, length: MemoryLayout<SIMD4<Float>>.size, index: 1)
+            batchTexture = .max
+        }
+
+        for (index, s) in sprites.enumerated() {
+            drawMeshes(before: index)
             let key = s.texture == MMK_TEXTURE_NONE ? (drawMissing ? Self.fallbackKey | min(s.layer, 0xFFFF) : MMK_TEXTURE_NONE) : s.texture
             if key != batchTexture { flush(); batchTexture = key }
             var (u0, u1) = (s.u0, s.u1)
@@ -236,6 +246,7 @@ final class Renderer: NSObject, MTKViewDelegate {
                       SIMD4(x0, y0, u0, s.v1), SIMD4(x1, y1, u1, s.v0), SIMD4(x0, y1, u0, s.v0)]
         }
         flush()
+        drawMeshes(before: Int.max)
 
         // HUD strip across the top of the view, drawn at drawable resolution
         var hud = MmkHud()
@@ -263,14 +274,24 @@ final class Renderer: NSObject, MTKViewDelegate {
             enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         }
 
-        // 100 Mario overlays (SMM1 layouts: pause, course clear, skip countdown, intro card)
+        enc.endEncoding()
+
+        // 100 Mario overlays (SMM1 layouts: pause, course clear, skip countdown, intro card), in a
+        // pass of their own: the layout pipelines have no depth attachment
         if let o = session.overlay, let ui = SMM1UI.shared {
             let layers = o.layers
             for l in layers { l.apply(tick: o.tick) }
-            ui.encode(enc, layers: layers)
+            let pass2 = MTLRenderPassDescriptor()
+            pass2.colorAttachments[0].texture = drawable.texture
+            pass2.colorAttachments[0].loadAction = .load
+            pass2.colorAttachments[0].storeAction = .store
+            if let enc2 = cmd.makeRenderCommandEncoder(descriptor: pass2) {
+                enc2.setViewport(MTLViewport(originX: (dw - vw) / 2, originY: (dh - vh) / 2, width: vw, height: vh, znear: 0, zfar: 1))
+                ui.encode(enc2, layers: layers)
+                enc2.endEncoding()
+            }
         }
 
-        enc.endEncoding()
         if let path = screenshot, snap.tick >= screenshotTicks {
             cmd.commit()
             cmd.waitUntilCompleted()
