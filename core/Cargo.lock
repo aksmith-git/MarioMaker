@@ -271,6 +271,7 @@ dependencies = [
 name = "mmk-assets"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "thiserror",
 ]
 
@@ -283,6 +284,14 @@ dependencies = [
  "mmk-formats",
  "mmk-import",
  "serde_json",
+]
+
+[[package]]
+name = "mmk-ffi"
+version = "0.1.0"
+dependencies = [
+ "mmk-assets",
+ "mmk-sim",
 ]
 
 [[package]]
@@ -307,6 +316,10 @@ dependencies = [
  "serde_json",
  "thiserror",
 ]
+
+[[package]]
+name = "mmk-sim"
+version = "0.1.0"
 
 [[package]]
 name = "once_cell_polyfill"

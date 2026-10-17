@@ -1,0 +1,15 @@
+[package]
+name = "mmk-ffi"
+description = "C ABI for the Swift app"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mmk_ffi"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+mmk-assets = { path = "../assets" }
+mmk-sim = { path = "../sim" }

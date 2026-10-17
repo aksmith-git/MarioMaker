@@ -11,6 +11,8 @@
 //! textures/<model>/<tex>.mtex  one texture (see `Mtex`)
 //! ```
 
+pub mod cache;
 pub mod mtex;
 
+pub use cache::{Cache, CacheError, TextureEntry};
 pub use mtex::{Mtex, MtexFormat, MtexVariant};

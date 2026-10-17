@@ -26,6 +26,16 @@ jobs:
           name: mmk-linux
           path: core/target/debug/mmk
 
+  app:
+    needs: rust
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build --release -p mmk-ffi
+        working-directory: core
+      - run: swift build
+        working-directory: app
+
   python:
     needs: rust
     runs-on: ubuntu-latest

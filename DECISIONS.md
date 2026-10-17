@@ -2,6 +2,17 @@
 
 Newest first. Each entry: what was decided, why, and what would change it.
 
+## 2026-10-18 — For now the Swift render loop drives the 60 Hz tick
+docs/architecture.md plans a Rust-owned sim thread. Until there is audio and heavier simulation,
+the renderer steps the engine from an accumulator (fixed 1/60 s ticks, capped catch-up) on the
+main thread. Simpler, still deterministic (ticks never depend on frame time). Revisit with audio.
+
+## 2026-10-18 — 2D styles render as sprite quads, not a full BFRES renderer
+SMB1 (and the other 2D styles) store each animation frame as its own small texture named
+`<anim>.<frame>` inside the model, and terrain as one tile atlas per theme. The slice draws
+textured quads; quad placement and frame timing will be read from the BFRES later for accuracy.
+SM3DW will need the model renderer.
+
 ## 2026-10-18 — Engine architecture: Rust core + thin Swift shell (Option B)
 Owner's choice from docs/architecture-options.md. Rust core (formats, importer, deterministic
 60 Hz sim, audio mixer, modes) behind a C ABI; Swift app for window, Metal rendering,

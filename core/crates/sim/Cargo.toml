@@ -1,0 +1,9 @@
+[package]
+name = "mmk-sim"
+description = "Deterministic 60 Hz simulation (world, player, actors), written from the behavioural specs"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
