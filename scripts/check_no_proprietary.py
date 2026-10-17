@@ -39,6 +39,8 @@ BLOCKED_EXTENSIONS = {
     ".bcd",
     # keys
     ".keys",
+    # opaque archives (could hold anything)
+    ".7z", ".rar",
 }
 BLOCKED_NAMES = {"prod.keys", "title.keys", "dev.keys", "otp.bin", "seeprom.bin", "common.key", "game.key"}
 
@@ -69,6 +71,8 @@ MAGICS = [
     (0, b"META", "Switch NPDM"),
     (0, b"WUX0", "Wii U WUX image"),
     (0x100, b"HEAD", "Switch XCI cartridge image"),
+    (0, b"7z\xbc\xaf\x27\x1c", "7-Zip archive"),
+    (0, b"Rar!\x1a\x07", "RAR archive"),
     (0x10, b"NRO0", "Switch NRO executable"),
 ]
 KEY_LINE = re.compile(

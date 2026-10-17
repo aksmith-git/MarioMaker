@@ -56,6 +56,9 @@ class CheckFileTests(unittest.TestCase):
     def test_key_filename_detected(self):
         self.assertTrue(check_file(self.write("wii keys from console.txt", b"hello\n")))
 
+    def test_7z_magic_detected(self):
+        self.assertTrue(check_file(self.write("update", b"7z\xbc\xaf\x27\x1c\x00\x04" + b"\x00" * 24)))
+
     def test_hex_in_docs_is_fine(self):
         self.assertEqual(check_file(self.write("doc.md", b"# Notes\n\nThe course hash 0123456789abcdef0123456789abcdef identifies the upload.\n")), [])
 

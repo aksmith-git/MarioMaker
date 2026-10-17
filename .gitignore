@@ -23,3 +23,10 @@ MeloCafe-*.zip
 # Python
 __pycache__/
 *.pyc
+
+# Archives and other dump files in the project root
+*.7z
+*.7z.[0-9][0-9][0-9]
+*.zip
+*.rar
+/MarioMaker*
