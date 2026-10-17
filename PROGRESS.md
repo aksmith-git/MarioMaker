@@ -1,6 +1,65 @@
 # Progress
 
-## Phase 1 — Environment and extraction (complete, awaiting go-ahead)
+## Roadmap
+✅ done · 🔄 in progress · ⬜ not started · ⏳ waiting on owner
+
+### Phase 1 — Environment and extraction ✅
+- ✅ Dumps gitignored; provenance checked; toolchain pinned; CI + pre-commit guard
+- ✅ SMM1 decrypted (base v16 + update v208); SMM2 v1.0.0 extracted; inventories; 550-course sample
+- ⏳ SMM2 update v3.0.3 as `.nsp` (current file is an incomplete 7z) — needed for Phase 7
+
+### Phase 2 — Course formats 🔄
+- 🔄 Gather community format docs (SMM1, SMM2)
+- ✅ Confirmed: SMM2 `.bcd` = 0x10 header + AES-CBC body + 0x30 trailer (CMAC); SMM1 `.cdt` = 0x15000 BE, CRC32 @0x08 over [0x10:]
+- ⬜ Format docs in `docs/formats/`
+- ⬜ SMM2 decrypted-course parser/writer
+- ⬜ SMM2 `.bcd` decrypt/encrypt (key table read at runtime from the owner's executable)
+- ⬜ SMM1 `.cdt` parser/writer + CRC
+- ⬜ Course ID ↔ code conversion (both games)
+- ⬜ Byte-exact round-trip tests: 550 dataset courses + all built-in courses
+- ⏳ Owner's own saved courses (optional)
+
+### Phase 3 — Binary analysis ⬜
+- ⬜ Course-loading pipeline · player physics per style · game-parameter file mapping
+- ⬜ Object behaviours (most common first) · style and theme differences
+- ⬜ SMM1 100 Mario Challenge logic (from `Block.rpx` v208)
+- ⬜ Behavioural specs in `research/` (private)
+
+### Phase 4 — Engine architecture ⬜
+- ⬜ 2–3 native options (all native Apple Silicon `.app`, Metal-backed) with trade-offs
+- ⬜ First-launch asset-import design + placeholder-art fallback
+- ⬜ Owner chooses → DECISIONS.md
+
+### Phase 5 — Vertical slice (SMB1, ground) ⬜
+- ⬜ Engine skeleton, rendering, input, placeholder art
+- ⬜ SMB1 ground asset extraction
+- ⬜ Load and render a real course
+- ⬜ Player physics (tested) · core objects
+- ⬜ Frame-by-frame tuning against Ryujinx
+
+### Phase 5b — Native app (must be done before Phase 6) ⬜
+- ⬜ Signed `.app` bundle with icon
+- ⬜ First-launch import screen (point at dump → extract; placeholder fallback)
+- ⬜ Course library screen: browse and play local courses
+- ⬜ Pause / restart / exit
+- ⬜ Settings: keyboard + controller mapping, window/fullscreen, volume
+- ⬜ Persistent save data (clears, settings)
+- ⬜ Per-course "playable / not yet supported" marking
+
+### Phase 6 — 100 Mario Challenge ⬜
+- ⬜ Local library + pluggable remote source (SmmServer/SMMDB-style API)
+- ⬜ Difficulty tiers (Nintendo's rating + clear rates)
+- ⬜ Mode: 100 lives, fixed course count, skip, completion/unlock tracking
+- ⬜ Pool limited to courses marked playable; grows with Phase 7
+- ⬜ SMM1 → SMM2 import design + documented losses
+
+### Phase 7 — Expansion ⬜
+- ⬜ Measure object/style/theme frequency in real courses
+- ⬜ Add styles, themes, objects in that order (2.0/3.0 items need the update dump)
+
+---
+
+## Phase 1 detail
 
 ### Done
 - Repo initialised; remote `aksmith-git/MarioMaker` (private). `.gitignore` excludes dumps, keys,

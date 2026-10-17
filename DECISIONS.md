@@ -2,6 +2,12 @@
 
 Newest first. Each entry: what was decided, why, and what would change it.
 
+## 2026-10-17 — Native app milestone (Phase 5b) before the 100 Mario Challenge
+Owner wants a proper native macOS app before the 100 Mario Challenge work starts. Phase 5b adds the
+app bundle, import screen, course library, pause menu, settings, save data and per-course
+"playable" marking. Phase 6's course pool is limited to playable courses and grows with Phase 7
+(alternative: do Phase 7 first; rejected for now because it delays the mode a lot).
+
 ## 2026-10-17 — Course sample from the public mm2_level dataset
 TGRCode's API returned 502 and SMMDB served a self-signed certificate. TheGreatRambler's Hugging
 Face dataset (26.6M courses, Feb 2022, CC BY-NC-SA 4.0) is read remotely with DuckDB range requests.
