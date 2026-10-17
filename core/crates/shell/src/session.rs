@@ -70,6 +70,9 @@ pub struct Session {
     pub scripted: Option<fn(u64) -> Input>,
     /// Local multiplayer: inputs of players 2–4 for the next ticks (set by the app each frame).
     pub extra_inputs: Vec<Input>,
+    /// Online play: a rollback session (player index = ours) and its UDP link.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub net: Option<(mmk_netplay::Session<mmk_sim::World>, mmk_netplay::UdpLink)>,
 }
 
 impl Session {
@@ -92,6 +95,8 @@ impl Session {
             phase_frames: 0,
             scripted: None,
             extra_inputs: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            net: None,
         }
     }
 
@@ -203,6 +208,20 @@ impl Session {
 
     /// Exactly one sim tick (also used by the headless screenshot run).
     pub fn tick(&mut self, input: Input) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some((net, link)) = &mut self.net {
+            // online: the rollback session owns the true world; we draw a copy of it
+            for p in link.poll() {
+                net.receive(&p);
+            }
+            net.advance(input);
+            link.send(&net.packet());
+            self.world = net.game.clone();
+            if let Some(d) = &mut self.director {
+                d.after_step(&self.world);
+            }
+            return;
+        }
         if self.world.others.is_empty() {
             self.world.step(input);
         } else {

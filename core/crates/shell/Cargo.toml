@@ -23,6 +23,7 @@ wgpu = { version = "30.0.1", features = ["webgl"] }
 winit = "0.30.13"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+mmk-netplay = { path = "../netplay" }
 clap.workspace = true
 cpal = "0.18.2"
 png = "0.18.1"

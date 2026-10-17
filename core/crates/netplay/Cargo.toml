@@ -1,0 +1,10 @@
+[package]
+name = "mmk-netplay"
+description = "Rollback netcode for online play on the deterministic sim (UDP peers)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+mmk-sim = { path = "../sim" }

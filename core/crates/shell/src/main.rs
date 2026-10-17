@@ -71,6 +71,15 @@ mod native {
         /// Play the smoke-test script in the window instead of reading input.
         #[arg(long)]
         scripted: bool,
+        /// Online play (2 players, rollback over UDP): our address, e.g. 0.0.0.0:7000.
+        #[arg(long)]
+        net_bind: Option<String>,
+        /// Online play: the other peer's address, e.g. 192.168.1.20:7000.
+        #[arg(long)]
+        net_peer: Option<String>,
+        /// Online play: which player we are (0 = player 1, 1 = player 2).
+        #[arg(long, default_value_t = 0)]
+        net_player: usize,
         /// Local multiplayer: 1–4 players (keyboard + first pad, then one pad each).
         #[arg(long, default_value_t = 1)]
         players: usize,
@@ -140,6 +149,20 @@ mod native {
         }
         if args.players > 1 {
             game.session.world.set_players(args.players);
+        }
+        if let (Some(bind), Some(peer)) = (&args.net_bind, &args.net_peer) {
+            let peer: std::net::SocketAddr =
+                peer.parse().map_err(|e| format!("--net-peer: {e}"))?;
+            let link = mmk_netplay::UdpLink::bind(bind, vec![peer])
+                .map_err(|e| format!("--net-bind: {e}"))?;
+            game.session.world.set_players(2);
+            let net =
+                mmk_netplay::Session::new(game.session.world.clone(), 2, args.net_player.min(1));
+            game.session.net = Some((net, link));
+            log(&format!(
+                "online: player {} of 2, peer {peer}",
+                args.net_player.min(1) + 1
+            ));
         }
         if let Some(x) = args.start_x {
             let w = &mut game.session.world;

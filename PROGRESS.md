@@ -281,8 +281,10 @@ Not Nintendo's network: the engine talks to an open-source server the owner can 
   variants): extra players run the same rules, rejoin beside player 1 [inf: bubble], any player
   clears; `mmk-play --players N` (one pad each), FFI `mmk_engine_set_players / step_players`;
   `World` is `Clone` and replays deterministically (rollback groundwork) · versus, bubbles ⬜
-- ⬜ Real-time multiplayer (co-op / versus, up to 4): rollback netcode on the deterministic sim
-  over WebRTC (open-source `matchbox` signalling) so native and web players can meet
+- 🔄 Real-time online play: rollback netcode crate `mmk-netplay` ✅ (predict, restore snapshot,
+  re-simulate; redundant input packets over UDP; test: two peers with 4-frame delay and 1/3 loss end
+  identical to a full replay) and `mmk-play --net-bind/--net-peer/--net-player` (2 players) ·
+  4 players, NAT traversal / relay via the server, WebRTC for the web, versus ⬜
 - ⬜ Accounts without Nintendo services; moderation tools for self-hosters
 
 ---

@@ -1299,6 +1299,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mmk-netplay"
+version = "0.1.0"
+dependencies = [
+ "mmk-sim",
+]
+
+[[package]]
 name = "mmk-online"
 version = "0.1.0"
 dependencies = [
@@ -1332,6 +1339,7 @@ dependencies = [
  "mmk-editor",
  "mmk-formats",
  "mmk-host",
+ "mmk-netplay",
  "mmk-sim",
  "png",
  "pollster",
