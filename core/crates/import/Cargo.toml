@@ -8,5 +8,6 @@ publish.workspace = true
 
 [dependencies]
 mmk-formats = { path = "../formats" }
+mmk-assets = { path = "../assets" }
 serde_json.workspace = true
 thiserror.workspace = true

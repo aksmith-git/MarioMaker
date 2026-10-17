@@ -1,0 +1,225 @@
+//! BNTX texture containers (Switch) and Tegra X1 block-linear unswizzling.
+//!
+//! BFRES model files embed their textures as a BNTX; `find_embedded` locates it. Pixel data is
+//! returned linear (row-major, top row first), still in its original format (RGBA8 or BCn), which
+//! Apple Silicon GPUs sample directly.
+
+use crate::error::{Error, Result};
+
+fn bad(detail: impl Into<String>) -> Error {
+    Error::Format {
+        what: "BNTX",
+        detail: detail.into(),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PixelFormat {
+    Rgba8,
+    Bc1,
+    Bc2,
+    Bc3,
+    Bc4,
+    Bc5,
+    Bc6h,
+    Bc7,
+    Other(u8),
+}
+
+impl PixelFormat {
+    fn from_type(t: u8) -> Self {
+        match t {
+            0x0B => Self::Rgba8,
+            0x1A => Self::Bc1,
+            0x1B => Self::Bc2,
+            0x1C => Self::Bc3,
+            0x1D => Self::Bc4,
+            0x1E => Self::Bc5,
+            0x1F => Self::Bc6h,
+            0x20 => Self::Bc7,
+            t => Self::Other(t),
+        }
+    }
+    /// (bytes per element, element width/height in pixels)
+    pub fn element(self) -> Option<(usize, usize)> {
+        Some(match self {
+            Self::Rgba8 => (4, 1),
+            Self::Bc1 | Self::Bc4 => (8, 4),
+            Self::Bc2 | Self::Bc3 | Self::Bc5 | Self::Bc6h | Self::Bc7 => (16, 4),
+            Self::Other(_) => return None,
+        })
+    }
+}
+
+/// Number interpretation of the format (low byte of the BNTX format word).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Variant {
+    Unorm,
+    Snorm,
+    Srgb,
+    Other(u8),
+}
+
+#[derive(Clone, Debug)]
+pub struct Texture {
+    pub name: String,
+    pub width: usize,
+    pub height: usize,
+    pub mip_count: usize,
+    pub format: PixelFormat,
+    pub variant: Variant,
+    /// Channel selectors as stored (one byte per output channel R,G,B,A: 0 = zero, 1 = one,
+    /// 2 = red, 3 = green, 4 = blue, 5 = alpha).
+    pub channel_select: [u8; 4],
+    /// Mip 0, unswizzled to linear element rows.
+    pub data: Vec<u8>,
+}
+
+struct R<'a>(&'a [u8]);
+impl R<'_> {
+    fn u16(&self, o: usize) -> Result<u16> {
+        Ok(u16::from_le_bytes(
+            self.0
+                .get(o..o + 2)
+                .ok_or_else(|| bad("truncated"))?
+                .try_into()
+                .unwrap(),
+        ))
+    }
+    fn u32(&self, o: usize) -> Result<u32> {
+        Ok(u32::from_le_bytes(
+            self.0
+                .get(o..o + 4)
+                .ok_or_else(|| bad("truncated"))?
+                .try_into()
+                .unwrap(),
+        ))
+    }
+    fn u64(&self, o: usize) -> Result<usize> {
+        Ok(u64::from_le_bytes(
+            self.0
+                .get(o..o + 8)
+                .ok_or_else(|| bad("truncated"))?
+                .try_into()
+                .unwrap(),
+        ) as usize)
+    }
+    fn name(&self, o: usize) -> Result<String> {
+        let len = self.u16(o)? as usize;
+        let raw = self
+            .0
+            .get(o + 2..o + 2 + len)
+            .ok_or_else(|| bad("name outside file"))?;
+        Ok(String::from_utf8_lossy(raw).into_owned())
+    }
+}
+
+/// Byte range of a BNTX embedded in a larger file (e.g. a BFRES).
+pub fn find_embedded(data: &[u8]) -> Option<&[u8]> {
+    let start = data.windows(4).position(|w| w == b"BNTX")?;
+    let size = u32::from_le_bytes(data.get(start + 0x1C..start + 0x20)?.try_into().ok()?) as usize;
+    data.get(start..start + size)
+}
+
+pub fn parse(bntx: &[u8]) -> Result<Vec<Texture>> {
+    let r = R(bntx);
+    if bntx.get(..4) != Some(b"BNTX") || bntx.get(0x20..0x24) != Some(b"NX  ") {
+        return Err(bad("missing BNTX/NX magic"));
+    }
+    let count = r.u32(0x24)? as usize;
+    let info_ptrs = r.u64(0x28)?;
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let t = r.u64(info_ptrs + i * 8)?;
+        if bntx.get(t..t + 4) != Some(b"BRTI") {
+            return Err(bad("missing BRTI"));
+        }
+        let mip_count = r.u16(t + 0x16)? as usize;
+        let fmt = r.u32(t + 0x1C)?;
+        let width = r.u32(t + 0x24)? as usize;
+        let height = r.u32(t + 0x28)? as usize;
+        let block_height_log2 = (r.u32(t + 0x34)? & 7) as usize;
+        let channel_select = r.u32(t + 0x58)?.to_le_bytes();
+        let name = r.name(r.u64(t + 0x60)?)?;
+        let mip0 = r.u64(r.u64(t + 0x70)?)?;
+        let format = PixelFormat::from_type((fmt >> 8) as u8);
+        let variant = match fmt & 0xFF {
+            1 => Variant::Unorm,
+            2 => Variant::Snorm,
+            6 => Variant::Srgb,
+            v => Variant::Other(v as u8),
+        };
+        let (bpe, ew) = format
+            .element()
+            .ok_or_else(|| bad(format!("{name}: unsupported format {fmt:#x}")))?;
+        let (w_el, h_el) = (width.div_ceil(ew), height.div_ceil(ew));
+        let data = unswizzle(
+            &bntx[mip0.min(bntx.len())..],
+            w_el,
+            h_el,
+            bpe,
+            1 << block_height_log2,
+        )
+        .ok_or_else(|| bad(format!("{name}: image data truncated")))?;
+        out.push(Texture {
+            name,
+            width,
+            height,
+            mip_count,
+            format,
+            variant,
+            channel_select,
+            data,
+        });
+    }
+    Ok(out)
+}
+
+/// Tegra X1 block-linear → linear. `width`/`height` in elements (pixels or 4×4 blocks),
+/// `bpe` bytes per element, `block_height` in GOBs (power of two).
+pub fn unswizzle(
+    src: &[u8],
+    width: usize,
+    height: usize,
+    bpe: usize,
+    block_height: usize,
+) -> Option<Vec<u8>> {
+    let mut out = vec![0u8; width * height * bpe];
+    let gobs_per_row = (width * bpe).div_ceil(64);
+    for y in 0..height {
+        for x in 0..width {
+            let xb = x * bpe;
+            let gob = (y / (8 * block_height)) * 512 * block_height * gobs_per_row
+                + (xb / 64) * 512 * block_height
+                + (y % (8 * block_height) / 8) * 512;
+            let addr = gob
+                + (xb % 64) / 32 * 256
+                + (y % 8) / 2 * 64
+                + (xb % 32) / 16 * 32
+                + (y % 2) * 16
+                + xb % 16;
+            let dst = (y * width + x) * bpe;
+            out[dst..dst + bpe].copy_from_slice(src.get(addr..addr + bpe)?);
+        }
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unswizzle_first_gob_layout() {
+        // 16x8 RGBA8 = one GOB (64 bytes x 8 rows). Fill the source with each byte's own address
+        // and check a few well-known positions of the GOB layout.
+        let src: Vec<u8> = (0..512).map(|i| (i % 251) as u8).collect();
+        let out = unswizzle(&src, 16, 8, 4, 1).unwrap();
+        let at = |x: usize, y: usize| out[(y * 16 + x) * 4];
+        assert_eq!(at(0, 0), 0); // byte 0
+        assert_eq!(at(4, 0), 32); // x_bytes 16 -> second 16-byte column of a 32-byte sector
+        assert_eq!(at(0, 1), 16); // row 1 -> +16
+        assert_eq!(at(0, 2), 64); // row 2 -> +64
+        assert_eq!(at(8, 0), (256 % 251) as u8); // x_bytes 32 -> +256
+    }
+}

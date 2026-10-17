@@ -7,7 +7,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use mmk_assets::{Mtex, MtexFormat, MtexVariant};
 use mmk_formats::archive::{self, Sarc};
+use mmk_formats::bntx::{self, PixelFormat, Variant};
 use mmk_formats::nso::Nso;
 use mmk_formats::smm2::crypto::{KeyTable, decrypt_bcd};
 use mmk_formats::smm2::keyfind;
@@ -55,6 +57,7 @@ pub struct ImportReport {
     pub module_id: String,
     pub out_dir: PathBuf,
     pub tables: usize,
+    pub textures: usize,
     pub builtin_courses_verified: usize,
 }
 
@@ -129,6 +132,114 @@ fn builtin_bcds(romfs: &Path) -> Result<Vec<(String, Vec<u8>)>> {
     Ok(out)
 }
 
+/// Game styles whose models are imported. Phase 5 needs SMB1 only; widen as styles are added.
+pub const STYLES: &[&str] = &["M1"];
+
+fn to_mtex(t: &bntx::Texture) -> Option<Mtex> {
+    let format = match t.format {
+        PixelFormat::Rgba8 => MtexFormat::Rgba8,
+        PixelFormat::Bc1 => MtexFormat::Bc1,
+        PixelFormat::Bc2 => MtexFormat::Bc2,
+        PixelFormat::Bc3 => MtexFormat::Bc3,
+        PixelFormat::Bc4 => MtexFormat::Bc4,
+        PixelFormat::Bc5 => MtexFormat::Bc5,
+        PixelFormat::Bc6h => MtexFormat::Bc6h,
+        PixelFormat::Bc7 => MtexFormat::Bc7,
+        PixelFormat::Other(_) => return None,
+    };
+    let variant = match t.variant {
+        Variant::Srgb => MtexVariant::Srgb,
+        Variant::Snorm => MtexVariant::Snorm,
+        _ => MtexVariant::Unorm,
+    };
+    Some(Mtex {
+        format,
+        variant,
+        width: t.width as u32,
+        height: t.height as u32,
+        channel_select: t.channel_select,
+        data: t.data.clone(),
+    })
+}
+
+/// Model name from a RomFS path like `Model/M1_Enemy_kuribo.Nin_NX_NVN.zs`.
+fn model_name(path: &str) -> String {
+    let file = path.rsplit('/').next().unwrap_or(path);
+    file.split('.').next().unwrap_or(file).to_string()
+}
+
+/// Every model of the imported styles: `Model/<style>_*.zs` and members of `Pack/<style>_Model.pack`.
+fn collect_models(romfs: &Path) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut models = Vec::new();
+    let dir = romfs.join("Model");
+    let mut paths: Vec<PathBuf> = fs::read_dir(&dir)
+        .map_err(|source| ImportError::Io {
+            path: dir.clone(),
+            source,
+        })?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .collect();
+    paths.sort();
+    for p in paths {
+        let name = p.file_name().unwrap().to_string_lossy().to_string();
+        if STYLES.iter().any(|s| name.starts_with(&format!("{s}_"))) && name.ends_with(".zs") {
+            models.push((model_name(&name), read(&p)?));
+        }
+    }
+    for style in STYLES {
+        let pack_path = romfs.join(format!("Pack/{style}_Model.pack"));
+        if pack_path.is_file() {
+            for (name, data) in open_sarc(&pack_path)?.files() {
+                if name.ends_with(".zs") {
+                    models.push((model_name(name), data.to_vec()));
+                }
+            }
+        }
+    }
+    models.sort_by(|a, b| a.0.cmp(&b.0));
+    models.dedup_by(|a, b| a.0 == b.0);
+    Ok(models)
+}
+
+fn import_textures(cfg: &ImportConfig, out: &Path, progress: Progress) -> Result<usize> {
+    let models = collect_models(&cfg.romfs)?;
+    let mut index = serde_json::Map::new();
+    let mut count = 0;
+    for (i, (model, data)) in models.iter().enumerate() {
+        progress("textures", i, models.len());
+        let ctx = cfg.romfs.join("Model").join(model);
+        let sarc = Sarc::parse(archive::unwrap(data.clone()).map_err(fmt_err(&ctx))?)
+            .map_err(fmt_err(&ctx))?;
+        let mut entry = serde_json::Map::new();
+        for (_, member) in sarc.files() {
+            let Some(b) = bntx::find_embedded(member) else {
+                continue;
+            };
+            for t in bntx::parse(b).map_err(fmt_err(&ctx))? {
+                let Some(m) = to_mtex(&t) else { continue };
+                write(
+                    &out.join(format!("textures/{model}/{}.mtex", t.name)),
+                    &m.to_bytes(),
+                )?;
+                entry.insert(
+                    t.name.clone(),
+                    json!({ "w": m.width, "h": m.height, "format": m.format.name(), "srgb": m.variant == MtexVariant::Srgb }),
+                );
+                count += 1;
+            }
+        }
+        if !entry.is_empty() {
+            index.insert(model.clone(), Value::Object(entry));
+        }
+    }
+    progress("textures", models.len(), models.len());
+    write(
+        &out.join("textures/index.json"),
+        serde_json::to_string(&index).unwrap().as_bytes(),
+    )?;
+    Ok(count)
+}
+
 pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
     // 1. identify
     progress("identify", 0, 1);
@@ -180,13 +291,18 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
     }
     progress("tables", mush.len(), mush.len());
 
-    // 4. manifest
+    // 4. textures of every model of the imported styles
+    let texture_count = import_textures(cfg, &out, progress)?;
+
+    // 5. manifest
     let manifest: Value = json!({
         "importer_version": IMPORTER_VERSION,
         "game": "SMM2",
         "build": build,
         "module_id": nso.module_id_hex(),
-        "stages": ["identify", "keys", "tables"],
+        "stages": ["identify", "keys", "tables", "textures"],
+        "texture_styles": STYLES,
+        "textures": texture_count,
         "tables": tables,
         "builtin_courses": courses.len(),
     });
@@ -200,6 +316,7 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
         module_id: nso.module_id_hex(),
         out_dir: out,
         tables: tables.len(),
+        textures: texture_count,
         builtin_courses_verified: courses.len(),
     })
 }

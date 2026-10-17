@@ -35,6 +35,9 @@ enum Cmd {
     /// List a SARC archive (Yaz0/zstd wrappers are removed): one JSON line per entry with name,
     /// size and CRC32 of the contents.
     Sarc { file: PathBuf },
+    /// Export the textures inside a BFRES/BNTX file (wrappers removed) as PNG for inspection.
+    /// RGBA8 only; block-compressed textures are listed but not written.
+    Textures { file: PathBuf, out: PathBuf },
     /// Import the user's own extracted SMM2 RomFS + ExeFS into an engine asset cache.
     Import {
         #[arg(long)]
@@ -61,6 +64,68 @@ fn crc32(data: &[u8]) -> u32 {
         }
     }
     !crc
+}
+
+/// Minimal PNG writer (RGBA8, zlib via flate2) for inspection output.
+fn write_png(path: &std::path::Path, w: usize, h: usize, rgba: &[u8]) -> std::io::Result<()> {
+    fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        let start = out.len();
+        out.extend_from_slice(kind);
+        out.extend_from_slice(data);
+        let c = crc32(&out[start..]);
+        out.extend_from_slice(&c.to_be_bytes());
+    }
+    let mut raw = Vec::with_capacity((w * 4 + 1) * h);
+    for row in rgba.chunks_exact(w * 4) {
+        raw.push(0);
+        raw.extend_from_slice(row);
+    }
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    z.write_all(&raw)?;
+    let idat = z.finish()?;
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&(w as u32).to_be_bytes());
+    ihdr.extend_from_slice(&(h as u32).to_be_bytes());
+    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+    chunk(&mut png, b"IHDR", &ihdr);
+    chunk(&mut png, b"IDAT", &idat);
+    chunk(&mut png, b"IEND", &[]);
+    std::fs::write(path, png)
+}
+
+fn export_textures(file: &PathBuf, out: &std::path::Path) -> Result<(), String> {
+    use mmk_formats::bntx;
+    let data = std::fs::read(file).map_err(|e| e.to_string())?;
+    let data = mmk_formats::archive::unwrap(data).map_err(|e| e.to_string())?;
+    // A .zs model file is a SARC holding the BFRES; search every member for an embedded BNTX.
+    let blobs: Vec<Vec<u8>> = match mmk_formats::archive::Sarc::parse(data.clone()) {
+        Ok(s) => s.files().map(|(_, d)| d.to_vec()).collect(),
+        Err(_) => vec![data],
+    };
+    std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
+    for blob in blobs {
+        let Some(b) = bntx::find_embedded(&blob) else {
+            continue;
+        };
+        for t in bntx::parse(b).map_err(|e| e.to_string())? {
+            let info = json!({ "name": t.name, "w": t.width, "h": t.height, "mips": t.mip_count,
+                "format": format!("{:?}", t.format), "variant": format!("{:?}", t.variant),
+                "channels": t.channel_select });
+            println!("{info}");
+            if t.format == bntx::PixelFormat::Rgba8 {
+                write_png(
+                    &out.join(format!("{}.png", t.name)),
+                    t.width,
+                    t.height,
+                    &t.data,
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn load(path: &PathBuf) -> std::io::Result<Vec<u8>> {
@@ -184,6 +249,13 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Cmd::Textures { file, out } => match export_textures(&file, &out) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("{}: {e}", file.display());
+                ExitCode::FAILURE
+            }
+        },
         Cmd::Import { romfs, exefs, out } => {
             let out_root = out.unwrap_or_else(|| {
                 PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
@@ -204,9 +276,10 @@ fn main() -> ExitCode {
             match mmk_import::run(&cfg, &mut progress) {
                 Ok(r) => {
                     println!(
-                        "imported SMM2 {} ({} tables, {} built-in courses verified) into {}",
+                        "imported SMM2 {} ({} tables, {} textures, {} built-in courses verified) into {}",
                         r.build,
                         r.tables,
+                        r.textures,
                         r.builtin_courses_verified,
                         r.out_dir.display()
                     );

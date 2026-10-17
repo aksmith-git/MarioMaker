@@ -1,0 +1,10 @@
+[package]
+name = "mmk-assets"
+description = "Engine runtime asset cache format (written by the importer and the placeholder-pack builder)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true

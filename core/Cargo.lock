@@ -268,6 +268,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mmk-assets"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "mmk-cli"
 version = "0.1.0"
 dependencies = [
@@ -295,6 +302,7 @@ dependencies = [
 name = "mmk-import"
 version = "0.1.0"
 dependencies = [
+ "mmk-assets",
  "mmk-formats",
  "serde_json",
  "thiserror",
