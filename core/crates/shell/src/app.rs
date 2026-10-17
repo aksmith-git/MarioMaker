@@ -235,7 +235,18 @@ impl App {
         }
         let dt = self.last.map_or(0.0, |l| now - l);
         self.last = Some(now);
-        let pads = self.pads.poll();
+        // local multiplayer: keyboard + the first pad are player 1, further pads players 2–4
+        let each = self.pads.poll_each();
+        let pads = if self.game.session.world.others.is_empty() {
+            each.iter().fold(0, |a, b| a | b)
+        } else {
+            each.first().copied().unwrap_or(0)
+        };
+        self.game.session.extra_inputs = each
+            .iter()
+            .skip(1)
+            .map(|&b| mmk_sim::Input { buttons: b })
+            .collect();
         let input = combine(&self.keys, pads);
         let actions = self.keys.take_actions();
         if self.game.editing {

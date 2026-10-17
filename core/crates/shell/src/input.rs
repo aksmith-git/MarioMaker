@@ -79,13 +79,19 @@ impl Pads {
 
     /// Process pending gamepad events and return the buttons held on any pad.
     pub fn poll(&mut self) -> u32 {
+        self.poll_each().iter().fold(0, |a, b| a | b)
+    }
+
+    /// Process pending gamepad events and return each connected pad's buttons (in id order).
+    pub fn poll_each(&mut self) -> Vec<u32> {
         use gilrs::{Axis, Button};
         let Some(g) = &mut self.gilrs else {
-            return 0;
+            return Vec::new();
         };
         while g.next_event().is_some() {}
-        let mut b = 0;
+        let mut out = Vec::new();
         for (_, pad) in g.gamepads() {
+            let mut b = 0;
             let x = pad.value(Axis::LeftStickX);
             let y = pad.value(Axis::LeftStickY);
             let held = |btn: Button| pad.is_pressed(btn);
@@ -111,8 +117,9 @@ impl Pads {
             if held(Button::Start) {
                 b |= input::START;
             }
+            out.push(b);
         }
-        b
+        out
     }
 }
 

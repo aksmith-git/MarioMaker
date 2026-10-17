@@ -71,6 +71,9 @@ mod native {
         /// Play the smoke-test script in the window instead of reading input.
         #[arg(long)]
         scripted: bool,
+        /// Local multiplayer: 1–4 players (keyboard + first pad, then one pad each).
+        #[arg(long, default_value_t = 1)]
+        players: usize,
         /// Course Maker: edit the course file (a new course if it doesn't exist yet); Enter
         /// test-plays, E returns to editing, Ctrl+S saves back to the file.
         #[arg(long)]
@@ -134,6 +137,9 @@ mod native {
                 game.cache.textures.len()
             )),
             None => log("assets: none, drawing placeholder boxes"),
+        }
+        if args.players > 1 {
+            game.session.world.set_players(args.players);
         }
         if let Some(x) = args.start_x {
             let w = &mut game.session.world;

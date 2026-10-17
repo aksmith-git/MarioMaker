@@ -84,6 +84,9 @@ MmkEngine *mmk_engine_new(const MmkAssets *assets);
 void mmk_engine_free(MmkEngine *engine);
 bool mmk_engine_load_course(MmkEngine *engine, const uint8_t *data, size_t len);
 void mmk_engine_step(MmkEngine *engine, const MmkInput *input);
+// Local multiplayer: 1–4 players; then step with one input per player (player 1 first)
+void mmk_engine_set_players(MmkEngine *engine, uint32_t players);
+void mmk_engine_step_players(MmkEngine *engine, const MmkInput *inputs, size_t count);
 void mmk_engine_snapshot(MmkEngine *engine, MmkSnapshot *out);
 void mmk_engine_hud(const MmkEngine *engine, MmkHud *out);
 

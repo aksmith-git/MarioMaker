@@ -357,6 +357,48 @@ pub unsafe extern "C" fn mmk_engine_step(engine: *mut MmkEngine, input: *const M
     })
 }
 
+/// Local multiplayer: `players` in all (1–4); the extra players join beside player 1.
+///
+/// # Safety
+/// `engine` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_engine_set_players(engine: *mut MmkEngine, players: u32) {
+    guard((), || {
+        if let Some(e) = unsafe { engine.as_mut() } {
+            e.world.set_players(players as usize);
+        }
+    })
+}
+
+/// One tick with one input per player (player 1 first; `count` inputs).
+///
+/// # Safety
+/// `engine` must be a live handle; `inputs` holds `count` inputs (or is NULL).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_engine_step_players(
+    engine: *mut MmkEngine,
+    inputs: *const MmkInput,
+    count: usize,
+) {
+    guard((), || {
+        let Some(e) = (unsafe { engine.as_mut() }) else {
+            return;
+        };
+        let list: Vec<Input> = if inputs.is_null() {
+            Vec::new()
+        } else {
+            unsafe { std::slice::from_raw_parts(inputs, count) }
+                .iter()
+                .map(|i| Input { buttons: i.buttons })
+                .collect()
+        };
+        e.world.step_players(&list);
+        if let Some(d) = &mut e.director {
+            d.after_step(&e.world);
+        }
+    })
+}
+
 /// Describe the current frame. Pointers stay valid until the next call on this engine.
 ///
 /// # Safety

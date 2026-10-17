@@ -119,6 +119,7 @@ struct SpawnRecord {
     was_visible: bool,
 }
 
+#[derive(Clone)]
 pub struct World {
     pub tick: u64,
     pub level: Level,
@@ -210,6 +211,12 @@ pub struct World {
     clown_prev: (bool, bool),
     /// The course's game style (feature switches for the player and objects).
     pub style: crate::player::Style,
+    /// Players 2–4 (Luigi, Toad, Toadette) in local multiplayer; the camera follows player 1.
+    pub others: Vec<Player>,
+    /// Which character each extra player is (index into Mario, Luigi, Toad, Toadette).
+    pub other_chars: Vec<usize>,
+    /// Character of player 1's slot (changes when another player takes the goal).
+    pub main_char: usize,
     /// Run held this frame (carrying).
     run_held: bool,
     /// Key-door pairs unlocked: (area, warp id >> 1).
@@ -231,6 +238,52 @@ impl Default for World {
 }
 
 /// Field atlas model per theme for SMB1 (Model/M1_Field_<theme>).
+/// The model of multiplayer character `who` (0 Mario … 3 Toadette): the `_2`/`_3`/`_4` variant.
+fn character_model(model: &'static str, who: usize) -> &'static str {
+    const TABLE: [[&str; 4]; 6] = [
+        [
+            "M1_Player_MarioMdl",
+            "M1_Player_MarioMdl_2",
+            "M1_Player_MarioMdl_3",
+            "M1_Player_MarioMdl_4",
+        ],
+        [
+            "M1_Player_SpMarioMdl",
+            "M1_Player_SpMarioMdl_2",
+            "M1_Player_SpMarioMdl_3",
+            "M1_Player_SpMarioMdl_4",
+        ],
+        [
+            "M1_Player_FireMarioMdl",
+            "M1_Player_FireMarioMdl_2",
+            "M1_Player_FireMarioMdl_3",
+            "M1_Player_FireMarioMdl_4",
+        ],
+        [
+            "M1_Player_TnkMarioMdl",
+            "M1_Player_TnkMarioMdl_2",
+            "M1_Player_TnkMarioMdl_3",
+            "M1_Player_TnkMarioMdl_4",
+        ],
+        [
+            "M1_Player_MantMario",
+            "M1_Player_MantMario_2",
+            "M1_Player_MantMario_3",
+            "M1_Player_MantMario_4",
+        ],
+        [
+            "M1_Player_SpBallMarioMdl",
+            "M1_Player_SpBallMarioMdl_2",
+            "M1_Player_SpBallMarioMdl_3",
+            "M1_Player_SpBallMarioMdl_4",
+        ],
+    ];
+    TABLE
+        .iter()
+        .find(|row| row[0] == model)
+        .map_or(model, |row| row[who.min(3)])
+}
+
 fn field_model(style: &str, theme: u8) -> String {
     let name = [
         "plain",
@@ -347,6 +400,9 @@ impl World {
             pink_total,
             clown_prev: (false, false),
             style,
+            others: Vec::new(),
+            other_chars: Vec::new(),
+            main_char: 0,
             run_held: false,
             unlocked_doors: Default::default(),
             snakes: Vec::new(),
@@ -407,6 +463,10 @@ impl World {
         }
         self.mark_taken_big_coins();
         self.custom_scroll = None;
+        let (px, py) = (self.player.x, self.player.y);
+        for (k, o) in self.others.iter_mut().enumerate() {
+            *o = Player::new(px - 12.0 * (k + 1) as f32, py);
+        }
         // course start: the view starts centred on the player, clamped to the area
         let area = self.camera_area();
         let (px, py) = (self.player.x, self.player.y);
@@ -1054,6 +1114,84 @@ impl World {
         self.update_camera();
         self.autoscroll_push();
         self.activate();
+    }
+
+    /// Local multiplayer: `n` players in all (1–4). The extra players join beside player 1.
+    pub fn set_players(&mut self, n: usize) {
+        let n = n.clamp(1, 4) - 1;
+        let (px, py) = (self.player.x, self.player.y);
+        self.others = (0..n)
+            .map(|k| Player::new(px - 12.0 * (k + 1) as f32, py))
+            .collect();
+        self.other_chars = (1..=n).collect();
+    }
+
+    /// One tick with an input per player (player 1 first). Extra players run the same player
+    /// rules — physics, coins, items, enemies, the goal — swapped into player 1's place one at a
+    /// time. One who dies, or drops out of the view, comes back beside player 1 [inf: SMM2 puts
+    /// them in a bubble]; any player reaching the goal clears the course for everyone.
+    pub fn step_players(&mut self, inputs: &[Input]) {
+        self.step(inputs.first().copied().unwrap_or_default());
+        let mut i = 0;
+        while i < self.others.len() {
+            let input = inputs.get(i + 1).copied().unwrap_or_default();
+            let goal_before = self.goal_phase != GoalPhase::None;
+            std::mem::swap(&mut self.player, &mut self.others[i]);
+            self.step_extra_player(input);
+            let took_goal = !goal_before && self.goal_phase != GoalPhase::None;
+            if took_goal {
+                // this player finishes the course: they become player 1 for the goal demo
+                std::mem::swap(&mut self.main_char, &mut self.other_chars[i]);
+            } else {
+                std::mem::swap(&mut self.player, &mut self.others[i]);
+            }
+            i += 1;
+        }
+    }
+
+    /// The per-player part of a tick for an extra player (in `self.player` meanwhile).
+    fn step_extra_player(&mut self, input: Input) {
+        if self.goal_phase != GoalPhase::None || self.transit.is_some() {
+            return;
+        }
+        let jump_held = input.held(input::JUMP);
+        self.player.style = self.style;
+        self.player.in_water = self
+            .liquid
+            .is_some_and(|l| l.water() && l.covers(self.player.y + 8.0));
+        self.player.step(input, &self.level);
+        if !self.player.alive() {
+            if self.player.restart_due() {
+                self.rejoin();
+            }
+            return;
+        }
+        if self.player.spiked && self.player.hurt() {
+            self.events.push(Event::PowerDown);
+        }
+        self.collect_coins();
+        self.player_interactions(jump_held);
+        self.check_goal();
+        let v = self.view_rect(64.0);
+        let p = &self.player;
+        if p.x < v.0 || p.x > v.2 || p.y < v.1 - 64.0 {
+            self.rejoin();
+        }
+    }
+
+    /// An extra player (in `self.player`) comes back beside player 1 (held in `others`).
+    fn rejoin(&mut self) {
+        let lead = self
+            .others
+            .iter()
+            .find(|o| o.alive())
+            .map(|o| (o.x, o.y))
+            .unwrap_or(self.level.start);
+        let form = self.player.form;
+        self.player = Player::new(lead.0, lead.1 + 32.0);
+        if self.player.alive() && form != Form::Small {
+            self.player.form = form;
+        }
     }
 
     fn ice_under_player(&self) -> bool {
@@ -4000,6 +4138,12 @@ impl World {
                 Effect::Score { .. } => {}
             }
         }
+        for (k, o) in self.others.iter().enumerate() {
+            let who = self.other_chars.get(k).copied().unwrap_or(k + 1);
+            if let Some(s) = self.player_sprite_of(o, who) {
+                out.push(s);
+            }
+        }
         if let Some(mut s) = self.player_sprite() {
             if let Some(heels) = self.player.shoe {
                 // the player stands in the shoe: shoe at the feet, the player drawn 8 px higher
@@ -4599,7 +4743,11 @@ impl World {
     }
 
     fn player_sprite(&self) -> Option<Sprite> {
-        let p = &self.player;
+        self.player_sprite_of(&self.player, self.main_char)
+    }
+
+    /// A player's sprite; `who` 0 Mario, 1 Luigi, 2 Toad, 3 Toadette.
+    fn player_sprite_of(&self, p: &Player, who: usize) -> Option<Sprite> {
         if p.hidden {
             return None;
         }
@@ -4620,27 +4768,9 @@ impl World {
             Form::Fire => "M1_Player_FireMarioMdl",
             Form::Raccoon => "M1_Player_TnkMarioMdl",
         };
-        // star: cycle the palette variants (_2, _3, _4)
-        let model: &'static str = if p.star > 0 {
-            let k = (self.tick / 2) % 4;
-            match (form, k) {
-                (_, 0) => model,
-                (Form::Small, 1) => "M1_Player_MarioMdl_2",
-                (Form::Small, 2) => "M1_Player_MarioMdl_3",
-                (Form::Small, _) => "M1_Player_MarioMdl_4",
-                (Form::Super | Form::Cape | Form::Propeller, 1) => "M1_Player_SpMarioMdl_2",
-                (Form::Super | Form::Cape | Form::Propeller, 2) => "M1_Player_SpMarioMdl_3",
-                (Form::Super | Form::Cape | Form::Propeller, _) => "M1_Player_SpMarioMdl_4",
-                (Form::Raccoon, 1) => "M1_Player_TnkMarioMdl_2",
-                (Form::Raccoon, 2) => "M1_Player_TnkMarioMdl_3",
-                (Form::Raccoon, _) => "M1_Player_TnkMarioMdl_4",
-                (Form::Fire, 1) => "M1_Player_FireMarioMdl_2",
-                (Form::Fire, 2) => "M1_Player_FireMarioMdl_3",
-                (Form::Fire, _) => "M1_Player_FireMarioMdl_4",
-            }
-        } else {
-            model
-        };
+        // the multiplayer characters are the model's variants: _2 Luigi, _3 Toad, _4 Toadette
+        // (star power is a palette effect in the game; not drawn yet [⬜])
+        let model = character_model(model, who);
         let small = form == Form::Small;
         let frame = match p.pose {
             Pose::Wait => "wait.0",
@@ -4722,7 +4852,7 @@ impl World {
             frame
         };
         let model = if p.pose == Pose::Dead {
-            "M1_Player_MarioMdl"
+            character_model("M1_Player_MarioMdl", who)
         } else {
             model
         };
@@ -5929,6 +6059,73 @@ mod tests {
             !w.player.alive() || w.events.contains(&Event::Death),
             "spikes out"
         );
+    }
+
+    #[test]
+    fn cloned_worlds_stay_identical_under_the_same_inputs() {
+        // the basis of rollback netcode: a snapshot replays exactly
+        let mut a = World::with_level(Level::demo());
+        for i in 0..120u32 {
+            a.step(Input {
+                buttons: input::RIGHT | if i % 40 < 15 { input::JUMP } else { 0 },
+            });
+        }
+        let mut b = a.clone();
+        for i in 0..600u32 {
+            let inp = Input {
+                buttons: input::RIGHT | input::RUN | if i % 30 < 12 { input::JUMP } else { 0 },
+            };
+            a.step(inp);
+            b.step(inp);
+        }
+        assert_eq!(
+            (a.player.x, a.player.y, a.tick),
+            (b.player.x, b.player.y, b.tick)
+        );
+        assert_eq!(
+            (a.score, a.coins, a.actors.len()),
+            (b.score, b.coins, b.actors.len())
+        );
+        let pos = |w: &World| w.actors.iter().map(|x| (x.x, x.y)).collect::<Vec<_>>();
+        assert_eq!(pos(&a), pos(&b));
+    }
+
+    #[test]
+    fn local_multiplayer_players_move_collect_and_rejoin() {
+        let mut lvl = Level::flat(60);
+        for x in 14..16 {
+            lvl.coins.push(CoinTile { x, y: 2 });
+        }
+        let mut w = World::with_level(lvl);
+        w.set_players(2);
+        assert_eq!(w.others.len(), 1);
+        let x0 = w.others[0].x;
+        // player 2 runs right, player 1 stands still
+        for _ in 0..90 {
+            w.step_players(&[
+                Input::default(),
+                Input {
+                    buttons: input::RIGHT,
+                },
+            ]);
+        }
+        assert!(w.others[0].x > x0 + 50.0, "player 2 moved");
+        assert!(w.player.x < 70.0, "player 1 stayed");
+        // player 2 walks into the coins
+        for _ in 0..120 {
+            w.step_players(&[
+                Input::default(),
+                Input {
+                    buttons: input::RIGHT,
+                },
+            ]);
+        }
+        assert!(w.coins >= 1, "coins count for everyone");
+        // far out of the view: back beside player 1
+        w.others[0].x = 5000.0;
+        w.step_players(&[Input::default(), Input::default()]);
+        assert!((w.others[0].x - w.player.x).abs() < 1.0);
+        assert!(w.sprites().len() > 2);
     }
 
     #[test]

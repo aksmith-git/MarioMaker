@@ -68,6 +68,8 @@ pub struct Session {
     phase_frames: u32,
     /// Replaces the player's input (smoke tests); given the tick.
     pub scripted: Option<fn(u64) -> Input>,
+    /// Local multiplayer: inputs of players 2–4 for the next ticks (set by the app each frame).
+    pub extra_inputs: Vec<Input>,
 }
 
 impl Session {
@@ -89,6 +91,7 @@ impl Session {
             was_dying: false,
             phase_frames: 0,
             scripted: None,
+            extra_inputs: Vec::new(),
         }
     }
 
@@ -200,7 +203,19 @@ impl Session {
 
     /// Exactly one sim tick (also used by the headless screenshot run).
     pub fn tick(&mut self, input: Input) {
-        self.world.step(input);
+        if self.world.others.is_empty() {
+            self.world.step(input);
+        } else {
+            let mut all = vec![input];
+            all.extend(
+                self.world
+                    .others
+                    .iter()
+                    .enumerate()
+                    .map(|(k, _)| self.extra_inputs.get(k).copied().unwrap_or_default()),
+            );
+            self.world.step_players(&all);
+        }
         if let Some(d) = &mut self.director {
             d.after_step(&self.world);
         }

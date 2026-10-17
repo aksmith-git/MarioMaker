@@ -277,6 +277,10 @@ Not Nintendo's network: the engine talks to an open-source server the owner can 
   `RemoteSource` for 100 Mario) · accounts, makers, rankings, SMMDB import ⬜ · ⏳ owner: keep this or
   connect to another open-source server
 - ⬜ Course World client: browse, play, like/boo, comment, upload from the editor
+- ✅ Local multiplayer (co-op, up to 4: Mario, Luigi, Toad, Toadette as the models' _2/_3/_4
+  variants): extra players run the same rules, rejoin beside player 1 [inf: bubble], any player
+  clears; `mmk-play --players N` (one pad each), FFI `mmk_engine_set_players / step_players`;
+  `World` is `Clone` and replays deterministically (rollback groundwork) · versus, bubbles ⬜
 - ⬜ Real-time multiplayer (co-op / versus, up to 4): rollback netcode on the deterministic sim
   over WebRTC (open-source `matchbox` signalling) so native and web players can meet
 - ⬜ Accounts without Nintendo services; moderation tools for self-hosters
