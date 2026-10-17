@@ -102,6 +102,8 @@ pub enum Form {
     Raccoon,
     /// SMW Cape Feather: cape spin, glide.
     Cape,
+    /// NSMBU Propeller Mushroom: Spin flies up, then a slow fall.
+    Propeller,
 }
 
 /// Invincibility after taking damage (§7).
@@ -311,6 +313,10 @@ pub struct Player {
     /// Ground pound: > 0 wind-up frames left, −1 diving; `pound_landed` for the world this frame.
     pub pound: i32,
     pub pound_landed: bool,
+    /// Propeller: rise frames left, falling slowly, used since the last landing.
+    pub prop_rise: i32,
+    pub prop_fall: bool,
+    prop_used: bool,
     prev_down: bool,
     prev_spin: bool,
     /// Climbing a vine: its centre x and the side the player hangs on (−1 left, +1 right).
@@ -373,6 +379,9 @@ impl Player {
             land_timer: 0,
             pound: 0,
             pound_landed: false,
+            prop_rise: 0,
+            prop_fall: false,
+            prop_used: false,
             prev_down: false,
             prev_spin: false,
         }
@@ -794,6 +803,7 @@ impl Player {
         if self.exit_window > 0 {
             self.exit_window -= 1;
         }
+        let vy_before = self.vy;
         if self.in_water {
             self.swim(inp, pressed);
         } else {
@@ -807,7 +817,9 @@ impl Player {
                 } else {
                     self.ground(inp);
                 }
-                if spin_pressed && self.style.can_spin() && self.held.is_none() {
+                if spin_pressed && self.form == Form::Propeller {
+                    // the propeller launch replaces the spin jump
+                } else if spin_pressed && self.style.can_spin() && self.held.is_none() {
                     // spin jump (player-physics.md §2.6): vy 3.228, 4.5 in 3D World
                     self.vy = if self.style == Style::W3 { 4.5 } else { 3.228 };
                     self.spinning = true;
@@ -870,6 +882,7 @@ impl Player {
             self.land_timer = 0;
         }
         self.step_wall_and_pound(inp, pressed, level);
+        self.step_propeller(inp, spin_pressed, vy_before);
         // raccoon flaps (vy 1.5, no gravity, 18 frames) and slow fall (≥ −1.0, 15 frames); the
         // cape glides (≥ −1.0) while jump is held
         if !self.on_ground && !self.in_water {
@@ -932,6 +945,7 @@ impl Player {
                 Form::Fire => 2,
                 Form::Raccoon => 3,
                 Form::Cape => 4,
+                Form::Propeller => 5,
             },
             shoe: self.shoe.is_some(),
             clown_car: self.clown.is_some(),
@@ -964,6 +978,58 @@ impl Player {
             self.facing = self.vx.signum() as i32;
         }
         self.pose = Pose::Slide;
+    }
+
+    /// Propeller (player-physics.md §5.4, NSMBU): Spin (once per airtime) → rise toward vy 2.5
+    /// at +1.0/frame for 50 frames with no gravity; then PropellerFall: gravity −0.1, max fall
+    /// −1.25; Down while falling drills down at up to −6.0. Air control: target ±2.5 rising /
+    /// ±1.5 falling, accel 0.08 / 0.07, 0.11 reversing, 0.05 without input.
+    fn step_propeller(&mut self, inp: Input, spin_pressed: bool, vy_before: f32) {
+        if self.form != Form::Propeller || self.in_water {
+            self.prop_rise = 0;
+            self.prop_fall = false;
+            return;
+        }
+        if self.on_ground && self.vy <= 0.0 {
+            self.prop_used = false;
+            self.prop_fall = false;
+            self.prop_rise = 0;
+        }
+        if spin_pressed && !self.prop_used && self.held.is_none() {
+            self.prop_used = true;
+            self.prop_rise = 50;
+            self.prop_fall = false;
+            self.on_ground = false;
+            self.spinning = false;
+        }
+        let rising = self.prop_rise > 0;
+        if rising {
+            self.prop_rise -= 1;
+            self.vy = (vy_before + 1.0).min(2.5);
+            if self.prop_rise == 0 {
+                self.prop_fall = true;
+            }
+        } else if self.prop_fall && !self.on_ground {
+            self.vy = if inp.held(input::DOWN) {
+                (vy_before - 0.34).max(-6.0)
+            } else {
+                (vy_before - 0.1).max(-1.25)
+            };
+        } else {
+            return;
+        }
+        let dir = inp.dir_x() as f32;
+        let target = dir * if rising { 2.5 } else { 1.5 };
+        let acc = if dir == 0.0 {
+            0.05
+        } else if self.vx * dir < 0.0 {
+            0.11
+        } else if rising {
+            0.08
+        } else {
+            0.07
+        };
+        self.vx = approach(self.vx, target, acc);
     }
 
     fn wall_at(&self, level: &Level, dir: i32) -> bool {

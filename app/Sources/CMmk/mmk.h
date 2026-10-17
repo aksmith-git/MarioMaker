@@ -91,7 +91,7 @@ typedef struct {
     uint32_t kind;              // 0 none, 1 defeat N (target = enemy class), 2 N 1-Ups, 3 N coins
                                 // (target = coin value, 0 any), 4 N POWs, 5 N P Switches, 6 goal
                                 // invincible, 7 as Super, 8 as Fire, 9 no damage, 10 no landing,
-                                // 11 in a Goomba's Shoe, 12 in a Koopa Clown Car, 13 as Raccoon, 14 as Cape,
+                                // 11 in a Goomba's Shoe, 12 in a Koopa Clown Car, 13 as Raccoon, 14 as Cape, 15 as Propeller,
                                 // 255 not supported
     uint32_t target, count, needed;
     uint8_t met, violated, _pad[2];

@@ -1837,7 +1837,9 @@ impl World {
     /// The style power-up as an item: SMB1 keeps the mushroom (its Big Mushroom isn't in yet).
     fn style_item(&self) -> Kind {
         match self.style {
-            crate::player::Style::M3 | crate::player::Style::MW => Kind::StyleItem,
+            crate::player::Style::M3 | crate::player::Style::MW | crate::player::Style::WU => {
+                Kind::StyleItem
+            }
             _ => Kind::Mushroom,
         }
     }
@@ -1845,10 +1847,10 @@ impl World {
     fn collect_item(&mut self, kind: Kind, x: f32, y: f32) {
         match kind {
             Kind::StyleItem => {
-                let form = if self.style == crate::player::Style::MW {
-                    Form::Cape
-                } else {
-                    Form::Raccoon
+                let form = match self.style {
+                    crate::player::Style::MW => Form::Cape,
+                    crate::player::Style::WU => Form::Propeller,
+                    _ => Form::Raccoon,
                 };
                 self.player.power_up(form);
                 self.events.push(Event::PowerUp);
@@ -4523,7 +4525,8 @@ impl World {
         // (M3_Player_TnkMarioMdl; SMW's cape Mario uses its Super Mario body)
         let model = match form {
             Form::Small => "M1_Player_MarioMdl",
-            Form::Super | Form::Cape => "M1_Player_SpMarioMdl",
+            // NSMBU draws one 3D Mario with the propeller part (the mesh path maps it)
+            Form::Super | Form::Cape | Form::Propeller => "M1_Player_SpMarioMdl",
             Form::Fire => "M1_Player_FireMarioMdl",
             Form::Raccoon => "M1_Player_TnkMarioMdl",
         };
@@ -4535,9 +4538,9 @@ impl World {
                 (Form::Small, 1) => "M1_Player_MarioMdl_2",
                 (Form::Small, 2) => "M1_Player_MarioMdl_3",
                 (Form::Small, _) => "M1_Player_MarioMdl_4",
-                (Form::Super | Form::Cape, 1) => "M1_Player_SpMarioMdl_2",
-                (Form::Super | Form::Cape, 2) => "M1_Player_SpMarioMdl_3",
-                (Form::Super | Form::Cape, _) => "M1_Player_SpMarioMdl_4",
+                (Form::Super | Form::Cape | Form::Propeller, 1) => "M1_Player_SpMarioMdl_2",
+                (Form::Super | Form::Cape | Form::Propeller, 2) => "M1_Player_SpMarioMdl_3",
+                (Form::Super | Form::Cape | Form::Propeller, _) => "M1_Player_SpMarioMdl_4",
                 (Form::Raccoon, 1) => "M1_Player_TnkMarioMdl_2",
                 (Form::Raccoon, 2) => "M1_Player_TnkMarioMdl_3",
                 (Form::Raccoon, _) => "M1_Player_TnkMarioMdl_4",
@@ -5787,6 +5790,27 @@ mod tests {
         assert!(w.player.pound > 0);
         run(&mut w, input::DOWN, 12);
         assert_eq!(w.player.vy, -6.0);
+    }
+
+    #[test]
+    fn propeller_flies_up_then_falls_slowly() {
+        let mut w = World::with_level(Level::flat(40));
+        w.style = crate::player::Style::WU;
+        w.player.x = 100.0;
+        w.player.form = Form::Propeller;
+        run(&mut w, 0, 2);
+        run(&mut w, input::SPIN, 1);
+        run(&mut w, 0, 10);
+        assert!((w.player.vy - 2.5).abs() < 1e-3, "rising: {}", w.player.vy);
+        run(&mut w, 0, 60);
+        assert!(w.player.prop_fall);
+        assert!(w.player.vy >= -1.25 - 1e-3, "slow fall: {}", w.player.vy);
+        run(&mut w, input::DOWN, 30);
+        assert!(
+            w.player.vy < -3.0 || w.player.on_ground,
+            "drill: {}",
+            w.player.vy
+        );
     }
 
     #[test]
