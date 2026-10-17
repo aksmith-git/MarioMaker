@@ -53,6 +53,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         t?.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &px, bytesPerRow: 4)
         return t
     }()
+    private var skyColor: UInt32 = 0x5C94FCFF
     private let session: GameSession
     private var engine: OpaquePointer { session.engine }
     /// Sprites without art (MMK_TEXTURE_NONE) are drawn as coloured boxes in placeholder mode
@@ -189,7 +190,13 @@ final class Renderer: NSObject, MTKViewDelegate {
         enc.setRenderPipelineState(pipeline)
         enc.setFragmentSamplerState(sampler, index: 0)
 
-        // sky: SMB1 overworld blue (#5C94FC) until background models are drawn
+        // clear colour behind the theme background (black for underground/castle)
+        let clear = mmk_engine_clear_color(engine)
+        if clear != skyColor, let sky = skyTexture {
+            skyColor = clear
+            var px: [UInt8] = [UInt8(clear >> 24), UInt8((clear >> 16) & 0xff), UInt8((clear >> 8) & 0xff), 0xff]
+            sky.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &px, bytesPerRow: 4)
+        }
         if let sky = skyTexture {
             var ident = SIMD4<Float>(1, 1, 0, 0)
             enc.setVertexBytes(&ident, length: 16, index: 1)

@@ -495,6 +495,32 @@ pub unsafe extern "C" fn mmk_engine_debug_teleport(engine: *mut MmkEngine, x: f3
     })
 }
 
+/// Background clear colour (0xRRGGBBAA): the theme background's top-left pixel when the cache has
+/// it as RGBA8, black otherwise (underground, castle, placeholder art).
+///
+/// # Safety
+/// `engine` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_engine_clear_color(engine: *const MmkEngine) -> u32 {
+    guard(0x0000_00ff, || {
+        let Some(e) = (unsafe { engine.as_ref() }) else {
+            return 0x0000_00ff;
+        };
+        let Some((model, tex)) = e.world.background() else {
+            return 0x0000_00ff;
+        };
+        let assets = unsafe { &*e.assets };
+        let Some(i) = assets.cache.texture_index(model, tex) else {
+            return 0x0000_00ff;
+        };
+        let t = &assets.cache.textures[i].texture;
+        if t.format != mmk_assets::mtex::MtexFormat::Rgba8 || t.data.len() < 4 {
+            return 0x0000_00ff;
+        }
+        u32::from_be_bytes([t.data[0], t.data[1], t.data[2], 0xff])
+    })
+}
+
 /// HUD counters and this tick's events (bit n = `mmk_sim::Event` discriminant n).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]

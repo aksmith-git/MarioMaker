@@ -51,7 +51,8 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
 - ✅ 1. Rust workspace (formats, assets, import, sim, ffi, cli) + Swift/Metal app; CI on macOS + Linux
 - ✅ 2. Importer: identifies the game build, finds the course key table, converts tables, exports
   M1 textures (RGBA8 + BCn, Tegra unswizzle) into a Metal-ready cache outside the repo
-- ✅ 3. Rendering: tiles, sprites, letterboxed integer scaling; BFRES reader (0.9: skeleton,
+- ✅ 3. Rendering: tiles, sprites, letterboxed integer scaling; theme backgrounds (M1_DV_*, day/night,
+  parallax 0.5 [inf]) with the clear colour from the background's sky (black underground/castle); BFRES reader (0.9: skeleton,
   materials, shapes, texture-pattern animations) → importer `sprites.json` (1952 of 1963 M1
   textures placed by their model quad, all animation frame keys) → FFI draws model sprites at the
   sim's origin + quad. Hand offsets gone; Goomba walk animation fixed (it never animated) and

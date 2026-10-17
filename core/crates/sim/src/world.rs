@@ -2508,6 +2508,7 @@ impl World {
             flip_y: false,
             layer,
         };
+        self.background_sprites(&mut out);
         for t in &self.level.tiles {
             let (px, py) = (t.x as f32 * TILE, t.y as f32 * TILE);
             if visible(px, py) {
@@ -2977,6 +2978,45 @@ impl World {
             out.push(s);
         }
         out
+    }
+
+    /// Theme background model and texture (M1_DV_<theme>[_D]), if the theme has one.
+    /// Underground and castle have none (black). Ghost house only has the night art.
+    pub fn background(&self) -> Option<(&'static str, &'static str)> {
+        let night = self.level.night;
+        Some(match (self.level.theme, night) {
+            (0, false) => ("M1_DV_plain", "M1_DV_plain_00"),
+            (0, true) => ("M1_DV_plain_D", "M1_DV_plain_D_00.0"),
+            (3, false) => ("M1_DV_airship", "M1_DV_airship_00"),
+            (3, true) => ("M1_DV_airship_D", "M1_DV_airship_D.00.0"),
+            (4, false) => ("M1_DV_water", "M1_DV_water"),
+            (4, true) => ("M1_DV_water_D", "M1_DV_water_D_00.0"),
+            (5, _) => ("M1_DV_hauntedhouse_D", "M1_DV_hauntedhouse_D.00"),
+            (6, false) => ("M1_DV_snow", "M1_DV_snow_00"),
+            (6, true) => ("M1_DV_snow_D", "M1_DV_snow_D_00.0"),
+            (7, _) => ("M1_DV_desert", "M1_DV_desert_00"),
+            (8, _) => ("M1_DV_athletic", "M1_DV_athletic_00"),
+            (9, _) => ("M1_DV_woods", "M1_DV_woods_00"),
+            _ => return None,
+        })
+    }
+
+    /// The background: a 512×512 picture repeated sideways, anchored 32 px below the area bottom,
+    /// scrolling at half the camera speed [inf parallax 0.5].
+    fn background_sprites(&self, out: &mut Vec<Sprite>) {
+        let Some((model, tex)) = self.background() else {
+            return;
+        };
+        const P: f32 = 0.5;
+        let ox = -128.0 + self.camera_x * (1.0 - P);
+        let oy = (self.level.bottom - 32.0 + self.camera_y * (1.0 - P)).min(self.camera_y);
+        let mut k = ((self.camera_x - ox) / 512.0).floor();
+        while ox + k * 512.0 < self.camera_x + VIEW_W {
+            let mut s = Self::model_sprite(model, tex, ox + k * 512.0, oy, 512.0, 512.0, false, 0);
+            s.image.rect = Some((0.0, 0.0, 512.0, 512.0));
+            out.push(s);
+            k += 1.0;
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
