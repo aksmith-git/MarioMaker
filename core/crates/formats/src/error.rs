@@ -28,6 +28,8 @@ pub enum Error {
     Cmac,
     #[error("invalid course code: {0}")]
     InvalidCode(String),
+    #[error("{what}: {detail}")]
+    Format { what: &'static str, detail: String },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

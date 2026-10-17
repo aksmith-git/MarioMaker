@@ -30,6 +30,37 @@ enum Cmd {
         #[arg(long)]
         brief: bool,
     },
+    /// Decode a BYML file (Yaz0/zstd wrappers are removed) and print it as JSON.
+    Byml { file: PathBuf },
+    /// List a SARC archive (Yaz0/zstd wrappers are removed): one JSON line per entry with name,
+    /// size and CRC32 of the contents.
+    Sarc { file: PathBuf },
+    /// Import the user's own extracted SMM2 RomFS + ExeFS into an engine asset cache.
+    Import {
+        #[arg(long)]
+        romfs: PathBuf,
+        #[arg(long)]
+        exefs: PathBuf,
+        /// Cache root (default: ~/Library/Application Support/mmk/assets)
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+}
+
+fn crc32(data: &[u8]) -> u32 {
+    // small local CRC32 (IEEE) to avoid another dependency in the CLI
+    let mut crc = !0u32;
+    for &b in data {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
 }
 
 fn load(path: &PathBuf) -> std::io::Result<Vec<u8>> {
@@ -114,6 +145,77 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             } else {
                 ExitCode::SUCCESS
+            }
+        }
+        Cmd::Byml { file } => {
+            let res = std::fs::read(&file)
+                .map_err(|e| e.to_string())
+                .and_then(|d| mmk_formats::archive::unwrap(d).map_err(|e| e.to_string()))
+                .and_then(|d| mmk_formats::byml::parse(&d).map_err(|e| e.to_string()));
+            match res {
+                Ok(v) => {
+                    println!("{v}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{}: {e}", file.display());
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Cmd::Sarc { file } => {
+            let res = std::fs::read(&file)
+                .map_err(|e| e.to_string())
+                .and_then(|d| mmk_formats::archive::unwrap(d).map_err(|e| e.to_string()))
+                .and_then(|d| mmk_formats::archive::Sarc::parse(d).map_err(|e| e.to_string()));
+            match res {
+                Ok(sarc) => {
+                    for (name, data) in sarc.files() {
+                        println!(
+                            "{}",
+                            json!({ "name": name, "size": data.len(), "crc32": crc32(data) })
+                        );
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{}: {e}", file.display());
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Cmd::Import { romfs, exefs, out } => {
+            let out_root = out.unwrap_or_else(|| {
+                PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                    .join("Library/Application Support/mmk/assets")
+            });
+            let cfg = mmk_import::ImportConfig {
+                romfs,
+                exefs,
+                out_root,
+            };
+            let mut last = String::new();
+            let mut progress = |stage: &str, done: usize, total: usize| {
+                if stage != last || done == total {
+                    eprintln!("{stage}: {done}/{total}");
+                    last = stage.to_string();
+                }
+            };
+            match mmk_import::run(&cfg, &mut progress) {
+                Ok(r) => {
+                    println!(
+                        "imported SMM2 {} ({} tables, {} built-in courses verified) into {}",
+                        r.build,
+                        r.tables,
+                        r.builtin_courses_verified,
+                        r.out_dir.display()
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("import failed: {e}");
+                    ExitCode::FAILURE
+                }
             }
         }
     }

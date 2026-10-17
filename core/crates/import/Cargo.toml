@@ -1,0 +1,12 @@
+[package]
+name = "mmk-import"
+description = "First-launch importer: the user's own extracted RomFS/ExeFS → engine asset cache"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+mmk-formats = { path = "../formats" }
+serde_json.workspace = true
+thiserror.workspace = true

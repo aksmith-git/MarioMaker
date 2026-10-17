@@ -5,8 +5,11 @@
 //! the SMM2 course key table is supplied by the caller from the user's own game executable.
 
 pub mod aes_modes;
+pub mod archive;
+pub mod byml;
 pub mod course_id;
 pub mod error;
+pub mod nso;
 pub mod record;
 pub mod smm1;
 pub mod smm2;
