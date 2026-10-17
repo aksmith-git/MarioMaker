@@ -2,6 +2,67 @@
 
 Newest first. Each entry: what was decided, why, and what would change it.
 
+## 2026-10-18 — 3D styles: meshes in the cache, sim sprites become mesh draws
+NSMBU (WU) and 3D World (3W) are drawn from their BFRES meshes. What the data showed first:
+- **NSMBU** enemies, items and objects are pre-rendered frames on a quad (`walk_Alb.000` …,
+  switched by texture-pattern animations), like the 2D styles but at a finer frame rate. Its
+  players (body + head models), Yoshi and the bosses are skinned meshes. Terrain is the
+  `WU_Field_*` atlas, drawn as tiles as before.
+- **3D World** is meshes throughout. Its terrain is one model per field-atlas cell
+  (`<theme>_model_<atlas index in hex>`, the same index the sim already computes for the 2D
+  atlases), with neighbour variants (`_ff`, `_fs`, `_l_f`, …) for slopes and edges. Blocks,
+  coins and pipes live in `Pack/StaticModel.pack`, which the importer now reads for WU_/3W_.
+
+Decisions:
+- **Cache format:** `meshes/<Model>.mmesh` holds every model of a game file: skeleton,
+  materials (albedo texture, wrap, unlit flag), shapes, LOD 0 only. Vertices are baked into the
+  bind pose in model space, so rigid and single-bone shapes skin like smooth ones. Each
+  animation is its own `anims/<Model>/<anim>.mskel`, plus an `index.json` per folder. It merges
+  the skeletal, bone visibility and texture-pattern tracks that share a base name (`walk` +
+  `walk_ftp`). Curves are kept as decoded keys and evaluated at run time, not baked per frame.
+  Both files are a JSON header plus a binary blob (`mmk_assets::mesh`). Importer version 5.
+- **Who poses:** Rust (`MeshModel::pose`, through `mmk_mesh_pose`) computes the skinning matrices,
+  bone visibility and the texture of each shape. Metal skins on the GPU. Only the 3D styles use
+  this path. `mmk_engine_set_meshes(false)` / `MMK_NO_MESH=1` turns it off.
+- **Mapping a sim sprite to a mesh** (`ffi/src/mesh.rs`):
+  - Model: `M1_<rest>` → `<style>_<rest>`. A model of its own for the frame wins
+    (`3W_Enemy_nokonokoA_shell` for `shell.*`). In a multi-model file, the model named after the
+    frame stem wins, then the one named after the file, never a `*break*` debris model.
+  - Players (table): NSMBU `WU_Player_MarioMdl`, `SMB_model` + `SMH_model` for small, `MB_model`
+    + `MH_model` otherwise. "S" = small is inferred from the sizes [inf]. The head rides the
+    body's `face_1` bone [inf]. 3D World uses `3W_Player_Mario` / `…MarioMini` with the Face,
+    Eye, HandL and HandR files on the body's `Head` / `HandL` / `HandR` bones. Fire forms use the
+    `.1` textures.
+  - Blocks (3W): field-atlas index → `3W_Object_block_*` (brick, ?, used, hard, donut, cloud,
+    ice). Other 3W tiles take the terrain model for their atlas index. The first variant is used
+    for edge and slope cells [inf]. Cells without a model (pipes, note blocks, …) fall back to
+    the NSMBU atlas tile.
+  - Animation: the frame stem (`walk.1` → `walk`), matched case-insensitively, then a synonym
+    table (`fall` → `jump2` / `FallLoop`, `shell` → `Move`, `dead` → `DieOver`, …), then
+    `wait`, else the rest pose. Players also try their shared animation files
+    (`WU_Player_CommonAnm`, `3W_Player_Animation_*`). Small NSMBU Mario tries `SMB_`-prefixed
+    names first; the NSMBU head uses `PH_` texture animations.
+  - Time = the world tick [inf: the sim keeps no per-actor animation clock], so all actors
+    animate in phase and one-shot animations start mid-way.
+  - Placement: origin = the sim's model origin (x + w/2, y). Scale = sim width ÷ the SMB1
+    texture width. Enemies and players turn 70° from the camera toward their walking direction
+    [inf: chosen so the face shows; not measured]. Pre-rendered NSMBU cards are mirrored like
+    the 2D sprites; their art is taken to face left like SMB1 [inf].
+  - Bones the animation doesn't mention keep their rest visibility, except alternative parts.
+    For `<name>NN` siblings only `…00` shows (3D World faces, hands, eyelids) [inf].
+- **Rendering:** orthographic side view sharing the sprites' world → NDC transform. A depth
+  buffer is used per depth group (consecutive mesh draws of one layer), and every later group is
+  in front of all earlier ones. Meshes keep real depth among themselves inside a layer, and
+  painter's order with sprites between layers. Lighting is one directional light plus ambient
+  (our choice). Cards are unlit and alpha-tested. 3D albedo alpha is ignored, since the render
+  state isn't read [inf]. Backgrounds (`_DV_`) aren't meshed yet.
+- **Debug:** `MMK_MESH_PREVIEW=<mesh>[#model][@anim],<style>:<sim model>:<frame>,…` model viewer
+  with `MMK_SCREENSHOT` (mirrors `MMK_UI_LAYOUT`); `mmk bfres <file> [--member] [--curves]`.
+
+What would change it: the game's per-actor animation state and blend rules, the camera angle
+and actor turn from Ryujinx captures, material render info (translucency, emission), and the
+3D World neighbour-variant rules.
+
 ## 2026-10-18 — Bosses (Bowser, Boom Boom / Pom Pom, Bowser Jr.): HP through one hit path
 Every boss hit goes through `Actor::boss_hit(attack)`, which applies the spec's HP rules. Bowser:
 fire 1, shell 3, 20 HP (big 40), and stomps are Invalid. Boom Boom and Bowser Jr.: 3 HP; a

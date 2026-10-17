@@ -68,8 +68,10 @@ smmfmt/  tests/             Python reference implementation of the course format
 
 - Opaque handles: `MmkEngine`, `MmkAssets`, `MmkImporter`. Everything else is `#[repr(C)]` POD.
 - Calls (shape, not final):
-  - `mmk_assets_open(path) → MmkAssets*`; `mmk_assets_textures/meshes(...)` enumerate GPU resources
-    so Swift uploads them once (textures are already Metal pixel formats).
+  - `mmk_assets_open(path) → MmkAssets*`; `mmk_assets_texture(...)` enumerates GPU resources
+    so Swift uploads them once (textures are already Metal pixel formats). Meshes load on
+    demand (`ffi/src/mesh.rs`): `mmk_mesh_find/model/shape/anim/pose`, and the engine's
+    per-frame `mmk_engine_meshes`.
   - `mmk_engine_new(assets, config) → MmkEngine*`; `mmk_engine_load_course(engine, bytes, len)`.
   - `mmk_engine_set_input(engine, const MmkInput*)`; the sim thread consumes it each tick.
   - `mmk_engine_snapshot(engine, MmkSnapshot* out)` → pointers + lengths into the published
@@ -105,9 +107,12 @@ the owner's keys.)
 5. **Textures**: BNTX → unswizzle (Tegra block-linear) → store as Metal-ready blobs (RGBA8 sRGB,
    BC1/4/5/7) with mip chains.
 6. **Models/animations**: BFRES → engine mesh, material (texture refs, blend, sampler),
-   skeleton, skeletal / texture-pattern / SRT animations. Done for the 2D styles as
-   `sprites.json` (sprite quad + UVs per texture, texture-pattern frame keys; format notes in
-   [formats/bfres.md](formats/bfres.md)); full meshes come with SM3DW.
+   skeleton, skeletal / texture-pattern / SRT animations. The 2D styles get `sprites.json`
+   (sprite quad + UVs per texture, texture-pattern frame keys; format notes in
+   [formats/bfres.md](formats/bfres.md)). NSMBU and 3D World also get `meshes/<Model>.mmesh`
+   (bind-pose vertices, skeleton, materials, LOD 0) and `anims/<Model>/<anim>.mskel`
+   (skeletal + bone visibility + texture-pattern tracks merged by name), see
+   `mmk_assets::mesh`.
 7. **Audio**: BWAV/BARS → kept as DSP-ADPCM + loop points; decoded in the mixer.
 8. **Manifest**: importer version, source file hashes, contents → enables incremental re-import.
 
@@ -158,8 +163,16 @@ per layout. Hosts only step and draw them, so the same classes can move to the p
 - Resources uploaded once from the asset cache (`MTLTexture`, vertex/index buffers).
 - Per frame: draw items sorted by layer (background → terrain → actors → effects → UI);
   orthographic camera for 2D styles, nearest sampling for M1/M3/MW; light-mask pass for night
-  darkness; perspective path for SM3DW later.
-- Shaders (MSL): unlit textured (2D styles), simple lit (NSMBU/SM3DW, later), light mask, UI.
+  darkness (later).
+- Meshes (NSMBU / 3D World, `MeshRenderer.swift`): the snapshot's sprites that have a mesh in
+  the cache come out of `mmk_engine_meshes` instead (model → world transform, animation, time,
+  the sprite index they go before). Rust poses them (`mmk_mesh_pose`: skinning matrices,
+  visibility, texture per shape); the shader skins on the GPU under the same orthographic
+  transform as the sprites. Depth groups per layer keep painter's order with the sprites. Model
+  viewer: `MMK_MESH_PREVIEW=<mesh>[#model][@anim],<style>:<sim model>:<frame>,…
+  [MMK_MESH_YAW/PITCH/TICK/FLIP] [MMK_SCREENSHOT=<png>]` (`MeshPreview.swift`).
+- Shaders (MSL): unlit textured (2D styles), skinned + simple lit (NSMBU / 3D World meshes),
+  light mask (later), UI.
 - UI (`app/Sources/MMKApp/UILayer.swift`): draws `MmkUiQuad` lists — t = combine(tex0, tex1),
   c = mix(black, white, t) · vertex colour; one pipeline per blend mode, one sampler per
   wrap/filter combination; layout units mapped to the viewport (origin centre, y up). Debug view:
