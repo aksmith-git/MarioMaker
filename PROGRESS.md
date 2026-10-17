@@ -155,6 +155,8 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   lets the player pass until met; HUD shows progress · holding / riding conditions ⬜ (no carry,
   Yoshi, shoe yet) — SMB1 sample 53 → 65 playable
 - ✅ Chain Chomp (chained + unchained)
+- ✅ Vines: climb areas with tile art from the course data; climbing (1.0 / 1.5 px/f, 6 px
+  hang, side switch, jump off with 30-frame lock) · vines sprouting from blocks ⬜
 - ✅ Lava Bubble (hide / cosine rise / fall), Monty Mole (buried, mound, leap, chase), Angry Sun
   (corner wait, spin, half-ellipse swoop) and Moon (wipes on-screen enemies)
 - ✅ Tracks: graph from track records (lines + quarter arcs), rail follower (0.75 / 1.5 px/f),

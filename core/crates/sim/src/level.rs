@@ -306,6 +306,8 @@ pub struct Level {
     pub snakes: Vec<(i32, i32, usize, bool, bool, Vec<u16>)>,
     /// Track graph (59-track.md).
     pub tracks: crate::track::Tracks,
+    /// Vines (64): climb areas (centre x, bottom, top) in px.
+    pub vines: Vec<(f32, f32, f32)>,
     pub liquid: Option<LiquidSpec>,
     /// One-way walls (drawing): centre x, bottom y, orientation.
     pub oneway: Vec<(f32, f32, u8)>,
@@ -371,8 +373,8 @@ pub fn switch_atlas(kind: BlockKind, on: bool) -> u32 {
 pub const SUPPORTED_PARTS: &[i16] = &[
     0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 43, 44, 46, 47, 48, 52, 53, 54, 55,
-    56, 57, 58, 60, 61, 63, 66, 67, 68, 70, 71, 76, 82, 83, 84, 87, 88, 90, 91, 95, 99, 100, 102,
-    104, 105, 109,
+    56, 57, 58, 60, 61, 63, 64, 66, 67, 68, 70, 71, 76, 82, 83, 84, 87, 88, 90, 91, 95, 99, 100,
+    102, 104, 105, 109,
 ];
 
 /// Parts that become actors and so can ride a track (59-track.md).
@@ -474,6 +476,7 @@ impl Level {
             firebars: Vec::new(),
             cannons: Vec::new(),
             snakes: Vec::new(),
+            vines: Vec::new(),
             tracks: Default::default(),
             liquid: None,
             oneway: Vec::new(),
@@ -747,6 +750,33 @@ impl Level {
                     h: hgt.max(2),
                     contents,
                 });
+                continue;
+            }
+            if o.id == 64 {
+                // vine: a climb area, not solid; extended data holds the top and bottom tile ids
+                // (0x7F00_7D / 0x7F00_7E), the middle uses 0x7E (64-vine.md)
+                let top = (o.extended_data >> 16) & 0xFF;
+                let bottom = o.extended_data & 0xFF;
+                for dy in 0..hgt {
+                    let atlas = if dy == hgt - 1 && top != 0 {
+                        top
+                    } else if dy == 0 && bottom != 0 {
+                        bottom
+                    } else {
+                        0x7E
+                    };
+                    lvl.tiles.push(TileDraw {
+                        x: tx,
+                        y: ty + dy,
+                        atlas,
+                        flip: 0,
+                    });
+                }
+                lvl.vines.push((
+                    tx as f32 * TILE + 8.0,
+                    ty as f32 * TILE,
+                    (ty + hgt) as f32 * TILE,
+                ));
                 continue;
             }
             if o.id == 53 {
@@ -1235,6 +1265,7 @@ impl Level {
             firebars: Vec::new(),
             cannons: Vec::new(),
             snakes: Vec::new(),
+            vines: Vec::new(),
             tracks: Default::default(),
             liquid: None,
             oneway: Vec::new(),

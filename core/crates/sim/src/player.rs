@@ -182,6 +182,7 @@ pub enum Pose {
     Pole,
     Fire,
     Swim,
+    Climb,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -240,6 +241,10 @@ pub struct Player {
     skid: SkidPhase,
     prev_jump: bool,
     prev_run: bool,
+    /// Climbing a vine: its centre x and the side the player hangs on (−1 left, +1 right).
+    pub climbing: Option<(f32, i32)>,
+    /// Frames before a vine can be grabbed again (after jumping off).
+    climb_lock: i32,
 }
 
 impl Player {
@@ -276,6 +281,8 @@ impl Player {
             skid: SkidPhase::None,
             prev_jump: false,
             prev_run: false,
+            climbing: None,
+            climb_lock: 0,
         }
     }
 
@@ -635,6 +642,16 @@ impl Player {
         }
         self.prev_run = run;
 
+        // vines (64-vine.md)
+        if self.climb_lock > 0 {
+            self.climb_lock -= 1;
+        }
+        if (self.climbing.is_some() || self.try_grab(inp, level))
+            && self.climb(inp, pressed, run, level)
+        {
+            return;
+        }
+
         // crouch: big forms on the ground with Down held (kept through a crouch jump)
         if self.on_ground {
             let want = self.big() && inp.held(input::DOWN);
@@ -716,6 +733,82 @@ impl Player {
         if self.y < -2.0 * TILE {
             self.kill(); // fell into a pit
         }
+    }
+
+    fn vine_at(level: &Level, x: f32, y: f32) -> Option<(f32, f32, f32)> {
+        level
+            .vines
+            .iter()
+            .copied()
+            .find(|v| (x - v.0).abs() <= 10.0 && y + 8.0 >= v.1 && y + 4.0 <= v.2)
+    }
+
+    /// Grab a vine the player overlaps: Up, or Down in the air [inf: grab input not traced].
+    fn try_grab(&mut self, inp: Input, level: &Level) -> bool {
+        if self.climb_lock > 0 || self.in_water {
+            return false;
+        }
+        let want = inp.held(input::UP) || (inp.held(input::DOWN) && !self.on_ground);
+        let Some(v) = want.then(|| Self::vine_at(level, self.x, self.y)).flatten() else {
+            return false;
+        };
+        self.climbing = Some((v.0, if self.x < v.0 { -1 } else { 1 }));
+        self.vx = 0.0;
+        self.vy = 0.0;
+        self.crouch = false;
+        true
+    }
+
+    /// Climbing (player state "Vine"): held 6 px beside the vine (SMB1), up/down at 1.0 px/f
+    /// (1.5 with run), vy toward the target by 0.5/frame (reversing zeroes it first), up only
+    /// while the vine continues above; toward the other side switches sides; jump lets go with
+    /// a 30-frame re-grab lock; reaching the ground without Up held steps off. Returns false
+    /// when the player let go (normal physics take over this frame).
+    fn climb(&mut self, inp: Input, pressed: bool, run: bool, level: &Level) -> bool {
+        let Some((vx, mut side)) = self.climbing else {
+            return false;
+        };
+        let Some(v) = Self::vine_at(level, vx, self.y) else {
+            self.climbing = None;
+            return false;
+        };
+        if pressed {
+            self.climbing = None;
+            self.climb_lock = 30;
+            self.vy = JUMP_BASE;
+            self.on_ground = false;
+            self.vx = inp.dir_x() as f32 * 1.0;
+            return false;
+        }
+        let dir = inp.dir_x();
+        if dir != 0 && dir == -side {
+            side = -side;
+        }
+        let speed = if run { 1.5 } else { 1.0 };
+        let target = if inp.held(input::UP) && self.y + 16.0 < v.2 {
+            speed
+        } else if inp.held(input::DOWN) {
+            -speed
+        } else {
+            0.0
+        };
+        if target != 0.0 && self.vy * target < 0.0 {
+            self.vy = 0.0;
+        }
+        self.vy += (target - self.vy).clamp(-0.5, 0.5);
+        self.vx = 0.0;
+        self.x = vx + side as f32 * 6.0;
+        self.facing = -side;
+        let sensors = self.sensors();
+        self.move_and_collide(level, sensors);
+        if self.on_ground && !inp.held(input::UP) {
+            self.climbing = None;
+            return true;
+        }
+        self.climbing = Some((vx, side));
+        self.pose = Pose::Climb;
+        self.walk_phase += self.vy.abs();
+        true
     }
 
     /// Swimming (§5.1): strokes add 1.0 (1.25 from the bottom), the player sinks toward −1.5

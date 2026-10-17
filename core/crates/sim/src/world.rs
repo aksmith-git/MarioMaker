@@ -3809,6 +3809,13 @@ impl World {
                 }
             }
             Pose::Pole => "climb.0",
+            Pose::Climb => {
+                if ((p.walk_phase / 8.0) as i32) % 2 == 0 {
+                    "climb.0"
+                } else {
+                    "climb.1"
+                }
+            }
             Pose::Swim => ["swim.0", "swim.1", "swim.2", "swim.3", "swim.4", "swim.5"]
                 [((p.walk_phase / 4.0) as usize).min(5)],
             Pose::Fire => {
@@ -4601,6 +4608,28 @@ mod tests {
         run(&mut w, 0, 120 + 36 + 130);
         let x1 = w.actors[0].x - w.camera_x;
         assert!((x1 - 48.0).abs() < 2.0, "left corner: {x1}");
+    }
+
+    #[test]
+    fn vines_are_climbed_up_to_their_top() {
+        let mut lvl = Level::flat(40);
+        // a 6-tile vine standing on the ground at tile 10
+        lvl.vines.push((10.0 * TILE + 8.0, 2.0 * TILE, 8.0 * TILE));
+        let mut w = World::with_level(lvl);
+        w.player.x = 10.0 * TILE + 4.0;
+        run(&mut w, input::UP, 1);
+        assert!(w.player.climbing.is_some());
+        assert_eq!(w.player.x, 10.0 * TILE + 8.0 - 6.0, "hangs 6 px beside it");
+        run(&mut w, input::UP, 200);
+        let top = w.player.y;
+        assert!(
+            top + 16.0 >= 8.0 * TILE - 1.0 && top < 8.0 * TILE,
+            "stops at the top: {top}"
+        );
+        // jump off, and no re-grab for 30 frames
+        run(&mut w, input::JUMP, 1);
+        assert!(w.player.climbing.is_none());
+        assert!(w.player.vy > 0.0);
     }
 
     #[test]
