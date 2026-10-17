@@ -98,6 +98,10 @@ pub enum Form {
     Small,
     Super,
     Fire,
+    /// SMB3 Super Leaf: tail attack, slow fall, P-meter flight.
+    Raccoon,
+    /// SMW Cape Feather: cape spin, glide.
+    Cape,
 }
 
 /// Invincibility after taking damage (§7).
@@ -286,6 +290,14 @@ pub struct Player {
     pub sliding: bool,
     /// In a spin jump (until landing).
     pub spinning: bool,
+    /// SMB3 P-meter (0…630) and its hold timer; flight window after a full-meter jump.
+    pub p_meter: i32,
+    p_hold: i32,
+    pub flight: i32,
+    /// Raccoon / cape: attack (tail swing, cape spin) frames left; flap and slow-fall frames.
+    pub attack: i32,
+    pub flap: i32,
+    pub slow_fall: i32,
     prev_spin: bool,
     /// Climbing a vine: its centre x and the side the player hangs on (−1 left, +1 right).
     pub climbing: Option<(f32, i32)>,
@@ -335,6 +347,12 @@ impl Player {
             held: None,
             sliding: false,
             spinning: false,
+            p_meter: 0,
+            p_hold: 0,
+            flight: 0,
+            attack: 0,
+            flap: 0,
+            slow_fall: 0,
             prev_spin: false,
         }
     }
@@ -430,10 +448,8 @@ impl Player {
 
     /// Collect a power-up (20-super-mushroom.md: form changes only upward).
     pub fn power_up(&mut self, to: Form) -> bool {
-        let up = matches!(
-            (self.form, to),
-            (Form::Small, Form::Super | Form::Fire) | (Form::Super, Form::Fire)
-        );
+        // a mushroom only grows a small player; other power-ups replace the current form
+        let up = to != self.form && (to != Form::Super || self.form == Form::Small);
         if up && self.control == Control::Normal {
             // small + Fire Flower goes straight to Fire (the block swap to a mushroom happens at
             // spawn time)
@@ -701,6 +717,18 @@ impl Player {
         if run && !self.prev_run && self.form == Form::Fire && !self.crouch {
             self.throw = true;
         }
+        // raccoon tail swing / cape spin on Run (player-physics.md §5.4) [inf: 16 frames]
+        if run
+            && !self.prev_run
+            && matches!(self.form, Form::Raccoon | Form::Cape)
+            && self.held.is_none()
+        {
+            self.attack = 16;
+        }
+        if self.attack > 0 {
+            self.attack -= 1;
+        }
+        self.step_meters(inp, pressed, jump);
         self.prev_run = run;
 
         // vines (64-vine.md)
@@ -793,6 +821,22 @@ impl Player {
                 self.vy = (self.vy + g).max(FALL_CAP);
             }
         }
+        // raccoon flaps (vy 1.5, no gravity, 18 frames) and slow fall (≥ −1.0, 15 frames); the
+        // cape glides (≥ −1.0) while jump is held
+        if !self.on_ground && !self.in_water {
+            if self.flap > 0 {
+                self.flap -= 1;
+                self.vy = 1.5;
+            } else if self.slow_fall > 0 {
+                self.slow_fall -= 1;
+                self.vy = self.vy.max(-1.0);
+            } else if self.form == Form::Cape && jump && self.vy < 0.0 {
+                self.vy = self.vy.max(-1.0);
+            }
+        } else {
+            self.flap = 0;
+            self.slow_fall = 0;
+        }
         self.was_in_water = self.in_water;
         self.x += self.wind;
 
@@ -837,6 +881,8 @@ impl Player {
                 Form::Small => 0,
                 Form::Super => 1,
                 Form::Fire => 2,
+                Form::Raccoon => 3,
+                Form::Cape => 4,
             },
             shoe: self.shoe.is_some(),
             clown_car: self.clown.is_some(),
@@ -869,6 +915,47 @@ impl Player {
             self.facing = self.vx.signum() as i32;
         }
         self.pose = Pose::Slide;
+    }
+
+    /// P-meter (SMB3) / cape meter (SMW), raccoon flaps (player-physics.md §2.5, §5.4): the
+    /// meter fills 10/frame while running on the ground at ≥ 2.1 px/f with run and a direction
+    /// held (630 = full, 63 frames), holds 30 frames, then drains 4/frame. A jump with a full
+    /// meter opens a 240-frame flight window; in the air each jump press flaps while the window
+    /// is open, else (falling) slows the fall.
+    fn step_meters(&mut self, inp: Input, pressed: bool, _jump: bool) {
+        let running =
+            self.on_ground && inp.held(input::RUN) && inp.dir_x() != 0 && self.vx.abs() >= 2.1;
+        if running {
+            self.p_meter = (self.p_meter + 10).min(630);
+            self.p_hold = 30;
+        } else if self.on_ground || self.flight == 0 {
+            if self.p_hold > 0 {
+                self.p_hold -= 1;
+            } else {
+                self.p_meter = (self.p_meter - 4).max(0);
+            }
+        }
+        if self.flight > 0 {
+            self.flight -= 1;
+        }
+        if pressed && self.on_ground && self.p_meter >= 630 && self.form == Form::Raccoon {
+            self.flight = 240;
+        }
+        if pressed && !self.on_ground && self.form == Form::Raccoon {
+            if self.flight > 0 {
+                self.flap = 18;
+            } else if self.vy < 0.0 {
+                self.slow_fall = 15;
+            }
+            self.attack = self.attack.max(8);
+        }
+        if pressed && self.on_ground && self.p_meter >= 630 && self.form == Form::Cape {
+            // cape flight (simplified): a high launch, then the glide [inf: MantFlying dives ⬜]
+            self.flight = 72;
+        }
+        if self.form == Form::Cape && self.flight > 60 && !self.on_ground {
+            self.vy = self.vy.max(3.628);
+        }
     }
 
     fn vine_at(level: &Level, x: f32, y: f32) -> Option<(f32, f32, f32)> {

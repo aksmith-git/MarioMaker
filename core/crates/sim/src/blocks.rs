@@ -37,8 +37,12 @@ pub enum Contents {
     FireFlower,
     Star,
     OneUp,
+    /// The style power-up (44): Super Leaf in SMB3, Cape Feather in SMW (SMB1: mushroom).
+    Special,
     Goomba,
-    Koopa { red: bool },
+    Koopa {
+        red: bool,
+    },
 }
 
 impl Contents {
@@ -46,7 +50,8 @@ impl Contents {
     pub fn from_part(id: i16, child_flags: u32) -> Option<Self> {
         Some(match id {
             8 => Contents::Coin,
-            20 | 44 => Contents::Mushroom, // 44 style power-up: SMB1 = Big Mushroom [slice: mushroom]
+            20 => Contents::Mushroom,
+            44 => Contents::Special,
             34 => Contents::FireFlower,
             35 => Contents::Star,
             33 => Contents::OneUp,
@@ -59,7 +64,7 @@ impl Contents {
     }
 
     pub fn is_powerup(self) -> bool {
-        matches!(self, Contents::FireFlower)
+        matches!(self, Contents::FireFlower | Contents::Special)
     }
 }
 

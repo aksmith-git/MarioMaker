@@ -41,6 +41,8 @@ pub enum Kind {
     },
     Mushroom,
     FireFlower,
+    /// The style power-up: Super Leaf (SMB3) / Cape Feather (SMW).
+    StyleItem,
     Star,
     OneUp,
     Fireball,
@@ -335,7 +337,7 @@ impl Kind {
     pub fn is_item(self) -> bool {
         matches!(
             self,
-            Kind::Mushroom | Kind::FireFlower | Kind::Star | Kind::OneUp
+            Kind::Mushroom | Kind::FireFlower | Kind::Star | Kind::OneUp | Kind::StyleItem
         )
     }
 }
@@ -1496,6 +1498,7 @@ impl Actor {
             Kind::ChainChomp { chained } => self.step_chomp(level, chained),
             Kind::LavaBubble => self.step_lava_bubble(),
             Kind::FishBone => self.step_fish_bone(level),
+            Kind::StyleItem => self.step_style_item(level),
             Kind::FloatCoin => {
                 if self.wings {
                     self.wing_bob(16.0);
@@ -2077,6 +2080,42 @@ impl Actor {
         }
         if self.on_ground && self.vy <= 0.0 && self.timer <= 0 {
             self.timer = 50;
+        }
+    }
+
+    /// Super Leaf / Cape Feather [inf: SMB3 / SMW behaviour, not traced]: out of a block it
+    /// flies up (vy 2.5, slowing 0.1/frame), then sways down at 0.5 px/f swinging ±20 px; a
+    /// placed one hovers where it is. Phases: 0 new, 1 rising, 2 swaying, 3 hovering.
+    fn step_style_item(&mut self, level: &Level) {
+        match self.phase {
+            0 => {
+                if self.spawn.is_some() {
+                    self.phase = 3;
+                } else {
+                    self.phase = 1;
+                    self.vy = 2.5;
+                }
+            }
+            1 => {
+                self.vy -= 0.1;
+                self.y += self.vy;
+                if self.vy <= 0.0 {
+                    self.phase = 2;
+                    self.home_x = self.x;
+                    self.heading = 0.0;
+                }
+            }
+            2 => {
+                self.heading += 3.0;
+                self.x = self.home_x + 20.0 * self.heading.to_radians().sin();
+                self.vx = 0.0;
+                self.vy = -0.5;
+                self.collide(level);
+                if self.on_ground {
+                    self.phase = 3;
+                }
+            }
+            _ => {}
         }
     }
 

@@ -1007,6 +1007,7 @@ impl World {
         self.claws(input);
         self.pow_quake();
         self.bump_moving_block();
+        self.tail_attack();
         self.check_checkpoints();
         self.shell_walls();
         self.actor_interactions();
@@ -1216,6 +1217,7 @@ impl World {
         };
         let item = match contents {
             Contents::Mushroom => Some(Kind::Mushroom),
+            Contents::Special => Some(self.style_item()),
             Contents::FireFlower => Some(Kind::FireFlower),
             Contents::Star => Some(Kind::Star),
             Contents::OneUp => Some(Kind::OneUp),
@@ -1809,8 +1811,26 @@ impl World {
         }
     }
 
+    /// The style power-up as an item: SMB1 keeps the mushroom (its Big Mushroom isn't in yet).
+    fn style_item(&self) -> Kind {
+        match self.style {
+            crate::player::Style::M3 | crate::player::Style::MW => Kind::StyleItem,
+            _ => Kind::Mushroom,
+        }
+    }
+
     fn collect_item(&mut self, kind: Kind, x: f32, y: f32) {
         match kind {
+            Kind::StyleItem => {
+                let form = if self.style == crate::player::Style::MW {
+                    Form::Cape
+                } else {
+                    Form::Raccoon
+                };
+                self.player.power_up(form);
+                self.events.push(Event::PowerUp);
+                self.add_score(ITEM_SCORE, x, y + 16.0);
+            }
             // the power-up sound plays for every pickup, also when the form does not change
             Kind::Mushroom => {
                 self.player.power_up(Form::Super);
@@ -2361,6 +2381,65 @@ impl World {
         }
     }
 
+    /// Raccoon tail swing / cape spin [inf: hit window frames 12–4 of the 16-frame swing, reach
+    /// 18 px in front at body height; the cape spin reaches both sides]: knocks out enemies and
+    /// bumps the block it touches.
+    fn tail_attack(&mut self) {
+        let p = &self.player;
+        if !(4..=12).contains(&p.attack) || !matches!(p.form, Form::Raccoon | Form::Cape) {
+            return;
+        }
+        let both = p.form == Form::Cape;
+        let (x0, x1) = if both {
+            (p.x - 18.0, p.x + 18.0)
+        } else if p.facing > 0 {
+            (p.x, p.x + 18.0)
+        } else {
+            (p.x - 18.0, p.x)
+        };
+        let reach = (x0, p.y + 2.0, x1, p.y + 14.0);
+        let px = p.x;
+        let mut hits = 0;
+        for a in &mut self.actors {
+            let boss = matches!(
+                a.kind,
+                Kind::Bowser { .. } | Kind::BoomBoom { .. } | Kind::BowserJr { .. }
+            );
+            if a.kind.is_enemy()
+                && a.alive()
+                && a.solid_contact()
+                && !boss
+                && !matches!(
+                    a.kind,
+                    Kind::Boo | Kind::Thwomp { .. } | Kind::AngrySun { .. }
+                )
+                && overlap(reach, a.bbox())
+            {
+                a.die_fall(px);
+                hits += 1;
+            }
+        }
+        for _ in 0..hits {
+            self.events.push(Event::EnemyDown);
+        }
+        // blocks at the swing's tip (once, at the start of the window)
+        if self.player.attack == 12 {
+            let ty = ((self.player.y + 8.0) / TILE).floor() as i32;
+            let sides: &[f32] = if both { &[-1.0, 1.0] } else { &[0.0] };
+            for &side in sides {
+                let dir = if side == 0.0 {
+                    self.player.facing as f32
+                } else {
+                    side
+                };
+                let tx = ((self.player.x + dir * 14.0) / TILE).floor() as i32;
+                if self.blocks.get(tx, ty).is_some() {
+                    self.hit_block(tx, ty, true, HitPower::Break);
+                }
+            }
+        }
+    }
+
     /// A moving block (wings / track) hit from below releases its contents once and is used up.
     fn bump_moving_block(&mut self) {
         let Some(id) = self.player.head_solid else {
@@ -2397,6 +2476,7 @@ impl World {
                 return;
             }
             Contents::Mushroom => Kind::Mushroom,
+            Contents::Special => self.style_item(),
             Contents::FireFlower => Kind::FireFlower,
             Contents::Star => Kind::Star,
             Contents::OneUp => Kind::OneUp,
@@ -3986,6 +4066,13 @@ impl World {
                 )
             }
             Kind::Mushroom => ("M1_Item_kinoko", "wait.0", 16.0, 16.0, false),
+            Kind::StyleItem => (
+                "M1_Item_special",
+                ["wait.0", "wait.1", "wait.2"][(self.tick as usize / 8) % 3],
+                16.0,
+                16.0,
+                a.x < a.home_x,
+            ),
             Kind::OneUp => ("M1_Item_kinoko1up", "wait.0", 16.0, 16.0, false),
             Kind::FireFlower => (
                 "M1_Item_flower",
@@ -4384,10 +4471,13 @@ impl World {
             Control::Change { timer, from } if (timer / 4) % 2 == 0 => from,
             _ => p.form,
         };
+        // the raccoon and cape forms are named as SMB1 models so the style remap finds them
+        // (M3_Player_TnkMarioMdl; SMW's cape Mario uses its Super Mario body)
         let model = match form {
             Form::Small => "M1_Player_MarioMdl",
-            Form::Super => "M1_Player_SpMarioMdl",
+            Form::Super | Form::Cape => "M1_Player_SpMarioMdl",
             Form::Fire => "M1_Player_FireMarioMdl",
+            Form::Raccoon => "M1_Player_TnkMarioMdl",
         };
         // star: cycle the palette variants (_2, _3, _4)
         let model: &'static str = if p.star > 0 {
@@ -4397,9 +4487,12 @@ impl World {
                 (Form::Small, 1) => "M1_Player_MarioMdl_2",
                 (Form::Small, 2) => "M1_Player_MarioMdl_3",
                 (Form::Small, _) => "M1_Player_MarioMdl_4",
-                (Form::Super, 1) => "M1_Player_SpMarioMdl_2",
-                (Form::Super, 2) => "M1_Player_SpMarioMdl_3",
-                (Form::Super, _) => "M1_Player_SpMarioMdl_4",
+                (Form::Super | Form::Cape, 1) => "M1_Player_SpMarioMdl_2",
+                (Form::Super | Form::Cape, 2) => "M1_Player_SpMarioMdl_3",
+                (Form::Super | Form::Cape, _) => "M1_Player_SpMarioMdl_4",
+                (Form::Raccoon, 1) => "M1_Player_TnkMarioMdl_2",
+                (Form::Raccoon, 2) => "M1_Player_TnkMarioMdl_3",
+                (Form::Raccoon, _) => "M1_Player_TnkMarioMdl_4",
                 (Form::Fire, 1) => "M1_Player_FireMarioMdl_2",
                 (Form::Fire, 2) => "M1_Player_FireMarioMdl_3",
                 (Form::Fire, _) => "M1_Player_FireMarioMdl_4",
@@ -4442,6 +4535,30 @@ impl World {
                     "jump.0"
                 }
             }
+        };
+        // raccoon: tail swing, flight flaps, slow-fall swings; cape: flight / glide poses
+        let k3 = (self.tick as usize / 3) % 3;
+        let (model, frame) = match form {
+            Form::Raccoon if p.attack > 0 && p.on_ground => (
+                model,
+                ["wait.1", "wait.2", "wait.3", "wait.4"][(p.attack as usize / 4) % 4],
+            ),
+            Form::Raccoon if !p.on_ground && p.flight > 0 => (
+                model,
+                [
+                    "b_dash_flyswing.0",
+                    "b_dash_flyswing.1",
+                    "b_dash_flyswing.2",
+                ][k3],
+            ),
+            Form::Raccoon if !p.on_ground && (p.slow_fall > 0 || p.attack > 0) => {
+                (model, ["jump_swing.0", "jump_swing.1", "jump_swing.2"][k3])
+            }
+            Form::Cape if !p.on_ground && p.flight > 0 => ("M1_Player_MantMario", "up1.0"),
+            Form::Cape if !p.on_ground && p.vy <= -0.99 && p.vy >= -1.01 => {
+                ("M1_Player_MantMario", "down1.0")
+            }
+            _ => (model, frame),
         };
         // carrying (not in SMB1): the carry poses, named per style
         let frame = if p.held.is_some() {
@@ -5554,6 +5671,41 @@ mod tests {
         w.player_interactions(false);
         assert!(w.player.vy > 0.0 && w.player.alive() && w.player.form == form);
         assert!(w.actors[i].alive());
+    }
+
+    #[test]
+    fn super_leaf_gives_tail_attack_and_p_meter_flight() {
+        let mut lvl = Level::flat(200);
+        lvl.spawns.push(spawn(Kind::StyleItem, 80.0, 32.0));
+        lvl.spawns.push(spawn(Kind::Goomba, 300.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.style = crate::player::Style::M3;
+        w.player.x = 60.0;
+        run(&mut w, input::RIGHT, 20);
+        run(&mut w, 0, 60);
+        assert_eq!(w.player.form, Form::Raccoon, "picked up the leaf");
+        // tail swing knocks out the Goomba in front
+        let gi = w
+            .actors
+            .iter()
+            .position(|a| a.kind == Kind::Goomba)
+            .unwrap();
+        let (gx, gy) = (w.actors[gi].x, w.actors[gi].y);
+        w.player.x = gx - 20.0;
+        w.player.y = gy;
+        w.player.facing = 1;
+        run(&mut w, input::RUN, 6);
+        assert!(!w.actors[gi].alive(), "tail hit");
+        // run 70 frames: the P-meter fills, a jump opens the flight window, flaps hold vy 1.5
+        run(&mut w, 0, 30);
+        run(&mut w, input::RIGHT | input::RUN, 130);
+        assert_eq!(w.player.p_meter, 630);
+        run(&mut w, input::RIGHT | input::RUN | input::JUMP, 1);
+        assert!(w.player.flight > 0);
+        run(&mut w, input::RIGHT | input::RUN, 10);
+        assert!(!w.player.on_ground);
+        run(&mut w, input::RIGHT | input::RUN | input::JUMP, 2);
+        assert_eq!(w.player.vy, 1.5, "flapping");
     }
 
     #[test]

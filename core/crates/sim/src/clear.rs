@@ -85,6 +85,8 @@ pub enum Goal {
     Star,
     Super,
     Fire,
+    Raccoon,
+    Cape,
     /// Reach the goal wearing a Goomba's Shoe / flying a Koopa Clown Car.
     Shoe,
     ClownCar,
@@ -136,6 +138,8 @@ impl ClearCondition {
             (2, Some(i)) => match i {
                 42 => Goal::Super,
                 44 => Goal::Fire,
+                47 => Goal::Raccoon,
+                48 => Goal::Cape,
                 45 => Goal::Star,
                 58 => Goal::Shoe,
                 62 => Goal::ClownCar,
@@ -232,6 +236,8 @@ impl ClearCondition {
             Goal::Star => star,
             Goal::Super => form == 1,
             Goal::Fire => form == 2,
+            Goal::Raccoon => form == 3,
+            Goal::Cape => form == 4,
             Goal::Shoe => shoe,
             Goal::ClownCar => clown_car,
             Goal::NoDamage | Goal::NoLanding => !self.violated,

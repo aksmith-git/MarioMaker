@@ -9,7 +9,7 @@ use crate::{MmkEngine, guard};
 pub struct MmkCondition {
     /// 0 none, 1 defeat N (target = enemy class), 2 collect N 1-Ups, 3 collect N coins (target =
     /// coin value, 0 any), 4 use N POW blocks, 5 press N P Switches, 6 goal while invincible,
-    /// 7 goal as Super, 8 goal as Fire, 9 no damage, 10 no landing, 11 goal in a Goomba's Shoe, 12 in a Koopa Clown Car,
+    /// 7 goal as Super, 8 goal as Fire, 9 no damage, 10 no landing, 11 goal in a Goomba's Shoe, 12 in a Koopa Clown Car, 13 as Raccoon, 14 as Cape,
     /// 255 not supported.
     pub kind: u32,
     pub target: u32,
@@ -46,6 +46,8 @@ pub unsafe extern "C" fn mmk_engine_clear_condition(
             Goal::Super => (7, 0),
             Goal::Fire => (8, 0),
             Goal::Shoe => (11, 0),
+            Goal::Raccoon => (13, 0),
+            Goal::Cape => (14, 0),
             Goal::ClownCar => (12, 0),
             Goal::NoDamage => (9, 0),
             Goal::NoLanding => (10, 0),

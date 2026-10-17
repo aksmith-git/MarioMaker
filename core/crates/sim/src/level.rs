@@ -418,7 +418,7 @@ pub fn unsupported_features(course: &Course) -> Vec<String> {
             // style-specific parts the engine doesn't have yet: the style power-up (44: Super
             // Leaf in SMB3, Cape Feather in SMW, Propeller in NSMBU, Super Bell in 3D World) and
             // Yoshi's Egg (45 in SMW / NSMBU)
-            if o.id == 44 && style != "M1" {
+            if o.id == 44 && matches!(style.as_str(), "WU" | "3W") {
                 out.insert(format!("{style} power-up (44)"));
                 continue;
             }
@@ -634,7 +634,11 @@ impl Level {
                 1 => Some(Kind::Koopa {
                     red: o.flags & 0x4 != 0,
                 }),
-                20 | 44 => Some(Kind::Mushroom),
+                20 => Some(Kind::Mushroom),
+                // the style power-up: Super Leaf (SMB3), Cape Feather (SMW); SMB1 keeps the
+                // mushroom for now
+                44 if matches!(lvl.style.as_str(), "M3" | "MW") => Some(Kind::StyleItem),
+                44 => Some(Kind::Mushroom),
                 34 => Some(Kind::FireFlower),
                 35 => Some(Kind::Star),
                 33 => Some(Kind::OneUp),
