@@ -190,6 +190,8 @@ pub struct World {
     carry: f32,
     /// Autoscroll view position (x, or y in vertical areas).
     autoscroll_pos: f32,
+    /// Custom autoscroll: next node index (into the sorted nodes), speed, camera centre.
+    custom_scroll: Option<(usize, f32, (f32, f32))>,
     /// The current area's liquid level, if any.
     pub liquid: Option<Liquid>,
     /// Cannon countdowns (current area).
@@ -325,6 +327,7 @@ impl World {
             donut_respawn: Vec::new(),
             carry: 0.0,
             autoscroll_pos: 0.0,
+            custom_scroll: None,
             liquid: None,
             cannon_timers: Vec::new(),
             keys: 0,
@@ -387,6 +390,7 @@ impl World {
             }
         }
         self.mark_taken_big_coins();
+        self.custom_scroll = None;
         // course start: the view starts centred on the player, clamped to the area
         let area = self.camera_area();
         let (px, py) = (self.player.x, self.player.y);
@@ -2893,6 +2897,7 @@ impl World {
     /// Re-centre the camera on the player, as the game does after a respawn or a pipe exit (also
     /// used by the debug teleport).
     pub fn reset_camera(&mut self) {
+        self.custom_scroll = None;
         let area = self.camera_area();
         let (x, y) = (self.player.x, self.player.y);
         let level = &self.level;
@@ -2940,11 +2945,62 @@ impl World {
                 self.camera_x = self.autoscroll_pos;
             }
         }
+        if self.level.autoscroll == 4 && !self.level.scroll_nodes.is_empty() {
+            self.custom_autoscroll();
+        }
+    }
+
+    /// Custom autoscroll (89-autoscroll-camera.md, themes.md §4.3): the view centre starts at
+    /// the nearest node not behind it and travels node to node at the speed of each segment's
+    /// start node (setting 0–2 → 0.5 / 1.0 / 2.0 px/f [inf: field + 1 = slow/normal/fast]),
+    /// easing by max(0.03·|Δ|, 0.01) per frame; it pauses during warps, deaths and the goal.
+    fn custom_autoscroll(&mut self) {
+        let mut nodes = self.level.scroll_nodes.clone();
+        nodes.sort_by_key(|n| n.0);
+        let vertical = self.level.vertical;
+        let (next, mut v, (mut cx, mut cy)) = match self.custom_scroll {
+            Some(s) => s,
+            None => {
+                let c = (self.camera_x + VIEW_W / 2.0, self.camera_y + VIEW_H / 2.0);
+                let key = |n: &(u8, f32, f32, u8)| if vertical { n.2 - c.1 } else { n.1 - c.0 };
+                let nearest = (0..nodes.len())
+                    .min_by(|&a, &b| key(&nodes[a]).abs().total_cmp(&key(&nodes[b]).abs()))
+                    .unwrap_or(0);
+                let next = (nearest..nodes.len())
+                    .find(|&i| key(&nodes[i]) >= 0.0)
+                    .unwrap_or(nodes.len());
+                (next, 0.0, c)
+            }
+        };
+        let paused =
+            !self.player.alive() || self.goal_phase != GoalPhase::None || self.transit.is_some();
+        let mut next = next;
+        if !paused && next < nodes.len() {
+            let from = next.saturating_sub(1);
+            let target = [0.5, 1.0, 2.0][nodes[from].3.min(2) as usize];
+            let dv = target - v;
+            v += dv.signum() * (dv.abs() * 0.03).max(0.01).min(dv.abs());
+            let (tx, ty) = (nodes[next].1, nodes[next].2);
+            let (dx, dy) = (tx - cx, ty - cy);
+            let d = (dx * dx + dy * dy).sqrt();
+            if d <= v {
+                (cx, cy) = (tx, ty);
+                next += 1;
+            } else {
+                cx += dx / d * v;
+                cy += dy / d * v;
+            }
+        }
+        self.custom_scroll = Some((next, v, (cx, cy)));
+        let l = &self.level;
+        self.camera_x = (cx - VIEW_W / 2.0).clamp(l.left, (l.right - VIEW_W).max(l.left));
+        self.camera_y = (cy - VIEW_H / 2.0).clamp(l.bottom, (l.top - VIEW_H).max(l.bottom));
     }
 
     /// Autoscroll pushes the player with the view edges; squeezed against a wall = death.
     fn autoscroll_push(&mut self) {
-        if !matches!(self.level.autoscroll, 1..=3)
+        let custom = self.level.autoscroll == 4 && !self.level.scroll_nodes.is_empty();
+        if !(matches!(self.level.autoscroll, 1..=3) || custom)
             || self.level.vertical
             || !self.player.alive()
             || self.player.control != Control::Normal
@@ -5211,6 +5267,27 @@ mod tests {
         assert!(
             w.actors.iter().all(|a| a.kind != Kind::FishBone),
             "shattered on the wall"
+        );
+    }
+
+    #[test]
+    fn custom_autoscroll_follows_its_nodes() {
+        let mut lvl = Level::flat(200);
+        lvl.autoscroll = 4;
+        // two nodes along the floor: from the start view to x = 1000 at the fast setting
+        lvl.scroll_nodes.push((2, 1000.0, 120.0, 0));
+        lvl.scroll_nodes.push((1, 200.0, 120.0, 2));
+        let mut w = World::with_level(lvl);
+        w.reset_camera();
+        let x0 = w.camera_x;
+        run(&mut w, input::RIGHT, 300);
+        let moved = w.camera_x - x0;
+        // eases toward 2 px/f (0.03 smoothing): well past 300 px in 300 frames
+        assert!(moved > 300.0 && moved < 600.0, "{moved}");
+        run(&mut w, input::RIGHT | input::RUN, 400);
+        assert!(
+            (w.camera_x + VIEW_W / 2.0 - 1000.0).abs() < 1.0,
+            "stops at the last node"
         );
     }
 

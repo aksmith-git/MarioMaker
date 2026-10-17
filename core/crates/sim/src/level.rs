@@ -312,6 +312,8 @@ pub struct Level {
     pub snakes: Vec<(i32, i32, usize, bool, bool, Vec<u16>)>,
     /// Track graph (59-track.md).
     pub tracks: crate::track::Tracks,
+    /// Custom autoscroll path (89 nodes): (node number, x, y, speed setting 0–2), in px.
+    pub scroll_nodes: Vec<(u8, f32, f32, u8)>,
     /// Vines (64): climb areas (centre x, bottom, top) in px.
     pub vines: Vec<(f32, f32, f32)>,
     pub liquid: Option<LiquidSpec>,
@@ -379,8 +381,8 @@ pub fn switch_atlas(kind: BlockKind, on: bool) -> u32 {
 pub const SUPPORTED_PARTS: &[i16] = &[
     0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 52, 53,
-    54, 55, 56, 57, 58, 60, 61, 63, 64, 66, 67, 68, 70, 71, 76, 82, 83, 84, 87, 88, 90, 91, 92, 95,
-    99, 100, 102, 103, 104, 105, 109,
+    54, 55, 56, 57, 58, 60, 61, 63, 64, 66, 67, 68, 70, 71, 76, 82, 83, 84, 87, 88, 89, 90, 91, 92,
+    95, 99, 100, 102, 103, 104, 105, 109,
 ];
 
 /// Parts that become actors and so can ride a track (59-track.md).
@@ -399,8 +401,8 @@ pub fn unsupported_features(course: &Course) -> Vec<String> {
             continue; // unused sub-area
         }
 
-        if h.autoscroll_type == 4 {
-            out.insert("custom autoscroll".to_string());
+        if h.autoscroll_type == 4 && !area.objects.iter().any(|o| o.id == 89) {
+            out.insert("custom autoscroll without nodes".to_string());
         }
 
         for o in area.objects.iter() {
@@ -483,6 +485,7 @@ impl Level {
             firebars: Vec::new(),
             cannons: Vec::new(),
             snakes: Vec::new(),
+            scroll_nodes: Vec::new(),
             pink_coins: Vec::new(),
             vines: Vec::new(),
             tracks: Default::default(),
@@ -769,6 +772,17 @@ impl Level {
                     h: hgt.max(2),
                     contents,
                 });
+                continue;
+            }
+            if o.id == 89 {
+                // custom autoscroll node (89-autoscroll-camera.md): number (flags >> 20) & 0xF,
+                // speed (flags >> 18) & 3; the camera centre follows the nodes in order
+                lvl.scroll_nodes.push((
+                    ((o.flags >> 20) & 0xF) as u8,
+                    o.x as f32 / 10.0,
+                    o.y as f32 / 10.0,
+                    ((o.flags >> 18) & 3) as u8,
+                ));
                 continue;
             }
             if o.id == 64 {
@@ -1309,6 +1323,7 @@ impl Level {
             firebars: Vec::new(),
             cannons: Vec::new(),
             snakes: Vec::new(),
+            scroll_nodes: Vec::new(),
             pink_coins: Vec::new(),
             vines: Vec::new(),
             tracks: Default::default(),
