@@ -9,7 +9,7 @@ use mmk_formats::smm2::Course;
 use crate::actors::{Actor, Effect, FIREBALL_LIFE, FIREBALL_SPEED, Kind, Mode};
 use crate::blocks::{self, Block, BlockKind, Blocks, Contents, HitPower, HitResult, Release};
 use crate::input::{self, Input};
-use crate::level::{Cell, Level, Spawn, TILE, block_atlas};
+use crate::level::{Cell, Level, PipeDir, Spawn, TILE, block_atlas};
 use crate::player::{Control, Form, Player, Pose, STAR_FRAMES};
 use crate::render::{Sprite, SpriteImage};
 use crate::warp::{self, SideHold, Transit};
@@ -53,7 +53,13 @@ pub enum Event {
     TimeCount,
     Clear,
     Pipe,
+    Checkpoint,
 }
+
+/// Pipe generator timing by pipe colour 0–3 (green, red, blue, yellow), frames.
+const GEN_INTERVAL: [i32; 4] = [180, 60, 240, 120];
+const GEN_FIRST: [i32; 4] = [90, 30, 90, 60];
+const GEN_RETRY: [i32; 4] = [30, 8, 41, 19];
 
 /// Goal pole demo (27-goal.md, GoalPole M1).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -135,6 +141,12 @@ pub struct World {
     prev_up: bool,
     /// Screen fade for area changes (0 clear … 1 black).
     pub fade: f32,
+    /// Pipe generator countdowns (current area).
+    gen_timers: Vec<i32>,
+    /// Checkpoint reached: (area, checkpoint index). Survives death.
+    pub checkpoint: Option<(usize, usize)>,
+    /// Big coins taken: (area, spawn index). Kept across a checkpoint respawn.
+    big_coins: std::collections::BTreeSet<(usize, usize)>,
 }
 
 impl Default for World {
@@ -217,6 +229,9 @@ impl World {
             side_hold: SideHold::default(),
             prev_up: false,
             fade: 0.0,
+            gen_timers: Vec::new(),
+            checkpoint: None,
+            big_coins: Default::default(),
         };
         w.field_model = Box::leak(field_model(&w.level.style, w.level.theme).into_boxed_str());
         w.reset_course();
@@ -246,9 +261,28 @@ impl World {
         self.cleared = false;
         let (sx, sy) = self.level.start;
         self.player = Player::new(sx, sy);
+        if self.checkpoint.is_none() {
+            self.big_coins.clear();
+        }
+        if let Some((area, idx)) = self.checkpoint {
+            self.switch_area(area);
+            if let Some(cp) = self.level.checkpoints.get(idx) {
+                self.player = Player::new(cp.x, cp.y);
+            }
+        }
+        self.mark_taken_big_coins();
         self.camera_y = 0.0;
         self.update_camera();
         self.activate();
+    }
+
+    /// Big coins already collected (before a checkpoint) don't come back.
+    fn mark_taken_big_coins(&mut self) {
+        for (i, rec) in self.spawns.iter_mut().enumerate() {
+            if self.big_coins.contains(&(self.area, i)) {
+                rec.killed = true;
+            }
+        }
     }
 
     /// Build the current area's live state from its loaded level.
@@ -275,6 +309,16 @@ impl World {
             .collect();
         self.actors.clear();
         self.effects.clear();
+        self.reset_generators();
+    }
+
+    fn reset_generators(&mut self) {
+        self.gen_timers = self
+            .level
+            .generators
+            .iter()
+            .map(|g| GEN_FIRST[g.colour as usize & 3])
+            .collect();
     }
 
     /// Switch to the other area, keeping the state of the one being left.
@@ -298,9 +342,11 @@ impl World {
                     Box::leak(field_model(&self.level.style, self.level.theme).into_boxed_str());
                 self.actors.clear();
                 self.effects.clear();
+                self.reset_generators();
             }
             None => self.load_area_fresh(),
         }
+        self.mark_taken_big_coins();
         for s in &mut self.spawns {
             s.alive = false;
             s.was_visible = false;
@@ -451,9 +497,17 @@ impl World {
             self.release(r);
         }
         let px = self.player.x;
+        let py = self.player.y;
+        let mut born = Vec::new();
         for a in &mut self.actors {
-            a.step(&self.level, px);
+            a.target = (px, py);
+            if let Some(n) = a.step_spawning(&self.level) {
+                born.push(n);
+            }
         }
+        self.actors.extend(born);
+        self.step_generators();
+        self.check_checkpoints();
         self.shell_walls();
         self.actor_interactions();
         self.player_interactions(jump_held);
@@ -580,7 +634,7 @@ impl World {
                 continue;
             }
             match a.kind {
-                Kind::Goomba => {
+                Kind::Goomba | Kind::Piranha { .. } => {
                     a.die_fall(cx);
                     kills += 1;
                     scores.push((a.x, a.y + 24.0));
@@ -764,6 +818,7 @@ impl World {
                 if !(ae && be) || !a.solid_contact() || !b.solid_contact() {
                     continue;
                 }
+                let walkers = a.kind.is_walker() && b.kind.is_walker();
                 let a_slide = a.mode == Mode::ShellSlide;
                 let b_slide = b.mode == Mode::ShellSlide;
                 match (a_slide, b_slide) {
@@ -779,7 +834,7 @@ impl World {
                         scores.push((Self::chain_score(s.chain), v.x, v.y + 24.0));
                         s.chain += 1;
                     }
-                    (false, false) => {
+                    (false, false) if walkers => {
                         // walkers turn on touching each other (when moving toward each other)
                         let toward = (b.x - a.x) * a.dir as f32 > 0.0;
                         if a.mode == Mode::Normal && toward && a.turn_lock == 0 {
@@ -790,6 +845,7 @@ impl World {
                             b.turn();
                         }
                     }
+                    _ => {}
                 }
             }
         }
@@ -816,6 +872,23 @@ impl World {
                 continue;
             }
             let ab = a.bbox();
+            if let Kind::BigCoin { value } = a.kind {
+                if overlap(contact, ab) {
+                    let (ax, ay) = (a.x, a.y);
+                    if let Some(s) = a.spawn {
+                        self.big_coins.insert((self.area, s));
+                    }
+                    self.actors[i].mode = Mode::Dead;
+                    let n = [10, 30, 50][value as usize];
+                    for _ in 0..n {
+                        self.add_coin();
+                    }
+                    self.score += [1000, 3000, 5000][value as usize] - n * COIN_SCORE;
+                    let _ = (ax, ay);
+                }
+                i += 1;
+                continue;
+            }
             if a.kind.is_item() {
                 if overlap(contact, ab) {
                     let kind = a.kind;
@@ -826,13 +899,14 @@ impl World {
                 i += 1;
                 continue;
             }
-            if !a.kind.is_enemy() || !overlap(hurt, ab) {
+            let harmful = a.kind.is_enemy() || a.kind == Kind::EnemyFire;
+            if !harmful || !overlap(hurt, ab) {
                 i += 1;
                 continue;
             }
             let p = &self.player;
             let (ax, ay, ah) = (a.x, a.y, a.height());
-            if star {
+            if star && a.kind != Kind::EnemyFire {
                 let px = p.x;
                 self.actors[i].die_fall(px);
                 let n = self.player.stomp_chain;
@@ -843,7 +917,7 @@ impl World {
                 continue;
             }
             // stomp: falling with the feet in the enemy's upper half [inf: window not traced]
-            let stomp = p.vy < 0.0 && p.y >= ay + ah * 0.5;
+            let stomp = p.vy < 0.0 && p.y >= ay + ah * 0.5 && !a.kind.unstompable();
             let still_shell = a.mode == Mode::ShellWait;
             if still_shell {
                 let dir = if ax >= p.x { 1 } else { -1 };
@@ -945,6 +1019,8 @@ impl World {
                 a.wings = s.wings;
                 a.spawn = Some(idx);
                 a.home_y = s.y;
+                a.pipe = s.pipe;
+                a.rng ^= (idx as u32 + 1).wrapping_mul(0x85eb_ca6b);
                 // enemies face the player (left if player.x ≤ x); items face right
                 a.dir = if s.kind.is_enemy() && self.player.x <= s.x {
                     -1
@@ -986,6 +1062,118 @@ impl World {
                 && let Some(s) = a.spawn
             {
                 self.spawns[s].killed = true;
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- pipe generators
+
+    /// Pipes with something inside keep producing it while on screen (EnemyWaki, 9-pipe.md):
+    /// first delay / interval / retry by pipe colour, at most `spout` alive.
+    fn step_generators(&mut self) {
+        let v = self.view_rect(0.0);
+        for gi in 0..self.level.generators.len() {
+            let g = self.level.generators[gi];
+            let c = g.colour as usize & 3;
+            let on_screen =
+                g.x >= v.0 - 16.0 && g.x <= v.2 + 16.0 && g.y >= v.1 - 16.0 && g.y <= v.3 + 16.0;
+            if !on_screen {
+                self.gen_timers[gi] = GEN_FIRST[c];
+                continue;
+            }
+            self.gen_timers[gi] -= 1;
+            if self.gen_timers[gi] > 0 {
+                continue;
+            }
+            let alive = self
+                .actors
+                .iter()
+                .filter(|a| a.generator == Some(gi) && a.mode != Mode::Dead)
+                .count();
+            let limit = match g.kind {
+                Kind::Koopa { red: true } => 1,
+                _ => 10,
+            };
+            // something sitting in front of the mouth blocks the spawn
+            let probe = match g.dir {
+                PipeDir::Up => (g.x - 8.0, g.y, g.x + 8.0, g.y + 15.0),
+                PipeDir::Down => (g.x - 8.0, g.y - 15.0, g.x + 8.0, g.y),
+                PipeDir::Right => (g.x, g.y - 8.0, g.x + 15.0, g.y + 8.0),
+                PipeDir::Left => (g.x - 15.0, g.y - 8.0, g.x, g.y + 8.0),
+            };
+            let blocked = self
+                .actors
+                .iter()
+                .any(|a| a.mode != Mode::Dead && overlap(a.bbox(), probe));
+            if alive >= limit || blocked {
+                self.gen_timers[gi] = GEN_RETRY[c];
+                continue;
+            }
+            self.gen_timers[gi] = GEN_INTERVAL[c];
+            let mut a = Actor::new(g.kind, g.x, g.y);
+            a.big = g.big;
+            a.wings = g.wings;
+            a.generator = Some(gi);
+            a.pipe = Some((g.dir, g.x, g.y));
+            let h = a.height();
+            let (sx, sy, tx, ty) = match g.dir {
+                PipeDir::Up => (g.x, g.y - h, g.x, g.y),
+                PipeDir::Down => (g.x, g.y + 1.0, g.x, g.y - h),
+                PipeDir::Right => (
+                    g.x - 20.0,
+                    g.y - if h > 16.0 { 14.0 } else { 8.0 },
+                    g.x + 7.9,
+                    g.y - if h > 16.0 { 14.0 } else { 8.0 },
+                ),
+                PipeDir::Left => (
+                    g.x + 20.0,
+                    g.y - if h > 16.0 { 14.0 } else { 8.0 },
+                    g.x - 7.9,
+                    g.y - if h > 16.0 { 14.0 } else { 8.0 },
+                ),
+            };
+            a.x = sx;
+            a.y = sy;
+            a.dir = match g.dir {
+                PipeDir::Left => -1,
+                PipeDir::Right => 1,
+                _ => {
+                    if self.player.x <= g.x {
+                        -1
+                    } else {
+                        1
+                    }
+                }
+            };
+            a.mode = Mode::DokanOut { tx, ty };
+            self.actors.push(a);
+        }
+    }
+
+    // ---------------------------------------------------------------- checkpoints
+
+    /// Touching a checkpoint flag records the respawn point, scores 2000 and gives its power-up
+    /// (90-checkpoint-flag.md). Touch box x ∈ [−14, −2], y ∈ [3, 29] from the flag origin.
+    fn check_checkpoints(&mut self) {
+        let b = self.player.contact_box();
+        for (i, cp) in self.level.checkpoints.clone().into_iter().enumerate() {
+            if self.checkpoint == Some((self.area, i)) {
+                continue;
+            }
+            if overlap(b, (cp.x - 14.0, cp.y + 3.0, cp.x - 2.0, cp.y + 29.0)) {
+                self.checkpoint = Some((self.area, i));
+                self.add_score(2000, cp.x, cp.y + 32.0);
+                self.events.push(Event::Checkpoint);
+                match cp.contents {
+                    Some(Contents::Mushroom) => {
+                        self.player.power_up(Form::Super);
+                    }
+                    Some(Contents::FireFlower) => {
+                        self.player.power_up(Form::Fire);
+                    }
+                    Some(Contents::Star) => self.player.star = STAR_FRAMES,
+                    _ => {}
+                }
             }
         }
     }
@@ -1252,6 +1440,22 @@ impl World {
             }
         }
         self.goal_sprites(&mut out);
+        for (i, cp) in self.level.checkpoints.iter().enumerate() {
+            if !visible(cp.x, cp.y) {
+                continue;
+            }
+            let on = self.checkpoint == Some((self.area, i));
+            out.push(Self::model_sprite(
+                "M1_Object_middle_flag",
+                if on { "wait2.0" } else { "wait.0" },
+                cp.x - 16.0,
+                cp.y,
+                32.0,
+                32.0,
+                false,
+                8,
+            ));
+        }
         for &(dx, dy, kind) in &self.level.doors {
             if !visible(dx, dy) {
                 continue;
@@ -1457,18 +1661,61 @@ impl World {
                 16.0,
                 false,
             ),
-            Kind::Fireball => ("M1_Object_superball", "superball", 8.0, 8.0, false),
+            Kind::Fireball | Kind::EnemyFire => ("M1_Object_firebar", "fire.0", 16.0, 8.0, false),
+            Kind::Piranha { fire: false } => (
+                "M1_Enemy_packun",
+                if (a.age / 8).is_multiple_of(2) {
+                    "wait.0"
+                } else {
+                    "wait.1"
+                },
+                16.0,
+                24.0,
+                false,
+            ),
+            Kind::Piranha { fire: true } => (
+                "M1_Enemy_packunfire",
+                if (a.age / 8).is_multiple_of(2) {
+                    "up.0"
+                } else {
+                    "up.1"
+                },
+                32.0,
+                32.0,
+                a.dir > 0,
+            ),
+            Kind::BigCoin { value } => (
+                ["M1_Object_coin10", "M1_Object_coin30", "M1_Object_coin50"][value as usize],
+                ["wait.0", "wait.1", "wait.2", "wait.3"][(self.tick as usize / 8) % 4],
+                32.0,
+                32.0,
+                false,
+            ),
         };
         let (w, h) = (w * scale, h * scale);
         // [inf] art placement inside the texture, measured from the textures (the BFRES quad
         // offsets are not imported yet): the Goomba fills the upper 16 rows of its 16×32 image
         let dy = match a.kind {
             Kind::Goomba => -15.0 * scale,
+            Kind::Piranha { fire: true } => -4.0 * scale,
             _ => 0.0,
         };
         let mut s = Self::model_sprite(model, tex, a.x - w / 2.0, a.y + dy, w, h, flip_x, layer);
         if a.kind == Kind::Fireball {
             s.y = a.y;
+        }
+        if matches!(a.kind, Kind::Piranha { .. }) {
+            // in a pipe: behind the pipe; a down-facing pipe hangs the plant upside down
+            if a.pipe.is_some() {
+                s.layer = 5;
+            }
+            if let Some((PipeDir::Down, ..)) = a.pipe {
+                s.flip_y = true;
+                s.y = a.y - h - dy;
+            }
+        }
+        if matches!(a.mode, Mode::DokanOut { .. }) {
+            s.layer = 5;
         }
         if a.mode == Mode::DieFall {
             s.flip_y = true;
@@ -1660,6 +1907,7 @@ mod tests {
             y: 32.0,
             big: false,
             wings: false,
+            pipe: None,
         });
         let mut w = World::with_level(lvl);
         assert_eq!(w.actors.len(), 1);
@@ -1691,6 +1939,7 @@ mod tests {
             y: 32.0,
             big: false,
             wings: false,
+            pipe: None,
         });
         let mut w = World::with_level(lvl);
         let lives = w.lives;
@@ -1821,6 +2070,94 @@ mod tests {
     }
 
     #[test]
+    fn pipe_piranha_cycles_and_hides_when_player_on_pipe() {
+        let mut lvl = Level::flat(60);
+        lvl.add_pipe(20, 2, 2, PipeDir::Up);
+        // entry point (top centre of the mouth) at (336, 64); hidden 36 px below
+        lvl.spawns.push(Spawn {
+            kind: Kind::Piranha { fire: false },
+            x: 336.0,
+            y: 64.0 - 36.0,
+            big: false,
+            wings: false,
+            pipe: Some((PipeDir::Up, 336.0, 64.0)),
+        });
+        let mut w = World::with_level(lvl);
+        w.player.x = 200.0;
+        assert_eq!(w.actors.len(), 1);
+        // first cycle: rise (8 + 36 frames), out 96, sink 36, hidden 72, rise again
+        let mut ys = Vec::new();
+        for _ in 0..300 {
+            w.step(Input::default());
+            ys.push(w.actors[0].y);
+        }
+        let first_out = ys.iter().position(|&y| y == 64.0).unwrap();
+        let out_len = ys[first_out..].iter().take_while(|&&y| y == 64.0).count();
+        // the first frame is the (zero-length) initial hidden check
+        assert_eq!(first_out, 1 + 8 + 36 - 1);
+        assert!((96..=97).contains(&out_len), "out {out_len}");
+        let hidden_from = first_out + out_len + 36;
+        assert_eq!(ys[hidden_from], 64.0 - 36.0);
+        assert!(ys[hidden_from + 72 + 8 + 36..].contains(&64.0));
+        // standing on the pipe keeps it hidden
+        let mut w2 = World::with_level(w.initial.clone());
+        w2.player.x = 336.0;
+        w2.player.y = 64.0;
+        for _ in 0..300 {
+            w2.step(Input::default());
+            assert!(w2.actors[0].y <= 64.0 - 36.0 + 0.01);
+        }
+    }
+
+    #[test]
+    fn pipe_generator_spawns_every_180_frames() {
+        let mut lvl = Level::flat(60);
+        lvl.add_pipe(14, 2, 2, PipeDir::Up);
+        lvl.generators.push(crate::level::PipeGenerator {
+            kind: Kind::Goomba,
+            big: false,
+            wings: false,
+            dir: PipeDir::Up,
+            x: 240.0,
+            y: 64.0,
+            colour: 0,
+        });
+        let mut w = World::with_level(lvl);
+        w.player.x = 40.0;
+        let mut births = Vec::new();
+        let mut n = 0;
+        for f in 0..500 {
+            w.step(Input::default());
+            let now = w.actors.iter().filter(|a| a.generator.is_some()).count();
+            if now > n {
+                births.push(f);
+            }
+            n = now;
+        }
+        assert!(births.len() >= 2, "{births:?}");
+        assert_eq!(births[0], 89);
+        assert_eq!(births[1] - births[0], 180);
+    }
+
+    #[test]
+    fn checkpoint_respawn() {
+        let mut lvl = Level::flat(100);
+        lvl.checkpoints.push(crate::level::Checkpoint {
+            x: 20.0 * TILE,
+            y: 32.0,
+            contents: None,
+        });
+        lvl.timer = 300;
+        let mut w = World::with_level(lvl);
+        run(&mut w, input::RIGHT, 300);
+        assert_eq!(w.checkpoint, Some((0, 0)));
+        w.player.kill();
+        run(&mut w, 0, 200);
+        assert!(w.player.alive());
+        assert_eq!(w.player.x, 20.0 * TILE);
+    }
+
+    #[test]
     fn deterministic_with_objects() {
         let make = || {
             let mut lvl = Level::flat(150);
@@ -1835,6 +2172,7 @@ mod tests {
                     y: 32.0,
                     big: false,
                     wings: i == 4,
+                    pipe: None,
                 });
             }
             World::with_level(lvl)

@@ -5,7 +5,7 @@
 //! 35-super-star.md, 33-one-up.md and the shared enemy draft (death, emergence, activation).
 //! Positions are the feet centre (px, y up); boxes extend half_w either side and h upward.
 
-use crate::level::{Cell, Level, TILE};
+use crate::level::{Cell, Level, PipeDir, TILE};
 
 pub const WALK_SPEED: f32 = 0.5;
 pub const ENEMY_GRAVITY: f32 = -0.1875;
@@ -19,6 +19,8 @@ pub const FIREBALL_SPEED: f32 = 3.625;
 pub const FIREBALL_GRAVITY: f32 = -0.4375;
 pub const FIREBALL_BOUNCE: f32 = 4.0;
 pub const FIREBALL_LIFE: i32 = 600;
+/// Piranha Plant height (EnemyDB tall_max 24; texture 16×24).
+pub const PIRANHA_H: f32 = 24.0;
 // DieFall default launch (shared enemy draft §6.2)
 const DIE_SPEED: f32 = 1.5;
 const DIE_VY: f32 = 3.9;
@@ -39,11 +41,32 @@ pub enum Kind {
     Star,
     OneUp,
     Fireball,
+    /// Piranha Plant (fire = alternate form). Free-standing, or cycling in a pipe.
+    Piranha {
+        fire: bool,
+    },
+    /// 10/30/50-coin (value 0, 1, 2).
+    BigCoin {
+        value: u8,
+    },
+    /// Fire Piranha Plant's fireball: straight line at 1 px/frame.
+    EnemyFire,
 }
 
 impl Kind {
     pub fn is_enemy(self) -> bool {
+        matches!(
+            self,
+            Kind::Goomba | Kind::Koopa { .. } | Kind::Shell { .. } | Kind::Piranha { .. }
+        )
+    }
+    /// Walks along the ground (turns at walls and other walkers).
+    pub fn is_walker(self) -> bool {
         matches!(self, Kind::Goomba | Kind::Koopa { .. } | Kind::Shell { .. })
+    }
+    /// Hurts the player on touch but cannot be stomped.
+    pub fn unstompable(self) -> bool {
+        matches!(self, Kind::Piranha { .. } | Kind::EnemyFire)
     }
     pub fn is_item(self) -> bool {
         matches!(
@@ -62,6 +85,12 @@ pub enum Mode {
     },
     /// Enemy popping out of a block (vy 2.5 up, gravity on) for `timer` frames, no collisions.
     PopOut,
+    /// Coming out of a pipe mouth toward (tx, ty): 1 px/frame vertically, 0.5 sideways, no
+    /// collisions (shared enemy draft §5.3).
+    DokanOut {
+        tx: f32,
+        ty: f32,
+    },
     Normal,
     /// Flattened Goomba (DieStamp), deleted when the timer runs out.
     Stomped,
@@ -101,6 +130,16 @@ pub struct Actor {
     pub spawn: Option<usize>,
     /// Hit a wall this frame (in the movement direction).
     pub wall: bool,
+    /// Pipe this actor lives in (pipe Piranha) and its mouth (entry point).
+    pub pipe: Option<(PipeDir, f32, f32)>,
+    /// Index of the pipe generator that made it.
+    pub generator: Option<usize>,
+    /// Behaviour phase for actors with small state machines (Piranha).
+    pub phase: u8,
+    /// Per-actor random state (xorshift32), seeded at spawn.
+    pub rng: u32,
+    /// Nearest player's position, set by the world before each step.
+    pub target: (f32, f32),
 }
 
 impl Actor {
@@ -126,12 +165,27 @@ impl Actor {
             home_y: y,
             spawn: None,
             wall: false,
+            pipe: None,
+            generator: None,
+            phase: 0,
+            rng: 0x9e37_79b9 ^ (x.to_bits().rotate_left(7)) ^ y.to_bits(),
+            target: (0.0, 0.0),
         }
+    }
+
+    fn rand(&mut self, n: u32) -> u32 {
+        let mut x = self.rng.max(1);
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.rng = x;
+        x % n
     }
 
     pub fn half_w(&self) -> f32 {
         match self.kind {
-            Kind::Fireball => 4.0,
+            Kind::Fireball | Kind::EnemyFire => 4.0,
+            Kind::BigCoin { .. } => 15.0,
             _ if self.big => 16.0,
             _ => 8.0,
         }
@@ -139,17 +193,35 @@ impl Actor {
 
     pub fn height(&self) -> f32 {
         match self.kind {
-            Kind::Fireball => 8.0,
+            Kind::Fireball | Kind::EnemyFire => 8.0,
+            Kind::BigCoin { .. } => 30.0,
+            Kind::Piranha { .. } => PIRANHA_H * if self.big { 2.0 } else { 1.0 },
             Kind::Koopa { .. } if !self.big => 16.0, // body box 16×16 (art is 16×32)
             _ if self.big => 32.0,
             _ => 16.0,
         }
     }
 
-    /// (x0, y0, x1, y1) hit box.
+    /// (x0, y0, x1, y1) hit box. A Piranha's body extends from its origin along its pipe's
+    /// outward direction (down for a down-facing pipe, sideways for side pipes).
     pub fn bbox(&self) -> (f32, f32, f32, f32) {
         let hw = self.half_w();
-        (self.x - hw, self.y, self.x + hw, self.y + self.height())
+        let h = self.height();
+        match (self.kind, self.pipe) {
+            (Kind::Piranha { .. }, Some((PipeDir::Down, _, _))) => {
+                (self.x - hw, self.y - h, self.x + hw, self.y)
+            }
+            (Kind::Piranha { .. }, Some((PipeDir::Right, _, _))) => {
+                (self.x, self.y - hw, self.x + h, self.y + hw)
+            }
+            (Kind::Piranha { .. }, Some((PipeDir::Left, _, _))) => {
+                (self.x - h, self.y - hw, self.x, self.y + hw)
+            }
+            (Kind::BigCoin { .. }, _) => {
+                (self.x - 15.0, self.y + 1.0, self.x + 15.0, self.y + 31.0)
+            }
+            _ => (self.x - hw, self.y, self.x + hw, self.y + h),
+        }
     }
 
     pub fn alive(&self) -> bool {
@@ -159,6 +231,22 @@ impl Actor {
     /// Can touch the player / other actors.
     pub fn solid_contact(&self) -> bool {
         matches!(self.mode, Mode::Normal | Mode::ShellWait | Mode::ShellSlide)
+            && !(matches!(self.kind, Kind::Piranha { .. }) && self.piranha_hidden())
+    }
+
+    /// A pipe Piranha is harmless while less than 30 % of the way out.
+    fn piranha_hidden(&self) -> bool {
+        let Some((dir, px, py)) = self.pipe else {
+            return false;
+        };
+        let travel = self.height() + if self.big { 4.0 } else { 12.0 };
+        let out = match dir {
+            PipeDir::Up => self.y - (py - travel),
+            PipeDir::Down => (py + travel) - self.y,
+            PipeDir::Right => self.x - (px - travel),
+            PipeDir::Left => (px + travel) - self.x,
+        };
+        out <= 0.3 * travel
     }
 
     /// Knock off (DieFall) away from `from_x`.
@@ -229,6 +317,14 @@ impl Actor {
 
     /// One frame of behaviour and movement. `player_x` is used for facing rules.
     pub fn step(&mut self, level: &Level, player_x: f32) {
+        self.target.0 = player_x;
+        let _ = self.step_spawning(level);
+    }
+
+    /// One frame; may return a new actor to add (a Fire Piranha's fireball). Uses `target`.
+    pub fn step_spawning(&mut self, level: &Level) -> Option<Actor> {
+        let player_x = self.target.0;
+        let mut spawned = None;
         self.age += 1;
         self.wall = false;
         if self.kick_lock > 0 {
@@ -252,6 +348,32 @@ impl Actor {
                     if self.kind == Kind::Star {
                         self.vy = FIREBALL_BOUNCE;
                     }
+                }
+            }
+            Mode::DokanOut { tx, ty } => {
+                let horizontal = (tx - self.x).abs() > 0.01;
+                let speed = if horizontal { 0.5 } else { 1.0 };
+                let step = |v: f32, t: f32| {
+                    if (t - v).abs() <= speed {
+                        t
+                    } else {
+                        v + speed * (t - v).signum()
+                    }
+                };
+                self.x = step(self.x, tx);
+                self.y = step(self.y, ty);
+                if self.x == tx && self.y == ty {
+                    self.mode = Mode::Normal;
+                    self.vx = match self.kind {
+                        Kind::Mushroom | Kind::OneUp | Kind::Star => ITEM_SPEED * self.dir as f32,
+                        _ => 0.0,
+                    };
+                    self.vy = if matches!(self.pipe, Some((PipeDir::Down, _, _))) {
+                        -1.0
+                    } else {
+                        0.0
+                    };
+                    self.pipe = None;
                 }
             }
             Mode::PopOut => {
@@ -306,8 +428,169 @@ impl Actor {
                 }
             }
         }
+        if self.mode == Mode::Normal
+            && let Kind::Piranha { fire } = self.kind
+        {
+            spawned = self.step_piranha(fire);
+        }
         if self.y < -4.0 * TILE && self.mode != Mode::DieFall {
             self.mode = Mode::Dead; // fell into a pit
+        }
+        spawned
+    }
+
+    /// Piranha Plant (2-piranha-plant.md). Free-standing: bites in place (and a Fire Piranha
+    /// spits every 48–95 + 40 frames). In a pipe: hidden 72 → rise 1 px/f → out 96 → sink.
+    fn step_piranha(&mut self, fire: bool) -> Option<Actor> {
+        let (px, py) = self.target;
+        if fire {
+            self.dir = if px <= self.x { -1 } else { 1 };
+        }
+        let Some((dir, mx, my)) = self.pipe else {
+            // free-standing: phase 0 = waiting to spit (timer), 1 = spitting
+            if !fire {
+                return None;
+            }
+            return self.fire_cycle(px, py);
+        };
+        let travel = self.height() + if self.big { 4.0 } else { 12.0 };
+        let u = match dir {
+            PipeDir::Up => (0.0, 1.0),
+            PipeDir::Down => (0.0, -1.0),
+            PipeDir::Right => (1.0, 0.0),
+            PipeDir::Left => (-1.0, 0.0),
+        };
+        let hidden = (mx - u.0 * travel, my - u.1 * travel);
+        let out = (mx, my);
+        let towards = |a: &mut Actor, t: (f32, f32)| {
+            let step = |v: f32, t: f32| {
+                if (t - v).abs() <= 1.0 {
+                    t
+                } else {
+                    v + (t - v).signum()
+                }
+            };
+            a.x = step(a.x, t.0);
+            a.y = step(a.y, t.1);
+            a.x == t.0 && a.y == t.1
+        };
+        let mut shot = None;
+        match self.phase {
+            // hidden; a player at the mouth keeps it in (timer ≥ 60)
+            0 => {
+                let at_mouth = match dir {
+                    PipeDir::Up => (px - mx).abs() <= 28.0 && py <= my + 16.0 && py >= my - 32.0,
+                    PipeDir::Down => (px - mx).abs() <= 19.0 && py <= my && py >= my - 35.0,
+                    PipeDir::Right => (px - (mx + 8.0)).abs() <= 8.0 && (py - my).abs() <= 17.0,
+                    PipeDir::Left => (px - (mx - 8.0)).abs() <= 8.0 && (py - my).abs() <= 17.0,
+                };
+                if at_mouth {
+                    self.timer = self.timer.max(60);
+                }
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    self.phase = 1;
+                    self.timer = 8;
+                }
+            }
+            // OutMove: 8-frame delay, then 1 px/frame
+            1 => {
+                if self.timer > 0 {
+                    self.timer -= 1;
+                } else if towards(self, out) {
+                    self.phase = 2;
+                    self.timer = 96;
+                    self.pause = 48 + self.rand(48) as i32; // fire delay
+                }
+            }
+            // DokanWait: 96 frames (a Fire Piranha waits until it has fired)
+            2 => {
+                self.timer -= 1;
+                let mut fired = true;
+                if fire {
+                    fired = self.phase_fired();
+                    if !fired {
+                        shot = self.fire_cycle(px, py);
+                    }
+                }
+                if self.timer <= 0 && fired {
+                    self.phase = 3;
+                }
+            }
+            // DokanIn
+            _ => {
+                if towards(self, hidden) {
+                    self.phase = 0;
+                    self.timer = 72;
+                    self.hops = 0;
+                }
+            }
+        }
+        shot
+    }
+
+    fn phase_fired(&self) -> bool {
+        self.hops >= 2
+    }
+
+    /// Fire Piranha spit: wait `pause` frames, then 20 frames of animation, spit, 20 frames.
+    /// `hops` = 0 waiting, 1 spitting, 2 done (pipe plants fire once per cycle).
+    fn fire_cycle(&mut self, px: f32, py: f32) -> Option<Actor> {
+        match self.hops {
+            0 => {
+                if self.pause > 0 {
+                    self.pause -= 1;
+                } else {
+                    self.hops = 1;
+                    self.chain = 0;
+                }
+                None
+            }
+            1 => {
+                self.chain += 1;
+                if self.chain == 20 {
+                    // angle ±22° / ±45° toward the player
+                    let (mx, my) = match self.pipe {
+                        Some((PipeDir::Down, ..)) => (self.x, self.y - self.height() + 8.0),
+                        _ => (self.x, self.y + self.height() - 8.0),
+                    };
+                    let want = (py + 8.0 - my).atan2(px - mx);
+                    let face = if px <= self.x {
+                        std::f32::consts::PI
+                    } else {
+                        0.0
+                    };
+                    let best = [22.0f32, -22.0, 45.0, -45.0]
+                        .iter()
+                        .map(|d| {
+                            let a = if face == 0.0 {
+                                d.to_radians()
+                            } else {
+                                std::f32::consts::PI - d.to_radians()
+                            };
+                            let diff = (a - want).sin().atan2((a - want).cos()).abs();
+                            (diff, a)
+                        })
+                        .min_by(|a, b| a.0.total_cmp(&b.0))
+                        .map(|(_, a)| a)
+                        .unwrap_or(0.0);
+                    let mut f = Actor::new(Kind::EnemyFire, mx, my - 4.0);
+                    f.vx = best.cos();
+                    f.vy = best.sin();
+                    f.timer = 600;
+                    return Some(f);
+                }
+                if self.chain >= 40 {
+                    if self.pipe.is_some() {
+                        self.hops = 2;
+                    } else {
+                        self.hops = 0;
+                        self.pause = 48 + self.rand(48) as i32;
+                    }
+                }
+                None
+            }
+            _ => None,
         }
     }
 
@@ -381,7 +664,23 @@ impl Actor {
                     self.mode = Mode::Dead; // snuffed against a wall
                 }
             }
-            Kind::Shell { .. } => {}
+            Kind::EnemyFire => {
+                self.x += self.vx;
+                self.y += self.vy;
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    self.mode = Mode::Dead;
+                }
+            }
+            Kind::Piranha { .. } => {
+                // free-standing plants stand on their surface and may fall if unsupported
+                if self.pipe.is_none() {
+                    self.vx = 0.0;
+                    self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+                    self.collide(level);
+                }
+            }
+            Kind::BigCoin { .. } | Kind::Shell { .. } => {}
         }
     }
 

@@ -108,6 +108,30 @@ pub struct Spawn {
     pub y: f32,
     pub big: bool,
     pub wings: bool,
+    /// Lives in a pipe (Piranha Plant): direction and mouth (entry point).
+    pub pipe: Option<(PipeDir, f32, f32)>,
+}
+
+/// Something placed inside a pipe (object flag bit 0): the pipe keeps producing it
+/// (EnemyWaki, 9-pipe.md). `colour` selects the timing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PipeGenerator {
+    pub kind: Kind,
+    pub big: bool,
+    pub wings: bool,
+    pub dir: PipeDir,
+    /// Pipe entry point (outer edge of the mouth).
+    pub x: f32,
+    pub y: f32,
+    pub colour: u8,
+}
+
+/// A checkpoint flag: origin (bottom centre) and the power-up inside.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Checkpoint {
+    pub x: f32,
+    pub y: f32,
+    pub contents: Option<Contents>,
 }
 
 /// Pipe mouth direction ((flags >> 5) & 3).
@@ -172,6 +196,8 @@ pub struct Level {
     pub blocks: Vec<BlockPlacement>,
     pub spawns: Vec<Spawn>,
     pub warps: Vec<Warp>,
+    pub generators: Vec<PipeGenerator>,
+    pub checkpoints: Vec<Checkpoint>,
     /// Doors to draw: origin (bottom centre) and type.
     pub doors: Vec<(f32, f32, u8)>,
     /// Goal pole position (X0, Y0): pole x and the top of its base block (main area only).
@@ -201,6 +227,15 @@ pub fn block_atlas(kind: BlockKind) -> u32 {
         BlockKind::Donut => 64,
         BlockKind::Cloud => 102,
         BlockKind::Ice => 120,
+    }
+}
+
+fn pipe_dir(flags: u32) -> PipeDir {
+    match (flags >> 5) & 3 {
+        0 => PipeDir::Right,
+        1 => PipeDir::Left,
+        2 => PipeDir::Up,
+        _ => PipeDir::Down,
     }
 }
 
@@ -240,6 +275,8 @@ impl Level {
             blocks: Vec::new(),
             spawns: Vec::new(),
             warps: Vec::new(),
+            generators: Vec::new(),
+            checkpoints: Vec::new(),
             doors: Vec::new(),
             goal: None,
             style: course.header.game_style.as_str_lossy(),
@@ -291,6 +328,24 @@ impl Level {
 
         // tile-like objects: (x, y) is the centre of the bottom-left tile [toost LevelDrawer
         // semisolid/pipe placement; course-loading.md: tile parts always sit on tile centres]
+        // pipe entry points (for objects placed inside pipes): (x, y, dir, colour)
+        let pipe_entries: Vec<(f32, f32, PipeDir, u8)> = area
+            .objects
+            .iter()
+            .filter(|o| o.id == 9)
+            .map(|o| {
+                let dir = pipe_dir(o.flags);
+                let (ax, ay) = (o.x as f32 / 10.0, o.y as f32 / 10.0);
+                let l = (o.height.max(1) as f32 - 1.0) * TILE;
+                let (ex, ey) = match dir {
+                    PipeDir::Right => (ax + l + 8.0, ay - 8.0),
+                    PipeDir::Left => (ax - l - 8.0, ay + 8.0),
+                    PipeDir::Up => (ax + 8.0, ay + l + 8.0),
+                    PipeDir::Down => (ax - 8.0, ay - l - 8.0),
+                };
+                (ex, ey, dir, ((o.flags >> 18) & 3) as u8)
+            })
+            .collect();
         for o in area.objects.iter() {
             let (w, hgt) = (o.width.max(1) as i32, o.height.max(1) as i32);
             let left_px = o.x as f32 / 10.0 - 8.0;
@@ -309,16 +364,76 @@ impl Level {
                 34 => Some(Kind::FireFlower),
                 35 => Some(Kind::Star),
                 33 => Some(Kind::OneUp),
+                2 => Some(Kind::Piranha {
+                    fire: o.flags & 0x4 != 0,
+                }),
+                70 => Some(Kind::BigCoin {
+                    value: ((o.flags >> 18) & 3).min(2) as u8,
+                }),
                 _ => None,
             };
             if let Some(kind) = actor {
+                // inside a pipe (flag bit 0): the object sits on the pipe's entry point
+                let (ox, oy) = (o.x as f32 / 10.0, o.y as f32 / 10.0);
+                let in_pipe = (o.flags & 1 != 0)
+                    .then(|| {
+                        pipe_entries
+                            .iter()
+                            .min_by(|a, b| {
+                                ((a.0 - ox).abs() + (a.1 - oy).abs())
+                                    .total_cmp(&((b.0 - ox).abs() + (b.1 - oy).abs()))
+                            })
+                            .copied()
+                    })
+                    .flatten()
+                    .filter(|e| (e.0 - ox).abs() + (e.1 - oy).abs() <= 16.0);
+                if let Some((ex, ey, dir, colour)) = in_pipe {
+                    if matches!(kind, Kind::Piranha { .. }) {
+                        let travel =
+                            24.0 * if big { 2.0 } else { 1.0 } + if big { 4.0 } else { 12.0 };
+                        let (hx, hy) = match dir {
+                            PipeDir::Up => (ex, ey - travel),
+                            PipeDir::Down => (ex, ey + travel),
+                            PipeDir::Right => (ex - travel, ey),
+                            PipeDir::Left => (ex + travel, ey),
+                        };
+                        lvl.spawns.push(Spawn {
+                            kind,
+                            x: hx,
+                            y: hy,
+                            big,
+                            wings,
+                            pipe: Some((dir, ex, ey)),
+                        });
+                    } else {
+                        lvl.generators.push(PipeGenerator {
+                            kind,
+                            big,
+                            wings,
+                            dir,
+                            x: ex,
+                            y: ey,
+                            colour,
+                        });
+                    }
+                    continue;
+                }
                 // actors: x is the horizontal centre, y the centre of the bottom row
                 lvl.spawns.push(Spawn {
                     kind,
-                    x: o.x as f32 / 10.0,
-                    y: o.y as f32 / 10.0 - 8.0,
+                    x: ox,
+                    y: oy - 8.0,
                     big,
                     wings,
+                    pipe: None,
+                });
+                continue;
+            }
+            if o.id == 90 {
+                lvl.checkpoints.push(Checkpoint {
+                    x: o.x as f32 / 10.0,
+                    y: o.y as f32 / 10.0 - 8.0,
+                    contents: Contents::from_part(o.child_id, o.child_flags),
                 });
                 continue;
             }
@@ -348,12 +463,7 @@ impl Level {
                     // pipe (9-pipe.md): anchor = base tile; 2 wide, `height` long, mouth at the
                     // far end; direction (flags >> 5) & 3, warp id (flags >> 20) & 0x1F
                     let len = hgt;
-                    let dir = match (o.flags >> 5) & 3 {
-                        0 => PipeDir::Right,
-                        1 => PipeDir::Left,
-                        2 => PipeDir::Up,
-                        _ => PipeDir::Down,
-                    };
+                    let dir = pipe_dir(o.flags);
                     let (ax, ay) = (o.x as f32 / 10.0, o.y as f32 / 10.0);
                     let (ix, iy) = ((ax / TILE).floor() as i32, (ay / TILE).floor() as i32);
                     lvl.add_pipe(ix, iy, len, dir);
@@ -629,6 +739,7 @@ impl Level {
             y: 32.0,
             big: false,
             wings: false,
+            pipe: None,
         });
         lvl.spawns.push(Spawn {
             kind: Kind::Koopa { red: false },
@@ -636,6 +747,7 @@ impl Level {
             y: 32.0,
             big: false,
             wings: false,
+            pipe: None,
         });
         // pipe
         lvl.add_pipe(46, 2, 2, PipeDir::Up);
@@ -659,6 +771,8 @@ impl Level {
             blocks: Vec::new(),
             spawns: Vec::new(),
             warps: Vec::new(),
+            generators: Vec::new(),
+            checkpoints: Vec::new(),
             doors: Vec::new(),
             goal: None,
             style: "M1".into(),
