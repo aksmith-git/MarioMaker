@@ -61,7 +61,10 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   music, death and clear fanfares, count-down loop); AVAudioEngine output (`MMK_MUTE=1` to
   silence); `mmk audio` CLI lists/decodes sounds to WAV · other themes' music, night music and
   object sounds beyond the slice ⬜
-- 🔄 5. Terrain: ground, blocks, pipes, semisolids, slopes ✅ · ice ✅ · exact camera rules ⬜
+- ✅ 5. Terrain: ground, blocks, pipes, semisolids, slopes ✅ · ice ✅ · in-course camera ✅ (4 px
+  dead-zone follow, filtered vertical tracking, six vertical speed strategies, low-camera 216 px
+  ceiling, full-height scroll-stop walls, course start, frozen on death, goal); autoscroll and
+  vertical-area camera come with those features
 - ✅ 6. Core objects: coins; ? / brick / hidden / hard / note blocks (bump curve, contents, multi-coin,
   breaking + debris); Super Mushroom, Fire Flower + fireballs, Star, 1-Up; Goomba (+ Paragoomba),
   Koopa green/red (+ Paratroopas), shells (kick, slide, chain kills, wake-up); stomp chains, damage

@@ -8,6 +8,7 @@ use mmk_formats::smm2::Course;
 
 use crate::actors::{Actor, Effect, FIREBALL_LIFE, FIREBALL_SPEED, Kind, Mode};
 use crate::blocks::{self, Block, BlockKind, Blocks, Contents, HitPower, HitResult, Release};
+use crate::camera::{self, Camera};
 use crate::input::{self, Input};
 use crate::level::{Cell, CoinTile, Level, PipeDir, Spawn, TILE, switch_atlas};
 use crate::player::{Control, Form, Player, Pose, STAR_FRAMES};
@@ -116,6 +117,8 @@ pub struct World {
     pub player: Player,
     pub camera_x: f32,
     pub camera_y: f32,
+    /// The follow camera; `camera_x`/`camera_y` are its view's bottom-left corner.
+    pub camera: Camera,
     pub blocks: Blocks,
     pub actors: Vec<Actor>,
     pub effects: Vec<Effect>,
@@ -224,6 +227,7 @@ impl World {
             level,
             camera_x: 0.0,
             camera_y: 0.0,
+            camera: Camera::default(),
             blocks: Blocks::default(),
             actors: Vec::new(),
             effects: Vec::new(),
@@ -307,8 +311,12 @@ impl World {
             }
         }
         self.mark_taken_big_coins();
-        self.camera_y = 0.0;
-        self.update_camera();
+        // course start: the view starts centred on the player, clamped to the area
+        let area = self.camera_area();
+        let (px, py) = (self.player.x, self.player.y);
+        let level = &self.level;
+        self.camera = Camera::start(&area, px, py, |x, y| level.cell(x, y) == Cell::Solid);
+        self.sync_camera();
         self.activate();
     }
 
@@ -1662,8 +1670,7 @@ impl World {
         let Some(mut t) = self.transit else { return };
         if warp::step(&mut t, &mut self.player) {
             self.switch_area(t.to_area);
-            self.camera_y = 0.0;
-            self.update_camera();
+            self.reset_camera();
             self.activate();
         }
         self.fade = warp::fade(&t);
@@ -1847,22 +1854,58 @@ impl World {
 
     // ---------------------------------------------------------------- camera
 
-    /// Provisional camera (exact follow rules are an open spec item): keep the player near the
-    /// horizontal centre, scroll vertically when they leave a middle band; clamp to the area.
+    /// Follow camera (camera.rs, research spec camera.md).
     fn update_camera(&mut self) {
-        if !self.player.alive() {
-            return;
+        let p = &self.player;
+        // frozen while dead and while travelling through a pipe/door (reset at the exit)
+        let activity = if !p.alive() || self.transit.is_some() {
+            camera::Activity::Frozen
+        } else if self.goal_phase != GoalPhase::None {
+            camera::Activity::Goal
+        } else {
+            camera::Activity::Play
+        };
+        let target = camera::Target {
+            x: p.x,
+            y: p.y,
+            vx: p.vx,
+            vy: p.vy,
+            on_ground: p.on_ground,
+            activity,
+        };
+        let area = self.camera_area();
+        let level = &self.level;
+        self.camera
+            .update(&area, &target, |x, y| level.cell(x, y) == Cell::Solid);
+        self.sync_camera();
+    }
+
+    /// Re-centre the camera on the player, as the game does after a respawn or a pipe exit (also
+    /// used by the debug teleport).
+    pub fn reset_camera(&mut self) {
+        let area = self.camera_area();
+        let (x, y) = (self.player.x, self.player.y);
+        let level = &self.level;
+        self.camera.reset(&area, (x, y + 16.0), (x, y), |tx, ty| {
+            level.cell(tx, ty) == Cell::Solid
+        });
+        self.sync_camera();
+    }
+
+    fn camera_area(&self) -> camera::Area {
+        let l = &self.level;
+        camera::Area {
+            bounds: camera::Rect::new(l.left, l.bottom, l.right, l.top),
+            low_camera: l.boundary_type != 0,
+            vertical: l.vertical,
+            main: l.main_area,
         }
-        let max_x = (self.level.right - VIEW_W).max(self.level.left);
-        self.camera_x = (self.player.x - VIEW_W / 2.0).clamp(self.level.left, max_x);
-        let max_y = (self.level.top - VIEW_H).max(0.0);
-        let (lo, hi) = (3.0 * TILE, 8.0 * TILE);
-        if self.player.y - self.camera_y > hi {
-            self.camera_y = self.player.y - hi;
-        } else if self.player.y - self.camera_y < lo {
-            self.camera_y = self.player.y - lo;
-        }
-        self.camera_y = self.camera_y.clamp(0.0, max_y);
+    }
+
+    fn sync_camera(&mut self) {
+        let v = self.camera.view(&self.camera_area());
+        self.camera_x = v.left;
+        self.camera_y = v.bottom;
     }
 
     // ---------------------------------------------------------------- drawing

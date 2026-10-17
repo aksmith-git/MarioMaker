@@ -445,6 +445,7 @@ pub unsafe extern "C" fn mmk_engine_debug_teleport(engine: *mut MmkEngine, x: f3
             e.world.player.x = x;
             e.world.player.y = y;
             e.world.player.vy = 0.0;
+            e.world.reset_camera();
         }
     })
 }
