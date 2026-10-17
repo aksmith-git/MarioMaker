@@ -135,6 +135,10 @@ pub enum Kind {
     Wrench,
     /// Wiggler: head + 4 trailing segments; a stomp makes it angry (52-wiggler.md).
     Wiggler,
+    /// Chain Chomp (61): chained to a stake at (home_x, home_y), or free (alternate form).
+    ChainChomp {
+        chained: bool,
+    },
     /// Lava lift (skull raft, 64 px): drifts right at 0.8 (fast 2.5) once ridden.
     LavaLift {
         fast: bool,
@@ -164,7 +168,12 @@ impl Kind {
                 | Kind::BobOmb
                 | Kind::DryBones
                 | Kind::Boo
+                | Kind::ChainChomp { .. }
         )
+    }
+    /// Stomps bounce off without harming it or the player (EnemyDB "Invalid").
+    pub fn stomp_bounces(self) -> bool {
+        matches!(self, Kind::ChainChomp { .. })
     }
     /// Walks along the ground (turns at walls and other walkers).
     pub fn is_walker(self) -> bool {
@@ -359,7 +368,12 @@ impl Actor {
     pub fn fire_proof(&self) -> bool {
         matches!(
             self.kind,
-            Kind::Buzzy | Kind::SpikeTop | Kind::DryBones | Kind::Boo | Kind::Thwomp { .. }
+            Kind::Buzzy
+                | Kind::SpikeTop
+                | Kind::DryBones
+                | Kind::Boo
+                | Kind::Thwomp { .. }
+                | Kind::ChainChomp { .. }
         ) || (matches!(self.kind, Kind::Shell { .. }) && self.buzzy)
     }
 
@@ -1301,6 +1315,7 @@ impl Actor {
                 self.y += self.vy;
             }
             Kind::Boo => self.step_boo(),
+            Kind::ChainChomp { chained } => self.step_chomp(level, chained),
             Kind::Goomba
             | Kind::Koopa { .. }
             | Kind::Spiny
@@ -1792,6 +1807,146 @@ impl Actor {
         self.vy = self.speed * s + w * c;
         self.x += self.vx;
         self.y += self.vy;
+    }
+
+    /// Chain Chomp (61-chain-chomp.md). Chained: hops around the stake (0.8 px/f, 1.5 hop on each
+    /// landing, turns past 40·s px or at walls, pulled back past the 49.6·s chain), and after
+    /// 120–179 frames crouches 61 frames, lunges at 8 px/f (+1/frame) to 51.2·s + 4 px from the
+    /// stake, bites 61 frames and curves back. 3 of 7 lunges aim at the player (elevation 73.1°,
+    /// 45° or 18.3° by height); the rest are random. Free: hops at 1.2 px/f with 3.0 hops.
+    /// Phases: 0 walk, 1 crouch, 2 lunge, 3 bite, 4 return. Attack counter in `hops`.
+    fn step_chomp(&mut self, level: &Level, chained: bool) {
+        let s = if self.big { 2.0 } else { 1.0 };
+        let (px, py) = self.target;
+        let stake = (self.home_x, self.home_y + 8.0 * s);
+        if !chained {
+            if self.on_ground {
+                self.vx += (1.2 * self.dir as f32 - self.vx).clamp(-0.05, 0.05);
+                self.vy = 3.0;
+                self.on_ground = false;
+            }
+            self.vy = (self.vy - 0.1875).max(-4.0);
+            self.collide(level);
+            if self.wall {
+                self.turn();
+                self.vx = 1.2 * self.dir as f32;
+            }
+            return;
+        }
+        match self.phase {
+            0 => {
+                if self.timer <= 0 && self.age <= 1 {
+                    self.timer = 120 + self.rand(60) as i32;
+                }
+                let away = (self.x - stake.0) * self.dir as f32 > 0.0;
+                if self.turn_lock == 0 && away && (self.x - stake.0).abs() > 40.0 * s {
+                    self.turn();
+                    self.turn_lock = 10;
+                }
+                self.vx = 0.8 * self.dir as f32;
+                if self.on_ground {
+                    self.vy = 1.5;
+                    self.on_ground = false;
+                }
+                self.vy = (self.vy - 0.1875).max(-4.0);
+                // chain: pulled back past its slack length
+                let (cx, cy) = (self.x, self.y + 8.0 * s);
+                let d = ((cx - stake.0).powi(2) + (cy - stake.1).powi(2)).sqrt();
+                let l = 49.6 * s;
+                if d > l {
+                    let k = (d - l) * 0.3 / d;
+                    self.vx = (self.vx - (cx - stake.0) * k).clamp(-4.0, 4.0);
+                    self.vy = (self.vy - (cy - stake.1) * k).max(-4.0);
+                }
+                self.collide(level);
+                if self.wall && self.turn_lock == 0 {
+                    self.turn();
+                    self.turn_lock = 10;
+                }
+                self.timer -= 1;
+                if self.timer <= 0 && self.on_ground {
+                    self.phase = 1;
+                    self.timer = 61;
+                    self.vx = 0.0;
+                    self.vy = 0.0;
+                    self.hops = (self.hops + 1) % 7;
+                    let aimed = matches!(self.hops, 0 | 3 | 5);
+                    let (dir, deg) = if aimed {
+                        let dy = py - self.y;
+                        let deg = if dy > 36.0 {
+                            73.1
+                        } else if dy > 16.0 {
+                            45.0
+                        } else {
+                            18.3
+                        };
+                        (if px < self.x { -1 } else { 1 }, deg)
+                    } else {
+                        let r = self.rand(8);
+                        let deg = match r {
+                            0 => 73.1,
+                            1..=3 => 45.0,
+                            _ => 18.3,
+                        };
+                        (if self.rand(2) == 0 { -1 } else { 1 }, deg)
+                    };
+                    self.dir = dir;
+                    let reach = 51.2 * s + 4.0;
+                    let (sn, cs) = (deg as f32).to_radians().sin_cos();
+                    // lunge target (centre) in `trail[0]`
+                    self.trail = vec![(stake.0 + reach * cs * dir as f32, stake.1 + reach * sn)];
+                }
+            }
+            1 => {
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    self.phase = 2;
+                    self.speed = 0.0;
+                }
+            }
+            2 => {
+                let (tx, ty) = self.trail.first().copied().unwrap_or(stake);
+                let (cx, cy) = (self.x, self.y + 8.0 * s);
+                let (dx, dy) = (tx - cx, ty - cy);
+                let d = (dx * dx + dy * dy).sqrt();
+                self.speed = (self.speed + 1.0).min(8.0);
+                if d <= self.speed {
+                    self.x = tx;
+                    self.y = ty - 8.0 * s;
+                    self.phase = 3;
+                    self.timer = 61;
+                } else {
+                    self.x += dx / d * self.speed;
+                    self.y += dy / d * self.speed;
+                }
+            }
+            3 => {
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    self.phase = 4;
+                    self.heading = 0.0; // curve parameter
+                    self.trail = vec![(self.x, self.y)];
+                }
+            }
+            _ => {
+                // back to the ground beside the stake on a curve [inf: control points not read]
+                let (sx, sy) = self.trail.first().copied().unwrap_or((self.x, self.y));
+                let side = if sx < stake.0 { -1.0 } else { 1.0 };
+                let (ex, ey) = (stake.0 + 32.0 * s * side, self.home_y);
+                self.heading = (self.heading + 0.04).min(1.0);
+                let t = self.heading;
+                let (mx, my) = ((sx + ex) / 2.0, sy.max(ey) + 16.0);
+                let u = 1.0 - t;
+                self.x = u * u * sx + 2.0 * u * t * mx + t * t * ex;
+                self.y = u * u * sy + 2.0 * u * t * my + t * t * ey;
+                if t >= 1.0 {
+                    self.phase = 0;
+                    self.timer = 120 + self.rand(60) as i32;
+                    self.vy = 0.0;
+                    self.collide(level);
+                }
+            }
+        }
     }
 
     /// Winged Piranha Plant / Muncher (2-piranha-plant.md): wait 72 frames, jump at 4.5

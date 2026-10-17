@@ -1287,6 +1287,12 @@ impl World {
             }
             // stomp: falling with the feet in the enemy's upper half [inf: window not traced]
             let stomp = p.vy < 0.0 && p.y >= ay + ah * 0.5 && !a.kind.unstompable();
+            if stomp && a.kind.stomp_bounces() {
+                self.player.bounce(jump_held);
+                self.events.push(Event::Bump);
+                i += 1;
+                continue;
+            }
             let still_shell = a.mode == Mode::ShellWait;
             if still_shell {
                 let dir = if ax >= p.x { 1 } else { -1 };
@@ -1413,6 +1419,13 @@ impl World {
                     // pivot at the top centre of the 3×4 object
                     a.home_x = s.x;
                     a.home_y = s.y + 64.0;
+                }
+                if let Kind::ChainChomp { chained: true } = s.kind {
+                    // the stake stays at the placement; the Chomp starts beside it
+                    a.home_x = s.x;
+                    a.home_y = s.y;
+                    let side = if self.player.x <= s.x { -20.0 } else { 20.0 };
+                    a.x = s.x + side * if s.big { 2.0 } else { 1.0 };
                 }
                 if let Some(start) = s.rail {
                     // the reference point is the object's tile centre (feet + 8)
@@ -2727,6 +2740,45 @@ impl World {
                 x += TILE;
             }
         }
+        // Chain Chomp stakes and chains (the chain is cosmetic: 4 links, stake to Chomp)
+        for a in &self.actors {
+            if a.kind != (Kind::ChainChomp { chained: true }) || !visible(a.home_x, a.home_y) {
+                continue;
+            }
+            let s = if a.big { 2.0 } else { 1.0 };
+            out.push(Self::model_sprite(
+                "M1_Enemy_wanwan",
+                "kui.0",
+                a.home_x - 8.0 * s,
+                a.home_y,
+                16.0 * s,
+                16.0 * s,
+                false,
+                30,
+            ));
+            let (sx, sy) = (a.home_x, a.home_y + 12.0 * s);
+            let (cx, cy) = (a.x, a.y + 8.0 * s);
+            for k in 1..5 {
+                let f = k as f32 / 5.0;
+                let sag = (f * (1.0 - f))
+                    * 12.0
+                    * if a.phase == 2 || a.phase == 3 {
+                        0.0
+                    } else {
+                        1.0
+                    };
+                out.push(Self::model_sprite(
+                    "M1_Enemy_wanwan",
+                    "chain.0",
+                    sx + (cx - sx) * f - 4.0 * s,
+                    sy + (cy - sy) * f - 4.0 * s - sag,
+                    8.0 * s,
+                    8.0 * s,
+                    false,
+                    30,
+                ));
+            }
+        }
         for a in &self.actors {
             if a.kind != Kind::Claw || !visible(a.home_x, a.home_y) {
                 continue;
@@ -3447,6 +3499,17 @@ impl World {
                 false,
             ),
             Kind::Wiggler => ("M1_Enemy_hanachan", "head.0", 16.0, 32.0, a.dir > 0),
+            Kind::ChainChomp { .. } => (
+                "M1_Enemy_wanwan",
+                if a.phase == 2 || a.phase == 3 || (self.tick / 8).is_multiple_of(2) {
+                    "wait.1"
+                } else {
+                    "wait.0"
+                },
+                16.0,
+                16.0,
+                a.dir > 0,
+            ),
             Kind::LavaLift { .. } => return None,
             Kind::Skewer { .. } => return None,
             Kind::CheepCheep { red } => (
@@ -4261,6 +4324,35 @@ mod tests {
         let x2 = w.actors[0].x;
         run(&mut w, 0, 30);
         assert!((w.actors[0].x - x2).abs() < 0.5);
+    }
+
+    #[test]
+    fn chain_chomp_stays_on_its_chain_and_lunges() {
+        let mut lvl = Level::flat(40);
+        lvl.spawns
+            .push(spawn(Kind::ChainChomp { chained: true }, 200.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 280.0;
+        let mut lunged = false;
+        let mut far: f32 = 0.0;
+        for _ in 0..400 {
+            run(&mut w, 0, 1);
+            let a = &w.actors[0];
+            lunged |= a.phase == 2;
+            let d = ((a.x - a.home_x).powi(2) + (a.y + 8.0 - (a.home_y + 8.0)).powi(2)).sqrt();
+            far = far.max(d);
+        }
+        assert!(lunged, "lunges within 120–179 frames + 61 crouch");
+        assert!(far <= 51.2 + 4.0 + 6.0, "reach {far}"); // the return curve may bow out a little
+        // stomping bounces off and leaves it unharmed
+        let a = &w.actors[0];
+        let (ax, ay) = (a.x, a.y);
+        w.player.x = ax;
+        w.player.y = ay + 14.0;
+        w.player.vy = -2.0;
+        w.player_interactions(false);
+        assert!(w.player.vy > 0.0);
+        assert!(w.actors[0].alive());
     }
 
     #[test]
