@@ -91,7 +91,9 @@ the owner's keys.)
 5. **Textures**: BNTX → unswizzle (Tegra block-linear) → store as Metal-ready blobs (RGBA8 sRGB,
    BC1/4/5/7) with mip chains.
 6. **Models/animations**: BFRES → engine mesh, material (texture refs, blend, sampler),
-   skeleton, skeletal / texture-pattern / SRT animations.
+   skeleton, skeletal / texture-pattern / SRT animations. Done for the 2D styles as
+   `sprites.json` (sprite quad + UVs per texture, texture-pattern frame keys; format notes in
+   [formats/bfres.md](formats/bfres.md)); full meshes come with SM3DW.
 7. **Audio**: BWAV/BARS → kept as DSP-ADPCM + loop points; decoded in the mixer.
 8. **Manifest**: importer version, source file hashes, contents → enables incremental re-import.
 

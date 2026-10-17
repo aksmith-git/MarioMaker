@@ -9,10 +9,13 @@
 //! tables/<name>.json           game data tables (EnemyDB, EditDB, SceneDB, ...)
 //! textures/index.json          { model: { texture: {w, h, format, variant} } }
 //! textures/<model>/<tex>.mtex  one texture (see `Mtex`)
+//! sprites.json                 2D sprite quads + texture-pattern timing (see `sprites`)
 //! ```
 
 pub mod cache;
 pub mod mtex;
+pub mod sprites;
 
 pub use cache::{Cache, CacheError, TextureEntry};
 pub use mtex::{Mtex, MtexFormat, MtexVariant};
+pub use sprites::{Anim, Quad};

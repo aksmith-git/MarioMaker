@@ -51,8 +51,12 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
 - ✅ 1. Rust workspace (formats, assets, import, sim, ffi, cli) + Swift/Metal app; CI on macOS + Linux
 - ✅ 2. Importer: identifies the game build, finds the course key table, converts tables, exports
   M1 textures (RGBA8 + BCn, Tegra unswizzle) into a Metal-ready cache outside the repo
-- 🔄 3. Rendering: tiles, sprites, letterboxed integer scaling ✅ · exact BFRES quad placement and
-  animation timing ⬜ (sprite offsets currently measured from the textures)
+- ✅ 3. Rendering: tiles, sprites, letterboxed integer scaling; BFRES reader (0.9: skeleton,
+  materials, shapes, texture-pattern animations) → importer `sprites.json` (1952 of 1963 M1
+  textures placed by their model quad, all animation frame keys) → FFI draws model sprites at the
+  sim's origin + quad. Hand offsets gone; Goomba walk animation fixed (it never animated) and
+  timed from the data (10 frames per texture); goal flag mirrored as in the game. Player walk-rate
+  scaling and the other objects' frame timings are measured but not wired in yet
 - ⬜ 4. Audio (BWAV DSP-ADPCM decode, mixer, music + sound effects)
 - 🔄 5. Terrain: ground, blocks, pipes, semisolids, slopes ✅ · ice ✅ · exact camera rules ⬜
 - ✅ 6. Core objects: coins; ? / brick / hidden / hard / note blocks (bump curve, contents, multi-coin,
