@@ -4715,12 +4715,35 @@ impl World {
             }
         }
         for t in &self.level.trees {
-            if visible(t.x, t.y + 32.0) {
+            // the 3D World tree in parts (models at game scale): a 40-px root, 16-px trunk
+            // units up to the canopy, the canopy (67 px tall) with its top at the platform
+            let (_, top) = t.canopy();
+            if !visible(t.x, t.y + 32.0) && !visible(t.x, top) {
+                continue;
+            }
+            let ground = t.y - 8.0;
+            let crown = top - 67.0;
+            let mut parts = vec![("treebell_root.0", ground)];
+            let mut y = ground + 40.0;
+            const UNITS: [&str; 6] = [
+                "treebell_unitA.0",
+                "treebell_unitB.0",
+                "treebell_unitC.0",
+                "treebell_unitD.0",
+                "treebell_unitE.0",
+                "treebell_unitF.0",
+            ];
+            while y < crown {
+                parts.push((UNITS[parts.len() % UNITS.len()], y));
+                y += 16.0;
+            }
+            parts.push(("tree_top.0", crown));
+            for (stem, y) in parts {
                 out.push(Self::model_sprite(
                     "M1_Object_treebell",
-                    "wait.0",
+                    stem,
                     t.x - 8.0,
-                    t.y - 8.0,
+                    y,
                     16.0,
                     16.0,
                     false,

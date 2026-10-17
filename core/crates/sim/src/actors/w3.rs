@@ -1663,6 +1663,9 @@ impl Actor {
     /// Model and animation frame. The 3D World models (`3W_Enemy_…`) are reached through the
     /// `M1_` name like every other enemy; frame stems name the model's animations.
     pub fn w3_look(&self) -> Option<W3Look> {
+        // 3D World-only models: the mesh path draws at (size / 16) × the model's own size, and
+        // these models are authored at game scale
+        const M: f32 = 16.0;
         let flash = self.kick_lock > 0 && (self.kick_lock / 2) % 2 == 0;
         if flash && self.kind == Kind::Porcupuffer {
             return None;
@@ -1683,8 +1686,8 @@ impl Actor {
                 } else {
                     "walk.0"
                 },
-                16.0,
-                if horned { 24.0 } else { 16.0 },
+                M,
+                M,
                 face,
             ),
             Kind::Stingby => (
@@ -1696,8 +1699,8 @@ impl Actor {
                 } else {
                     "walk.0"
                 },
-                16.0,
-                16.0,
+                M,
+                M,
                 face,
             ),
             Kind::Skipsqueak { spiny } => (
@@ -1715,8 +1718,8 @@ impl Actor {
                     skip::GIVE_UP => "giveup.0",
                     _ => "wait.0",
                 },
-                16.0,
-                16.0,
+                M,
+                M,
                 face,
             ),
             Kind::HopChops => (
@@ -1731,8 +1734,8 @@ impl Actor {
                     _ if !self.on_ground => "jump.0",
                     _ => "walk.0",
                 },
-                32.0,
-                16.0,
+                M,
+                M,
                 face,
             ),
             Kind::Porcupuffer => (
@@ -1747,8 +1750,8 @@ impl Actor {
                     puff::FALL => "wait.0",
                     _ => "swim.0",
                 },
-                32.0,
-                32.0,
+                M,
+                M,
                 face,
             ),
             Kind::Bully => (
@@ -1763,8 +1766,8 @@ impl Actor {
                     _ if !self.on_ground => "fall.0",
                     _ => "wait.0",
                 },
-                32.0,
-                32.0,
+                M,
+                M,
                 face,
             ),
             Kind::Charvaargh => (
@@ -1777,8 +1780,8 @@ impl Actor {
                     (chr::ATTACK, _) => "attacksideend.0",
                     _ => "fall.0",
                 },
-                64.0,
-                64.0,
+                M,
+                M,
                 face,
             ),
             Kind::PiranhaCreeper { .. } => (
@@ -1790,8 +1793,8 @@ impl Actor {
                     _ if self.mode == super::Mode::DieFall => "down.0",
                     _ => "move.0",
                 },
-                2.0 * CREEP_HEAD,
-                2.0 * CREEP_HEAD,
+                M,
+                M,
                 face,
             ),
             _ => return None,

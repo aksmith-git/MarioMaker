@@ -206,15 +206,14 @@ impl World {
                 } else {
                     "M1_Enemy_packunpipe_body_straight"
                 };
-                // the stalk models are centred on their origin
-                let half = crate::actors::CREEP_CELL / 2.0;
+                // the stalk models are centred on their origin and authored at game scale
                 out.push(Self::model_sprite(
                     model,
                     "move.0",
-                    x - half,
+                    x - 8.0,
                     y,
-                    2.0 * half,
-                    2.0 * half,
+                    16.0,
+                    16.0,
                     false,
                     39,
                 ));
