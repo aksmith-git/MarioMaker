@@ -96,6 +96,20 @@ enum Cmd {
     },
     /// Decode a BFLYT / BFLAN / BFFNT / MSBT file (Yaz0 removed) and print it as JSON.
     Lyt { file: PathBuf },
+    /// Smoke-run courses headlessly with a scripted run-and-jump input: reports crashes, how far
+    /// right the player got (of the goal distance), deaths and clears. One JSON line per course
+    /// with --each.
+    Simulate {
+        files: Vec<PathBuf>,
+        #[arg(long)]
+        each: bool,
+        /// Course key table for encrypted .bcd files (an asset cache's keys/course_table.bin).
+        #[arg(long)]
+        keys: Option<PathBuf>,
+        /// Frames per course (60 per second).
+        #[arg(long, default_value_t = 3600)]
+        frames: u32,
+    },
     /// Run the open-source course server (courses + index in DIR).
     Server {
         #[arg(long, default_value = "mmk-server-data")]
@@ -596,6 +610,12 @@ fn main() -> ExitCode {
                 ExitCode::SUCCESS
             }
         }
+        Cmd::Simulate {
+            files,
+            each,
+            keys,
+            frames,
+        } => simulate(&files, each, keys, frames),
         Cmd::Coverage { files, each, keys } => {
             let table: Option<mmk_formats::smm2::KeyTable> = keys.and_then(|p| {
                 let b = std::fs::read(p).ok()?;
@@ -973,5 +993,120 @@ fn main() -> ExitCode {
                 }
             }
         }
+    }
+}
+
+/// Course data from a file: raw, zlib, or an encrypted .bcd (with the key table).
+fn course_data(raw: Vec<u8>, table: Option<&smm2::KeyTable>) -> Option<Vec<u8>> {
+    if raw.len() == smm2::COURSE_SIZE {
+        Some(raw)
+    } else if raw.len() == smm2::BCD_SIZE {
+        crypto::decrypt_bcd(&raw, table?, false)
+            .ok()
+            .map(|b| b.body)
+    } else {
+        let mut out = Vec::new();
+        flate2::read::ZlibDecoder::new(&raw[..])
+            .read_to_end(&mut out)
+            .ok()?;
+        Some(out)
+    }
+}
+
+fn read_key_table(path: Option<PathBuf>) -> Option<smm2::KeyTable> {
+    let b = std::fs::read(path?).ok()?;
+    let words: Vec<u32> = b
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_le_bytes(*c))
+        .collect();
+    words.try_into().ok()
+}
+
+/// One scripted run: hold right + run, jump in 24-frame bursts every 40 frames, and a long jump
+/// when stuck for a second. Returns (progress 0-1 toward the goal, deaths, cleared).
+fn simulate_course(course: &smm2::Course, frames: u32) -> (f32, u32, bool) {
+    use mmk_sim::input::{self, Input};
+    let mut w = mmk_sim::World::from_course(course);
+    w.lives = 9999; // keep retrying for the whole run
+    let start_x = w.player.x;
+    let goal_x = w.level.goal.map(|g| g.0).unwrap_or(w.level.right);
+    let lives0 = w.lives;
+    let (mut best, mut stuck, mut last_x) = (start_x, 0u32, start_x);
+    let mut cleared = false;
+    for t in 0..frames {
+        let mut b = input::RIGHT | input::RUN;
+        let long = stuck > 60 && stuck % 90 < 40;
+        if t % 40 < 24 || long {
+            b |= input::JUMP;
+        }
+        w.step(Input { buttons: b });
+        best = best.max(w.player.x);
+        if (w.player.x - last_x).abs() < 0.2 {
+            stuck += 1;
+        } else {
+            stuck = 0;
+        }
+        last_x = w.player.x;
+        if w.goal_phase != mmk_sim::world::GoalPhase::None {
+            cleared = true;
+            break;
+        }
+    }
+    let span = (goal_x - start_x).max(1.0);
+    (
+        ((best - start_x) / span).clamp(0.0, 1.0),
+        lives0.saturating_sub(w.lives),
+        cleared,
+    )
+}
+
+fn simulate(files: &[PathBuf], each: bool, keys: Option<PathBuf>, frames: u32) -> ExitCode {
+    let table = read_key_table(keys);
+    let (mut total, mut panics, mut clears) = (0usize, 0usize, 0usize);
+    let mut progress = 0.0f32;
+    for f in files {
+        let Some(data) = std::fs::read(f)
+            .ok()
+            .and_then(|raw| course_data(raw, table.as_ref()))
+        else {
+            continue;
+        };
+        let Ok(c) = smm2::Course::parse(&data) else {
+            continue;
+        };
+        total += 1;
+        let style = c.header.game_style.as_str_lossy();
+        let run = std::panic::catch_unwind(|| simulate_course(&c, frames));
+        let line = match run {
+            Ok((p, deaths, cleared)) => {
+                progress += p;
+                clears += cleared as usize;
+                json!({"file": f.display().to_string(), "style": style, "progress": p,
+                       "deaths": deaths, "cleared": cleared})
+            }
+            Err(e) => {
+                panics += 1;
+                let msg = e
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                    .unwrap_or_default();
+                json!({"file": f.display().to_string(), "style": style, "panic": msg})
+            }
+        };
+        if each || line.get("panic").is_some() {
+            println!("{line}");
+        }
+    }
+    println!(
+        "{total} courses: {panics} crashed, {clears} cleared by the scripted run, mean progress {:.0}%",
+        100.0 * progress / (total.saturating_sub(panics)).max(1) as f32
+    );
+    if panics > 0 {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }
