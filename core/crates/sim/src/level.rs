@@ -235,6 +235,8 @@ pub struct Level {
     pub generators: Vec<PipeGenerator>,
     pub checkpoints: Vec<Checkpoint>,
     pub blasters: Vec<Blaster>,
+    /// Conveyor belts: left tile, right tile (inclusive), row, speed (px/frame, + = right).
+    pub conveyors: Vec<(i32, i32, i32, f32)>,
     /// Doors to draw: origin (bottom centre) and type.
     pub doors: Vec<(f32, f32, u8)>,
     /// Goal pole position (X0, Y0): pole x and the top of its base block (main area only).
@@ -264,6 +266,21 @@ pub fn block_atlas(kind: BlockKind) -> u32 {
         BlockKind::Donut => 64,
         BlockKind::Cloud => 102,
         BlockKind::Ice => 120,
+        BlockKind::OnOff => 21 * 16 + 2 + 32,
+        BlockKind::Dotted { blue } => 21 * 16 + 2 + blue as u32,
+    }
+}
+
+/// ON/OFF-dependent art: switch (ON 370 / OFF 371), dotted blocks solid (338/339) or outline
+/// (354/355), from atlas rows 21–23.
+pub fn switch_atlas(kind: BlockKind, on: bool) -> u32 {
+    match kind {
+        BlockKind::OnOff => 23 * 16 + 2 + (!on) as u32,
+        BlockKind::Dotted { blue } => {
+            let solid = blue != on;
+            21 * 16 + 2 + blue as u32 + if solid { 0 } else { 16 }
+        }
+        k => block_atlas(k),
     }
 }
 
@@ -286,6 +303,9 @@ fn block_kind(id: i16) -> Option<BlockKind> {
         22 => BlockKind::Cloud,
         29 => BlockKind::Hidden,
         63 => BlockKind::Ice,
+        99 => BlockKind::OnOff,
+        // dotted-line block: colour from the alternate flag [?]
+        100 => BlockKind::Dotted { blue: false },
         _ => return None,
     })
 }
@@ -316,6 +336,7 @@ impl Level {
             generators: Vec::new(),
             checkpoints: Vec::new(),
             blasters: Vec::new(),
+            conveyors: Vec::new(),
             doors: Vec::new(),
             goal: None,
             style: course.header.game_style.as_str_lossy(),
@@ -410,6 +431,8 @@ impl Level {
                     value: ((o.flags >> 18) & 3).min(2) as u8,
                 }),
                 10 => Some(Kind::Spring),
+                18 => Some(Kind::PSwitch),
+                57 => Some(Kind::Muncher),
                 12 => Some(Kind::Thwomp {
                     side: o.flags & 0x4 != 0,
                 }),
@@ -496,6 +519,24 @@ impl Level {
                 });
                 continue;
             }
+            if o.id == 53 {
+                // conveyor: solid belt, direction (flags >> 3) & 3 (0 left, 1 right), fast
+                // when (flags >> 18) & 3 = 1 (53-conveyor-belt.md)
+                let right = (o.flags >> 3) & 3 == 1;
+                let fast = (o.flags >> 18) & 3 == 1;
+                let speed = if fast { 2.0 } else { 1.0 } * if right { 1.0 } else { -1.0 };
+                for dx in 0..w {
+                    lvl.set(tx + dx, ty, Cell::Solid);
+                    lvl.tiles.push(TileDraw {
+                        x: tx + dx,
+                        y: ty,
+                        atlas: 49, // [inf] placeholder art (bridge) until the belt model is found
+                        flip: 0,
+                    });
+                }
+                lvl.conveyors.push((tx, tx + w - 1, ty, speed));
+                continue;
+            }
             if o.id == 43 {
                 for dx in 0..w {
                     for dy in 0..hgt {
@@ -515,11 +556,14 @@ impl Level {
             match o.id {
                 8 if !actorish => lvl.coins.push(CoinTile { x: tx, y: ty }),
                 id if !actorish && block_kind(id).is_some() => {
-                    let kind = block_kind(id).unwrap();
+                    let mut kind = block_kind(id).unwrap();
+                    if id == 100 && o.flags & 0x4 != 0 {
+                        kind = BlockKind::Dotted { blue: true };
+                    }
                     let contents = Contents::from_part(o.child_id, o.child_flags);
                     let cell = match kind {
-                        BlockKind::Cloud => Cell::SemiTop,
-                        BlockKind::Hidden => Cell::Empty,
+                        BlockKind::Cloud | BlockKind::Donut => Cell::SemiTop,
+                        BlockKind::Hidden | BlockKind::Dotted { blue: true } => Cell::Empty,
                         _ => Cell::Solid,
                     };
                     for dx in 0..w {
@@ -850,6 +894,7 @@ impl Level {
             generators: Vec::new(),
             checkpoints: Vec::new(),
             blasters: Vec::new(),
+            conveyors: Vec::new(),
             doors: Vec::new(),
             goal: None,
             style: "M1".into(),

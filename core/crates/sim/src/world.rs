@@ -9,7 +9,7 @@ use mmk_formats::smm2::Course;
 use crate::actors::{Actor, Effect, FIREBALL_LIFE, FIREBALL_SPEED, Kind, Mode};
 use crate::blocks::{self, Block, BlockKind, Blocks, Contents, HitPower, HitResult, Release};
 use crate::input::{self, Input};
-use crate::level::{Cell, Level, PipeDir, Spawn, TILE, block_atlas};
+use crate::level::{Cell, CoinTile, Level, PipeDir, Spawn, TILE, switch_atlas};
 use crate::player::{Control, Form, Player, Pose, STAR_FRAMES};
 use crate::render::{Sprite, SpriteImage};
 use crate::warp::{self, SideHold, Transit};
@@ -54,7 +54,11 @@ pub enum Event {
     Clear,
     Pipe,
     Checkpoint,
+    Switch,
 }
+
+/// P-switch duration: [ext] about 10 s (not found in the binary).
+pub const P_FRAMES: i32 = 600;
 
 /// Pipe generator timing by pipe colour 0–3 (green, red, blue, yellow), frames.
 const GEN_INTERVAL: [i32; 4] = [180, 60, 240, 120];
@@ -150,6 +154,19 @@ pub struct World {
     next_id: u32,
     /// Bill Blaster countdowns (main timer, cooldown) for the current area.
     blaster_timers: Vec<(i32, i32)>,
+    /// Course-wide ON/OFF state (true = ON / red, the start state).
+    pub on_off: bool,
+    /// P-switch time left (frames).
+    pub p_timer: i32,
+    /// Tiles swapped by the P switch: bricks that became coins, coins that became bricks.
+    p_bricks: Vec<(i32, i32)>,
+    p_coins: Vec<(i32, i32)>,
+    /// Donut under the player and how long it has been ridden.
+    donut_ride: Option<((i32, i32), i32)>,
+    /// Fallen donuts waiting to come back: tile, frames left.
+    donut_respawn: Vec<((i32, i32), i32)>,
+    /// Conveyor carry applied to the player (px/frame).
+    carry: f32,
 }
 
 impl Default for World {
@@ -237,6 +254,13 @@ impl World {
             big_coins: Default::default(),
             next_id: 1,
             blaster_timers: Vec::new(),
+            on_off: true,
+            p_timer: 0,
+            p_bricks: Vec::new(),
+            p_coins: Vec::new(),
+            donut_ride: None,
+            donut_respawn: Vec::new(),
+            carry: 0.0,
         };
         w.field_model = Box::leak(field_model(&w.level.style, w.level.theme).into_boxed_str());
         w.reset_course();
@@ -264,6 +288,13 @@ impl World {
         self.goal_frames = 0;
         self.countdown = false;
         self.cleared = false;
+        self.on_off = true;
+        self.p_timer = 0;
+        self.p_bricks.clear();
+        self.p_coins.clear();
+        self.donut_ride = None;
+        self.donut_respawn.clear();
+        self.carry = 0.0;
         let (sx, sy) = self.level.start;
         self.player = Player::new(sx, sy);
         if self.checkpoint.is_none() {
@@ -359,6 +390,9 @@ impl World {
             None => self.load_area_fresh(),
         }
         self.mark_taken_big_coins();
+        self.apply_on_off();
+        self.donut_ride = None;
+        self.donut_respawn.clear();
         for s in &mut self.spawns {
             s.alive = false;
             s.was_visible = false;
@@ -446,6 +480,7 @@ impl World {
         let jump_held = input.held(input::JUMP);
         self.player.on_ice = self.ice_under_player();
         self.step_platforms(jump_held);
+        self.conveyor_carry();
         let prev_x = self.player.x;
         self.player.step(input, &self.level);
         if self.player.spiked && self.player.hurt() {
@@ -470,8 +505,14 @@ impl World {
             )
             .map(|w| (w, true))
             .or_else(|| {
-                warp::door_entry(&self.player, input, up_pressed, &self.level.warps)
-                    .map(|w| (w, false))
+                warp::door_entry(
+                    &self.player,
+                    input,
+                    up_pressed,
+                    self.p_timer > 0,
+                    &self.level.warps,
+                )
+                .map(|w| (w, false))
             });
             if let Some((from, is_pipe)) = entry {
                 let warps: Vec<Vec<crate::level::Warp>> =
@@ -511,6 +552,8 @@ impl World {
             return;
         }
         self.collect_coins();
+        self.step_donuts();
+        self.step_p_switch();
 
         // blocks, actors, effects
         for r in self.blocks.step() {
@@ -638,6 +681,14 @@ impl World {
             }
             HitResult::Bumped => {
                 self.events.push(Event::Bump);
+                if from_below {
+                    self.bump_top(tx, ty);
+                }
+            }
+            HitResult::Switch => {
+                self.on_off = !self.on_off;
+                self.apply_on_off();
+                self.events.push(Event::Switch);
                 if from_below {
                     self.bump_top(tx, ty);
                 }
@@ -921,6 +972,36 @@ impl World {
                     let (ax, ay) = (a.x, a.y);
                     self.actors[i].mode = Mode::Dead;
                     self.collect_item(kind, ax, ay);
+                }
+                i += 1;
+                continue;
+            }
+            if a.kind == Kind::PSwitch {
+                // pressed by landing on it from above
+                let p = &self.player;
+                if a.phase == 0 && p.vy <= 0.0 && overlap(hurt, ab) && p.y >= a.y + 8.0 {
+                    let id = a.id;
+                    if let Some(sw) = self.actors.iter_mut().find(|x| x.id == id) {
+                        sw.phase = 1;
+                        sw.timer = 34;
+                    }
+                    self.press_p_switch();
+                }
+                i += 1;
+                continue;
+            }
+            if let (Kind::Muncher, Some((x0, y0, x1, y1, _))) = (a.kind, a.solid_box()) {
+                // a Muncher hurts on every side, including from on top
+                if overlap(hurt, (x0 - 1.5, y0 - 1.5, x1 + 1.5, y1 + 1.5))
+                    && !star
+                    && self.player.hurt()
+                {
+                    self.events.push(if self.player.alive() {
+                        Event::PowerDown
+                    } else {
+                        Event::Death
+                    });
+                    return;
                 }
                 i += 1;
                 continue;
@@ -1288,6 +1369,190 @@ impl World {
         }
     }
 
+    // ---------------------------------------------------------------- switches, donuts, belts
+
+    /// Set dotted-line block solidity from the ON/OFF state (red solid when ON).
+    fn apply_on_off(&mut self) {
+        let on = self.on_off;
+        let cells: Vec<((i32, i32), bool)> = self
+            .blocks
+            .map
+            .iter()
+            .filter_map(|(&k, b)| match b.kind {
+                BlockKind::Dotted { blue } => Some((k, blue != on)),
+                _ => None,
+            })
+            .collect();
+        for ((x, y), solid) in cells {
+            self.level
+                .set(x, y, if solid { Cell::Solid } else { Cell::Empty });
+        }
+    }
+
+    /// P switch pressed: bricks and coins swap for P_FRAMES (18-p-switch.md).
+    fn press_p_switch(&mut self) {
+        self.events.push(Event::Switch);
+        if self.p_timer > 0 {
+            self.p_timer = P_FRAMES;
+            return;
+        }
+        self.p_timer = P_FRAMES;
+        let bricks: Vec<(i32, i32)> = self
+            .blocks
+            .map
+            .iter()
+            .filter(|(_, b)| b.kind == BlockKind::Brick && b.contents.is_none() && b.bump.is_none())
+            .map(|(&k, _)| k)
+            .collect();
+        let coins: Vec<(i32, i32)> = self.level.coins.iter().map(|c| (c.x, c.y)).collect();
+        self.level.coins.clear();
+        for &(x, y) in &bricks {
+            self.blocks.map.remove(&(x, y));
+            self.level.set(x, y, Cell::Empty);
+            self.level.coins.push(CoinTile { x, y });
+        }
+        for &(x, y) in &coins {
+            self.blocks
+                .map
+                .insert((x, y), Block::new(BlockKind::Brick, None));
+            self.level.set(x, y, Cell::Solid);
+        }
+        self.p_bricks = bricks;
+        self.p_coins = coins;
+    }
+
+    fn step_p_switch(&mut self) {
+        if self.p_timer <= 0 {
+            return;
+        }
+        self.p_timer -= 1;
+        if self.p_timer > 0 {
+            return;
+        }
+        // back: remaining P coins become bricks again, unbroken P bricks become coins
+        for (x, y) in std::mem::take(&mut self.p_bricks) {
+            if let Some(i) = self.level.coins.iter().position(|c| (c.x, c.y) == (x, y)) {
+                self.level.coins.remove(i);
+                self.blocks
+                    .map
+                    .insert((x, y), Block::new(BlockKind::Brick, None));
+                self.level.set(x, y, Cell::Solid);
+            }
+        }
+        for (x, y) in std::mem::take(&mut self.p_coins) {
+            if self
+                .blocks
+                .get(x, y)
+                .is_some_and(|b| b.kind == BlockKind::Brick)
+            {
+                self.blocks.map.remove(&(x, y));
+                self.level.set(x, y, Cell::Empty);
+                self.level.coins.push(CoinTile { x, y });
+            }
+        }
+    }
+
+    /// Donut blocks drop after 48 frames of being stood on and come back 120 frames after
+    /// falling out of the area (21-donut-block.md).
+    fn step_donuts(&mut self) {
+        let p = &self.player;
+        let under = if p.on_ground {
+            [-4.9f32, 4.9].iter().find_map(|&fx| {
+                let (tx, ty) = (
+                    ((p.x + fx) / TILE).floor() as i32,
+                    ((p.y - 1.0) / TILE).floor() as i32,
+                );
+                self.blocks
+                    .get(tx, ty)
+                    .is_some_and(|b| b.kind == BlockKind::Donut)
+                    .then_some((tx, ty))
+            })
+        } else {
+            None
+        };
+        self.donut_ride = match (under, self.donut_ride) {
+            (Some(t), Some((r, n))) if t == r => Some((t, n + 1)),
+            (Some(t), _) => Some((t, 1)),
+            _ => None,
+        };
+        if let Some(((x, y), n)) = self.donut_ride
+            && n >= 48
+        {
+            self.blocks.map.remove(&(x, y));
+            self.level.set(x, y, Cell::Empty);
+            let (bx, by) = blocks::origin(x, y);
+            let mut a = Actor::new(Kind::Donut, bx, by);
+            a.home_x = x as f32;
+            a.home_y = y as f32;
+            self.add_actor(a);
+            self.donut_ride = None;
+        }
+        for a in &mut self.actors {
+            if a.kind == Kind::Donut && a.y < -2.0 * TILE && a.mode != Mode::Dead {
+                a.mode = Mode::Dead;
+                self.donut_respawn
+                    .push(((a.home_x as i32, a.home_y as i32), 120));
+            }
+        }
+        let mut back = Vec::new();
+        self.donut_respawn.retain_mut(|(t, n)| {
+            *n -= 1;
+            if *n <= 0 {
+                back.push(*t);
+                false
+            } else {
+                true
+            }
+        });
+        for (x, y) in back {
+            self.blocks
+                .map
+                .insert((x, y), Block::new(BlockKind::Donut, None));
+            self.level.set(x, y, Cell::SemiTop);
+        }
+    }
+
+    /// Conveyor carry: toward the belt speed by 0.2/frame while standing on it; off the belt the
+    /// carry stops at once (53-conveyor-belt.md).
+    fn conveyor_carry(&mut self) {
+        let p = &self.player;
+        let target = if p.on_ground {
+            let (tx, ty) = (
+                (p.x / TILE).floor() as i32,
+                ((p.y - 1.0) / TILE).floor() as i32,
+            );
+            self.level
+                .conveyors
+                .iter()
+                .find(|c| ty == c.2 && tx >= c.0 && tx <= c.1)
+                .map_or(0.0, |c| c.3)
+        } else {
+            0.0
+        };
+        self.carry = if target == 0.0 {
+            0.0
+        } else if self.carry < target {
+            (self.carry + 0.2).min(target)
+        } else {
+            (self.carry - 0.2).max(target)
+        };
+        self.player.x += self.carry;
+        // walkers on belts move with them
+        let belts = self.level.conveyors.clone();
+        for a in &mut self.actors {
+            if !a.on_ground || !a.kind.is_walker() {
+                continue;
+            }
+            let (tx, ty) = (
+                (a.x / TILE).floor() as i32,
+                ((a.y - 1.0) / TILE).floor() as i32,
+            );
+            if let Some(c) = belts.iter().find(|c| ty == c.2 && tx >= c.0 && tx <= c.1) {
+                a.x += c.3;
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- checkpoints
 
     /// Touching a checkpoint flag records the respawn point, scores 2000 and gives its power-up
@@ -1569,7 +1834,13 @@ impl World {
             if b.kind == BlockKind::Hidden || !visible(px, py) {
                 continue;
             }
-            out.push(tile(px, py, block_atlas(b.kind), 12));
+            let mut s = tile(px, py, switch_atlas(b.kind, self.on_off), 12);
+            if let Some(((dx, dy), n)) = self.donut_ride
+                && (dx, dy) == (bx, by)
+            {
+                s.x += [1.0, 2.0, 1.0, 0.0, -1.0, -2.0, -1.0, 0.0][(n as usize) % 8];
+            }
+            out.push(s);
         }
         for c in &self.level.coins {
             let (px, py) = (c.x as f32 * TILE, c.y as f32 * TILE);
@@ -1599,6 +1870,7 @@ impl World {
                 continue;
             }
             let tex = match kind {
+                1 if self.p_timer == 0 => "door_dot",
                 1 => "door_p",
                 2 => "key_wait.0",
                 _ => "wait.0",
@@ -1895,6 +2167,29 @@ impl World {
             ),
             Kind::BulletBill => ("M1_Enemy_killer", "wait.0", 16.0, 16.0, a.dir > 0),
             Kind::Lift { .. } => return None,
+            Kind::PSwitch => (
+                "M1_Object_pswitch",
+                if a.phase > 0 {
+                    "push.1"
+                } else {
+                    ["wait.0", "wait.1", "wait.2", "wait.3"][(self.tick as usize / 8) % 4]
+                },
+                16.0,
+                16.0,
+                false,
+            ),
+            Kind::Muncher => (
+                "M1_Enemy_packunblack",
+                if (self.tick / 8).is_multiple_of(2) {
+                    "wait.0"
+                } else {
+                    "wait.1"
+                },
+                16.0,
+                16.0,
+                false,
+            ),
+            Kind::Donut => ("M1_Object_block_chikuwa", "fall.0", 16.0, 16.0, false),
             Kind::BigCoin { value } => (
                 ["M1_Object_coin10", "M1_Object_coin30", "M1_Object_coin50"][value as usize],
                 ["wait.0", "wait.1", "wait.2", "wait.3"][(self.tick as usize / 8) % 4],
@@ -2469,6 +2764,95 @@ mod tests {
             hurt |= !w.player.alive();
         }
         assert!(hurt);
+    }
+
+    fn place(lvl: &mut Level, x: i32, y: i32, kind: BlockKind, cell: Cell) {
+        lvl.set(x, y, cell);
+        lvl.blocks.push(BlockPlacement {
+            x,
+            y,
+            kind,
+            contents: None,
+        });
+    }
+
+    #[test]
+    fn on_off_switch_flips_dotted_blocks() {
+        let mut lvl = Level::flat(40);
+        place(&mut lvl, 3, 5, BlockKind::OnOff, Cell::Solid);
+        place(
+            &mut lvl,
+            10,
+            2,
+            BlockKind::Dotted { blue: false },
+            Cell::Solid,
+        );
+        place(
+            &mut lvl,
+            11,
+            2,
+            BlockKind::Dotted { blue: true },
+            Cell::Empty,
+        );
+        let mut w = World::with_level(lvl);
+        assert_eq!(w.level.cell(10, 2), Cell::Solid);
+        assert_eq!(w.level.cell(11, 2), Cell::Empty);
+        run(&mut w, input::JUMP, 30);
+        assert!(!w.on_off);
+        assert_eq!(w.level.cell(10, 2), Cell::Empty);
+        assert_eq!(w.level.cell(11, 2), Cell::Solid);
+    }
+
+    #[test]
+    fn p_switch_swaps_bricks_and_coins_then_reverts() {
+        let mut lvl = Level::flat(60);
+        place(&mut lvl, 20, 5, BlockKind::Brick, Cell::Solid);
+        lvl.coins.push(CoinTile { x: 22, y: 5 });
+        lvl.spawns.push(spawn(Kind::PSwitch, 120.0, 32.0));
+        let mut w = World::with_level(lvl);
+        run(&mut w, 0, 5);
+        w.player.x = 120.0;
+        w.player.y = 70.0;
+        run(&mut w, 0, 20);
+        assert!(w.p_timer > 0);
+        assert_eq!(w.level.cell(20, 5), Cell::Empty);
+        assert!(w.level.coins.iter().any(|c| (c.x, c.y) == (20, 5)));
+        assert_eq!(w.level.cell(22, 5), Cell::Solid);
+        run(&mut w, 0, P_FRAMES as usize);
+        assert_eq!(w.p_timer, 0);
+        assert_eq!(w.level.cell(20, 5), Cell::Solid);
+        assert!(w.level.coins.iter().any(|c| (c.x, c.y) == (22, 5)));
+    }
+
+    #[test]
+    fn donut_drops_after_48_frames() {
+        let mut lvl = Level::flat(40);
+        for x in 10..16 {
+            for y in 0..2 {
+                lvl.set(x, y, Cell::Empty);
+            }
+        }
+        place(&mut lvl, 12, 4, BlockKind::Donut, Cell::SemiTop);
+        let mut w = World::with_level(lvl);
+        w.player.x = 12.0 * TILE + 8.0;
+        w.player.y = 5.0 * TILE + 10.0;
+        run(&mut w, 0, 20);
+        assert!(w.player.on_ground);
+        run(&mut w, 0, 40);
+        assert!(w.actors.iter().any(|a| a.kind == Kind::Donut));
+        assert!(w.blocks.get(12, 4).is_none());
+    }
+
+    #[test]
+    fn conveyor_carries_the_player() {
+        let mut lvl = Level::flat(40);
+        lvl.conveyors.push((2, 20, 1, 2.0));
+        let mut w = World::with_level(lvl);
+        let x0 = w.player.x;
+        run(&mut w, 0, 60);
+        // ramps 0.2/frame to 2.0 (10 frames), then 2 px/frame
+        let moved = w.player.x - x0;
+        assert!((moved - (2.0 * 60.0 - 9.0)).abs() < 1.0, "moved {moved}");
     }
 
     #[test]

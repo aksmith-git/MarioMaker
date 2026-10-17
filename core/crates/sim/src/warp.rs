@@ -135,14 +135,23 @@ pub fn pipe_entry(
     best.map(|(_, w)| w)
 }
 
-/// A door the player can enter this frame (Up pressed, no Left/Right, on the ground).
-pub fn door_entry(p: &Player, inp: Input, up_pressed: bool, warps: &[Warp]) -> Option<Warp> {
+/// A door the player can enter this frame (Up pressed, no Left/Right, on the ground). P doors
+/// work only while a P switch is active; key doors are not handled yet.
+pub fn door_entry(
+    p: &Player,
+    inp: Input,
+    up_pressed: bool,
+    p_active: bool,
+    warps: &[Warp],
+) -> Option<Warp> {
     if !p.on_ground || !up_pressed || inp.held(input::LEFT) || inp.held(input::RIGHT) {
         return None;
     }
     warps
         .iter()
-        .filter(|w| matches!(w.kind, WarpKind::Door(0)))
+        .filter(|w| {
+            matches!(w.kind, WarpKind::Door(0)) || (p_active && w.kind == WarpKind::Door(1))
+        })
         .filter(|w| (p.x - w.x).abs() <= 7.0 && (p.y - w.y).abs() < 2.0)
         .min_by(|a, b| (p.x - a.x).abs().total_cmp(&(p.x - b.x).abs()))
         .copied()

@@ -21,6 +21,12 @@ pub enum BlockKind {
     Donut,
     Cloud,
     Ice,
+    /// ON/OFF switch block: toggles the course-wide ON/OFF state when hit.
+    OnOff,
+    /// Dotted-line block: solid when its colour matches the ON/OFF state (red = ON).
+    Dotted {
+        blue: bool,
+    },
 }
 
 /// What a block releases (the course object's child id, mapped to what the slice supports).
@@ -165,6 +171,8 @@ pub enum HitResult {
     Coin,
     /// Broke into debris.
     Broke,
+    /// ON/OFF switch hit: bounced and the state flips.
+    Switch,
 }
 
 /// Events produced when a bump ends.
@@ -258,7 +266,11 @@ impl Blocks {
                 });
                 HitResult::Bumped
             }
-            BlockKind::Donut | BlockKind::Cloud => HitResult::Nothing,
+            BlockKind::Donut | BlockKind::Cloud | BlockKind::Dotted { .. } => HitResult::Nothing,
+            BlockKind::OnOff => {
+                b.bump = Some(bump);
+                HitResult::Switch
+            }
         }
     }
 

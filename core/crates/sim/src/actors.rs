@@ -64,6 +64,12 @@ pub enum Kind {
     Spring,
     /// Bullet Bill from a blaster: flies straight at 1 px/frame, through terrain.
     BulletBill,
+    /// P Switch: pressed from above.
+    PSwitch,
+    /// Muncher: invulnerable solid hazard.
+    Muncher,
+    /// A Donut block that has dropped (falls g −0.1875, cap −2, carries riders).
+    Donut,
 }
 
 impl Kind {
@@ -87,7 +93,10 @@ impl Kind {
     }
     /// Moves before the player and offers a solid surface (riders are carried).
     pub fn is_platform(self) -> bool {
-        matches!(self, Kind::Thwomp { .. } | Kind::Lift { .. } | Kind::Spring)
+        matches!(
+            self,
+            Kind::Thwomp { .. } | Kind::Lift { .. } | Kind::Spring | Kind::Muncher | Kind::Donut
+        )
     }
     pub fn is_item(self) -> bool {
         matches!(
@@ -216,6 +225,16 @@ impl Actor {
                 let hw = width as f32 * 8.0;
                 Some((self.x - hw, self.y + 8.0, self.x + hw, self.y + 16.0, true))
             }
+            Kind::Muncher if self.mode == Mode::Normal => {
+                Some((self.x - 8.0, self.y, self.x + 8.0, self.y + 16.0, false))
+            }
+            Kind::Donut => Some((
+                self.x - 8.0,
+                self.y + 8.0,
+                self.x + 8.0,
+                self.y + 16.0,
+                true,
+            )),
             Kind::Spring if self.mode == Mode::Normal => {
                 let top = self.y + 12.5 - self.aux_compression();
                 Some((self.x - 8.0, top - 4.0, self.x + 8.0, top, true))
@@ -889,6 +908,24 @@ impl Actor {
                 self.vx = self.dir as f32;
                 self.x += self.vx;
             }
+            Kind::Donut => {
+                self.vy = (self.vy - 0.1875).max(-2.0);
+                self.y += self.vy;
+            }
+            Kind::PSwitch => {
+                if self.phase > 0 {
+                    // pressed: squash animation, then removed (PushReserve 2 + DelWait 2 + anim)
+                    self.timer -= 1;
+                    if self.timer <= 0 {
+                        self.mode = Mode::Dead;
+                    }
+                } else {
+                    self.vx = 0.0;
+                    self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+                    self.collide(level);
+                }
+            }
+            Kind::Muncher => {}
             Kind::BigCoin { .. } | Kind::Shell { .. } => {}
         }
     }

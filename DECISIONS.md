@@ -25,6 +25,8 @@ them:
   the high bounce) — the binary pairs the speeds with "jump profile" ids whose meaning is [inf].
 - Side Thwomp charge trigger: player within 2 × its half-width vertically and 256 px horizontally
   [inf]; the normal Thwomp uses the spec's |dx| < W + 32 zone.
+- P-switch duration 600 frames ([ext] ~10 s; not found in the binary). Dotted-line block colour
+  from the alternate flag [?]. Conveyor art uses a placeholder tile until the belt model is found.
 - Sprite art offsets inside textures are measured from the textures (e.g. the Goomba sits in the
   top half of its 16×32 image) until BFRES quad placement is imported.
 
