@@ -148,7 +148,7 @@ pub fn check_textures(game: &Game) -> Result<String, String> {
     if !gpu.bc {
         return Err(format!("{}: no BC texture support", gpu.info.name));
     }
-    let renderer = Renderer::new(&gpu, FORMAT, &game.cache);
+    let mut renderer = Renderer::new(&gpu, FORMAT, &game.cache);
     // sRGB textures go through an sRGB target (decoded, then encoded again), linear ones
     // through a linear target, so the texel bytes come back unchanged
     const LINEAR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -166,10 +166,14 @@ pub fn check_textures(game: &Game) -> Result<String, String> {
     let mut report = Vec::new();
     let mut worst_all = 0u8;
     for (i, t) in game.cache.textures.iter().enumerate() {
-        let m = &t.texture;
+        let Some(m) = game.cache.texture(i) else {
+            report.push(format!("{}/{}: unreadable", t.model, t.name));
+            continue;
+        };
         if m.format == MtexFormat::Rgba8 {
             continue;
         }
+        renderer.ensure(&gpu, i);
         let Some(group) = renderer.texture(i) else {
             report.push(format!("{}/{}: not uploaded", t.model, t.name));
             continue;

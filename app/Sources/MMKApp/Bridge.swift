@@ -14,8 +14,9 @@ final class EngineAssets: @unchecked Sendable {
     /// nil for the placeholder set.
     let url: URL?
     var isPlaceholder: Bool { url == nil }
-    /// GPU textures, uploaded once on first use (see Renderer).
-    var gpuTextures: [MTLTexture?]?
+    /// GPU textures by cache index, uploaded when a sprite first uses one (see Renderer); a
+    /// cached nil means the texture can't be drawn. The pixels are read lazily too.
+    var gpuTextures: [Int: MTLTexture?] = [:]
 
     private init(handle: OpaquePointer, url: URL?) {
         self.handle = handle

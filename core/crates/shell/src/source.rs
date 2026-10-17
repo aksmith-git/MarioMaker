@@ -15,6 +15,10 @@ pub trait AssetSource {
     fn read(&self, rel: &str) -> io::Result<Vec<u8>>;
     /// Shown in messages (a directory path, "browser files", ...).
     fn describe(&self) -> String;
+    /// The directory behind the source, if it is one (the cache is then read lazily from it).
+    fn dir(&self) -> Option<&Path> {
+        None
+    }
 }
 
 /// A directory on disk (native builds).
@@ -34,6 +38,9 @@ impl AssetSource for DirSource {
     }
     fn describe(&self) -> String {
         self.root.display().to_string()
+    }
+    fn dir(&self) -> Option<&Path> {
+        Some(&self.root)
     }
 }
 
@@ -79,6 +86,10 @@ const ROOT: &str = "/mmk-assets";
 
 /// Open the asset cache through `source`.
 pub fn open_cache(source: &dyn AssetSource) -> Result<Cache, String> {
+    if let Some(dir) = source.dir() {
+        // a directory: texture pixels are read when first drawn
+        return Cache::open(dir).map_err(|e| format!("{}: {e}", source.describe()));
+    }
     let mut cache = Cache::load(ROOT, &|p| source.read(&relative(p)))
         .map_err(|e| format!("{}: {e}", source.describe()))?;
     // the cache's root is only used for messages and for files read later; point it at the

@@ -159,20 +159,21 @@ pub unsafe extern "C" fn mmk_assets_texture(
         let (Some(a), Some(out)) = (unsafe { assets.as_ref() }, unsafe { out.as_mut() }) else {
             return false;
         };
-        let Some(t) = a.cache.textures.get(index) else {
+        // pixels are read on first use (the cache is opened lazily)
+        let Some(t) = a.cache.texture(index) else {
             return false;
         };
         let (model, name) = &a.names[index];
         *out = MmkTextureInfo {
             model: model.as_ptr(),
             name: name.as_ptr(),
-            width: t.texture.width,
-            height: t.texture.height,
-            format: t.texture.format as u8,
-            variant: t.texture.variant as u8,
-            channel_select: t.texture.channel_select,
-            data: t.texture.data.as_ptr(),
-            len: t.texture.data.len(),
+            width: t.width,
+            height: t.height,
+            format: t.format as u8,
+            variant: t.variant as u8,
+            channel_select: t.channel_select,
+            data: t.data.as_ptr(),
+            len: t.data.len(),
         };
         true
     })

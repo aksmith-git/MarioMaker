@@ -125,7 +125,7 @@ impl SpriteResolver {
             });
             let (texture, p) = match found {
                 Some((texture, quad)) => {
-                    let t = &cache.textures[texture as usize].texture;
+                    let t = &cache.textures[texture as usize];
                     (
                         Some(texture),
                         place(&s, t.width as f32, t.height as f32, quad),
@@ -160,7 +160,9 @@ pub fn clear_color(world: &World, cache: &Cache) -> u32 {
     let Some(i) = cache.texture_index(model, tex) else {
         return BLACK;
     };
-    let t = &cache.textures[i].texture;
+    let Some(t) = cache.texture(i) else {
+        return BLACK;
+    };
     if t.format != MtexFormat::Rgba8 || t.data.len() < 4 {
         return BLACK;
     }

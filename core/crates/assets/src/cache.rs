@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use serde_json::Value;
 
@@ -24,11 +25,15 @@ pub enum CacheError {
     Mtex { path: PathBuf, source: MtexError },
 }
 
-#[derive(Clone, Debug)]
+/// A texture of the cache: name and size up front, pixels on first use (see [`Cache::texture`]).
+#[derive(Debug)]
 pub struct TextureEntry {
     pub model: String,
     pub name: String,
-    pub texture: Mtex,
+    pub width: u32,
+    pub height: u32,
+    path: PathBuf,
+    data: OnceLock<Option<Mtex>>,
 }
 
 /// A loaded cache. Textures are kept in a stable order (sorted by model, then name) so indices
@@ -36,6 +41,8 @@ pub struct TextureEntry {
 #[derive(Debug, Default)]
 pub struct Cache {
     pub root: PathBuf,
+    /// Read texture pixels from `root` when first asked for (`open`); else they were all loaded.
+    lazy: bool,
     pub manifest: Value,
     pub textures: Vec<TextureEntry>,
     by_name: HashMap<(String, String), usize>,
@@ -68,13 +75,19 @@ fn read_json(path: &Path) -> Result<Value, CacheError> {
 }
 
 impl Cache {
+    /// Open a cache directory. Texture pixels are read when first used ([`Cache::texture`]):
+    /// a cache of every style holds thousands of textures and a course draws a few hundred.
     pub fn open(root: impl AsRef<Path>) -> Result<Self, CacheError> {
-        Self::load(root, &|p| std::fs::read(p))
+        Self::build(root, &|p| std::fs::read(p), true)
     }
 
     /// Open a cache through `read` instead of the file system (e.g. files the user picked in a
     /// browser). `root` is only joined with relative paths and passed back to `read`.
     pub fn load(root: impl AsRef<Path>, read: ReadFn) -> Result<Self, CacheError> {
+        Self::build(root, read, false)
+    }
+
+    fn build(root: impl AsRef<Path>, read: ReadFn, lazy: bool) -> Result<Self, CacheError> {
         let root = root.as_ref().to_path_buf();
         let read_json = |path: &Path| parse_json(path, &read_with(read, path)?);
         let manifest = read_json(&root.join("manifest.json"))?;
@@ -91,12 +104,29 @@ impl Cache {
                 tex_names.sort();
                 for name in tex_names {
                     let path = root.join(format!("textures/{model}/{name}.mtex"));
-                    let texture = Mtex::parse(&read_with(read, &path)?)
-                        .map_err(|source| CacheError::Mtex { path, source })?;
+                    let info = &texs[name.as_str()];
+                    let dim = |k: &str| info[k].as_u64().unwrap_or(0) as u32;
+                    let data = OnceLock::new();
+                    let (mut width, mut height) = (dim("w"), dim("h"));
+                    if !lazy || width == 0 {
+                        let texture = Mtex::parse(&read_with(read, &path)?).map_err(|source| {
+                            CacheError::Mtex {
+                                path: path.clone(),
+                                source,
+                            }
+                        })?;
+                        (width, height) = (texture.width, texture.height);
+                        if !lazy {
+                            let _ = data.set(Some(texture));
+                        }
+                    }
                     textures.push(TextureEntry {
                         model: model.clone(),
                         name: name.clone(),
-                        texture,
+                        width,
+                        height,
+                        path,
+                        data,
                     });
                 }
             }
@@ -120,6 +150,7 @@ impl Cache {
         };
         Ok(Self {
             root,
+            lazy,
             manifest,
             textures,
             by_name,
@@ -142,6 +173,22 @@ impl Cache {
             .anims
             .get(&(m.clone(), name.to_string()))
             .or_else(|| self.sprites.anims.get(&(m, format!("{name}_ftp"))))
+    }
+
+    /// The pixels of texture `i`, read on first use for a lazily opened cache (None if the file
+    /// is missing or unreadable).
+    pub fn texture(&self, i: usize) -> Option<&Mtex> {
+        let e = self.textures.get(i)?;
+        e.data
+            .get_or_init(|| {
+                if !self.lazy {
+                    return None;
+                }
+                std::fs::read(&e.path)
+                    .ok()
+                    .and_then(|b| Mtex::parse(&b).ok())
+            })
+            .as_ref()
     }
 
     /// Index of a texture by model and texture name.

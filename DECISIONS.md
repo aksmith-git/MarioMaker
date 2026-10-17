@@ -416,3 +416,13 @@ proprietary guard. The macOS (Rust and the Swift app), Windows and wasm shell jo
 by hand (`workflow_dispatch`). A newer push cancels the older run. `scripts/check.sh --app`
 still runs every gate locally, macOS app included, before each commit.
 
+## 2026-10-18 — Textures load lazily
+With all five styles imported, the cache holds 12,540 textures (729 MB). Loading and uploading
+all of them took about 2 GB of memory at start-up. Now `Cache::open` reads texture sizes from
+`textures/index.json`, and a texture's pixels only when first asked for (`Cache::texture`). Both
+renderers upload a texture when a sprite first uses it. Measured on the same course and frame:
+- portable shell: 2.0 GB → 107 MB peak, start 1.1 s → 0.5 s;
+- macOS app: about 275 MB peak.
+
+`Cache::load` through a reader function, used by the web and by tests, still loads everything.
+

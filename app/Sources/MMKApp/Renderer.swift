@@ -45,7 +45,6 @@ final class Renderer: NSObject, MTKViewDelegate {
     private lazy var queue = device.makeCommandQueue()!
     private var pipeline: MTLRenderPipelineState?
     private var sampler: MTLSamplerState?
-    private var textures: [MTLTexture?] = []
     private lazy var skyTexture: MTLTexture? = {
         let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm_srgb, width: 1, height: 1, mipmapped: false)
         let t = device.makeTexture(descriptor: d)
@@ -80,15 +79,6 @@ final class Renderer: NSObject, MTKViewDelegate {
         } catch {
             fatalError("Metal pipeline: \(error)")
         }
-        if session.assets.gpuTextures == nil {
-            let a = session.assets.handle
-            session.assets.gpuTextures = (0..<mmk_assets_texture_count(a)).map { i in
-                var info = MmkTextureInfo()
-                guard mmk_assets_texture(a, i, &info) else { return nil }
-                return makeTexture(info)
-            }
-        }
-        textures = session.assets.gpuTextures ?? []
         if screenshot != nil { session.scriptedInput = Self.scriptedInput }
     }
 
@@ -325,7 +315,15 @@ final class Renderer: NSObject, MTKViewDelegate {
     private static let fallbackKey: UInt32 = 0xF000_0000
 
     private func texture(forBatch key: UInt32) -> MTLTexture? {
-        if key < Self.fallbackKey { return Int(key) < textures.count ? textures[Int(key)] : nil }
+        if key < Self.fallbackKey {
+            let assets = session.assets
+            let i = Int(key)
+            if let t = assets.gpuTextures[i] { return t }
+            var info = MmkTextureInfo()
+            let t = mmk_assets_texture(assets.handle, i, &info) ? makeTexture(info) : nil
+            assets.gpuTextures[i] = t
+            return t
+        }
         if key == MMK_TEXTURE_NONE { return nil }
         if let t = fallbackTextures[key] { return t }
         let t = makeFallbackTexture(layer: key & 0xFFFF)

@@ -6,6 +6,8 @@
 //! (one draw per run of sprites sharing a texture; positions snapped to whole pixels like the
 //! Swift renderer; underground night drawn upside down), then the HUD image on top.
 
+use std::sync::Arc;
+
 use mmk_assets::Cache;
 use mmk_host::DrawSprite;
 use mmk_sim::world::{VIEW_H, VIEW_W};
@@ -87,6 +89,13 @@ pub struct Scene<'a> {
     /// 0xRRGGBBAA behind everything in the view.
     pub clear: u32,
     pub hud: &'a HudText,
+}
+
+/// A cache texture on the GPU: not uploaded yet, unusable on this path, or ready.
+enum TexState {
+    Pending,
+    Skipped,
+    Ready(wgpu::BindGroup),
 }
 
 pub const SHADER: &str = r#"
@@ -187,7 +196,8 @@ pub struct Renderer {
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     /// Cache texture index → bind group (None: not uploadable, e.g. BC6H without GPU support).
-    textures: Vec<Option<wgpu::BindGroup>>,
+    textures: Vec<TexState>,
+    cache: Arc<Cache>,
     missing: Vec<wgpu::BindGroup>,
     sky: (wgpu::Texture, wgpu::BindGroup),
     sky_color: Option<u32>,
@@ -251,7 +261,7 @@ fn write_rgba(gpu: &Gpu, tex: &wgpu::Texture, w: u32, h: u32, data: &[u8]) {
 
 impl Renderer {
     /// Build the pipeline for targets of `format` and upload every texture of `cache`.
-    pub fn new(gpu: &Gpu, format: wgpu::TextureFormat, cache: &Cache) -> Self {
+    pub fn new(gpu: &Gpu, format: wgpu::TextureFormat, cache: &Arc<Cache>) -> Self {
         let device = &gpu.device;
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("sprite"),
@@ -302,38 +312,11 @@ impl Renderer {
             })
         };
 
-        let mut skipped = 0;
-        let textures = cache
-            .textures
-            .iter()
-            .map(|t| {
-                let Some(up) = crate::texture::plan(&t.texture, gpu.bc) else {
-                    skipped += 1;
-                    return None;
-                };
-                let tex = make_texture(gpu, &t.name, up.format, up.width, up.height);
-                gpu.queue.write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &tex,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d::ZERO,
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    &up.data,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(up.bytes_per_row),
-                        rows_per_image: Some(up.rows),
-                    },
-                    wgpu::Extent3d {
-                        width: up.width,
-                        height: up.height,
-                        depth_or_array_layers: 1,
-                    },
-                );
-                Some(bind(&tex))
-            })
+        // cache textures upload when a sprite first uses one (see `ensure`)
+        let textures = (0..cache.textures.len())
+            .map(|_| TexState::Pending)
             .collect();
+        let skipped = 0;
 
         let srgb = wgpu::TextureFormat::Rgba8UnormSrgb;
         let missing = MISSING
@@ -354,6 +337,7 @@ impl Renderer {
             layout,
             sampler,
             textures,
+            cache: cache.clone(),
             missing,
             sky: (sky, sky_bind),
             sky_color: None,
@@ -442,9 +426,66 @@ impl Renderer {
     pub fn sampler(&self) -> &wgpu::Sampler {
         &self.sampler
     }
-    /// Bind group of cache texture `i` (None if it wasn't uploaded).
+    /// Bind group of cache texture `i` (None if it isn't uploaded: not used yet, or a format
+    /// this GPU path can't take).
     pub fn texture(&self, i: usize) -> Option<&wgpu::BindGroup> {
-        self.textures.get(i)?.as_ref()
+        match self.textures.get(i)? {
+            TexState::Ready(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    /// Upload cache texture `i` if it hasn't been yet (pixels are read from the cache now).
+    pub fn ensure(&mut self, gpu: &Gpu, i: usize) {
+        if !matches!(self.textures.get(i), Some(TexState::Pending)) {
+            return;
+        }
+        let entry = &self.cache.textures[i];
+        let up = self
+            .cache
+            .texture(i)
+            .and_then(|t| crate::texture::plan(t, gpu.bc));
+        let Some(up) = up else {
+            self.textures[i] = TexState::Skipped;
+            self.skipped_textures += 1;
+            return;
+        };
+        let tex = make_texture(gpu, &entry.name, up.format, up.width, up.height);
+        gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &up.data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(up.bytes_per_row),
+                rows_per_image: Some(up.rows),
+            },
+            wgpu::Extent3d {
+                width: up.width,
+                height: up.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+        self.textures[i] = TexState::Ready(group);
     }
 
     fn push(&mut self, bind: Bind, quad: [[f32; 4]; 6]) {
@@ -498,6 +539,11 @@ impl Renderer {
         let (sx, sy) = (2.0 / VIEW_W, 2.0 / VIEW_H);
         let flip = if scene.upside_down { -1.0 } else { 1.0 };
         let ndc = |x: f32, y: f32| [(x - cam_x) * sx - 1.0, flip * ((y - cam_y) * sy - 1.0)];
+        for s in scene.sprites {
+            if let Some(t) = s.texture {
+                self.ensure(gpu, t as usize);
+            }
+        }
         for s in scene.sprites {
             let bind = match s.texture {
                 Some(t) if self.texture(t as usize).is_some() => Bind::Texture(t),
@@ -556,7 +602,7 @@ impl Renderer {
         pass.set_vertex_buffer(0, self.vbuf.slice(..));
         for &(start, n, bind) in &self.batches {
             let group = match bind {
-                Bind::Texture(t) => self.textures[t as usize].as_ref().unwrap(),
+                Bind::Texture(t) => self.texture(t as usize).expect("ensured above"),
                 Bind::Missing(i) => &self.missing[i],
                 Bind::Sky => &self.sky.1,
                 Bind::Hud => &self.hud.1,
