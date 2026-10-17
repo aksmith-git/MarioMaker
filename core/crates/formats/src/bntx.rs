@@ -2,7 +2,11 @@
 //!
 //! BFRES model files embed their textures as a BNTX; `find_embedded` locates it. Pixel data is
 //! returned linear (row-major, top row first), still in its original format (RGBA8 or BCn), which
-//! Apple Silicon GPUs sample directly.
+//! Apple Silicon GPUs sample directly. The few uncompressed formats the engine has no GPU path
+//! for (R8, R8G8, R5G5B5A1: SMM2 UI textures) are expanded to RGBA8 here, with the texture's
+//! channel select kept, so they sample the way the GPU would have sampled the original.
+//!
+//! Array textures (Switch font sheets) keep every layer's mip 0 in [`Texture::layers`].
 
 use crate::error::{Error, Result};
 
@@ -71,8 +75,45 @@ pub struct Texture {
     /// Channel selectors as stored (one byte per output channel R,G,B,A: 0 = zero, 1 = one,
     /// 2 = red, 3 = green, 4 = blue, 5 = alpha).
     pub channel_select: [u8; 4],
-    /// Mip 0, unswizzled to linear element rows.
+    /// Mip 0, unswizzled to linear element rows (layer 0 of an array texture).
     pub data: Vec<u8>,
+    /// Mip 0 of every array layer (layer 0 included) when the texture has more than one.
+    pub layers: Vec<Vec<u8>>,
+}
+
+/// Uncompressed formats that are expanded to RGBA8 on load: format type → bytes per pixel.
+fn expanded_bpp(t: u8) -> Option<usize> {
+    match t {
+        0x02 => Some(1), // R8
+        0x05 => Some(2), // R5G5B5A1
+        0x09 => Some(2), // R8G8
+        _ => None,
+    }
+}
+
+/// Pixels of an expanded format → RGBA8 (missing channels read as 0 and alpha as 1, as the GPU
+/// samples them).
+pub fn expand_to_rgba8(t: u8, src: &[u8]) -> Vec<u8> {
+    match t {
+        0x02 => src.iter().flat_map(|&r| [r, 0, 0, 255]).collect(),
+        0x09 => src
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|p| [p[0], p[1], 0, 255])
+            .collect(),
+        _ => src
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|p| {
+                // R5G5B5A1, red in the low bits [inf: one SMM2 texture, not checked on screen]
+                let v = u16::from_le_bytes(*p) as u32;
+                let c = |s: u32| (((v >> s) & 31) * 255 / 31) as u8;
+                [c(0), c(5), c(10), if v & 0x8000 != 0 { 255 } else { 0 }]
+            })
+            .collect(),
+    }
 }
 
 struct R<'a>(&'a [u8]);
@@ -138,11 +179,15 @@ pub fn parse(bntx: &[u8]) -> Result<Vec<Texture>> {
         let fmt = r.u32(t + 0x1C)?;
         let width = r.u32(t + 0x24)? as usize;
         let height = r.u32(t + 0x28)? as usize;
+        let layer_count = (r.u32(t + 0x30)? as usize).max(1);
         let block_height_log2 = (r.u32(t + 0x34)? & 7) as usize;
+        let image_size = r.u32(t + 0x50)? as usize;
         let channel_select = r.u32(t + 0x58)?.to_le_bytes();
         let name = r.name(r.u64(t + 0x60)?)?;
         let mip0 = r.u64(r.u64(t + 0x70)?)?;
-        let format = PixelFormat::from_type((fmt >> 8) as u8);
+        let type_code = (fmt >> 8) as u8;
+        let expand_bpp = expanded_bpp(type_code);
+        let mut format = PixelFormat::from_type(type_code);
         let variant = match fmt & 0xFF {
             1 => Variant::Unorm,
             2 => Variant::Snorm,
@@ -150,18 +195,26 @@ pub fn parse(bntx: &[u8]) -> Result<Vec<Texture>> {
             v => Variant::Other(v as u8),
         };
         // formats the engine doesn't draw (e.g. two-channel normal maps, 0x902) are skipped
-        let Some((bpe, ew)) = format.element() else {
+        let Some((bpe, ew)) = format.element().or(expand_bpp.map(|b| (b, 1))) else {
             continue;
         };
         let (w_el, h_el) = (width.div_ceil(ew), height.div_ceil(ew));
-        let data = unswizzle(
-            &bntx[mip0.min(bntx.len())..],
-            w_el,
-            h_el,
-            bpe,
-            1 << block_height_log2,
-        )
-        .ok_or_else(|| bad(format!("{name}: image data truncated")))?;
+        // array layers follow each other, each with its whole mip chain
+        let stride = image_size / layer_count;
+        let mut layers = Vec::with_capacity(layer_count);
+        for layer in 0..layer_count {
+            let start = (mip0 + layer * stride).min(bntx.len());
+            let px = unswizzle(&bntx[start..], w_el, h_el, bpe, 1 << block_height_log2)
+                .ok_or_else(|| bad(format!("{name}: image data truncated")))?;
+            layers.push(match expand_bpp {
+                Some(_) => expand_to_rgba8(type_code, &px),
+                None => px,
+            });
+        }
+        if expand_bpp.is_some() {
+            format = PixelFormat::Rgba8;
+        }
+        let data = layers[0].clone();
         out.push(Texture {
             name,
             width,
@@ -171,6 +224,7 @@ pub fn parse(bntx: &[u8]) -> Result<Vec<Texture>> {
             variant,
             channel_select,
             data,
+            layers: if layer_count > 1 { layers } else { Vec::new() },
         });
     }
     Ok(out)
@@ -209,6 +263,55 @@ pub fn unswizzle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_synthetic_textures() {
+        use crate::fixtures::sample_bntx;
+        // RGBA8 sRGB, 20×10 (not a whole GOB), two array layers
+        let l0: Vec<u8> = (0..20 * 10 * 4).map(|i| (i % 253) as u8).collect();
+        let l1: Vec<u8> = l0.iter().map(|v| v ^ 0xFF).collect();
+        let b = sample_bntx(
+            "Tex^u",
+            0x0B06,
+            20,
+            10,
+            4,
+            [2, 3, 4, 5],
+            &[l0.clone(), l1.clone()],
+        );
+        let t = &parse(&b).unwrap()[0];
+        assert_eq!((t.name.as_str(), t.width, t.height), ("Tex^u", 20, 10));
+        assert_eq!((t.format, t.variant), (PixelFormat::Rgba8, Variant::Srgb));
+        assert_eq!(t.data, l0);
+        assert_eq!(t.layers, [l0, l1]);
+        assert_eq!(
+            find_embedded(&[b"pad!".as_slice(), &b].concat()).unwrap(),
+            &b[..]
+        );
+    }
+
+    #[test]
+    fn expands_r8_rg8_and_rgb5a1() {
+        use crate::fixtures::sample_bntx;
+        let b = sample_bntx(
+            "Mask^r",
+            0x0201,
+            4,
+            2,
+            1,
+            [1, 1, 1, 2],
+            &[vec![0, 10, 20, 30, 40, 50, 60, 70]],
+        );
+        let t = &parse(&b).unwrap()[0];
+        assert_eq!(t.format, PixelFormat::Rgba8);
+        assert_eq!(&t.data[4..8], &[10, 0, 0, 255]);
+        assert_eq!(t.channel_select, [1, 1, 1, 2]);
+        assert!(t.layers.is_empty());
+        assert_eq!(expand_to_rgba8(0x09, &[1, 2]), [1, 2, 0, 255]);
+        // R5G5B5A1: red 31, green 0, blue 16, alpha 1
+        let v: u16 = 31 | (16 << 10) | 0x8000;
+        assert_eq!(expand_to_rgba8(0x05, &v.to_le_bytes()), [255, 0, 131, 255]);
+    }
 
     #[test]
     fn unswizzle_first_gob_layout() {

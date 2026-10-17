@@ -62,6 +62,48 @@ Decisions:
 What would change it: the game's per-actor animation state and blend rules, the camera angle
 and actor turn from Ryujinx captures, material render info (translucency, emission), and the
 3D World neighbour-variant rules.
+## 2026-10-18 — SMM2 UI: same cache form as SMM1, scalable fonts rasterised at import
+- **One cache form for both games.** `mmk import-smm2-ui` writes `<out>/manifest.json`
+  (`"game": "SMM2"`) and `ui/{layouts,textures,fonts,messages}` exactly like the SMM1 UI import,
+  so `UiCache`, the FFI and the app load either; messages sit flat in `messages/<archive>/`
+  (SMM2 has no groups) and the reader takes both. Location: `<assets root>/smm2-ui-<build>/`
+  (development copy `~/smm-work/cache/smm2-ui-3.0.3/`), `AppPaths.findSMM2UICache()`
+  (`MMK_UI2_CACHE` first); the asset-cache search skips `smm2-ui-*`.
+- **Text: TrueType/OpenType → bitmap fonts at import.** SMM2's text fonts are scalable
+  (BFTTF/BFOTF behind BFCPX combinations). The importer rasterises, once, every character the
+  chosen language's messages use (plus ASCII and Latin-1) at each combination's authored size
+  into the BFFNT-like grid the player already draws, with `ab_glyph` 0.2.32 — already pinned in
+  Cargo.lock (winit uses it on Linux), built offline, licence Apache-2.0 (ttf-parser MIT/Apache).
+  The player stays a bitmap-font player; no font code at run time. Would change for user text
+  in scripts the import doesn't cover (Japanese course names): bake more, or rasterise at run time.
+- **Metrics we chose [inf]:** line height 1.5 × size, character width = size (SMM2's text panes are
+  authored at 1.5–1.57 height:width, which then scales glyphs evenly); baseline centring the main
+  Latin font's em box; later combination entries win (makes every SMM2 entry reachable); the
+  console's own fonts are missing: UD Kakugo stands in for the system UD gothic, and the
+  controller button icons (U+E0E0… A/B/X/Y/L/R/ZL/ZR/SL/SR/+/−) are drawn as shapes with
+  letters (`smm2_font::button_icon`, community code-point table [inf]). No glyph borders yet.
+- **The title courses go into the UI import too** (`courses/title_course_data_*.bcd`, encrypted
+  as shipped), so the title has its demo even next to an asset cache without built-in courses.
+
+## 2026-10-18 — SMM2 title screen: the game's layouts, inferred choreography, two departures
+- **Layouts and their animations are the game's** (`Play_Title_00`, `Cmn_ClapperboardBtn_00`,
+  `Cmn_MainMenuBtn_00`, `Cmn_Cursor_00`); states and transitions are the title layout's own
+  animations (PressKey / DecideBackBtnTop, DecidePlayBtn / DecideBackBtn) [obs]. Inferred:
+  the screen starts on the "Press L + R" prompt; any menu button brings Make / Play; the cursor
+  is `Cmn_Cursor_00` sized to the selected button's `N_Carsor_00` / `B_Btn_00`; logo letters
+  white over a dark sky (`Type` frame 1), black otherwise; 24 ticks of the button's Decide before
+  the next screen. Details in the private `research/specs/smm2-layouts.md`.
+- **Behind it**: the title courses the engine can play (NSMBU / 3D World ones need the mesh
+  renderer), one after another, with a scripted demo (stand 1 s, walk right, jump every 2 s;
+  next course on death, clear or after 40 s). In the game the player moves Mario there.
+- **Departures:** a fourth Play-menu button "100 Mario Challenge" (a copy of the Coursebot part,
+  castle icon) for the SMM1-style challenge, with the list drawn at 80% so four fit between the
+  logo and the copyright line; Make (Course Maker) only claps and says "coming soon". Story Mode
+  opens the library on its Built-in filter, Course World and Coursebot the library.
+- **Player semantics added [inf]:** window flag bit 0 "one material for all frames" gives every
+  frame the first frame's colours and keeps each frame's texture (SMM2 button shadows); a part
+  property with material usage 1 takes only the enclosing material's colours (Course Maker icon
+  tint). Would change with a frame-by-frame comparison against the game.
 
 ## 2026-10-18 — Bosses (Bowser, Boom Boom / Pom Pom, Bowser Jr.): HP through one hit path
 Every boss hit goes through `Actor::boss_hit(attack)`, which applies the spec's HP rules. Bowser:

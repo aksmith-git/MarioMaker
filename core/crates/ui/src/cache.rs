@@ -148,33 +148,42 @@ impl UiCache {
         Self::default()
     }
 
-    /// Open an imported SMM1 folder (the one holding `manifest.json` and `ui/`).
+    /// Open an imported UI folder (the one holding `manifest.json` and `ui/`): an SMM1 import
+    /// (`mmk import-smm1`) or an SMM2 one (`mmk import-smm2-ui`); both have the same form.
     pub fn open(dir: impl AsRef<Path>) -> Result<Self, UiError> {
         let dir = dir.as_ref().to_path_buf();
         let manifest = read_json(&dir.join("manifest.json"))?;
-        if manifest.get("game").and_then(Value::as_str) != Some("SMM1") {
+        let game = manifest.get("game").and_then(Value::as_str);
+        if !matches!(game, Some("SMM1" | "SMM2")) || !dir.join("ui/layouts").is_dir() {
             return Err(UiError::Invalid(format!(
-                "{} is not an SMM1 UI import",
+                "{} is not an SMM1 or SMM2 UI import",
                 dir.display()
             )));
         }
         let mut message_files = HashMap::new();
-        // LayoutMsg/<group>/<Layout>.json, keyed by layout name; LayoutMsg wins over CommonMsg
+        // <archive>/<group>/<Layout>.json (SMM1) or <archive>/<Layout>.json (SMM2), keyed by
+        // layout name; LayoutMsg wins over CommonMsg
+        fn add_json(dir: &Path, out: &mut HashMap<String, PathBuf>) {
+            let Ok(files) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for f in files.flatten() {
+                let p = f.path();
+                if p.extension().is_some_and(|e| e == "json") {
+                    let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+                    out.insert(stem, p);
+                }
+            }
+        }
         for archive in ["CommonMsg", "LayoutMsg"] {
             let base = dir.join("ui/messages").join(archive);
+            add_json(&base, &mut message_files);
             let Ok(groups) = std::fs::read_dir(&base) else {
                 continue;
             };
             for g in groups.flatten() {
-                let Ok(files) = std::fs::read_dir(g.path()) else {
-                    continue;
-                };
-                for f in files.flatten() {
-                    let p = f.path();
-                    if p.extension().is_some_and(|e| e == "json") {
-                        let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-                        message_files.insert(stem, p);
-                    }
+                if g.path().is_dir() {
+                    add_json(&g.path(), &mut message_files);
                 }
             }
         }

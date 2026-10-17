@@ -52,13 +52,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 final class AppModel: ObservableObject {
     enum Screen {
-        case importer, library, game(GameSession), challenge(ChallengeFlow)
+        case importer, library, game(GameSession), challenge(ChallengeFlow), title(TitleFlow)
     }
 
     @Published var screen: Screen = .library
     @Published private(set) var assets: EngineAssets?
     @Published var errorMessage: String?
     @Published var addCoursesRequested = false
+    /// Filter the library opens with next (the title's Story Mode → Built-in).
+    @Published var libraryStartFilter: LibraryView.Filter?
     let library = CourseLibrary()
     let saves = SaveStore()
 
@@ -87,6 +89,18 @@ final class AppModel: ObservableObject {
         }
         if assets == nil {
             screen = .importer
+        } else if LayoutUI.smm2 != nil && env["MMK_TITLE"] != "off" {
+            // the SMM2 title screen first (MMK_UI_SCREEN=title-main / title-play: captures)
+            let start: TitleScene.State = switch env["MMK_UI_SCREEN"] {
+            case "title-main": .main
+            case "title-play": .category
+            default: .top
+            }
+            library.scan(assets: assets)
+            showTitle(start: start)
+            if case .title(let flow) = screen, let i = env["MMK_UI_SELECT"].flatMap(Int.init) {
+                flow.scene.debugSelectCategory(i)
+            }
         } else {
             showLibrary()
         }
@@ -98,6 +112,29 @@ final class AppModel: ObservableObject {
     func showLibrary() {
         screen = .library
         library.scan(assets: assets)
+    }
+
+    /// The SMM2 title screen (needs the SMM2 UI import; the library otherwise).
+    func showTitle(start: TitleScene.State = .main) {
+        guard let ui = LayoutUI.smm2, let flow = TitleFlow(ui: ui, assets: assets, start: start) else {
+            showLibrary()
+            return
+        }
+        flow.onChoice = { [weak self] choice in self?.titleChoice(choice) }
+        screen = .title(flow)
+    }
+
+    private func titleChoice(_ choice: TitleChoice) {
+        switch choice {
+        case .storyMode:
+            // Story Mode's courses are the built-in ones (the jobs map isn't there yet)
+            libraryStartFilter = .builtIn
+            showLibrary()
+        case .courseWorld, .coursebot:
+            showLibrary()
+        case .hundredMario:
+            showChallenge()
+        }
     }
 
     func showImporter() { screen = .importer }
@@ -206,6 +243,7 @@ struct RootView: View {
             case .library: LibraryView(library: model.library, saves: model.saves)
             case .game(let session): GameView(session: session).id(session.id)
             case .challenge(let flow): ChallengeView(flow: flow).id(flow.id)
+            case .title(let flow): TitleView(flow: flow).id(flow.id)
             }
         }
         .alert("Error", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {

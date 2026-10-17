@@ -16,6 +16,8 @@ serde_json = { version = "1.0.154", features = ["preserve_order"] }
 thiserror = "2.0.21"
 clap = { version = "4.6.7", features = ["derive"] }
 ruzstd = "0.9.1"
+# scalable-font rasterizer for the SMM2 UI import; already locked (winit pulls it in on Linux)
+ab_glyph = { version = "=0.2.32", default-features = false, features = ["std"] }
 lz4_flex = { version = "0.14.0", default-features = false, features = ["safe-decode", "std"] }
 
 [profile.release]

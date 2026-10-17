@@ -47,7 +47,9 @@ enum AppPaths {
         for root in roots {
             list.append(root.appendingPathComponent(preferredBuild, isDirectory: true))
             let others = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
-            list += others.filter { $0.lastPathComponent.hasPrefix("smm2-") }.sorted { $0.path > $1.path }
+            // (smm2-ui-* folders are the SMM2 UI import, not an asset cache)
+            list += others.filter { $0.lastPathComponent.hasPrefix("smm2-") && !$0.lastPathComponent.hasPrefix("smm2-ui-") }
+                .sorted { $0.path > $1.path }
         }
         var seen = Set<String>()
         return list.filter { seen.insert($0.standardizedFileURL.path).inserted }
@@ -80,6 +82,24 @@ enum AppPaths {
     }
 
     static func findSMM1Cache() -> URL? { smm1Candidates().first(where: isAssetCache) }
+
+    /// SMM2 UI import folders (`mmk import-smm2-ui`, drives the title screen and menus), best
+    /// first: `MMK_UI2_CACHE`, then `assets/smm2-ui-<build>/` here, then
+    /// `~/smm-work/cache/smm2-ui-<build>/`, newest build name first.
+    static func smm2UICandidates() -> [URL] {
+        var list: [URL] = []
+        if let d = ProcessInfo.processInfo.environment["MMK_UI2_CACHE"], !d.isEmpty {
+            list.append(URL(fileURLWithPath: d, isDirectory: true))
+        }
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        for root in [assetsRoot, home.appendingPathComponent("smm-work/cache", isDirectory: true)] {
+            let dirs = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+            list += dirs.filter { $0.lastPathComponent.hasPrefix("smm2-ui-") }.sorted { $0.path > $1.path }
+        }
+        return list
+    }
+
+    static func findSMM2UICache() -> URL? { smm2UICandidates().first(where: isAssetCache) }
 
     static func ensureDirectories() {
         for dir in [support, assetsRoot, courses] {

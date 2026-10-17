@@ -547,3 +547,111 @@ fn messages_by_label() {
     assert_eq!(p.message("T_A").as_deref(), Some("plain"));
     assert!(p.message("T_None").is_none());
 }
+
+/// Screen → L_Btn_00 / L_Btn_01 (part "Btn" with one text pane T_Btn_00), as SMM2 builds menus.
+fn smm2_menu(c: &mut UiCache) {
+    use mmk_formats::lyt::{PartProperty, Text};
+    let text = Pane {
+        kind: PaneKind::Text(Text {
+            font_size: [7.0, 9.0],
+            top_color: [255; 4],
+            bottom_color: [255; 4],
+            text: "JP".into(),
+            ..Default::default()
+        }),
+        name: "T_Btn_00".into(),
+        size: [100.0, 20.0],
+        ..Default::default()
+    };
+    let mut btn = layout(
+        "Btn",
+        vec![
+            picture("B_Btn_00", 0, [0.0, 0.0], [40.0, 20.0], vec![]),
+            text.clone(),
+        ],
+    );
+    btn.fonts = vec!["MessageFont.fcpx".into()];
+    add(c, btn);
+    // the screen's part properties carry a text pane with the Japanese placeholder, as SMM2's do
+    let prop = PartProperty {
+        name: "T_Btn_00".into(),
+        usage: 1,
+        pane: Some(Box::new(text)),
+        ..Default::default()
+    };
+    let part = |name: &str, y: f32| Pane {
+        kind: PaneKind::Part(Part {
+            layout: "Btn".into(),
+            magnify: [1.0, 1.0],
+            properties: vec![prop.clone()],
+        }),
+        name: name.into(),
+        translate: [0.0, y, 0.0],
+        size: [40.0, 20.0],
+        ..Default::default()
+    };
+    let group = Pane {
+        name: "N_List_00".into(),
+        translate: [10.0, 0.0, 0.0],
+        children: vec![part("L_Btn_00", 50.0), part("L_Btn_01", 0.0)],
+        ..Default::default()
+    };
+    add(c, layout("Menu", vec![group]));
+    let mut msgs = HashMap::new();
+    msgs.insert("L_Btn_00-T_Btn_00".to_string(), "AB".to_string());
+    msgs.insert("L_Btn_01-T_Btn_00".to_string(), "ABAB".to_string());
+    c.add_messages("Menu", msgs);
+}
+
+#[test]
+fn smm2_part_texts_use_part_pane_labels() {
+    let mut c = sample_cache();
+    smm2_menu(&mut c);
+    let p = LayoutPlayer::new(c.layout("Menu").unwrap());
+    let glyphs = p.draw_list().iter().filter(|q| q.tex0 == 0).count();
+    assert_eq!(glyphs, 6); // "AB" + "ABAB", not the stored "JP"
+}
+
+#[test]
+fn clones_follow_their_source_and_have_their_own_instance() {
+    let mut c = sample_cache();
+    smm2_menu(&mut c);
+    let mut p = LayoutPlayer::new(c.layout("Menu").unwrap());
+    assert!(p.add_clone("L_Btn_01", "L_Btn_02", [0.0, -50.0]));
+    assert!(!p.add_clone("L_Btn_01", "L_Btn_00", [0.0, 0.0])); // name taken
+    assert!(!p.add_clone("N_List_00", "X", [0.0, 0.0])); // not a part
+    assert!(p.set_text("L_Btn_02/T_Btn_00", "A"));
+    let q = p.draw_list();
+    assert_eq!(q.iter().filter(|q| q.tex0 == 0).count(), 7);
+    // the clone's bounding picture sits 50 below the source's, inside the moved group
+    let g = p.pane_global("L_Btn_02/B_Btn_00").unwrap();
+    assert!(close(g.corners[0], [-10.0, -40.0]));
+    let src = p.pane_global("L_Btn_01/B_Btn_00").unwrap();
+    assert!(close(src.corners[3], [30.0, -10.0]));
+    assert!(g.visible && (g.alpha - 1.0).abs() < 1e-6);
+    // hiding the group hides the clone too
+    p.set_visible("N_List_00", Some(false));
+    assert!(!p.pane_global("L_Btn_02/B_Btn_00").unwrap().visible);
+    assert_eq!(p.draw_list().len(), 0);
+}
+
+#[test]
+fn caller_pane_overrides_win_over_animations() {
+    let mut c = sample_cache();
+    let mut p = LayoutPlayer::new(c.layout("Sample").unwrap());
+    p.play("Move", 10.0); // moves P_Box to x 100 → 200
+    let o = PaneOverride {
+        translate: Some([0.0, 0.0]),
+        size: Some([10.0, 20.0]),
+        alpha: Some(51.0),
+        ..Default::default()
+    };
+    assert!(p.set_pane("P_Box", o));
+    let g = p.pane_global("P_Box").unwrap();
+    assert!(close(g.corners[0], [-5.0, 10.0]));
+    assert!((g.alpha - 0.2).abs() < 1e-6);
+    let info = p.pane_info("P_Box").unwrap();
+    assert_eq!(info.size, [10.0, 20.0]);
+    assert!(p.set_pane("P_Box", PaneOverride::default())); // removes it
+    assert!(!p.set_pane("P_None", o));
+}

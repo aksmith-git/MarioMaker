@@ -270,11 +270,25 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   Gamepad API check
 - ⬜ iOS/iPadOS: the Swift app on UIKit/SwiftUI + Metal (shared renderer code), touch controls,
   Files-app import of the owner's dump; installs over Tailscale with the existing tool
-- ⬜ Engine-drawn menus everywhere (layout player), so every platform shows the same screens
+- 🔄 Engine-drawn menus everywhere (layout player), so every platform shows the same screens:
+  SMM2 title + Play menu and the SMM1 100 Mario screens in the Swift app; not yet in `mmk-play`
 
-### Phase 9 — SMM2 single-player like-for-like ⬜ (owner request 2026-10-18)
-- ⬜ SMM2 layouts: Switch BFLYT/BFLAN + BNTX textures through the same layout player; title
-  screen, main menu, Course World, Story Mode map, pause, clear/death screens, HUD
+### Phase 9 — SMM2 single-player like-for-like 🔄 (owner request 2026-10-18)
+- 🔄 SMM2 layouts through the same layout player (private map: `research/specs/smm2-layouts.md`):
+  - ✅ formats: Switch BFLYT/BFLAN 9.0 (all 531 layouts, 2328 animations parse), BNTX textures
+    (all 3249 incl. R8/RG8/RGB5A1 → RGBA8), Switch BFFNT 4.1 (BNTX sheets), BFCPX font
+    combinations, BFTTF/BFOTF scalable fonts
+  - ✅ import `mmk import-smm2-ui <romfs> <out> [--exefs]` → `~/smm-work/cache/smm2-ui-3.0.3/`
+    (same cache form as the SMM1 UI; scalable fonts rasterised into bitmap fonts with ab_glyph;
+    console button icons drawn; the title courses copied)
+  - ✅ player: `<Part>-<Pane>` message labels, part clones, caller pane overrides, global pane
+    rectangles, "one material for all frames" windows, colour-only part material overrides [inf]
+  - ✅ title screen at app launch (when the import exists) over a scripted demo of the playable
+    title courses: prompt → Make (coming soon) / Play → Story Mode (library, Built-in filter),
+    Course World / Coursebot (library), 100 Mario Challenge (extra button, SMM1 flow); game
+    cursor, logo colour by course; keyboard + controller; screenshots `MMK_UI_SCREEN=title*`
+  - ⬜ boot scene, fades, FLCT per-character text, glyph borders; Course World (`Nwk_Title_00`),
+    Story Mode map (`Qst_*`), pause, clear / death screens, HUD; title in `mmk-play`
 - 🔄 All five styles (SMB1, SMB3, SMW, NSMBU, 3D World) and all themes (day/night) — all five
   playable; 3D World-only parts (! block, crate, tree, …) ⬜
 - ✅ Warp Box (97-warp-box.md): pairs 2k ↔ 2k+1 in the same area, entered by touch (no button),

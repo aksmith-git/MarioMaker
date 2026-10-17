@@ -12,6 +12,9 @@ import Metal
 /// card after a death). MMK_UI_DIFFICULTY=<0-3> picks the difficulty (default 0).
 /// MMK_UI_TICKS=<n>: SMM1 layout screens run straight to tick n and hold there (in-course overlays:
 /// n ticks after they appear), so captures are deterministic.
+/// SMM2 title (at launch; see SMM2Title.swift): title (prompt), title-main (Make / Play),
+/// title-play (Play menu; MMK_UI_SELECT=<n> picks the button); MMK_UI_INPUT=<tick>:<button>,…
+/// presses menu buttons at scene ticks; MMK_TITLE_COURSE=<n> picks the demo course.
 ///
 /// Waits, renders the main window's content (or the Settings window) into a PNG and quits.
 /// Window snapshots can't see Metal layers, so while this is set the renderer keeps a copy of its

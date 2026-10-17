@@ -15,6 +15,8 @@
 //!          u32 keys_offset (from the entry)
 //! keys     hermite: f32 frame, f32 value, f32 slope · step: f32 frame, u16 value, pad[2]
 //! ```
+//! Switch files (version 8+, SMM2: 9.0) insert a u32 (zero in every SMM2 file) before the start /
+//! end frames of pat1; everything else is laid out the same.
 
 use super::{Reader, file_header, sections};
 use crate::error::Result;
@@ -146,8 +148,13 @@ impl Animation {
                     let groups = r.u16(b + 2)? as usize;
                     anim.name = r.cstr(o + r.u32(b + 4)? as usize)?;
                     let go = o + r.u32(b + 8)? as usize;
-                    anim.start_frame = r.i16(b + 12)?;
-                    anim.end_frame = r.i16(b + 14)?;
+                    let frames = if super::bflyt::is_nx(h.version) {
+                        b + 16
+                    } else {
+                        b + 12
+                    };
+                    anim.start_frame = r.i16(frames)?;
+                    anim.end_frame = r.i16(frames + 2)?;
                     anim.groups = (0..groups)
                         .map(|i| r.cstr(go + i * 0x24))
                         .collect::<Result<_>>()?;
@@ -248,6 +255,17 @@ mod tests {
         let m = a.content("M_Box").unwrap();
         assert_eq!(m.kind, 1);
         assert_eq!(m.tags[0].entries[0].keys[1].value, 1.0);
+    }
+
+    #[test]
+    fn parses_switch_animation() {
+        let a = Animation::parse(&crate::fixtures::sample_bflan_nx()).unwrap();
+        assert_eq!(a.name, "Fade");
+        assert_eq!((a.start_frame, a.end_frame), (300, 310));
+        assert_eq!(a.groups, ["G_All"]);
+        let e = &a.content("T_Msg").unwrap().tags[0].entries[0];
+        assert_eq!(e.target, 16);
+        assert!((e.eval(5.0) - 127.5).abs() < 1e-3);
     }
 
     #[test]

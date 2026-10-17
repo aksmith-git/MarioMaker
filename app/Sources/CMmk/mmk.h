@@ -219,6 +219,19 @@ bool mmk_ui_set_visible(MmkUiLayout *layout, const char *pane, int32_t visible);
 bool mmk_ui_pane(const MmkUiLayout *layout, const char *pane, MmkUiPane *out);
 // message by label (own table, else a part's); value tags become U+FFFC. Length; 0 = none
 size_t mmk_ui_message(const MmkUiLayout *layout, const char *label, char *buf, size_t cap);
+// Where a pane is drawn: corners TL, TR, BL, BR (x, y) in layout units, global alpha 0-1.
+typedef struct {
+    float corners[8];
+    float alpha;
+    uint32_t visible;
+} MmkUiRect;
+bool mmk_ui_pane_rect(const MmkUiLayout *layout, const char *pane, MmkUiRect *out);
+// Force values over the animations: flags 1 translate (tx, ty), 2 size (w, h), 4 scale (sx, sy),
+// 8 alpha (0-255); flags 0 removes the override.
+bool mmk_ui_set_pane(MmkUiLayout *layout, const char *pane, uint32_t flags, float tx, float ty,
+                     float w, float h, float sx, float sy, float alpha);
+// Copy part pane `part` as `name`, moved by (dx, dy); it follows the original's animations.
+bool mmk_ui_add_clone(MmkUiLayout *layout, const char *part, const char *name, float dx, float dy);
 
 // --- meshes (core/crates/ffi/src/mesh.rs) ------------------------------------------------------
 // NSMBU / 3D World models from the asset cache (meshes/, anims/), loaded on first use and kept

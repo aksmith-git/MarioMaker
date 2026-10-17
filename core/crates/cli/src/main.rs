@@ -80,6 +80,20 @@ enum Cmd {
         #[arg(long, default_value = "USen")]
         language: String,
     },
+    /// Import the SMM2 UI (layouts, animations, textures, fonts, text) from the user's own
+    /// extracted RomFS into a layout-player cache folder (same form as `import-smm1`).
+    ImportSmm2Ui {
+        /// Extracted RomFS (update applied).
+        romfs: PathBuf,
+        /// Output folder, e.g. ~/smm-work/cache/smm2-ui-3.0.3
+        out: PathBuf,
+        /// Extracted ExeFS, to name the build in the manifest.
+        #[arg(long)]
+        exefs: Option<PathBuf>,
+        /// Message language suffix.
+        #[arg(long, default_value = "USen")]
+        language: String,
+    },
     /// Decode a BFLYT / BFLAN / BFFNT / MSBT file (Yaz0 removed) and print it as JSON.
     Lyt { file: PathBuf },
     /// Run the open-source course server (courses + index in DIR).
@@ -730,6 +744,49 @@ fn main() -> ExitCode {
                     }
                     println!(
                         "imported SMM1 {} UI: {} layouts, {} animations, {} textures, {} fonts, {} message files ({} skipped) into {}",
+                        r.build,
+                        r.layouts,
+                        r.animations,
+                        r.textures,
+                        r.fonts,
+                        r.messages,
+                        r.skipped.len(),
+                        r.out_dir.display()
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("import failed: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Cmd::ImportSmm2Ui {
+            romfs,
+            out,
+            exefs,
+            language,
+        } => {
+            let cfg = mmk_import::Smm2UiConfig {
+                romfs,
+                exefs,
+                out,
+                language,
+            };
+            let mut last = String::new();
+            let mut progress = |stage: &str, done: usize, total: usize| {
+                if stage != last || done == total {
+                    eprintln!("{stage}: {done}/{total}");
+                    last = stage.to_string();
+                }
+            };
+            match mmk_import::run_smm2_ui(&cfg, &mut progress) {
+                Ok(r) => {
+                    for s in &r.skipped {
+                        eprintln!("skipped: {s}");
+                    }
+                    println!(
+                        "imported SMM2 {} UI: {} layouts, {} animations, {} textures, {} fonts, {} message files ({} skipped) into {}",
                         r.build,
                         r.layouts,
                         r.animations,

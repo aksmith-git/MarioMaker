@@ -28,6 +28,9 @@ pub mod sprites;
 pub const IMPORTER_VERSION: u32 = 5;
 pub mod smm1;
 pub use smm1::{Smm1Config, Smm1Report, run_smm1};
+pub mod smm2_font;
+pub mod smm2_ui;
+pub use smm2_ui::{Smm2UiConfig, Smm2UiReport, run_smm2_ui};
 
 /// Builds this importer knows, identified by the NSO module id (first 16 bytes; the rest is 0).
 pub const KNOWN_BUILDS: &[(&str, &str)] = &[

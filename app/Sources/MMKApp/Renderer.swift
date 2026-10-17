@@ -258,12 +258,12 @@ final class Renderer: NSObject, MTKViewDelegate {
         if mmk_engine_clear_condition(engine, &cond) { text += "    " + ClearConditionText.describe(cond) }
         let stripH = 18.0
         let tw = Int(vw), th = Int(stripH * scale)
-        if text != hudText || hudSize != (tw, th) {
+        if !session.hideHud && (text != hudText || hudSize != (tw, th)) {
             hudText = text
             hudSize = (tw, th)
             hudTexture = makeTextTexture(text, width: tw, height: th)
         }
-        if let tex = hudTexture {
+        if !session.hideHud, let tex = hudTexture {
             var ident = SIMD4<Float>(1, 1, 0, 0)
             enc.setVertexBytes(&ident, length: 16, index: 1)
             let y0 = Float(1 - 2 * stripH / Double(snap.view_h))
@@ -290,6 +290,12 @@ final class Renderer: NSObject, MTKViewDelegate {
                 ui.encode(enc2, layers: layers)
                 enc2.endEncoding()
             }
+        }
+        // a layout screen over the course (SMM2 title over its demo course)
+        if let (scene, ui) = session.sceneOverlay {
+            let layers = scene.layers
+            for l in layers { l.apply(tick: scene.tick) }
+            ui.encode(enc, layers: layers)
         }
 
         if let path = screenshot, snap.tick >= screenshotTicks {

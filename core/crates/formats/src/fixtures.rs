@@ -4,21 +4,53 @@
 use crate::lyt::bflan::MAGIC as FLAN;
 use crate::lyt::bflyt::MAGIC as FLYT;
 
+/// Byte writer: big-endian (Wii U) by default, little-endian (Switch) with [`W::le`].
 #[derive(Default)]
-pub struct W(pub Vec<u8>);
+pub struct W(pub Vec<u8>, pub bool);
 
 impl W {
+    pub fn le() -> Self {
+        Self(Vec::new(), true)
+    }
     pub fn u8(&mut self, v: u8) -> &mut Self {
         self.0.push(v);
         self
     }
     pub fn u16(&mut self, v: u16) -> &mut Self {
-        self.0.extend_from_slice(&v.to_be_bytes());
+        let b = if self.1 {
+            v.to_le_bytes()
+        } else {
+            v.to_be_bytes()
+        };
+        self.0.extend_from_slice(&b);
         self
     }
     pub fn u32(&mut self, v: u32) -> &mut Self {
-        self.0.extend_from_slice(&v.to_be_bytes());
+        let b = if self.1 {
+            v.to_le_bytes()
+        } else {
+            v.to_be_bytes()
+        };
+        self.0.extend_from_slice(&b);
         self
+    }
+    pub fn u64(&mut self, v: u64) -> &mut Self {
+        let b = if self.1 {
+            v.to_le_bytes()
+        } else {
+            v.to_be_bytes()
+        };
+        self.0.extend_from_slice(&b);
+        self
+    }
+    /// Overwrite a u32 already written at `at`.
+    pub fn put_u32(&mut self, at: usize, v: u32) {
+        let b = if self.1 {
+            v.to_le_bytes()
+        } else {
+            v.to_be_bytes()
+        };
+        self.0[at..at + 4].copy_from_slice(&b);
     }
     pub fn f32(&mut self, v: f32) -> &mut Self {
         self.u32(v.to_bits())
@@ -66,6 +98,253 @@ pub fn file(magic: &[u8; 4], version: u32, sections: &[Vec<u8>]) -> Vec<u8> {
     v.extend_from_slice(&[0, 0]);
     v.extend_from_slice(&body);
     v
+}
+
+/// A Switch section (little-endian size).
+pub fn section_le(magic: &[u8; 4], body: &[u8]) -> Vec<u8> {
+    let mut v = magic.to_vec();
+    v.extend_from_slice(&((body.len() + 8) as u32).to_le_bytes());
+    v.extend_from_slice(body);
+    v
+}
+
+/// A whole Switch file: 0x14-byte little-endian header + sections.
+pub fn file_le(magic: &[u8; 4], version: u32, sections: &[Vec<u8>]) -> Vec<u8> {
+    let body: Vec<u8> = sections.concat();
+    let mut v = magic.to_vec();
+    v.extend_from_slice(&[0xFF, 0xFE]);
+    v.extend_from_slice(&0x14u16.to_le_bytes());
+    v.extend_from_slice(&version.to_le_bytes());
+    v.extend_from_slice(&((0x14 + body.len()) as u32).to_le_bytes());
+    v.extend_from_slice(&(sections.len() as u16).to_le_bytes());
+    v.extend_from_slice(&[0, 0]);
+    v.extend_from_slice(&body);
+    v
+}
+
+/// A Switch (v9.0) layout like the SMM2 ones: Root → [P_Box (picture, Switch material with a
+/// 16-byte coordinate generator), L_Btn (part "Sample" with a text override), T_Msg (text)],
+/// group G_All in the Switch form, texture names without an extension.
+pub fn sample_bflyt_nx() -> Vec<u8> {
+    let mut lyt = W::le();
+    lyt.u8(1)
+        .bytes(&[0; 3])
+        .f32(1280.0)
+        .f32(720.0)
+        .f32(0.0)
+        .f32(0.0);
+    lyt.bytes(b"SampleNx\0").pad_to(4);
+    let mut txl = W::le();
+    txl.u16(1).u16(0).u32(4).bytes(b"Box^s\0").pad_to(4);
+    let mut fnl = W::le();
+    fnl.u16(1)
+        .u16(0)
+        .u32(4)
+        .bytes(b"MessageFont.fcpx\0")
+        .pad_to(4);
+    // Switch material: name, flags, 00 02 04 08, black, white, then the usual blocks
+    let mut mat = W::le();
+    mat.name("M_Box", 0x1C);
+    mat.u32(1 | (1 << 2) | (1 << 4));
+    mat.bytes(&[0, 2, 4, 8]);
+    mat.bytes(&[10, 20, 30, 0]).bytes(&[200, 100, 50, 255]);
+    mat.u16(0).u8(1).u8(0);
+    mat.f32(0.25).f32(0.0).f32(0.0).f32(1.0).f32(1.0);
+    mat.u8(0).u8(0).u16(0).bytes(&[0; 12]); // 16-byte coordinate generator
+    let mut mat_t = W::le();
+    mat_t.name("T_Msg", 0x1C).u32(0).bytes(&[0, 2, 4, 8]);
+    mat_t.bytes(&[0, 0, 0, 0]).bytes(&[28, 3, 3, 255]);
+    let mut mat1 = W::le();
+    let first = 8 + 4 + 8;
+    mat1.u16(2)
+        .u16(0)
+        .u32(first as u32)
+        .u32((first + mat.len()) as u32);
+    mat1.bytes(&mat.0).bytes(&mat_t.0);
+
+    let block = |w: &mut W, name: &str, t: [f32; 2], size: [f32; 2]| {
+        w.u8(1).u8(0).u8(255).u8(0).name(name, 24).name("", 8);
+        w.f32(t[0]).f32(t[1]).f32(0.0);
+        w.f32(0.0).f32(0.0).f32(0.0);
+        w.f32(1.0).f32(1.0);
+        w.f32(size[0]).f32(size[1]);
+    };
+    let mut root = W::le();
+    block(&mut root, "RootPane", [0.0, 0.0], [1280.0, 720.0]);
+    let mut pic = W::le();
+    block(&mut pic, "P_Box", [100.0, -50.0], [64.0, 32.0]);
+    for _ in 0..4 {
+        pic.bytes(&[255, 255, 255, 255]);
+    }
+    pic.u16(0).u8(1).u8(0);
+    for uv in [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]] {
+        pic.f32(uv[0]).f32(uv[1]);
+    }
+    let text_block = |w: &mut W, name: &str, text: &str| {
+        let start = w.len();
+        block(w, name, [0.0, 0.0], [300.0, 40.0]);
+        let utf: Vec<u8> = text.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        let text_at = 8 + 0x4C + 0x54; // section header + pane block + text fields
+        w.u16(32).u16(utf.len() as u16 + 2).u16(1).u16(0);
+        w.u8(0).u8(2).u8(0).u8(0).f32(0.0);
+        w.u32(text_at as u32);
+        w.bytes(&[255; 4]).bytes(&[255; 4]);
+        w.f32(24.0).f32(36.0).f32(0.0).f32(0.0);
+        w.u32(0); // text id
+        w.f32(1.0).f32(-1.0).f32(1.0).f32(1.0);
+        w.bytes(&[0, 0, 0, 255]).bytes(&[0, 0, 0, 255]).f32(0.0);
+        w.u32(0).u32(0); // per-character transform, (unknown)
+        debug_assert_eq!(w.len() - start + 8, text_at);
+        w.bytes(&utf).u16(0).pad_to(4);
+    };
+    let mut txt = W::le();
+    text_block(&mut txt, "T_Msg", "Hi");
+    // part pane L_Btn → layout "Sample", overriding T_Label's text (a txt1 inside the prt1)
+    let mut prt = W::le();
+    block(&mut prt, "L_Btn", [0.0, -100.0], [200.0, 80.0]);
+    prt.u32(1).f32(1.0).f32(1.0);
+    let prop = prt.len();
+    prt.name("T_Label", 24).u8(1).u8(0).u8(0).u8(0);
+    prt.u32(0).u32(0).u32(0); // pane, user data, basic info offsets (patched)
+    prt.bytes(b"Sample\0").pad_to(4);
+    let pane_off = prt.len() + 8;
+    let mut over = W::le();
+    text_block(&mut over, "T_Label", "Ov");
+    let over = section_le(b"txt1", &over.0);
+    prt.bytes(&over);
+    prt.put_u32(prop + 28, pane_off as u32);
+
+    let mut grp = W::le();
+    grp.name("G_All", 0x22)
+        .u16(2)
+        .name("P_Box", 24)
+        .name("T_Msg", 24);
+
+    file_le(
+        FLYT,
+        0x0900_0000,
+        &[
+            section_le(b"lyt1", &lyt.0),
+            section_le(b"txl1", &txl.0),
+            section_le(b"fnl1", &fnl.0),
+            section_le(b"mat1", &mat1.0),
+            section_le(b"pan1", &root.0),
+            section_le(b"pas1", &[]),
+            section_le(b"pic1", &pic.0),
+            section_le(b"prt1", &prt.0),
+            section_le(b"txt1", &txt.0),
+            section_le(b"pae1", &[]),
+            section_le(b"grp1", &grp.0),
+        ],
+    )
+}
+
+/// A Switch (v9.0) animation "Fade": T_Msg alpha 0 → 255 over 10 frames, pat1 with the extra
+/// u32 before the frame range (start 300, end 310).
+pub fn sample_bflan_nx() -> Vec<u8> {
+    let mut pat = W::le();
+    pat.u16(0).u16(1).u32(0x20).u32(0x28).u32(0);
+    pat.u16(300).u16(310).u8(0).bytes(&[0; 3]);
+    pat.bytes(b"Fade\0\0\0\0").name("G_All", 0x24);
+    let mut pai = W::le();
+    pai.u16(10).u8(0).u8(0).u16(0).u16(1).u32(0x14);
+    pai.u32(0x18); // content 0 (from the section start)
+    pai.name("T_Msg", 28).u8(1).u8(0).u16(0).u32(0x24);
+    pai.bytes(b"FLVC").u8(1).bytes(&[0; 3]).u32(12);
+    pai.u8(0).u8(16).u8(2).u8(0).u16(2).u16(0).u32(12);
+    pai.f32(0.0).f32(0.0).f32(0.0).f32(10.0).f32(255.0).f32(0.0);
+    file_le(
+        FLAN,
+        0x0900_0000,
+        &[section_le(b"pat1", &pat.0), section_le(b"pai1", &pai.0)],
+    )
+}
+
+/// A minimal BNTX holding one `w`×`h` texture of BNTX format word `format` with `layers` array
+/// layers. `pixels` is the linear image of each layer (block height 1 GOB; it is swizzled here).
+pub fn sample_bntx(
+    name: &str,
+    format: u32,
+    w: usize,
+    h: usize,
+    bpe: usize,
+    channel_select: [u8; 4],
+    layers: &[Vec<u8>],
+) -> Vec<u8> {
+    // swizzle each layer into block-linear (inverse of bntx::unswizzle, block height 1)
+    let gobs_per_row = (w * bpe).div_ceil(64);
+    let layer_size = gobs_per_row * h.div_ceil(8) * 512;
+    let mut image = vec![0u8; layer_size * layers.len()];
+    for (li, px) in layers.iter().enumerate() {
+        for y in 0..h {
+            for x in 0..w {
+                let xb = x * bpe;
+                let gob = (y / 8) * 512 * gobs_per_row + (xb / 64) * 512;
+                let addr = gob
+                    + (xb % 64) / 32 * 256
+                    + (y % 8) / 2 * 64
+                    + (xb % 32) / 16 * 32
+                    + (y % 2) * 16
+                    + xb % 16;
+                let src = (y * w + x) * bpe;
+                image[li * layer_size + addr..li * layer_size + addr + bpe]
+                    .copy_from_slice(&px[src..src + bpe]);
+            }
+        }
+    }
+    let mut b = W::le();
+    b.bytes(b"BNTX")
+        .u32(0)
+        .u32(0x0004_0000)
+        .u16(0xFEFF)
+        .u16(0x40C);
+    b.u32(0).u32(0).u32(0).u32(0); // name, reloc, file size (patched at 0x1C)
+    b.bytes(b"NX  ").u32(1).u64(0x40); // count, info pointer table at 0x40
+    b.pad_to(0x40);
+    b.u64(0x48); // → BRTI
+    let brti = b.len();
+    b.bytes(b"BRTI").u32(0xA0).u64(0xA0);
+    b.u8(1)
+        .u8(2)
+        .u16(0)
+        .u16(0)
+        .u16(1)
+        .u32(1)
+        .u32(format)
+        .u32(0x20);
+    b.u32(w as u32)
+        .u32(h as u32)
+        .u32(1)
+        .u32(layers.len() as u32)
+        .u32(0)
+        .u32(0x10007);
+    b.bytes(&[0; 20]);
+    b.u32(image.len() as u32)
+        .u32(0x200)
+        .bytes(&channel_select)
+        .u32(1);
+    let name_ptr = b.len();
+    b.u64(0).u64(0).u64(0); // name, parent, mip pointer table (patched)
+    b.pad_to(brti + 0xA0);
+    let name_at = b.len();
+    b.u16(name.len() as u16)
+        .bytes(name.as_bytes())
+        .u8(0)
+        .pad_to(8);
+    let mips_at = b.len();
+    b.u64(0);
+    b.pad_to(0x200);
+    let data_at = b.len();
+    b.bytes(&image);
+    let total = b.len() as u32;
+    let mut out = b.0;
+    let put64 =
+        |out: &mut Vec<u8>, at: usize, v: u64| out[at..at + 8].copy_from_slice(&v.to_le_bytes());
+    out[0x1C..0x20].copy_from_slice(&total.to_le_bytes());
+    put64(&mut out, name_ptr, name_at as u64);
+    put64(&mut out, name_ptr + 16, mips_at as u64);
+    put64(&mut out, mips_at, data_at as u64);
+    out
 }
 
 pub fn pane_block(w: &mut W, name: &str, origin: u8, t: [f32; 2], size: [f32; 2]) {

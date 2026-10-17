@@ -282,12 +282,22 @@ struct LibraryView: View {
                 Button { model.showChallenge() } label: { Label("100 Mario Challenge", systemImage: "flag.checkered") }
                     .help("100 lives to clear a run of random playable courses from the library")
                     .disabled(model.assets == nil)
+                if LayoutUI.smm2 != nil {
+                    Button { model.showTitle() } label: { Label("Title screen", systemImage: "house") }
+                        .help("Back to the title screen")
+                }
                 Menu {
                     Button("Rescan library") { library.scan(assets: model.assets) }
                     Button("Show library folder in Finder") { NSWorkspace.shared.open(library.folder) }
                     Divider()
                     Button("Import game data…") { model.showImporter() }
                 } label: { Label("More", systemImage: "ellipsis.circle") }
+            }
+        }
+        .onAppear {
+            if let f = model.libraryStartFilter {
+                filter = f
+                model.libraryStartFilter = nil
             }
         }
         .onChange(of: model.addCoursesRequested) {

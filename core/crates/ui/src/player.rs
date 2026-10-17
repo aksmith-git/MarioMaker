@@ -160,11 +160,43 @@ fn uv_rect(u0: f32, v0: f32, u1: f32, v1: f32) -> [[f32; 2]; 4] {
     [[u0, v0], [u1, v0], [u0, v1], [u1, v1]]
 }
 
+/// Values a caller forces on a pane over its animations (`LayoutPlayer::set_pane`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PaneOverride {
+    pub translate: Option<[f32; 2]>,
+    pub size: Option<[f32; 2]>,
+    pub scale: Option<[f32; 2]>,
+    /// 0–255.
+    pub alpha: Option<f32>,
+}
+
+/// A pane's place on screen (`LayoutPlayer::pane_global`): its rectangle's corners in layout
+/// space (TL, TR, BL, BR), its global alpha (0–1) and whether it and all its parents are shown.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PaneGlobal {
+    pub corners: [[f32; 2]; 4],
+    pub alpha: f32,
+    pub visible: bool,
+}
+
+/// A copy of a part pane drawn next to the original (`LayoutPlayer::add_clone`): same parent,
+/// same animated values, moved by `offset`, with its own part instance.
+#[derive(Clone, Debug)]
+struct PartClone {
+    src: usize,
+    name: String,
+    offset: [f32; 2],
+    inst: LayoutPlayer,
+}
+
 /// A playing instance of a layout (its part panes get their own instances).
 #[derive(Clone, Debug)]
 pub struct LayoutPlayer {
     res: Arc<LayoutRes>,
     anims: Vec<(String, f32)>,
+    /// Caller overrides by node index (applied after animations).
+    overrides: HashMap<usize, PaneOverride>,
+    clones: Vec<PartClone>,
     /// Texts set by the caller (`set_text`), by pane name.
     texts: HashMap<String, String>,
     /// Message ids given to this part's text panes by the enclosing layout's part properties,
@@ -177,9 +209,12 @@ pub struct LayoutPlayer {
     /// bits, values). See [`PartBasicInfo`] for the bits.
     basic_overrides: HashMap<String, (u8, Option<PartBasicInfo>)>,
     /// Picture panes whose content (material, texture coordinates, colours) the enclosing
-    /// layout replaces: pane name → (enclosing layout, its replacement pane). The material is
-    /// one of the enclosing layout's (e.g. the number on each world-map course dot).
-    pane_overrides: HashMap<String, (Arc<LayoutRes>, Pane)>,
+    /// layout replaces: pane name → (enclosing layout, its replacement pane, material usage).
+    /// The material is one of the enclosing layout's (e.g. the number on each world-map course
+    /// dot). Material usage 1 takes only that material's colours and keeps the part's own
+    /// textures [inf: SMM2's Course Maker / World Maker icons are tinted this way; SMM1 only
+    /// uses 0].
+    pane_overrides: HashMap<String, (Arc<LayoutRes>, Pane, u8)>,
 }
 
 /// A pane's values after the bound animations (`LayoutPlayer::pane_info`), in its parent's space.
@@ -194,14 +229,31 @@ pub struct PaneInfo {
     pub visible: bool,
 }
 
-/// Message tables of the enclosing layouts, outermost (the screen) first.
-type MessageChain<'a> = [&'a HashMap<String, String>];
+/// Message tables of the enclosing layouts, outermost (the screen) first, each with the name of
+/// its part pane that leads to the layout being drawn (SMM2 labels a part's text
+/// `<PartPane>-<TextPane>` in the enclosing layout's table).
+type MessageChain<'a> = [(&'a HashMap<String, String>, &'a str)];
+
+/// Everything one evaluation of a layout gives, per node.
+struct Pass {
+    panes: Vec<PaneState>,
+    mats: Vec<MatState>,
+    mtx: Vec<Mtx>,
+    /// Global alpha (0–1).
+    alpha: Vec<f32>,
+    /// Alpha handed to descendants (influenced alpha).
+    passed: Vec<f32>,
+    visible: Vec<bool>,
+}
 
 struct Ctx<'a> {
     res: &'a LayoutRes,
     mats: &'a [MatState],
     /// Size of the pane being drawn (projection texture coordinates).
     pane_size: std::cell::Cell<[f32; 2]>,
+    /// Material colours (black, white) every quad takes while drawing the frames of a window
+    /// with "one material for all frames".
+    frame_colors: std::cell::Cell<Option<([u8; 4], [u8; 4])>>,
 }
 
 /// Corner positions of a quad for projected texture coordinates: in the pane's own space and in
@@ -212,46 +264,56 @@ struct Corners {
 }
 
 impl LayoutPlayer {
+    /// The instance drawn by part pane `p` of layout `res`, with `p`'s property overrides.
+    fn part_instance(res: &Arc<LayoutRes>, p: &mmk_formats::lyt::Part) -> Option<LayoutPlayer> {
+        let sub = res.parts.get(&p.layout)?;
+        let mut inst = LayoutPlayer::new(sub.clone());
+        for prop in &p.properties {
+            if prop.basic_usage != 0 {
+                inst.basic_overrides
+                    .insert(prop.name.clone(), (prop.basic_usage, prop.basic.clone()));
+            }
+            if let Some(pane) = &prop.pane
+                && matches!(pane.kind, PaneKind::Picture(_))
+            {
+                inst.pane_overrides.insert(
+                    prop.name.clone(),
+                    (res.clone(), (**pane).clone(), prop.material_usage),
+                );
+            }
+        }
+        // text overrides carried by the part pane's properties: a message id that the screen's
+        // message table (or an enclosing layout's) resolves when drawing
+        for prop in &p.properties {
+            if let Some(pane) = &prop.pane
+                && let PaneKind::Text(t) = &pane.kind
+            {
+                let label = if t.text_id.is_empty() {
+                    pane.name.clone()
+                } else {
+                    t.text_id.clone()
+                };
+                inst.text_ids
+                    .insert(prop.name.clone(), (label, t.text.clone()));
+            }
+        }
+        Some(inst)
+    }
+
     pub fn new(res: Arc<LayoutRes>) -> Self {
         let mut parts = HashMap::new();
         for (i, n) in res.nodes.iter().enumerate() {
             if let PaneKind::Part(p) = &n.pane.kind
-                && let Some(sub) = res.parts.get(&p.layout)
+                && let Some(inst) = Self::part_instance(&res, p)
             {
-                let mut inst = LayoutPlayer::new(sub.clone());
-                for prop in &p.properties {
-                    if prop.basic_usage != 0 {
-                        inst.basic_overrides
-                            .insert(prop.name.clone(), (prop.basic_usage, prop.basic.clone()));
-                    }
-                    if let Some(pane) = &prop.pane
-                        && matches!(pane.kind, PaneKind::Picture(_))
-                    {
-                        inst.pane_overrides
-                            .insert(prop.name.clone(), (res.clone(), (**pane).clone()));
-                    }
-                }
-                // text overrides carried by the part pane's properties: a message id that the
-                // screen's message table (or an enclosing layout's) resolves when drawing
-                for prop in &p.properties {
-                    if let Some(pane) = &prop.pane
-                        && let PaneKind::Text(t) = &pane.kind
-                    {
-                        let label = if t.text_id.is_empty() {
-                            pane.name.clone()
-                        } else {
-                            t.text_id.clone()
-                        };
-                        inst.text_ids
-                            .insert(prop.name.clone(), (label, t.text.clone()));
-                    }
-                }
                 parts.insert(i, inst);
             }
         }
         Self {
             res,
             anims: Vec::new(),
+            overrides: HashMap::new(),
+            clones: Vec::new(),
             texts: HashMap::new(),
             text_ids: HashMap::new(),
             parts,
@@ -274,21 +336,141 @@ impl LayoutPlayer {
         self.res.animations.keys().cloned().collect()
     }
 
-    /// The part instance for a `/`-separated path of part pane names.
+    /// The part instance for a `/`-separated path of part pane (or clone) names.
     fn part_mut(&mut self, path: &[&str]) -> Option<&mut LayoutPlayer> {
         let Some((first, rest)) = path.split_first() else {
             return Some(self);
         };
-        let idx = *self.res.pane_index.get(*first)?;
-        self.parts.get_mut(&idx)?.part_mut(rest)
+        let inst = match self.res.pane_index.get(*first) {
+            Some(idx) => self.parts.get_mut(idx)?,
+            None => &mut self.clones.iter_mut().find(|c| c.name == *first)?.inst,
+        };
+        inst.part_mut(rest)
     }
 
     fn part_ref(&self, path: &[&str]) -> Option<&LayoutPlayer> {
         let Some((first, rest)) = path.split_first() else {
             return Some(self);
         };
-        let idx = *self.res.pane_index.get(*first)?;
-        self.parts.get(&idx)?.part_ref(rest)
+        let inst = match self.res.pane_index.get(*first) {
+            Some(idx) => self.parts.get(idx)?,
+            None => &self.clones.iter().find(|c| c.name == *first)?.inst,
+        };
+        inst.part_ref(rest)
+    }
+
+    /// Draw a copy of part pane `path` (`[PartPane/…/]Part`) named `name`, `offset` away from it
+    /// in its parent's space. The copy follows the original's animated values and has its own
+    /// part instance (address it as `[…/]name/Pane` to play animations, set texts, …). False if
+    /// `path` is not a part pane or `name` is taken.
+    pub fn add_clone(&mut self, path: &str, name: &str, offset: [f32; 2]) -> bool {
+        let (parts, last) = Self::split(path);
+        let Some(p) = self.part_mut(&parts) else {
+            return false;
+        };
+        if p.res.pane_index.contains_key(name) || p.clones.iter().any(|c| c.name == name) {
+            return false;
+        }
+        let Some(&src) = p.res.pane_index.get(last) else {
+            return false;
+        };
+        let PaneKind::Part(part) = &p.res.nodes[src].pane.kind else {
+            return false;
+        };
+        let Some(inst) = Self::part_instance(&p.res, part) else {
+            return false;
+        };
+        p.clones.push(PartClone {
+            src,
+            name: name.to_string(),
+            offset,
+            inst,
+        });
+        true
+    }
+
+    /// Force a pane's translate / size / scale / alpha over its animations (`None` fields keep
+    /// the animated value; an all-`None` override removes it). False if there is no such pane.
+    pub fn set_pane(&mut self, path: &str, o: PaneOverride) -> bool {
+        let (parts, name) = Self::split(path);
+        let Some(p) = self.part_mut(&parts) else {
+            return false;
+        };
+        let Some(&i) = p.res.pane_index.get(name) else {
+            return false;
+        };
+        if o == PaneOverride::default() {
+            p.overrides.remove(&i);
+        } else {
+            p.overrides.insert(i, o);
+        }
+        true
+    }
+
+    /// Where pane `path` (`[PartPane/…/]Pane`) is drawn, in layout space, with the bound
+    /// animations applied.
+    pub fn pane_global(&self, path: &str) -> Option<PaneGlobal> {
+        self.pane_global_at(
+            &path.split('/').collect::<Vec<_>>(),
+            &Mtx::IDENTITY,
+            1.0,
+            true,
+        )
+    }
+
+    fn pane_global_at(
+        &self,
+        path: &[&str],
+        base: &Mtx,
+        base_alpha: f32,
+        base_visible: bool,
+    ) -> Option<PaneGlobal> {
+        let (first, rest) = path.split_first()?;
+        let pass = self.pass(base, base_alpha);
+        let (mtx, alpha, passed, visible, inst, magnify) = match self.res.pane_index.get(*first) {
+            Some(&i) => {
+                let magnify = match &self.res.nodes[i].pane.kind {
+                    PaneKind::Part(p) => p.magnify,
+                    _ => [1.0, 1.0],
+                };
+                (
+                    pass.mtx[i],
+                    pass.alpha[i],
+                    pass.passed[i],
+                    pass.visible[i],
+                    self.parts.get(&i),
+                    magnify,
+                )
+            }
+            None => {
+                let c = self.clones.iter().find(|c| c.name == *first)?;
+                let (m, a, pa, v) = self.clone_place(&pass, c);
+                let magnify = match &self.res.nodes[c.src].pane.kind {
+                    PaneKind::Part(p) => p.magnify,
+                    _ => [1.0, 1.0],
+                };
+                (m, a, pa, v, Some(&c.inst), magnify)
+            }
+        };
+        if rest.is_empty() {
+            let i = self.res.pane_index.get(*first).copied();
+            let (origin, size) = match i {
+                Some(i) => (self.res.nodes[i].pane.origin, pass.panes[i].size),
+                None => {
+                    let c = self.clones.iter().find(|c| c.name == *first)?;
+                    (self.res.nodes[c.src].pane.origin, pass.panes[c.src].size)
+                }
+            };
+            let (l, t, w, h) = pane_rect(origin, size);
+            let local = [[l, t], [l + w, t], [l, t - h], [l + w, t - h]];
+            return Some(PaneGlobal {
+                corners: local.map(|[x, y]| mtx.apply(x, y)),
+                alpha,
+                visible: visible && base_visible,
+            });
+        }
+        let m = mtx.mul(&Mtx::scale(magnify[0], magnify[1]));
+        inst?.pane_global_at(rest, &m, passed, visible && base_visible)
     }
 
     fn split(path: &str) -> (Vec<&str>, &str) {
@@ -326,6 +508,9 @@ impl LayoutPlayer {
                 self.anims.clear();
                 for p in self.parts.values_mut() {
                     p.stop(None);
+                }
+                for c in &mut self.clones {
+                    c.inst.stop(None);
                 }
             }
         }
@@ -375,8 +560,7 @@ impl LayoutPlayer {
         let (parts, name) = Self::split(path);
         let p = self.part_ref(&parts)?;
         let &i = p.res.pane_index.get(name)?;
-        let (mut panes, mut mats) = p.base_states();
-        p.apply_animations(&mut panes, &mut mats);
+        let (panes, _) = p.states();
         let st = &panes[i];
         Some(PaneInfo {
             translate: st.t,
@@ -452,6 +636,116 @@ impl LayoutPlayer {
         (panes, base_mats(&self.res))
     }
 
+    /// Pane and material values with the animations and the caller's overrides applied.
+    fn states(&self) -> (Vec<PaneState>, Vec<MatState>) {
+        let (mut panes, mut mats) = self.base_states();
+        self.apply_animations(&mut panes, &mut mats);
+        for (&i, o) in &self.overrides {
+            let st = &mut panes[i];
+            if let Some(t) = o.translate {
+                st.t[0] = t[0];
+                st.t[1] = t[1];
+            }
+            if let Some(s) = o.size {
+                st.size = s;
+            }
+            if let Some(s) = o.scale {
+                st.s = s;
+            }
+            if let Some(a) = o.alpha {
+                st.alpha = a;
+            }
+        }
+        (panes, mats)
+    }
+
+    /// Global transform, alpha and visibility of every node, placed by `base`.
+    fn pass(&self, base: &Mtx, base_alpha: f32) -> Pass {
+        let (mut panes, mats) = self.states();
+        for (&i, &v) in &self.visibility {
+            panes[i].visible = v;
+        }
+        let n = self.res.nodes.len();
+        let mut mtx = vec![Mtx::IDENTITY; n];
+        let mut alpha = vec![1f32; n]; // global alpha of each pane
+        // alpha multiplier handed to each pane's descendants: an "influenced alpha" pane fades its
+        // whole subtree (also through panes without the flag), as ui2d's draw info does
+        let mut passed = vec![1f32; n];
+        let mut visible = vec![false; n];
+        for i in 0..n {
+            let node = &self.res.nodes[i];
+            let st = &panes[i];
+            let own = st.alpha / 255.0;
+            let (parent_mtx, inherited, parent_visible, anchor) = match node.parent {
+                Some(p) => {
+                    let (m, a, v) = (mtx[p], passed[p], visible[p]);
+                    (m, a, v, self.anchor(i, &panes))
+                }
+                None => (*base, base_alpha, true, [0.0, 0.0]),
+            };
+            let t = [st.t[0] + anchor[0], st.t[1] + anchor[1], st.t[2]];
+            mtx[i] = parent_mtx.mul(&Mtx::srt(t, st.r, st.s));
+            alpha[i] = own * inherited;
+            passed[i] = if node.pane.influenced_alpha() {
+                alpha[i]
+            } else {
+                inherited
+            };
+            visible[i] = parent_visible && st.visible;
+        }
+        Pass {
+            panes,
+            mats,
+            mtx,
+            alpha,
+            passed,
+            visible,
+        }
+    }
+
+    /// Offset of node `i` from its parent's origin point given by its parent-anchor bits:
+    /// bits 0 → relative to the parent's origin point (castle flags sit on a bottom-origin
+    /// castle, the ending text in its bottom-origin balloon).
+    fn anchor(&self, i: usize, panes: &[PaneState]) -> [f32; 2] {
+        let node = &self.res.nodes[i];
+        let Some(p) = node.parent else {
+            return [0.0, 0.0];
+        };
+        if node.pane.origin >> 4 == 0 {
+            return [0.0, 0.0];
+        }
+        let pn = &self.res.nodes[p].pane;
+        let ps = &panes[p];
+        [
+            (factor(node.pane.origin >> 4) - factor(pn.origin)) * ps.size[0],
+            (factor(pn.origin >> 2) - factor(node.pane.origin >> 6)) * ps.size[1],
+        ]
+    }
+
+    /// (matrix, alpha, alpha passed down, visible) of a clone: its source's values, moved.
+    fn clone_place(&self, pass: &Pass, c: &PartClone) -> (Mtx, f32, f32, bool) {
+        let node = &self.res.nodes[c.src];
+        let st = &pass.panes[c.src];
+        let (parent_mtx, inherited, parent_visible) = match node.parent {
+            Some(p) => (pass.mtx[p], pass.passed[p], pass.visible[p]),
+            None => (Mtx::IDENTITY, 1.0, true),
+        };
+        let anchor = self.anchor(c.src, &pass.panes);
+        let t = [
+            st.t[0] + anchor[0] + c.offset[0],
+            st.t[1] + anchor[1] + c.offset[1],
+            st.t[2],
+        ];
+        let m = parent_mtx.mul(&Mtx::srt(t, st.r, st.s));
+        let a = st.alpha / 255.0 * inherited;
+        let passed = if node.pane.influenced_alpha() {
+            a
+        } else {
+            inherited
+        };
+        (m, a, passed, parent_visible && st.visible)
+    }
+
     fn apply_animations(&self, panes: &mut [PaneState], mats: &mut [MatState]) {
         for (name, frame) in &self.anims {
             let Some(anim) = self.res.animations.get(name) else {
@@ -521,9 +815,11 @@ impl LayoutPlayer {
         v
     }
 
-    /// The text a text pane shows: caller's text, else a message id from the enclosing layout
-    /// (searched from the screen inwards), else the pane's own id (this layout's table first,
-    /// then outwards), else the text stored in the layout.
+    /// The text a text pane shows: caller's text, else the enclosing layouts' `<Part>-<Pane>`
+    /// label (SMM2; outermost table first, e.g. `L_PlayBtn_00-T_Btn_00` in the screen's table),
+    /// else a message id from the enclosing layout's part properties (SMM1; searched from the
+    /// screen inwards), else the pane's own id (this layout's table first, then outwards), else
+    /// the text stored in the layout.
     fn text_for<'a>(
         &'a self,
         pane: &str,
@@ -533,11 +829,23 @@ impl LayoutPlayer {
         if let Some(s) = self.texts.get(pane) {
             return s;
         }
+        for k in 0..outer.len() {
+            let mut label: String = outer[k..]
+                .iter()
+                .map(|(_, n)| *n)
+                .collect::<Vec<_>>()
+                .join("-");
+            label.push('-');
+            label.push_str(pane);
+            if let Some(s) = outer[k].0.get(&label) {
+                return s;
+            }
+        }
         let own = &self.res.messages;
         if let Some((id, stored)) = self.text_ids.get(pane) {
             return outer
                 .iter()
-                .copied()
+                .map(|(m, _)| *m)
                 .chain(std::iter::once(own))
                 .find_map(|m| m.get(id))
                 .unwrap_or(stored);
@@ -548,7 +856,7 @@ impl LayoutPlayer {
             &t.text_id
         };
         std::iter::once(own)
-            .chain(outer.iter().rev().copied())
+            .chain(outer.iter().rev().map(|(m, _)| *m))
             .find_map(|m| m.get(label))
             .map(String::as_str)
             .unwrap_or(&t.text)
@@ -561,54 +869,25 @@ impl LayoutPlayer {
         outer: &MessageChain<'a>,
         out: &mut Vec<Quad>,
     ) {
-        let (mut panes, mut mats) = self.base_states();
-        self.apply_animations(&mut panes, &mut mats);
-        for (&i, &v) in &self.visibility {
-            panes[i].visible = v;
-        }
+        let pass = self.pass(base, base_alpha);
+        let Pass {
+            panes,
+            mats,
+            mtx,
+            alpha,
+            passed,
+            visible,
+        } = &pass;
         let n = self.res.nodes.len();
-        let mut mtx = vec![Mtx::IDENTITY; n];
-        let mut alpha = vec![1f32; n]; // global alpha of each pane
-        // alpha multiplier handed to each pane's descendants: an "influenced alpha" pane fades its
-        // whole subtree (also through panes without the flag), as ui2d's draw info does
-        let mut passed = vec![1f32; n];
-        let mut visible = vec![false; n];
         let ctx = Ctx {
             res: &self.res,
-            mats: &mats,
+            mats,
             pane_size: std::cell::Cell::new([0.0; 2]),
+            frame_colors: std::cell::Cell::new(None),
         };
         for i in 0..n {
             let node = &self.res.nodes[i];
             let st = &panes[i];
-            let own = st.alpha / 255.0;
-            let (parent_mtx, inherited, parent_visible, anchor) = match node.parent {
-                Some(p) => {
-                    let pn = &self.res.nodes[p].pane;
-                    let ps = &panes[p];
-                    // anchor bits 0: relative to the parent's origin point (castle flags sit on
-                    // a bottom-origin castle, the ending text in its bottom-origin balloon)
-                    let anchor = if node.pane.origin >> 4 == 0 {
-                        [0.0, 0.0]
-                    } else {
-                        [
-                            (factor(node.pane.origin >> 4) - factor(pn.origin)) * ps.size[0],
-                            (factor(pn.origin >> 2) - factor(node.pane.origin >> 6)) * ps.size[1],
-                        ]
-                    };
-                    (mtx[p], passed[p], visible[p], anchor)
-                }
-                None => (*base, base_alpha, true, [0.0, 0.0]),
-            };
-            let t = [st.t[0] + anchor[0], st.t[1] + anchor[1], st.t[2]];
-            mtx[i] = parent_mtx.mul(&Mtx::srt(t, st.r, st.s));
-            alpha[i] = own * inherited;
-            passed[i] = if node.pane.influenced_alpha() {
-                alpha[i]
-            } else {
-                inherited
-            };
-            visible[i] = parent_visible && st.visible;
             if !visible[i] {
                 continue;
             }
@@ -622,12 +901,31 @@ impl LayoutPlayer {
                             kind: PaneKind::Picture(op),
                             ..
                         },
+                        1,
+                    )) => {
+                        // the enclosing layout's colours on the part's own picture
+                        let colors = base_mats(owner)
+                            .get(op.material as usize)
+                            .map(|m| (m.black.map(to_u8), m.white.map(to_u8)));
+                        ctx.frame_colors.set(colors);
+                        let vc = vertex_colors(&st.colors, alpha[i]);
+                        ctx.picture(pic.material, &pic.tex_coords, rect, &mtx[i], vc, out);
+                        ctx.frame_colors.set(None);
+                    }
+                    Some((
+                        owner,
+                        Pane {
+                            kind: PaneKind::Picture(op),
+                            ..
+                        },
+                        _,
                     )) => {
                         let owner_mats = base_mats(owner);
                         let octx = Ctx {
                             res: owner,
                             mats: &owner_mats,
                             pane_size: std::cell::Cell::new(st.size),
+                            frame_colors: std::cell::Cell::new(None),
                         };
                         let colors = vertex_colors(&op.vertex_colors.map(rgba_f), alpha[i]);
                         octx.picture(op.material, &op.tex_coords, rect, &mtx[i], colors, out);
@@ -667,9 +965,18 @@ impl LayoutPlayer {
                     if let Some(inst) = self.parts.get(&i) {
                         let m = mtx[i].mul(&Mtx::scale(p.magnify[0], p.magnify[1]));
                         let a = passed[i];
-                        let mut chain: Vec<&HashMap<String, String>> = outer.to_vec();
-                        chain.push(&self.res.messages);
+                        let mut chain: Vec<(&HashMap<String, String>, &str)> = outer.to_vec();
+                        chain.push((&self.res.messages, &node.pane.name));
                         inst.draw_at(&m, a, &chain, out);
+                    }
+                    for c in self.clones.iter().filter(|c| c.src == i) {
+                        let (m, _, a, v) = self.clone_place(&pass, c);
+                        if v {
+                            let m = m.mul(&Mtx::scale(p.magnify[0], p.magnify[1]));
+                            let mut chain: Vec<(&HashMap<String, String>, &str)> = outer.to_vec();
+                            chain.push((&self.res.messages, &c.name));
+                            c.inst.draw_at(&m, a, &chain, out);
+                        }
                     }
                 }
                 PaneKind::Null | PaneKind::Bounding => {}
@@ -803,7 +1110,10 @@ impl Ctx<'_> {
     )> {
         let m = self.res.layout.materials.get(mat as usize)?;
         let ms = self.mats.get(mat as usize)?;
-        let (mut black, mut white) = (ms.black.map(to_u8), ms.white.map(to_u8));
+        let (mut black, mut white) = self
+            .frame_colors
+            .get()
+            .unwrap_or((ms.black.map(to_u8), ms.white.map(to_u8)));
         if m.texture_only {
             black = [0; 4];
             white = [255; 4];
@@ -918,6 +1228,28 @@ impl Ctx<'_> {
         self.quad(mat, sets, rect, mtx, color, None, out);
     }
 
+    /// A window's content quad, always with the content material's own colours.
+    fn content_quad(
+        &self,
+        w: &Window,
+        rect: (f32, f32, f32, f32),
+        mtx: &Mtx,
+        color: [[u8; 4]; 4],
+        out: &mut Vec<Quad>,
+    ) {
+        let saved = self.frame_colors.replace(None);
+        self.quad(
+            w.content.material,
+            &w.content.tex_coords,
+            rect,
+            mtx,
+            color,
+            None,
+            out,
+        );
+        self.frame_colors.set(saved);
+    }
+
     fn window(
         &self,
         w: &Window,
@@ -933,11 +1265,19 @@ impl Ctx<'_> {
         } else {
             [[255, 255, 255, to_u8(255.0 * alpha)]; 4]
         };
+        // flag bit 0, "one material for all frames": every frame takes the first frame's
+        // colours, keeping its own texture [inf: SMM2's button shadows give the first frame the
+        // shadow colour and leave the others white, with a different texture per corner]
+        let shared = (w.flags & 1 != 0)
+            .then(|| w.frames.first())
+            .flatten()
+            .and_then(|f| self.mats.get(f.material as usize))
+            .map(|ms| (ms.black.map(to_u8), ms.white.map(to_u8)));
+        let _restore = FrameColors::set(self, shared);
         let kind = w.kind();
         let draw_content = w.flags & 0x10 == 0 && kind != 2;
         let frames = &w.frames;
         let frame = |i: usize| frames.get(i).copied().unwrap_or_default();
-        let content_sets = &w.content.tex_coords;
         let [il, ir, it, ib] = w.inflation.map(|v| v as f32);
         if kind == 0 {
             if draw_content {
@@ -947,15 +1287,7 @@ impl Ctx<'_> {
                     ww - fl - fr + il + ir,
                     wh - ft - fb + it + ib,
                 );
-                self.quad(
-                    w.content.material,
-                    content_sets,
-                    rect,
-                    mtx,
-                    content_color,
-                    None,
-                    out,
-                );
+                self.content_quad(w, rect, mtx, content_color, out);
             }
             match frames.len() {
                 1 => {
@@ -1061,15 +1393,7 @@ impl Ctx<'_> {
             };
             if draw_content {
                 let rect = (l + fl - il, t + it, ww - fl - fr + il + ir, wh + it + ib);
-                self.quad(
-                    w.content.material,
-                    content_sets,
-                    rect,
-                    mtx,
-                    content_color,
-                    None,
-                    out,
-                );
+                self.content_quad(w, rect, mtx, content_color, out);
                 self.quad(
                     left.material,
                     &[],
@@ -1111,6 +1435,23 @@ impl Ctx<'_> {
                 );
             }
         }
+    }
+}
+
+/// Sets `Ctx::frame_colors` for the frames of one window; the content quad is drawn with its own
+/// material, so the window code clears it around that call.
+struct FrameColors<'c, 'a>(&'c Ctx<'a>);
+
+impl<'c, 'a> FrameColors<'c, 'a> {
+    fn set(ctx: &'c Ctx<'a>, colors: Option<([u8; 4], [u8; 4])>) -> Self {
+        ctx.frame_colors.set(colors);
+        Self(ctx)
+    }
+}
+
+impl Drop for FrameColors<'_, '_> {
+    fn drop(&mut self) {
+        self.0.frame_colors.set(None);
     }
 }
 

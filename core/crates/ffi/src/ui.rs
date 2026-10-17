@@ -296,6 +296,126 @@ pub unsafe extern "C" fn mmk_ui_pane(
     })
 }
 
+/// A pane's rectangle on screen (`MmkUiRect` in mmk.h, 40 bytes): corners TL, TR, BL, BR as
+/// x, y pairs in layout units (origin centre, y up), global alpha 0–1, shown (1) or not (0).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MmkUiRect {
+    pub corners: [f32; 8],
+    pub alpha: f32,
+    pub visible: u32,
+}
+
+/// Fill `out` with where pane `pane` (`[PartPane/…/]Pane`, clones included) is drawn under the
+/// bound animations. False if there is no such pane.
+///
+/// # Safety
+/// `layout` must be a live handle; `pane` a valid NUL-terminated string; `out` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_ui_pane_rect(
+    layout: *const MmkUiLayout,
+    pane: *const c_char,
+    out: *mut MmkUiRect,
+) -> bool {
+    guard(false, || {
+        let (Some(l), Some(pane), Some(out)) = (
+            unsafe { layout.as_ref() },
+            unsafe { str_arg(pane, "pane") },
+            unsafe { out.as_mut() },
+        ) else {
+            return false;
+        };
+        match l.player.pane_global(pane) {
+            Some(g) => {
+                let mut corners = [0f32; 8];
+                for (i, c) in g.corners.iter().enumerate() {
+                    corners[i * 2] = c[0];
+                    corners[i * 2 + 1] = c[1];
+                }
+                *out = MmkUiRect {
+                    corners,
+                    alpha: g.alpha,
+                    visible: g.visible as u32,
+                };
+                true
+            }
+            None => {
+                set_error(format!("no pane '{pane}'"));
+                false
+            }
+        }
+    })
+}
+
+/// Force values on pane `pane` over its animations. `flags`: 1 translate (`tx`, `ty`, in its
+/// parent's space), 2 size (`w`, `h`), 4 scale (`sx`, `sy`), 8 alpha (0–255); 0 removes the
+/// override. False if there is no such pane.
+///
+/// # Safety
+/// `layout` must be a live handle; `pane` a valid NUL-terminated string.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn mmk_ui_set_pane(
+    layout: *mut MmkUiLayout,
+    pane: *const c_char,
+    flags: u32,
+    tx: f32,
+    ty: f32,
+    w: f32,
+    h: f32,
+    sx: f32,
+    sy: f32,
+    alpha: f32,
+) -> bool {
+    guard(false, || {
+        let (Some(l), Some(pane)) = (unsafe { layout.as_mut() }, unsafe { str_arg(pane, "pane") })
+        else {
+            return false;
+        };
+        let o = mmk_ui::PaneOverride {
+            translate: (flags & 1 != 0).then_some([tx, ty]),
+            size: (flags & 2 != 0).then_some([w, h]),
+            scale: (flags & 4 != 0).then_some([sx, sy]),
+            alpha: (flags & 8 != 0).then_some(alpha),
+        };
+        let ok = l.player.set_pane(pane, o);
+        if !ok {
+            set_error(format!("no pane '{pane}'"));
+        }
+        ok
+    })
+}
+
+/// Draw a copy of part pane `part` (`[PartPane/…/]Part`) named `name`, moved by (`dx`, `dy`) in
+/// its parent's space; it follows the original's animations and has its own part instance
+/// (`name/Anim`, `name/Pane`). False if `part` is not a part pane or `name` is taken.
+///
+/// # Safety
+/// `layout` must be a live handle; `part` and `name` valid NUL-terminated strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_ui_add_clone(
+    layout: *mut MmkUiLayout,
+    part: *const c_char,
+    name: *const c_char,
+    dx: f32,
+    dy: f32,
+) -> bool {
+    guard(false, || {
+        let (Some(l), Some(part), Some(name)) = (
+            unsafe { layout.as_mut() },
+            unsafe { str_arg(part, "part") },
+            unsafe { str_arg(name, "name") },
+        ) else {
+            return false;
+        };
+        let ok = l.player.add_clone(part, name, [dx, dy]);
+        if !ok {
+            set_error(format!("cannot clone '{part}' as '{name}'"));
+        }
+        ok
+    })
+}
+
 /// Copy message `label` (from this layout's text table, else a part layout's) as UTF-8 into
 /// `buf` (NUL-terminated, truncated to `cap`), each value it takes (number, name) replaced by
 /// U+FFFC. Returns the full length in bytes, or 0 if there is no such message; `cap` 0 sizes it.
@@ -420,6 +540,71 @@ mod tests {
         assert_eq!(std::mem::offset_of!(MmkUiQuad, flags), 128);
         assert_eq!(size_of::<MmkUiPane>(), 48);
         assert_eq!(std::mem::offset_of!(MmkUiPane, alpha), 40);
+        assert_eq!(size_of::<MmkUiRect>(), 40);
+        assert_eq!(std::mem::offset_of!(MmkUiRect, alpha), 32);
+    }
+
+    /// The SMM2 title screen from the owner's SMM2 UI import when present (skipped in CI).
+    #[test]
+    fn owner_import_smm2_title() {
+        let home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
+        let dir = home.join("smm-work/cache/smm2-ui-3.0.3");
+        if !dir.join("manifest.json").is_file() {
+            eprintln!("no SMM2 UI import; skipping");
+            return;
+        }
+        unsafe {
+            let d = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+            let ui = mmk_ui_open(d.as_ptr());
+            assert!(
+                !ui.is_null(),
+                "{:?}",
+                CStr::from_ptr(crate::mmk_last_error())
+            );
+            let l = mmk_ui_layout(ui, c"Play_Title_00".as_ptr());
+            assert!(
+                !l.is_null(),
+                "{:?}",
+                CStr::from_ptr(crate::mmk_last_error())
+            );
+            assert_eq!(mmk_ui_anim_length(l, c"PressKey".as_ptr()), 25.0);
+            assert!(mmk_ui_play(l, c"PressKey".as_ptr(), 25.0));
+            let mut q = std::ptr::null();
+            assert!(mmk_ui_draw_list(l, &mut q) > 20);
+            // the category buttons: clone the third as a fourth, below it
+            assert!(mmk_ui_add_clone(
+                l,
+                c"L_CourseRobotPlayBtn_00".as_ptr(),
+                c"L_Extra_00".as_ptr(),
+                0.0,
+                -116.0
+            ));
+            let mut a = MmkUiRect::default();
+            let mut b = MmkUiRect::default();
+            assert!(mmk_ui_pane_rect(
+                l,
+                c"L_CourseRobotPlayBtn_00/B_Btn_00".as_ptr(),
+                &mut a
+            ));
+            assert!(mmk_ui_pane_rect(l, c"L_Extra_00/B_Btn_00".as_ptr(), &mut b));
+            assert!((a.corners[1] - b.corners[1] - 116.0).abs() < 1e-3);
+            assert!(mmk_ui_set_pane(
+                l,
+                c"N_PressKey_00".as_ptr(),
+                8,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+            ));
+            mmk_ui_layout_free(l);
+            mmk_ui_free(ui);
+        }
     }
 
     #[test]
