@@ -2,8 +2,9 @@
 //! see it drawn by the engine; Enter test-plays it, E (in play) returns to editing.
 //!
 //! Controls: mouse left places the selected part (or paints ground), right erases; 1–9 / 0 and
-//! Tab pick the part; arrows / WASD scroll; Ctrl+Z / Ctrl+Y undo / redo; Ctrl+S saves; Enter
-//! plays. [placeholder UI: a text strip until the SMM2 maker layouts draw]
+//! Tab pick the part; arrows scroll; Ctrl+Z / Ctrl+Y undo / redo; Ctrl+S saves; Enter plays.
+//! On the part under the cursor: W wings, B big, F alternate form, I put the selected part
+//! inside. T cycles the area theme, N toggles night. [placeholder UI: a text strip until the SMM2 maker layouts draw]
 
 use std::path::PathBuf;
 
@@ -124,6 +125,58 @@ impl Maker {
             self.editor.undo();
             self.editor.redo_clear();
         }
+        self.dirty = true;
+    }
+
+    /// Edit the part under the cursor: `what` = 'w' wings, 'b' big, 'f' alternate form, 'i' put
+    /// the selected palette part inside it (a block's item, a pipe's enemy).
+    pub fn modify(&mut self, what: char) {
+        let Some((tx, ty)) = self.cursor else { return };
+        let Some(i) = self.editor.object_at(tx, ty) else {
+            self.message = "no part under the cursor".into();
+            return;
+        };
+        self.editor.checkpoint();
+        match what {
+            'w' => self.editor.toggle_flags(i, 0x2),
+            'f' => self.editor.toggle_flags(i, 0x4),
+            'b' => self.editor.toggle_big(i),
+            'i' => match self.tool().1 {
+                Tool::Part(p) => self.editor.set_child(i, p, 0),
+                Tool::Ground => self.editor.set_child(i, -1, 0),
+            },
+            _ => {}
+        }
+        self.dirty = true;
+    }
+
+    /// Area settings: 't' next theme, 'n' night on/off.
+    pub fn setting(&mut self, what: char) {
+        self.editor.checkpoint();
+        let (theme, night) = self.editor.theme();
+        match what {
+            't' => self.editor.set_theme((theme + 1) % 10),
+            'n' => self.editor.set_night(!night),
+            _ => {}
+        }
+        let (theme, night) = self.editor.theme();
+        const NAMES: [&str; 10] = [
+            "Ground",
+            "Underground",
+            "Castle",
+            "Airship",
+            "Underwater",
+            "Ghost House",
+            "Snow",
+            "Desert",
+            "Sky",
+            "Forest",
+        ];
+        self.message = format!(
+            "{}{}",
+            NAMES[theme as usize % 10],
+            if night { " (night)" } else { "" }
+        );
         self.dirty = true;
     }
 

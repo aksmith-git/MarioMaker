@@ -303,6 +303,12 @@ impl App {
             KeyCode::KeyZ if ctrl => m.undo(),
             KeyCode::KeyY if ctrl => m.redo(),
             KeyCode::KeyS if ctrl => m.save(),
+            KeyCode::KeyW if !ctrl => m.modify('w'),
+            KeyCode::KeyB => m.modify('b'),
+            KeyCode::KeyF => m.modify('f'),
+            KeyCode::KeyI => m.modify('i'),
+            KeyCode::KeyT => m.setting('t'),
+            KeyCode::KeyN => m.setting('n'),
             KeyCode::Enter => {
                 self.game.play_maker_course();
                 self.keys.clear();

@@ -251,6 +251,32 @@ impl Editor {
         }
     }
 
+    /// A placed part (to read its flags and child).
+    pub fn object(&self, index: usize) -> Option<&CourseObject> {
+        self.area().objects.items.get(index)
+    }
+
+    /// Toggle flag bits on a part (wings 0x2, alternate 0x4); big uses the size field.
+    pub fn toggle_flags(&mut self, index: usize, bits: u32) {
+        if let Some(o) = self.area_mut().objects.items.get_mut(index) {
+            o.flags ^= bits;
+        }
+    }
+
+    /// Toggle the big size (size field 0x6000: 0x4000 big, else normal).
+    pub fn toggle_big(&mut self, index: usize) {
+        if let Some(o) = self.area_mut().objects.items.get_mut(index) {
+            let big = o.flags & 0x6000 == 0x4000;
+            o.flags = (o.flags & !0x6000) | if big { 0 } else { 0x4000 };
+        }
+    }
+
+    /// Current area's theme and night flag.
+    pub fn theme(&self) -> (u8, bool) {
+        let h = &self.area().header;
+        (h.theme, h.flags & 2 != 0)
+    }
+
     /// Put a part inside another (a ? block's item, a pipe's enemy): its child id.
     pub fn set_child(&mut self, index: usize, part: i16, child_flags: u32) {
         if let Some(o) = self.area_mut().objects.items.get_mut(index) {
