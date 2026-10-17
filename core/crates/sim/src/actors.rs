@@ -1239,6 +1239,20 @@ impl Actor {
     }
 
     fn step_normal(&mut self, level: &Level, player_x: f32) -> Option<Actor> {
+        if self.wings {
+            match self.kind {
+                Kind::Goomba | Kind::Koopa { .. } => {} // their own wing behaviour below
+                Kind::Piranha { .. } | Kind::Muncher if self.pipe.is_none() => {
+                    self.step_winged_plant(level);
+                    return None;
+                }
+                k if k.is_enemy() || k.is_item() || matches!(k, Kind::BigCoin { .. }) => {
+                    self.step_generic_wings(level);
+                    return None;
+                }
+                _ => {}
+            }
+        }
         match self.kind {
             Kind::DryBones if self.phase == 1 => {
                 // collapsed: reassembles after 224 frames
@@ -1749,6 +1763,58 @@ impl Actor {
         self.vy = self.speed * s + w * c;
         self.x += self.vx;
         self.y += self.vy;
+    }
+
+    /// Winged Piranha Plant / Muncher (2-piranha-plant.md): wait 72 frames, jump at 4.5
+    /// (gravity −0.1875); once the speed drops to 0.8 hover 120 frames (vy = 0.8·sin φ, φ from
+    /// 90° at +5°/frame), then fall back and wait again.
+    fn step_winged_plant(&mut self, level: &Level) {
+        match self.phase {
+            0 => {
+                self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+                self.vx = 0.0;
+                self.collide(level);
+                if self.on_ground {
+                    self.timer += 1;
+                    if self.timer >= 72 {
+                        self.phase = 1;
+                        self.vy = 4.5;
+                        self.on_ground = false;
+                    }
+                }
+            }
+            1 => {
+                self.vy += ENEMY_GRAVITY;
+                self.collide(level);
+                if self.vy <= 0.8 {
+                    self.phase = 2;
+                    self.timer = 0;
+                }
+            }
+            _ => {
+                self.vy = 0.8 * (90.0 + self.timer as f32 * 5.0).to_radians().sin();
+                self.y += self.vy;
+                self.timer += 1;
+                if self.timer >= 120 {
+                    self.phase = 0;
+                    self.timer = 0;
+                    self.vy = 0.0;
+                }
+            }
+        }
+    }
+
+    /// Generic winged flight [inf, from the winged Thwomp]: drift ±0.3 px/frame (turning at
+    /// walls), bob vy = 0.15·sin(2°·t).
+    fn step_generic_wings(&mut self, level: &Level) {
+        let t = 0.3 * self.dir as f32;
+        self.vx += (t - self.vx).clamp(-0.003, 0.003);
+        self.vy = 0.15 * (self.age as f32 * 2.0).to_radians().sin();
+        let before = self.x;
+        self.collide(level);
+        if self.wall || (self.x - before).abs() < 1e-4 && self.vx.abs() > 0.05 {
+            self.dir = -self.dir;
+        }
     }
 
     /// Paragoomba hops (small, small, big; 80-frame pause after the big hop); green Paratroopa

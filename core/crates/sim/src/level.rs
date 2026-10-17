@@ -388,7 +388,8 @@ pub fn unsupported_features(course: &Course) -> Vec<String> {
                 out.insert(format!("part {}", o.id));
             } else if o.flags & 0x400 != 0 {
                 out.insert("objects on tracks".to_string());
-            } else if o.flags & 0x2 != 0 && !matches!(o.id, 0 | 1 | 8) {
+            } else if o.flags & 0x2 != 0 && matches!(o.id, 4 | 5 | 6 | 11 | 12 | 13 | 29) {
+                // winged blocks, lifts, Thwomps and Bill Blasters fly as actors: not yet
                 out.insert(format!("wings on part {}", o.id));
             }
         }
