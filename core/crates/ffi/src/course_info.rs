@@ -74,7 +74,7 @@ pub fn fnv1a64(data: &[u8]) -> u64 {
 }
 
 /// Copy `s` into a C string buffer, truncating on a UTF-8 character boundary.
-fn fill<const N: usize>(out: &mut [c_char; N], s: &str) {
+pub(crate) fn fill<const N: usize>(out: &mut [c_char; N], s: &str) {
     let mut end = s.len().min(N - 1);
     while !s.is_char_boundary(end) {
         end -= 1;

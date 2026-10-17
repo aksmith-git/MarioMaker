@@ -5,9 +5,12 @@
 //!   banked extra lives, skipping, results, run completion.
 //! - [`pool`]: picking courses for a run by difficulty band from a pluggable course source.
 //! - [`save`]: Continue records per difficulty, unlocks and statistics (JSON).
+//! - [`challenge`]: one 100 Mario session over a local course library, tying the three together
+//!   for the app (the FFI is a thin wrapper over it).
 //!
 //! Deterministic: randomness comes from a caller-seeded generator so runs can be replayed.
 
+pub mod challenge;
 pub mod hundred;
 pub mod pool;
 pub mod save;

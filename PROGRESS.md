@@ -127,8 +127,17 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   state, free skip (100 Mario only), Save & Quit, game over, completion; course pools by
   difficulty band with SMM1's shuffle and castle search; Continue records, unlock rules, stats ·
   costume reward selection ⬜ (category table not read)
-- ⬜ Course pool: local library + pluggable remote source (SmmServer/SMMDB-style), difficulty tiers
-- ⬜ Pool limited to courses marked playable; grows with Phase 7
+- ✅ Run session (`modes::challenge`) + FFI (`mmk_challenge_*`, `mmk_engine_set_run_counters`):
+  New Game / Continue, life pre-charge autosave, deaths retry with the course-start counters,
+  1-Ups and coin rollovers banked through the sim's `lives_gained` (HUD lives stay put), skip,
+  Save & Quit, unloadable-course replacement, unlock announcement once, credits list
+- ✅ Course pool: local library (difficulty value = fail rate from the dataset's `index.json`
+  clear rate, else the SMM2 bucket); castle-theme courses preferred for the last course; no
+  repeats within a run while others remain · remote source ⬜
+- ✅ Pool limited to courses marked playable; grows with Phase 7
+- ✅ App flow (functional stand-in screens): difficulty select with locks and Continue, course
+  intro card, run banner, pause menu Skip / Start over (−1 life) / Save & Quit, game over, run
+  cleared + unlock + course credits; `hundred.json` save · SMM1 layouts ⬜ (layout player)
 - ⬜ SMM1 → SMM2 course import design + documented losses
 
 ### Phase 7 — Expansion ⬜

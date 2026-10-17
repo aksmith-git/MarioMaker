@@ -225,3 +225,12 @@ as a pre-commit hook.
 ## Open
 - Licence for the repository (owner's call).
 - Engine language/framework: deferred to Phase 4 per plan.
+
+## 2026-10-18 — 100 Mario over a local library: three deliberate departures from the server
+SMM1 refuses to start when the first search returns fewer than 32 courses; a local library is
+far smaller, so any non-empty band starts a run (`Pool::with_minimum`). Courses already cleared
+in the run are not offered again while others remain (the server has no such memory, but with a
+small library repeats would dominate). The castle search (last course) is read as "castle theme"
+and falls back to any course. Difficulty value = 100 − clear rate (the same fail-rate scale the
+SMM1 bands use); courses without metadata get 30, so they appear only in Easy and Normal runs.
+

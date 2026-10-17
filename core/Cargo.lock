@@ -305,6 +305,7 @@ dependencies = [
  "mmk-audio",
  "mmk-formats",
  "mmk-import",
+ "mmk-modes",
  "mmk-sim",
 ]
 

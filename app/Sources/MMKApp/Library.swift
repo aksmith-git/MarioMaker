@@ -2,11 +2,52 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// What a course list knows about a course beyond its file: today the public mm2_level dataset's
+/// `index.json` (`{"courses": [{"file", "clear_rate", "difficulty", …}]}`, paths relative to it).
+struct CourseMeta: Hashable, Sendable {
+    /// Clear rate in percent (clears ÷ attempts), if known.
+    var clearRate: Double?
+    /// Nintendo's SMM2 difficulty bucket 0 easy … 3 super expert, if known.
+    var bucket: Int?
+    var maker: String?
+
+    /// 100 Mario difficulty value 0–100: the fail rate (100 − clear %), as SMM1's bands use it.
+    /// Falls back to a value inside the SMM2 bucket, then to an easy value for unknown courses
+    /// (they then appear in Easy and Normal runs only).
+    var difficultyValue: Int {
+        if let r = clearRate { return max(0, min(100, Int((100 - r).rounded()))) }
+        if let b = bucket { return [20, 50, 85, 98][max(0, min(3, b))] }
+        return 30
+    }
+
+    /// `index.json` files under `root` → metadata by standardized file path.
+    static func scan(under root: URL) -> [String: CourseMeta] {
+        var out: [String: CourseMeta] = [:]
+        guard let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil,
+                                                     options: [.skipsHiddenFiles]) else { return out }
+        for case let url as URL in e where url.lastPathComponent == "index.json" {
+            guard let data = try? Data(contentsOf: url),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let list = obj["courses"] as? [[String: Any]] else { continue }
+            let dir = url.deletingLastPathComponent()
+            for c in list {
+                guard let file = c["file"] as? String else { continue }
+                let path = dir.appendingPathComponent(file).standardizedFileURL.path
+                out[path] = CourseMeta(clearRate: (c["clear_rate"] as? NSNumber)?.doubleValue,
+                                       bucket: (c["difficulty"] as? NSNumber)?.intValue,
+                                       maker: c["maker"] as? String)
+            }
+        }
+        return out
+    }
+}
+
 /// One course file in the library folder.
 struct CourseEntry: Identifiable, Hashable {
     var id: String { url.path }
     let url: URL
     let info: CourseInfo
+    var meta = CourseMeta()
 
     var name: String { info.name.isEmpty ? url.deletingPathExtension().lastPathComponent : info.name }
 }
@@ -59,10 +100,12 @@ final class CourseLibrary: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async {
             var found: [CourseEntry] = []
             var bad: [(String, String)] = []
+            let meta = CourseMeta.scan(under: folder)
             for url in Self.files(under: folder) {
                 guard let data = try? Data(contentsOf: url) else { continue }
                 switch CourseInfo.read(data, assets: assets) {
-                case .success(let info): found.append(CourseEntry(url: url, info: info))
+                case .success(let info):
+                    found.append(CourseEntry(url: url, info: info, meta: meta[url.standardizedFileURL.path] ?? CourseMeta()))
                 case .failure(let e): bad.append((url.path, e.description))
                 }
             }
@@ -102,6 +145,15 @@ final class CourseLibrary: ObservableObject {
                     }
                     try? fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
                     if (try? fm.copyItem(at: file, to: dest)) != nil { added += 1 }
+                }
+                // course lists (difficulty metadata) travel with their folder
+                if isDir.boolValue, let e = fm.enumerator(at: src, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+                    for case let f as URL in e where f.lastPathComponent == "index.json" {
+                        let dest = folder.appendingPathComponent(src.lastPathComponent + "/" + Self.relativePath(f, in: src))
+                        try? fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+                        try? fm.removeItem(at: dest)
+                        try? fm.copyItem(at: f, to: dest)
+                    }
                 }
             }
             DispatchQueue.main.async {
@@ -195,6 +247,9 @@ struct LibraryView: View {
                     .help("Copy course files or folders into the library")
                 Button { model.playDemo() } label: { Label("Demo", systemImage: "gamecontroller") }
                     .help("Play the built-in test strip")
+                Button { model.showChallenge() } label: { Label("100 Mario Challenge", systemImage: "flag.checkered") }
+                    .help("100 lives to clear a run of random playable courses from the library")
+                    .disabled(model.assets == nil)
                 Menu {
                     Button("Rescan library") { library.scan(assets: model.assets) }
                     Button("Show library folder in Finder") { NSWorkspace.shared.open(library.folder) }

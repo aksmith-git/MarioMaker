@@ -14,8 +14,20 @@ final class GameSession: ObservableObject, Identifiable {
 
     enum PauseItem: String, CaseIterable {
         case resume = "Continue"
+        case skip = "Skip this course"
         case restart = "Restart course"
+        case saveQuit = "Save & Quit"
         case exit = "Exit to library"
+    }
+
+    /// Pause menu entries: a challenge run can skip and Save & Quit, and a restart costs a life.
+    var pauseItems: [PauseItem] {
+        guard let run else { return [.resume, .restart, .exit] }
+        return run.canSkip ? [.resume, .skip, .restart, .saveQuit] : [.resume, .restart, .saveQuit]
+    }
+
+    func label(_ item: PauseItem) -> String {
+        item == .restart && run != nil ? "Start over (costs a life)" : item.rawValue
     }
 
     nonisolated let id = UUID()
@@ -36,6 +48,9 @@ final class GameSession: ObservableObject, Identifiable {
 
     /// Called when the player leaves the session (exit, after a clear or game over).
     var onExit: (() -> Void)?
+    /// The 100 Mario run this course belongs to: it owns lives, and decides what a death means.
+    weak var run: ChallengeFlow?
+    private var livesGained: UInt32 = 0
     /// Debug/smoke tests: replaces the player's input; given the engine tick.
     var scriptedInput: ((UInt64) -> MmkInput)?
     /// Debug: pause automatically after this many ticks (screenshots of the pause menu).
@@ -135,10 +150,11 @@ final class GameSession: ObservableObject, Identifiable {
                 if let t = autoPauseTick, engineTick >= t { autoPauseTick = nil; pause() }
             }
         case .paused:
-            if pressed.contains(.up) { pauseSelection = (pauseSelection + PauseItem.allCases.count - 1) % PauseItem.allCases.count }
-            if pressed.contains(.down) { pauseSelection = (pauseSelection + 1) % PauseItem.allCases.count }
+            let items = pauseItems
+            if pressed.contains(.up) { pauseSelection = (pauseSelection + items.count - 1) % items.count }
+            if pressed.contains(.down) { pauseSelection = (pauseSelection + 1) % items.count }
             if pressed.contains(.back) { resume() }
-            else if pressed.contains(.confirm) { choose(PauseItem.allCases[pauseSelection]) }
+            else if pressed.contains(.confirm) { choose(items[pauseSelection]) }
         case .cleared, .gameOver:
             // a short beat so a held jump doesn't skip the screen
             if phaseFrames > 30 && !pressed.intersection([.confirm, .back]).isEmpty { exit() }
@@ -149,8 +165,15 @@ final class GameSession: ObservableObject, Identifiable {
         attemptTicks += 1
         let h = hud
         if h.events & (1 << 13) != 0 && goalTicks == nil { goalTicks = attemptTicks } // Event::Goal
+        if h.lives_gained > livesGained {
+            run?.extraLives(Int(h.lives_gained - livesGained))
+        }
+        livesGained = h.lives_gained
         let dying = h.flags & 2 != 0
-        if wasDying && !dying {
+        if wasDying && !dying, let run {
+            // the engine restarted the course; the run decides whether it continues
+            if run.died() { newAttempt() } else { setPhase(.gameOver) }
+        } else if wasDying && !dying {
             // death sequence over, the course restarted
             if h.lives == 0 {
                 setPhase(.gameOver)
@@ -163,6 +186,7 @@ final class GameSession: ObservableObject, Identifiable {
             let ticks = goalTicks ?? attemptTicks
             clearTicks = ticks
             if let courseKey { newBest = saves?.addClear(courseKey, ticks: ticks) ?? false }
+            run?.cleared(score: h.score, coins: h.coins)
             setPhase(.cleared)
         }
     }
@@ -197,7 +221,14 @@ final class GameSession: ObservableObject, Identifiable {
     }
 
     func restart() {
+        // in a run, starting over counts as a death
+        if let run, !run.died() {
+            setPhase(.gameOver)
+            return
+        }
         mmk_engine_restart(engine)
+        run?.applyCounters(to: engine)
+        livesGained = 0
         wasDying = false
         newAttempt()
         lastTime = CACurrentMediaTime()
@@ -213,6 +244,8 @@ final class GameSession: ObservableObject, Identifiable {
         case .resume: resume()
         case .restart: restart()
         case .exit: exit()
+        case .skip: run?.skipped(); exit()
+        case .saveQuit: run?.saveAndQuit(); exit()
         }
     }
 }
@@ -228,9 +261,10 @@ struct GameView: View {
             switch session.phase {
             case .playing: EmptyView()
             case .paused: PauseMenu(session: session)
-            case .cleared: ResultCard(title: "Course clear!", detail: clearDetail, action: "Back to library", session: session)
-            case .gameOver: ResultCard(title: "Game over", detail: "Out of lives.", action: "Back to library", session: session)
+            case .cleared: ResultCard(title: "Course clear!", detail: clearDetail, action: session.run == nil ? "Back to library" : "Next", session: session)
+            case .gameOver: ResultCard(title: "Game over", detail: "Out of lives.", action: session.run == nil ? "Back to library" : "Continue", session: session)
             }
+            if let run = session.run, session.phase == .playing { RunBanner(run: run) }
         }
     }
 
@@ -248,11 +282,12 @@ private struct PauseMenu: View {
             Color.black.opacity(0.55)
             VStack(spacing: 18) {
                 Text("Paused").font(.system(size: 34, weight: .heavy, design: .rounded))
+                if let run = session.run { Text(run.pauseLine).font(.subheadline.weight(.semibold)) }
                 Text(session.title).font(.headline).foregroundStyle(.white.opacity(0.75)).lineLimit(1)
                 VStack(spacing: 8) {
-                    ForEach(Array(GameSession.PauseItem.allCases.enumerated()), id: \.offset) { i, item in
+                    ForEach(Array(session.pauseItems.enumerated()), id: \.offset) { i, item in
                         Button { session.choose(item) } label: {
-                            Text(item.rawValue)
+                            Text(session.label(item))
                                 .font(.system(size: 18, weight: .semibold, design: .rounded))
                                 .frame(width: 240, height: 40)
                                 .background(RoundedRectangle(cornerRadius: 10)

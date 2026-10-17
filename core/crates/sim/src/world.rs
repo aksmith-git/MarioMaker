@@ -131,6 +131,14 @@ pub struct World {
     pub score: u32,
     pub coins: u32,
     pub lives: u32,
+    /// Score and coins every (re)start begins from (a challenge run's course-start counters).
+    pub base_score: u32,
+    pub base_coins: u32,
+    /// Extra lives earned since the world was made (1-Ups, 100-coin rollovers); never reset,
+    /// counted even at the lives cap, so a run manager can bank them.
+    pub lives_gained: u32,
+    /// Challenge run: extra lives are banked by the run manager, not added to `lives`.
+    pub bank_lives: bool,
     /// Time left in frames (−1: no timer).
     pub time: i32,
     pub goal_phase: GoalPhase,
@@ -263,6 +271,10 @@ impl World {
             score: 0,
             coins: 0,
             lives: 5,
+            base_score: 0,
+            base_coins: 0,
+            lives_gained: 0,
+            bank_lives: false,
             time: -1,
             goal_phase: GoalPhase::None,
             goal_flag: 144.0,
@@ -317,8 +329,8 @@ impl World {
         self.fade = 0.0;
         self.initial = self.area_initial[0].clone();
         self.load_area_fresh();
-        self.score = 0;
-        self.coins = 0;
+        self.score = self.base_score;
+        self.coins = self.base_coins;
         self.time = if self.level.timer > 0 {
             self.level.timer as i32 * 60
         } else {
@@ -493,8 +505,21 @@ impl World {
         });
     }
 
+    /// A run's counters for the course about to start (100 Mario): restarts begin from them.
+    pub fn set_run_counters(&mut self, score: u32, coins: u32, lives: u32) {
+        self.base_score = score;
+        self.base_coins = coins % 100;
+        self.score = score;
+        self.coins = coins % 100;
+        self.lives = lives;
+        self.bank_lives = true;
+    }
+
     fn add_life(&mut self) {
-        self.lives = (self.lives + 1).min(MAX_LIVES);
+        self.lives_gained += 1;
+        if !self.bank_lives {
+            self.lives = (self.lives + 1).min(MAX_LIVES);
+        }
         self.events.push(Event::OneUp);
     }
 
@@ -3582,6 +3607,7 @@ impl World {
                 (self.time + 59) / 60
             },
             cleared: self.cleared,
+            lives_gained: self.lives_gained,
         }
     }
 }
@@ -3593,6 +3619,7 @@ pub struct Hud {
     pub lives: u32,
     pub time: i32,
     pub cleared: bool,
+    pub lives_gained: u32,
 }
 
 #[cfg(test)]
@@ -4565,6 +4592,22 @@ mod tests {
         );
         assert!(w.player.x >= w.camera_x + 8.0 - 0.01, "pushed along");
         assert!(w.player.alive());
+    }
+
+    #[test]
+    fn run_counters_survive_a_restart_and_lives_are_banked() {
+        let mut w = World::new();
+        w.set_run_counters(1200, 42, 100);
+        w.add_coin();
+        assert_eq!((w.score, w.coins), (1200 + COIN_SCORE, 43));
+        w.reset_course();
+        assert_eq!((w.score, w.coins, w.lives), (1200, 42, 100));
+        for _ in 0..60 {
+            w.add_coin();
+        }
+        assert_eq!(w.coins, 2);
+        assert_eq!(w.lives, 100, "rollover banked, not added");
+        assert_eq!(w.lives_gained, 1);
     }
 
     #[test]

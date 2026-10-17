@@ -12,6 +12,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use mmk_assets::{Cache, Quad};
 use mmk_sim::{Input, Sprite, World};
 
+pub mod challenge;
 pub mod course_info;
 pub mod import;
 
@@ -544,6 +545,8 @@ pub struct MmkHud {
     /// bit 0: course cleared; bit 1: player dying
     pub flags: u32,
     pub events: u32,
+    /// Extra lives earned since the course was loaded (monotonic; a run manager banks them).
+    pub lives_gained: u32,
 }
 
 /// # Safety
@@ -567,6 +570,7 @@ pub unsafe extern "C" fn mmk_engine_hud(engine: *const MmkEngine, out: *mut MmkH
             time: h.time,
             flags: h.cleared as u32 | (!e.world.player.alive() as u32) << 1,
             events,
+            lives_gained: h.lives_gained,
         };
     })
 }
@@ -760,7 +764,7 @@ mod tests {
         assert_eq!(size_of::<MmkSprite>(), 44);
         assert_eq!(size_of::<MmkSnapshot>(), 40);
         assert_eq!(size_of::<MmkTextureInfo>(), 48);
-        assert_eq!(size_of::<MmkHud>(), 24);
+        assert_eq!(size_of::<MmkHud>(), 28);
         assert_eq!(size_of::<MmkCourseInfo>(), 480);
         assert_eq!(std::mem::offset_of!(MmkCourseInfo, theme), 452);
         assert_eq!(std::mem::offset_of!(MmkCourseInfo, timer), 456);

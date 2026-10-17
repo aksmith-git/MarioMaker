@@ -2,7 +2,7 @@ import AppKit
 
 /// Debug: screenshot the app's own window without Screen Recording permission.
 ///
-///     MMK_UI_SCREENSHOT=<png> [MMK_UI_SCREENSHOT_DELAY=<s>, default 2] [MMK_UI_SCREEN=import|settings]
+///     MMK_UI_SCREENSHOT=<png> [MMK_UI_SCREENSHOT_DELAY=<s>, default 2] [MMK_UI_SCREEN=import|settings|challenge|challenge-intro]
 ///
 /// Waits, renders the main window's content (or the Settings window) into a PNG and quits.
 /// Window snapshots can't see Metal layers, so while this is set the renderer keeps a copy of its
@@ -20,6 +20,13 @@ enum DebugCapture {
         let delay = env["MMK_UI_SCREENSHOT_DELAY"].flatMap(Double.init) ?? 2
         let settings = env["MMK_UI_SCREEN"] == "settings"
         if env["MMK_UI_SCREEN"] == "import" { model.showImporter() }
+        if let screen = env["MMK_UI_SCREEN"], screen.hasPrefix("challenge") {
+            // after the library scan: the difficulty select, or an Easy run's first intro card
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay / 2) {
+                model.showChallenge()
+                if screen == "challenge-intro", case .challenge(let flow) = model.screen { flow.start(0, resume: false) }
+            }
+        }
         // (RootView opens the Settings window for MMK_UI_SCREEN=settings)
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
             let windows = NSApp.windows.filter { $0.isVisible && $0.contentView != nil }

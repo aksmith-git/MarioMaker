@@ -57,6 +57,8 @@ pub struct Pool {
     entries: Vec<CourseRef>,
     cursor: usize,
     first_search: bool,
+    /// Fewest results the first search may return ([`NOT_ENOUGH`] for the server).
+    pub min_first: usize,
 }
 
 impl Pool {
@@ -66,6 +68,15 @@ impl Pool {
             entries: Vec::new(),
             cursor: 0,
             first_search: true,
+            min_first: NOT_ENOUGH,
+        }
+    }
+
+    /// A pool whose first search may return as few as `min_first` courses (a local library).
+    pub fn with_minimum(difficulty: Difficulty, min_first: usize) -> Self {
+        Self {
+            min_first: min_first.max(1),
+            ..Self::new(difficulty)
         }
     }
 
@@ -80,7 +91,7 @@ impl Pool {
         if castle && found.is_empty() {
             found = src.search(band, POOL_REQUEST, false, rng);
         }
-        let too_few = found.is_empty() || (self.first_search && found.len() < NOT_ENOUGH);
+        let too_few = found.is_empty() || (self.first_search && found.len() < self.min_first);
         self.first_search = false;
         if too_few {
             return Err(PoolError::NotEnoughCourses);

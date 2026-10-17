@@ -8,6 +8,7 @@
 typedef struct MmkAssets MmkAssets;
 typedef struct MmkEngine MmkEngine;
 typedef struct MmkAudio MmkAudio;
+typedef struct MmkChallenge MmkChallenge;
 
 enum {
     MMK_BTN_LEFT = 1, MMK_BTN_RIGHT = 2, MMK_BTN_UP = 4, MMK_BTN_DOWN = 8,
@@ -49,7 +50,8 @@ typedef struct {
     int32_t time;               // seconds left, -1 = no timer
     uint32_t flags;             // bit 0: course cleared, bit 1: player dying
     uint32_t events;            // bit n: event n this tick (see mmk_sim::Event)
-} MmkHud;                                                              // 24 bytes
+    uint32_t lives_gained;      // extra lives earned since load (monotonic; 100 Mario banks them)
+} MmkHud;                                                              // 28 bytes
 
 typedef struct {
     char name[128];             // UTF-8, NUL-terminated
@@ -107,3 +109,42 @@ uint32_t mmk_audio_sample_rate(void);
 void mmk_audio_render(const MmkAudio *audio, float *out, size_t frames);
 void mmk_audio_set_volumes(const MmkAudio *audio, float master, float music, float sfx);
 void mmk_engine_set_audio(MmkEngine *engine, const MmkAudio *audio);   // NULL detaches
+
+// 100 Mario Challenge session (core/crates/ffi/src/challenge.rs). Difficulty 0 Easy, 1 Normal,
+// 2 Expert, 3 Super Expert.
+typedef struct {
+    char id[1024];              // as given to mmk_challenge_add_course (the app: file path)
+    char name[128];
+    char maker[128];
+    uint8_t difficulty;         // 0–100 fail rate
+    uint8_t _pad[7];
+} MmkRunCourse;                                                        // 1288 bytes
+
+typedef struct {
+    uint32_t course_number, total, lives, coins, score, banked, deaths, skips;
+} MmkRunStatus;                                                        // 32 bytes
+
+enum { MMK_OUTCOME_CLEARED = 0, MMK_OUTCOME_DIED = 1, MMK_OUTCOME_SKIPPED = 2, MMK_OUTCOME_SAVE_QUIT = 3 };
+enum { MMK_NEXT_PLAY = 0, MMK_NEXT_RETRY = 1, MMK_NEXT_GAME_OVER = 2, MMK_NEXT_COMPLETE = 3, MMK_NEXT_QUIT = 4 };
+
+MmkChallenge *mmk_challenge_new(const char *save_json, uint64_t seed);   // save_json may be NULL
+void mmk_challenge_free(MmkChallenge *c);
+void mmk_challenge_add_course(MmkChallenge *c, const char *id, const char *name, const char *maker,
+                              uint8_t difficulty, bool castle);
+uint32_t mmk_challenge_available(const MmkChallenge *c, uint8_t difficulty);
+bool mmk_challenge_unlocked(const MmkChallenge *c, uint8_t difficulty);
+bool mmk_challenge_can_continue(const MmkChallenge *c, uint8_t difficulty);
+uint32_t mmk_challenge_clears(const MmkChallenge *c, uint8_t difficulty);
+bool mmk_challenge_start(MmkChallenge *c, uint8_t difficulty, bool resume);
+bool mmk_challenge_course(const MmkChallenge *c, MmkRunCourse *out);
+void mmk_challenge_course_started(MmkChallenge *c);
+bool mmk_challenge_unloadable(MmkChallenge *c);
+void mmk_challenge_extra_lives(MmkChallenge *c, uint32_t n);
+uint8_t mmk_challenge_finish(MmkChallenge *c, uint8_t outcome, uint32_t score, uint32_t coins);
+void mmk_challenge_status(const MmkChallenge *c, MmkRunStatus *out);
+size_t mmk_challenge_cleared_count(const MmkChallenge *c);
+bool mmk_challenge_cleared(const MmkChallenge *c, size_t i, MmkRunCourse *out);
+int32_t mmk_challenge_take_unlock(MmkChallenge *c);                  // -1 = none
+void mmk_challenge_end(MmkChallenge *c);
+size_t mmk_challenge_save_json(const MmkChallenge *c, char *buf, size_t cap);  // length; cap 0 = size it
+void mmk_engine_set_run_counters(MmkEngine *engine, uint32_t score, uint32_t coins, uint32_t lives);

@@ -46,7 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 final class AppModel: ObservableObject {
     enum Screen {
-        case importer, library, game(GameSession)
+        case importer, library, game(GameSession), challenge(ChallengeFlow)
     }
 
     @Published var screen: Screen = .library
@@ -56,7 +56,12 @@ final class AppModel: ObservableObject {
     let library = CourseLibrary()
     let saves = SaveStore()
 
-    var isPlaying: Bool { if case .game = screen { true } else { false } }
+    var isPlaying: Bool {
+        switch screen {
+        case .game, .challenge: true
+        default: false
+        }
+    }
 
     private let env = ProcessInfo.processInfo.environment
 
@@ -89,6 +94,14 @@ final class AppModel: ObservableObject {
     }
 
     func showImporter() { screen = .importer }
+
+    /// 100 Mario Challenge over the library's playable courses.
+    func showChallenge() {
+        guard let assets else { return }
+        let flow = ChallengeFlow(assets: assets, library: library.entries, saves: saves)
+        flow.onExit = { [weak self] in self?.showLibrary() }
+        screen = .challenge(flow)
+    }
 
     func usePlaceholder() {
         UserDefaults.standard.set(true, forKey: SettingsKey.usePlaceholder)
@@ -185,6 +198,7 @@ struct RootView: View {
             case .importer: ImportView()
             case .library: LibraryView(library: model.library, saves: model.saves)
             case .game(let session): GameView(session: session).id(session.id)
+            case .challenge(let flow): ChallengeView(flow: flow).id(flow.id)
             }
         }
         .alert("Error", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
