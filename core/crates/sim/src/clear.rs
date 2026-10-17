@@ -74,6 +74,8 @@ pub enum Goal {
     Star,
     Super,
     Fire,
+    /// Reach the goal wearing a Goomba's Shoe.
+    Shoe,
     /// Reach the goal without taking damage / without landing after leaving the ground.
     NoDamage,
     NoLanding,
@@ -123,6 +125,7 @@ impl ClearCondition {
                 42 => Goal::Super,
                 44 => Goal::Fire,
                 45 => Goal::Star,
+                58 => Goal::Shoe,
                 _ => Goal::Unsupported(i),
             },
             (3, Some(70)) => Goal::NoDamage,
@@ -201,7 +204,7 @@ impl ClearCondition {
 
     /// Is the goal open? `star`, `form`: the player's state when touching it (form 0 small,
     /// 1 super, 2 fire).
-    pub fn met(&self, star: bool, form: u8) -> bool {
+    pub fn met(&self, star: bool, form: u8, shoe: bool) -> bool {
         match self.goal {
             Goal::None => true,
             Goal::Defeat(_) | Goal::OneUps | Goal::Coins(_) | Goal::Pow | Goal::PSwitch => {
@@ -210,6 +213,7 @@ impl ClearCondition {
             Goal::Star => star,
             Goal::Super => form == 1,
             Goal::Fire => form == 2,
+            Goal::Shoe => shoe,
             Goal::NoDamage | Goal::NoLanding => !self.violated,
             Goal::Unsupported(_) => false,
         }
@@ -256,9 +260,9 @@ mod tests {
         assert_eq!(c.defeated(enemy::GOOMBA, Some(7)), Some(false));
         assert_eq!(c.defeated(enemy::GOOMBA, Some(7)), Some(false), "respawn");
         assert_eq!(c.defeated(enemy::KOOPA, Some(8)), None);
-        assert!(!c.met(false, 0));
+        assert!(!c.met(false, 0, false));
         assert_eq!(c.defeated(enemy::GOOMBA, None), Some(true));
-        assert!(c.met(false, 0));
+        assert!(c.met(false, 0, false));
     }
 
     #[test]
@@ -276,8 +280,8 @@ mod tests {
         c.ground(false);
         c.ground(true);
         c.ground(true);
-        assert!(c.met(false, 0), "two frames of grace");
+        assert!(c.met(false, 0, false), "two frames of grace");
         c.ground(true);
-        assert!(!c.met(false, 0));
+        assert!(!c.met(false, 0, false));
     }
 }

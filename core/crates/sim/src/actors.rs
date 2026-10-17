@@ -135,6 +135,15 @@ pub enum Kind {
     Wrench,
     /// Wiggler: head + 4 trailing segments; a stomp makes it angry (52-wiggler.md).
     Wiggler,
+    /// Goomba in a Goomba's Shoe (45; `heels` = Stiletto): hops toward the player; leaves the
+    /// empty shoe when defeated.
+    ShoeGoomba {
+        heels: bool,
+    },
+    /// An empty Goomba's Shoe: the player climbs in by landing on it.
+    Shoe {
+        heels: bool,
+    },
     /// Lava Bubble (60): leaps from the lava (or the area floor) to its placed height.
     LavaBubble,
     /// Monty Mole (102): buried until the player comes near, then chases.
@@ -180,13 +189,14 @@ impl Kind {
                 | Kind::LavaBubble
                 | Kind::MontyMole
                 | Kind::AngrySun { moon: false }
+                | Kind::ShoeGoomba { .. }
         )
     }
     /// Clear-condition enemy class (clear.rs) of a defeated actor of this kind.
     pub fn defeat_class(self, buzzy: bool) -> Option<u8> {
         use crate::clear::enemy as e;
         Some(match self {
-            Kind::Goomba => e::GOOMBA,
+            Kind::Goomba | Kind::ShoeGoomba { .. } => e::GOOMBA,
             Kind::Koopa { .. } => e::KOOPA,
             Kind::Shell { .. } if buzzy => e::BUZZY,
             Kind::Shell { .. } => e::KOOPA,
@@ -963,6 +973,11 @@ impl Actor {
                 self.vy = 0.0;
                 true
             }
+            Kind::ShoeGoomba { .. } => {
+                // the Goomba falls out of its shoe (the world drops the empty shoe)
+                self.die_fall(self.x - self.dir as f32);
+                true
+            }
             Kind::Goomba => {
                 self.mode = Mode::Stomped;
                 self.timer = STOMP_FRAMES;
@@ -1376,6 +1391,12 @@ impl Actor {
             Kind::Boo => self.step_boo(),
             Kind::ChainChomp { chained } => self.step_chomp(level, chained),
             Kind::LavaBubble => self.step_lava_bubble(),
+            Kind::ShoeGoomba { .. } => self.step_shoe_goomba(level),
+            Kind::Shoe { .. } => {
+                self.vx = 0.0;
+                self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+                self.collide(level);
+            }
             Kind::MontyMole => self.step_monty(level),
             Kind::AngrySun { moon } => self.step_sun(moon),
             Kind::Goomba
@@ -1869,6 +1890,36 @@ impl Actor {
         self.vy = self.speed * s + w * c;
         self.x += self.vx;
         self.y += self.vy;
+    }
+
+    /// Goomba's Shoe enemy (45-goombas-shoe.md): on the ground it brakes to 0 by 0.5/frame and
+    /// pauses 50 frames, then hops toward the player (vy 4.5, vx 1.5); in the air a wall flips
+    /// it (4-frame lock). Pause in `timer`.
+    fn step_shoe_goomba(&mut self, level: &Level) {
+        let (px, _) = self.target;
+        if self.on_ground {
+            self.vx -= self.vx.clamp(-0.5, 0.5);
+            if self.timer <= 0 {
+                self.timer = 50;
+            }
+            self.timer -= 1;
+            if self.timer == 0 {
+                self.dir = if px < self.x { -1 } else { 1 };
+                self.vy = 4.5;
+                self.vx = 1.5 * self.dir as f32;
+                self.on_ground = false;
+            }
+        }
+        self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+        self.collide(level);
+        if self.wall && !self.on_ground && self.turn_lock == 0 {
+            self.turn();
+            self.vx = 1.5 * self.dir as f32;
+            self.turn_lock = 4;
+        }
+        if self.on_ground && self.vy <= 0.0 && self.timer <= 0 {
+            self.timer = 50;
+        }
     }
 
     /// Lava Bubble (60-lava-bubble.md). Hidden 120 frames 16 px below the reference level L, then

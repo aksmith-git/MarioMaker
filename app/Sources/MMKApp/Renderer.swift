@@ -402,6 +402,7 @@ enum ClearConditionText {
         case 8: return "\(mark) goal as Fire"
         case 9: return "\(mark) no damage"
         case 10: return "\(mark) no landing"
+        case 11: return "\(mark) goal in a shoe"
         default: return "⚑ condition not supported"
         }
     }

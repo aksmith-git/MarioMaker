@@ -241,6 +241,9 @@ pub struct Player {
     skid: SkidPhase,
     prev_jump: bool,
     prev_run: bool,
+    /// Wearing a Goomba's Shoe (Some(stiletto)): spikes and Munchers underfoot are safe, stomps
+    /// defeat most enemies; a hit knocks the shoe off instead of costing a form.
+    pub shoe: Option<bool>,
     /// Climbing a vine: its centre x and the side the player hangs on (−1 left, +1 right).
     pub climbing: Option<(f32, i32)>,
     /// Frames before a vine can be grabbed again (after jumping off).
@@ -283,6 +286,7 @@ impl Player {
             prev_run: false,
             climbing: None,
             climb_lock: 0,
+            shoe: None,
         }
     }
 
@@ -336,6 +340,11 @@ impl Player {
     pub fn hurt(&mut self) -> bool {
         if self.invuln > 0 || self.star > 0 || !matches!(self.control, Control::Normal) {
             return false;
+        }
+        if self.shoe.take().is_some() {
+            // [ext] a hit in the shoe only knocks the shoe off
+            self.invuln = INVULN_DAMAGE;
+            return true;
         }
         match self.form {
             Form::Small => self.kill(),

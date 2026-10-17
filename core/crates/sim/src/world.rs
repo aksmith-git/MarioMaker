@@ -549,6 +549,25 @@ impl World {
         }
     }
 
+    /// A defeated shoe Goomba leaves its empty shoe behind (unless it fell into lava).
+    fn drop_shoes(&mut self) {
+        let mut shoes = Vec::new();
+        for a in &mut self.actors {
+            if let Kind::ShoeGoomba { heels } = a.kind
+                && !a.alive()
+                && a.chain == 0
+            {
+                a.chain = 1;
+                let mut s = Actor::new(Kind::Shoe { heels }, a.x, a.y);
+                s.big = a.big;
+                shoes.push(s);
+            }
+        }
+        for s in shoes {
+            self.add_actor(s);
+        }
+    }
+
     /// Defeated enemies count toward a "defeat N" condition once each (placed objects by their
     /// spawn record; others every time).
     fn tally_defeats(&mut self) {
@@ -650,7 +669,8 @@ impl World {
         self.conveyor_carry();
         let prev_x = self.player.x;
         self.player.step(input, &self.level);
-        if self.player.spiked && self.player.hurt() {
+        let shoe_safe = self.player.shoe.is_some() && self.player.on_ground;
+        if self.player.spiked && !shoe_safe && self.player.hurt() {
             self.events.push(if self.player.alive() {
                 Event::PowerDown
             } else {
@@ -797,6 +817,7 @@ impl World {
         self.player_interactions(jump_held);
         self.step_effects();
         self.tally_defeats();
+        self.drop_shoes();
         self.despawn();
         self.actors.retain(|a| a.mode != Mode::Dead);
         // action conditions: damage taken this frame, landings
@@ -1266,9 +1287,11 @@ impl World {
                 continue;
             }
             if let (Kind::Muncher, Some((x0, y0, x1, y1, _))) = (a.kind, a.solid_box()) {
-                // a Muncher hurts on every side, including from on top
+                // a Muncher hurts on every side, including from on top (not through a shoe)
+                let shod = self.player.shoe.is_some() && self.player.y >= y1 - 2.0;
                 if overlap(hurt, (x0 - 1.5, y0 - 1.5, x1 + 1.5, y1 + 1.5))
                     && !star
+                    && !shod
                     && self.player.hurt()
                 {
                     self.events.push(if self.player.alive() {
@@ -1337,6 +1360,20 @@ impl World {
                 });
                 return;
             }
+            if let Kind::Shoe { heels } = a.kind {
+                // climb in by landing on it
+                if overlap(contact, ab)
+                    && self.player.vy <= 0.0
+                    && self.player.y >= a.y + 4.0
+                    && self.player.shoe.is_none()
+                {
+                    self.actors[i].mode = Mode::Dead;
+                    self.player.shoe = Some(heels);
+                    self.events.push(Event::PowerUp);
+                }
+                i += 1;
+                continue;
+            }
             if a.kind == (Kind::AngrySun { moon: true }) && overlap(contact, ab) {
                 // the Moon wipes out the enemies on screen and disappears [ext behaviour]
                 self.actors[i].mode = Mode::Dead;
@@ -1380,6 +1417,31 @@ impl World {
             }
             // stomp: falling with the feet in the enemy's upper half [inf: window not traced]
             let stomp = p.vy < 0.0 && p.y >= ay + ah * 0.5 && !a.kind.unstompable();
+            // a shoe stomp defeats most enemies, spiny or not (stamp_shoe in EnemyDB)
+            let shoe_stomp = self.player.shoe.is_some()
+                && p.vy < 0.0
+                && p.y >= ay + ah * 0.5
+                && !matches!(
+                    a.kind,
+                    Kind::Thwomp { .. }
+                        | Kind::Boo
+                        | Kind::AngrySun { .. }
+                        | Kind::EnemyFire
+                        | Kind::Hammer
+                        | Kind::Magic
+                        | Kind::Wrench
+                );
+            if shoe_stomp && (a.kind.unstompable() || a.kind.stomp_bounces()) {
+                let px = p.x;
+                self.actors[i].die_fall(px);
+                self.player.bounce(jump_held);
+                let n = self.player.stomp_chain;
+                self.player.stomp_chain += 1;
+                self.add_score(Self::chain_score(n), ax, ay + 24.0);
+                self.events.push(Event::Stomp);
+                i += 1;
+                continue;
+            }
             if stomp && a.kind.stomp_bounces() {
                 self.player.bounce(jump_held);
                 self.events.push(Event::Bump);
@@ -2449,7 +2511,7 @@ impl World {
             Form::Super => 1,
             Form::Fire => 2,
         };
-        if !self.clear.met(p.star > 0, form) {
+        if !self.clear.met(p.star > 0, form, p.shoe.is_some()) {
             return;
         }
         // grab: snap to the pole, score by height
@@ -3265,8 +3327,32 @@ impl World {
                 Effect::Score { .. } => {}
             }
         }
-        if let Some(s) = self.player_sprite() {
-            out.push(s);
+        if let Some(mut s) = self.player_sprite() {
+            if let Some(heels) = self.player.shoe {
+                // the player stands in the shoe: shoe at the feet, the player drawn 8 px higher
+                let p = &self.player;
+                let model = if heels {
+                    "M1_Enemy_kutsu_kuriboB"
+                } else {
+                    "M1_Enemy_kutsu_kuriboA"
+                };
+                let mut sh = Self::model_sprite(
+                    model,
+                    "wait.0",
+                    p.x - 8.0,
+                    p.y,
+                    16.0,
+                    16.0,
+                    p.facing > 0,
+                    s.layer + 1,
+                );
+                sh.image.rect = Some((0.0, 16.0, 16.0, 16.0));
+                s.y += 8.0;
+                out.push(s);
+                out.push(sh);
+            } else {
+                out.push(s);
+            }
         }
         out
     }
@@ -3620,6 +3706,38 @@ impl World {
             ),
             Kind::Wiggler => ("M1_Enemy_hanachan", "head.0", 16.0, 32.0, a.dir > 0),
             Kind::LavaBubble => ("M1_Enemy_bubble", "wait.0", 16.0, 16.0, false),
+            Kind::ShoeGoomba { heels } => (
+                if heels {
+                    "M1_Enemy_kutsu_kuriboB"
+                } else {
+                    "M1_Enemy_kutsu_kuriboA"
+                },
+                walk_frame(&["wait.0", "wait.1"], a.age, 8),
+                16.0,
+                32.0,
+                a.dir > 0,
+            ),
+            Kind::Shoe { heels } => {
+                // the shoe is the lower half of the shoe Goomba's art
+                let model = if heels {
+                    "M1_Enemy_kutsu_kuriboB"
+                } else {
+                    "M1_Enemy_kutsu_kuriboA"
+                };
+                let s = if a.big { 2.0 } else { 1.0 };
+                let mut sp = Self::model_sprite(
+                    model,
+                    "wait.0",
+                    a.x - 8.0 * s,
+                    a.y,
+                    16.0 * s,
+                    16.0 * s,
+                    false,
+                    layer,
+                );
+                sp.image.rect = Some((0.0, 16.0, 16.0, 16.0));
+                return Some(sp);
+            }
             Kind::MontyMole => (
                 "M1_Enemy_choropoo",
                 match a.phase {
@@ -4081,7 +4199,7 @@ mod tests {
         }
         run(&mut w, 0, 1);
         assert_eq!(w.clear.count, 2);
-        assert!(w.clear.met(false, 0));
+        assert!(w.clear.met(false, 0, false));
     }
 
     #[test]
@@ -4630,6 +4748,52 @@ mod tests {
         run(&mut w, input::JUMP, 1);
         assert!(w.player.climbing.is_none());
         assert!(w.player.vy > 0.0);
+    }
+
+    #[test]
+    fn shoe_goomba_hops_drops_its_shoe_and_the_player_wears_it() {
+        let mut lvl = Level::flat(60);
+        lvl.spawns
+            .push(spawn(Kind::ShoeGoomba { heels: false }, 300.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 150.0;
+        run(&mut w, 0, 49);
+        assert!(w.actors[0].on_ground);
+        run(&mut w, 0, 3);
+        assert!(
+            w.actors[0].vy > 0.0 && w.actors[0].vx < 0.0,
+            "hops toward the player"
+        );
+        // defeat it: the empty shoe stays
+        w.actors[0].stomp();
+        run(&mut w, 0, 2);
+        assert!(w.actors.iter().any(|a| matches!(a.kind, Kind::Shoe { .. })));
+        run(&mut w, 0, 60);
+        let shoe = w
+            .actors
+            .iter()
+            .find(|a| matches!(a.kind, Kind::Shoe { .. }))
+            .unwrap();
+        let (sx, sy) = (shoe.x, shoe.y);
+        w.player.x = sx;
+        w.player.y = sy + 12.0;
+        w.player.vy = -1.0;
+        w.player_interactions(false);
+        assert_eq!(w.player.shoe, Some(false));
+        // a shoe stomp defeats a Spiny
+        w.add_actor(Actor::new(Kind::Spiny, w.player.x + 60.0, 32.0));
+        let i = w.actors.iter().position(|a| a.kind == Kind::Spiny).unwrap();
+        let (ax, ay) = (w.actors[i].x, w.actors[i].y);
+        w.player.x = ax;
+        w.player.y = ay + 12.0;
+        w.player.vy = -2.0;
+        w.player_interactions(false);
+        assert!(!w.actors[i].alive());
+        // a hit only knocks the shoe off
+        assert!(w.player.hurt());
+        assert_eq!(w.player.shoe, None);
+        assert_eq!(w.player.form, Form::Small);
+        assert!(w.player.alive());
     }
 
     #[test]
