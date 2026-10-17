@@ -4595,7 +4595,10 @@ mod tests {
         lvl.night = true;
         let mut w = World::with_level(lvl);
         w.player.x = 600.0;
-        run(&mut w, 0, 120);
+        // 6 s calm, then 4 s of wind to the left
+        run(&mut w, 0, 300);
+        assert!((w.player.x - 600.0).abs() < 1.0);
+        run(&mut w, 0, 180);
         assert!(w.player.x < 600.0 - 50.0, "x {}", w.player.x);
     }
 
