@@ -371,14 +371,14 @@ pub fn switch_atlas(kind: BlockKind, on: bool) -> u32 {
 pub const SUPPORTED_PARTS: &[i16] = &[
     0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 43, 44, 46, 47, 48, 52, 53, 54, 55,
-    56, 57, 58, 60, 61, 63, 66, 67, 68, 70, 71, 76, 82, 83, 84, 87, 88, 90, 91, 95, 99, 100, 102,
-    104, 105, 109,
+    56, 57, 58, 60, 61, 62, 63, 66, 67, 68, 70, 71, 76, 77, 82, 83, 84, 87, 88, 90, 91, 95, 98, 99,
+    100, 102, 104, 105, 109,
 ];
 
 /// Parts that become actors and so can ride a track (59-track.md).
 const RIDES_TRACKS: &[i16] = &[
     0, 1, 2, 3, 10, 11, 12, 15, 18, 19, 20, 25, 28, 30, 31, 32, 33, 34, 35, 36, 39, 40, 41, 44, 46,
-    48, 52, 56, 57, 58, 60, 61, 68, 70, 76, 82, 83, 91, 95, 102, 105,
+    48, 52, 56, 57, 58, 60, 61, 62, 68, 70, 76, 77, 82, 83, 91, 95, 98, 102, 105,
 ];
 
 /// Why a course is not fully playable yet: one entry per missing feature (empty = playable).
@@ -618,6 +618,21 @@ impl Level {
                 58 => Some(Kind::RockyWrench),
                 52 => Some(Kind::Wiggler),
                 60 => Some(Kind::LavaBubble),
+                // bosses: a child Key (95) drops on defeat; flag 0x200 = in a Koopa Clown Car;
+                // Boom Boom's alternate form is Pom Pom only in 3D World (Bunbun3W → Punpun)
+                62 => Some(Kind::Bowser {
+                    key: o.child_id == 95,
+                    clown: o.flags & 0x200 != 0,
+                }),
+                77 => Some(Kind::BoomBoom {
+                    key: o.child_id == 95,
+                    clown: o.flags & 0x200 != 0,
+                    pom: o.flags & 0x4 != 0 && lvl.style == "3W",
+                }),
+                98 => Some(Kind::BowserJr {
+                    key: o.child_id == 95,
+                    clown: o.flags & 0x200 != 0,
+                }),
                 102 => Some(Kind::MontyMole),
                 104 => Some(Kind::AngrySun {
                     moon: o.flags & 0x4 != 0,
