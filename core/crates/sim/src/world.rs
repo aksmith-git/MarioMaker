@@ -216,6 +216,11 @@ fn field_model(style: &str, theme: u8) -> String {
     format!("{style}_Field_{name}")
 }
 
+/// Animation frame `age / rate` cycling through `frames`.
+fn walk_frame(frames: &[&'static str], age: u32, rate: u32) -> &'static str {
+    frames[((age / rate) as usize) % frames.len()]
+}
+
 fn overlap(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> bool {
     a.0 < b.2 && b.0 < a.2 && a.1 < b.3 && b.1 < a.3
 }
@@ -655,6 +660,11 @@ impl World {
             if a.kind == Kind::Lakitu {
                 a.speed = self.player.vx;
             }
+            if let Kind::CheepCheep { .. } = a.kind {
+                a.ridden = self
+                    .liquid
+                    .is_some_and(|l| l.water() && l.covers(a.y + 16.0));
+            }
             if let Some(n) = a.step_spawning(&self.level) {
                 born.push(n);
             }
@@ -1068,6 +1078,18 @@ impl World {
                     let (ax, ay) = (a.x, a.y);
                     self.actors[i].mode = Mode::Dead;
                     self.collect_item(kind, ax, ay);
+                }
+                i += 1;
+                continue;
+            }
+            if let Kind::Skewer { .. } = a.kind {
+                if overlap(hurt, a.skewer_head()) && !star && self.player.hurt() {
+                    self.events.push(if self.player.alive() {
+                        Event::PowerDown
+                    } else {
+                        Event::Death
+                    });
+                    return;
                 }
                 i += 1;
                 continue;
@@ -2468,6 +2490,50 @@ impl World {
                 31,
             ));
         }
+        for a in &self.actors {
+            let Kind::Skewer { dir } = a.kind else {
+                continue;
+            };
+            let (x0, y0, x1, y1) = a.skewer_head();
+            if !visible((x0 + x1) / 2.0, (y0 + y1) / 2.0) && !visible(a.x, a.y) {
+                continue;
+            }
+            // head (spikes) and the shaft back to the base, vertical skewers only for now
+            if dir == 0 || dir == 2 {
+                let mut h = Self::model_sprite(
+                    "M1_Object_daikonbou",
+                    "top",
+                    x0,
+                    if dir == 0 { y0 } else { y1 - 16.0 },
+                    64.0,
+                    16.0,
+                    false,
+                    35,
+                );
+                h.flip_y = dir == 0;
+                out.push(h);
+                let (base_y, head_y) = if dir == 0 {
+                    (a.y + 64.0, y0 + 16.0)
+                } else {
+                    (a.y, y1 - 16.0)
+                };
+                let (lo, hi) = (base_y.min(head_y), base_y.max(head_y));
+                let mut y = lo;
+                while y < hi {
+                    out.push(Self::model_sprite(
+                        "M1_Object_daikonbou",
+                        "wait_body.0",
+                        x0,
+                        y,
+                        64.0,
+                        16.0_f32.min(hi - y),
+                        false,
+                        34,
+                    ));
+                    y += 16.0;
+                }
+            }
+        }
         for sn in &self.snakes {
             let model = if sn.fast {
                 "M1_Object_block_snake2"
@@ -2985,6 +3051,25 @@ impl World {
             ),
             Kind::Seesaw { .. } => return None,
             Kind::Claw => return None,
+            Kind::Skewer { .. } => return None,
+            Kind::CheepCheep { red } => (
+                if red {
+                    "M1_Enemy_pukupukuB"
+                } else {
+                    "M1_Enemy_pukupukuA"
+                },
+                walk_frame(&["wait.0", "wait.1"], a.age, 8),
+                16.0,
+                16.0,
+                a.dir > 0,
+            ),
+            Kind::Blooper => (
+                "M1_Enemy_gesso",
+                if a.phase == 1 { "wait.1" } else { "wait.0" },
+                16.0,
+                24.0,
+                false,
+            ),
             Kind::Twister => (
                 "M1_Object_tornado",
                 if (self.tick / 4).is_multiple_of(2) {

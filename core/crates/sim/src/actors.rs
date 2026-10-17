@@ -115,6 +115,16 @@ pub enum Kind {
     Twister,
     /// Swinging claw (105): a claw on a rope swinging from a pivot; grabs the player.
     Claw,
+    /// Cheep Cheep (red = alternate): swims in water, flops and hops out of it.
+    CheepCheep {
+        red: bool,
+    },
+    /// Blooper: pulses toward the player, then sinks (48-blooper.md).
+    Blooper,
+    /// Skewer (83): a spiked pillar that thrusts out 144 px (dir 0 down, 1 left, 2 up, 3 right).
+    Skewer {
+        dir: u8,
+    },
 }
 
 impl Kind {
@@ -457,6 +467,71 @@ impl Actor {
             }
         }
         None
+    }
+
+    /// Skewer extension along its direction (`speed` = velocity, `heading` = extension, px):
+    /// wait 100, wind back to −34 (0.15/frame², ≤ 1.5), hold 40, thrust (0.5, ≤ 7) to 144,
+    /// hold 60, retract (0.1, ≤ 2) to 0, repeat.
+    fn step_skewer(&mut self) {
+        match self.phase {
+            0 => {
+                self.timer += 1;
+                if self.timer >= 100 {
+                    self.phase = 1;
+                    self.timer = 0;
+                }
+            }
+            1 => {
+                self.speed = (self.speed - 0.15).max(-1.5);
+                self.heading = (self.heading + self.speed).max(-34.0);
+                if self.heading <= -34.0 {
+                    self.phase = 2;
+                    self.speed = 0.0;
+                }
+            }
+            2 => {
+                self.timer += 1;
+                if self.timer >= 40 {
+                    self.phase = 3;
+                    self.timer = 0;
+                }
+            }
+            3 => {
+                self.speed = (self.speed + 0.5).min(7.0);
+                self.heading = (self.heading + self.speed).min(144.0);
+                if self.heading >= 144.0 {
+                    self.phase = 4;
+                    self.speed = 0.0;
+                }
+            }
+            4 => {
+                self.timer += 1;
+                if self.timer >= 60 {
+                    self.phase = 5;
+                    self.timer = 0;
+                }
+            }
+            _ => {
+                self.speed = (self.speed - 0.1).max(-2.0);
+                self.heading = (self.heading + self.speed).max(0.0);
+                if self.heading <= 0.0 {
+                    self.phase = 0;
+                    self.speed = 0.0;
+                }
+            }
+        }
+    }
+
+    /// The Skewer's spiked head box: 64 wide × 32 deep at the extended end.
+    pub fn skewer_head(&self) -> (f32, f32, f32, f32) {
+        let (cx, cy) = (self.x, self.y + 32.0);
+        let e = self.heading;
+        match self.kind {
+            Kind::Skewer { dir: 0 } => (cx - 32.0, cy - 32.0 - e, cx + 32.0, cy - e),
+            Kind::Skewer { dir: 2 } => (cx - 32.0, cy + e, cx + 32.0, cy + 32.0 + e),
+            Kind::Skewer { dir: 1 } => (cx - 32.0 - e, cy - 32.0, cx - e, cy + 32.0),
+            _ => (cx + e, cy - 32.0, cx + 32.0 + e, cy + 32.0),
+        }
     }
 
     /// Swinging claw tip (where a held player hangs): pivot (home) + rope of 40 px.
@@ -1248,6 +1323,65 @@ impl Actor {
                 }
             }
             Kind::Pow | Kind::Key => {}
+            Kind::CheepCheep { red } => {
+                // `in_water` is passed in `ridden` by the world
+                if self.ridden {
+                    let t = self.dir as f32;
+                    self.vx += (t - self.vx).clamp(-0.02, 0.02);
+                    if red && (self.x - self.home_x).abs() > 40.0 {
+                        self.dir = if self.x > self.home_x { -1 } else { 1 };
+                    }
+                    let phase = self.age as f32 * 3.0;
+                    let tv = 0.3 * phase.to_radians().sin();
+                    self.vy += (tv - self.vy).clamp(-0.1, 0.1);
+                    self.collide(level);
+                    if self.wall {
+                        self.dir = -self.dir;
+                    }
+                } else {
+                    // out of water: flop, hopping 4.0 on every landing
+                    self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+                    self.collide(level);
+                    if self.on_ground {
+                        self.vy = 4.0;
+                        self.vx = 0.5 * self.dir as f32;
+                        self.on_ground = false;
+                    }
+                    if self.wall {
+                        self.dir = -self.dir;
+                    }
+                }
+            }
+            Kind::Blooper => {
+                let (px, py) = self.target;
+                if self.phase == 0 {
+                    // sink at 0.5 for at least 30 frames, until level with the player
+                    self.speed += (0.5 - self.speed).clamp(-0.5, 0.5);
+                    self.x += 0.0;
+                    self.y -= self.speed;
+                    self.timer += 1;
+                    if self.timer >= 30 && self.y <= py + 16.0 {
+                        self.phase = 1;
+                        self.timer = 0;
+                        self.heading = if px >= self.x { 45.0 } else { 135.0 };
+                    }
+                } else {
+                    // pulse: speed 2·|sin φ|, φ += 6°/frame, 38 frames
+                    let t = 2.0 * (self.timer as f32 * 6.0).to_radians().sin().abs();
+                    self.speed += (t - self.speed).clamp(-1.0, 1.0);
+                    let a = self.heading.to_radians();
+                    self.x += self.speed * a.cos();
+                    self.y += self.speed * a.sin();
+                    self.timer += 1;
+                    if self.timer >= 38 {
+                        self.phase = 0;
+                        self.timer = 0;
+                        self.speed = 0.0;
+                    }
+                }
+                self.dir = if px >= self.x { 1 } else { -1 };
+            }
+            Kind::Skewer { .. } => self.step_skewer(),
             Kind::Claw => {
                 // pendulum: angle = A·sin(2π t / T); A 60°, T 160 frames [inf: the rope helper
                 // simulation is outside the decompiled range]
@@ -1833,6 +1967,26 @@ mod tests {
         }
         assert_eq!(n + 1, 28);
         assert!((top - 38.5).abs() < 0.2, "peak {top}");
+    }
+
+    #[test]
+    fn skewer_cycle() {
+        let level = Level::flat(40);
+        let mut s = Actor::new(Kind::Skewer { dir: 0 }, 200.0, 100.0);
+        let mut max_ext: f32 = 0.0;
+        let mut first_full = None;
+        for f in 0..400 {
+            s.step(&level, 0.0);
+            max_ext = max_ext.max(s.heading);
+            if s.heading >= 144.0 && first_full.is_none() {
+                first_full = Some(f);
+            }
+        }
+        assert_eq!(max_ext, 144.0);
+        // 100 wait + wind-back (~25) + 40 hold + thrust (~30)
+        let f = first_full.unwrap();
+        assert!((180..=210).contains(&f), "extended at frame {f}");
+        assert!(s.heading <= 144.0);
     }
 
     #[test]
