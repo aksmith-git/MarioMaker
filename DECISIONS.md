@@ -278,3 +278,26 @@ are 32 px long; only free ends reverse. Still guessed: which way curves bulge, t
 field, and open-vs-closed ends (all ends reverse). Junctions aren't built. Tracks are drawn with
 white texels from the field atlas, a placeholder for the real per-cell track tiles.
 
+## 2026-10-18 — Cross-platform shell (owner asked for Windows, macOS, Linux, web and iOS)
+The Rust core has no platform code, so it ports as is. Two ways to reach the platforms the
+SwiftUI/Metal app can't (Windows, Linux, web):
+- **chosen:** a portable Rust shell (winit + wgpu + gilrs + cpal; wasm32 for the web) that runs
+  the same core and draws everything itself, including the menus (layout player). The Swift app stays
+  for macOS/iOS.
+- **rejected:** a separate native app per platform. It would mean five UIs to keep in sync.
+
+Menus move from SwiftUI to engine-drawn layouts in both shells. That's what the like-for-like goal
+needs anyway, since SMM1 and SMM2 menus are layouts. Proposal; it can be revisited before Phase 8
+starts.
+
+## 2026-10-18 — Online: an open-source server, never Nintendo's
+The owner wants multiplayer through an open-source server. The engine isn't the Switch game, so it
+doesn't need Nintendo's NEX protocol.
+- **Proposal for course sharing:** our own open-source server (Rust, MIT/Apache), self-hostable,
+  with an HTTP API. It covers courses, search, likes, makers and Endless/100 Mario pools, and can
+  import from SMMDB.
+- **Proposal for real-time play:** rollback netcode on the deterministic sim over WebRTC
+  (open-source matchbox signalling), so desktop and browser players can join the same game.
+
+⏳ Open for the owner: whether they already have a specific open-source server in mind.
+
