@@ -20,6 +20,8 @@ use crate::player::{Control, Form, Player, Pose, STAR_FRAMES};
 use crate::render::{Sprite, SpriteImage};
 use crate::warp::{self, SideHold, Transit};
 
+mod bosses;
+
 /// SMM2 shows 24 × 13.5 tiles.
 pub const VIEW_W: f32 = 24.0 * TILE;
 pub const VIEW_H: f32 = 13.5 * TILE;
@@ -190,12 +192,23 @@ pub struct World {
     carry: f32,
     /// Autoscroll view position (x, or y in vertical areas).
     autoscroll_pos: f32,
+    /// Custom autoscroll: next node index (into the sorted nodes), speed, camera centre.
+    custom_scroll: Option<(usize, f32, (f32, f32))>,
     /// The current area's liquid level, if any.
     pub liquid: Option<Liquid>,
     /// Cannon countdowns (current area).
     cannon_timers: Vec<i32>,
     /// Keys held.
     pub keys: u32,
+    /// Pink coins collected this attempt (area, tile) and the course's total.
+    pub pink: std::collections::BTreeSet<(usize, i32, i32)>,
+    pub pink_total: usize,
+    /// Jump / Run held last frame while flying a Clown Car.
+    clown_prev: (bool, bool),
+    /// The course's game style (feature switches for the player and objects).
+    pub style: crate::player::Style,
+    /// Run held this frame (carrying).
+    run_held: bool,
     /// Key-door pairs unlocked: (area, warp id >> 1).
     unlocked_doors: std::collections::BTreeSet<(usize, u8)>,
     /// Snake blocks in the current area.
@@ -268,6 +281,8 @@ impl World {
 
     pub fn with_areas(areas: Vec<Level>) -> Self {
         let level = areas[0].clone();
+        let pink_total = areas.iter().map(|l| l.pink_coins.len()).sum();
+        let style = crate::player::Style::from_code(&level.style);
         let mut w = Self {
             tick: 0,
             initial: level.clone(),
@@ -319,9 +334,15 @@ impl World {
             donut_respawn: Vec::new(),
             carry: 0.0,
             autoscroll_pos: 0.0,
+            custom_scroll: None,
             liquid: None,
             cannon_timers: Vec::new(),
             keys: 0,
+            pink: Default::default(),
+            pink_total,
+            clown_prev: (false, false),
+            style,
+            run_held: false,
             unlocked_doors: Default::default(),
             snakes: Vec::new(),
             held_by: None,
@@ -358,6 +379,7 @@ impl World {
         self.cleared = false;
         self.on_off = true;
         self.keys = 0;
+        self.pink.clear();
         self.unlocked_doors.clear();
         self.p_timer = 0;
         self.p_bricks.clear();
@@ -377,6 +399,7 @@ impl World {
             }
         }
         self.mark_taken_big_coins();
+        self.custom_scroll = None;
         // course start: the view starts centred on the player, clamped to the area
         let area = self.camera_area();
         let (px, py) = (self.player.x, self.player.y);
@@ -549,6 +572,187 @@ impl World {
         }
     }
 
+    /// The player flies a Koopa Clown Car (42-koopa-clown-car.md, player state 68): toward the
+    /// pad direction at up to 2 px/f (diagonals normalised), accelerating 0.05/frame per axis,
+    /// braking by 5 % when over speed; the Fire car shoots with Run; Down + Jump climbs out
+    /// [inf: exit input not traced].
+    fn fly_clown_car(&mut self, input: Input) {
+        let Some(id) = self.player.clown else { return };
+        let Some(i) = self.actors.iter().position(|a| a.id == id && a.alive()) else {
+            self.player.clown = None;
+            return;
+        };
+        let jump = input.held(input::JUMP);
+        let run = input.held(input::RUN);
+        let jump_pressed = jump && !self.clown_prev.0;
+        let run_pressed = run && !self.clown_prev.1;
+        self.clown_prev = (jump, run);
+        if jump_pressed && input.held(input::DOWN) {
+            self.player.clown = None;
+            self.actors[i].phase = 0;
+            self.player.vy = 3.5;
+            self.player.on_ground = false;
+            self.events.push(Event::Jump);
+            return;
+        }
+        let dx = input.dir_x() as f32;
+        let dy = if input.held(input::UP) {
+            1.0
+        } else if input.held(input::DOWN) {
+            -1.0
+        } else {
+            0.0
+        };
+        let n = (dx * dx + dy * dy).sqrt();
+        let (tx, ty) = if n > 0.0 {
+            (2.0 * dx / n, 2.0 * dy / n)
+        } else {
+            (0.0, 0.0)
+        };
+        let car = &mut self.actors[i];
+        car.vx += (tx - car.vx).clamp(-0.05, 0.05);
+        car.vy += (ty - car.vy).clamp(-0.05, 0.05);
+        let v = (car.vx * car.vx + car.vy * car.vy).sqrt();
+        if v > 2.0 {
+            let k = (0.95 * v).max(2.0) / v;
+            car.vx *= k;
+            car.vy *= k;
+        }
+        if dx != 0.0 {
+            car.dir = dx as i32;
+        }
+        let before = (car.x, car.y);
+        car.collide(&self.level);
+        car.moved = (car.x - before.0, car.y - before.1);
+        let (cx, cy, dir, fire) = (
+            car.x,
+            car.y,
+            car.dir,
+            matches!(car.kind, Kind::ClownCar { fire: true }),
+        );
+        let p = &mut self.player;
+        p.x = cx;
+        p.y = cy + 14.0;
+        p.vx = 0.0;
+        p.vy = 0.0;
+        p.on_ground = true;
+        p.facing = dir;
+        if fire && run_pressed {
+            let mut f = Actor::new(Kind::Fireball, cx + dir as f32 * 18.0, cy + 10.0);
+            f.dir = dir;
+            f.vx = 4.0 * dir as f32;
+            self.add_actor(f);
+            self.events.push(Event::Fireball);
+        }
+    }
+
+    /// Enemies riding a Koopa Clown Car stay on top of it (same link id, flag 0x200); the car
+    /// chases the player while it has a rider.
+    fn carry_clown_riders(&mut self) {
+        let spawns = &self.level.spawns;
+        let mut moves = Vec::new();
+        for (ri, r) in self.actors.iter().enumerate() {
+            let Some(rs) = r.spawn else { continue };
+            let Some(rspawn) = spawns.get(rs) else {
+                continue;
+            };
+            if !rspawn.clown
+                || !r.alive()
+                || matches!(
+                    r.kind,
+                    Kind::Bowser { .. } | Kind::BoomBoom { .. } | Kind::BowserJr { .. }
+                )
+            {
+                continue;
+            }
+            let car = self.actors.iter().position(|c| {
+                matches!(c.kind, Kind::ClownCar { .. })
+                    && c.alive()
+                    && c.spawn
+                        .and_then(|s| spawns.get(s))
+                        .is_some_and(|s| s.link == rspawn.link)
+            });
+            if let Some(ci) = car {
+                moves.push((ri, ci));
+            }
+        }
+        for (ri, ci) in moves {
+            let (cx, cy) = (self.actors[ci].x, self.actors[ci].y);
+            if self.actors[ci].phase == 0 {
+                self.actors[ci].phase = 1;
+            }
+            let r = &mut self.actors[ri];
+            r.x = cx;
+            r.y = cy + 24.0;
+            r.vx = 0.0;
+            r.vy = 0.0;
+            r.on_ground = true;
+        }
+    }
+
+    /// A carried item sits in front of the player; letting go of Run kicks it. A carried shell
+    /// that touches an enemy defeats both. A shell that wakes up in the hands is dropped.
+    fn carry_held(&mut self) {
+        let Some(id) = self.player.held else { return };
+        let Some(i) = self.actors.iter().position(|a| a.id == id && a.held) else {
+            self.player.held = None;
+            return;
+        };
+        let p = &self.player;
+        let (x, y, facing, pvx) = (p.x + p.facing as f32 * 11.0, p.y + 2.0, p.facing, p.vx);
+        let release =
+            !self.run_held || !self.player.alive() || self.actors[i].mode != Mode::ShellWait;
+        if release {
+            self.actors[i].held = false;
+            self.player.held = None;
+            if self.actors[i].mode == Mode::ShellWait && self.player.alive() {
+                self.actors[i].x = x;
+                self.actors[i].kick(facing, pvx);
+                self.events.push(Event::Kick);
+            }
+            return;
+        }
+        {
+            let a = &mut self.actors[i];
+            a.x = x;
+            a.y = y;
+            a.vx = 0.0;
+            a.vy = 0.0;
+            a.timer = a.timer.max(60); // [inf] the shell doesn't wake while carried
+        }
+        let sb = self.actors[i].bbox();
+        let hit = self
+            .actors
+            .iter()
+            .position(|e| e.id != id && e.alive() && e.kind.is_enemy() && overlap(sb, e.bbox()));
+        if let Some(j) = hit {
+            self.actors[j].die_fall(x);
+            self.actors[i].held = false;
+            self.actors[i].die_fall(x - facing as f32);
+            self.player.held = None;
+            self.events.push(Event::EnemyDown);
+        }
+    }
+
+    /// A defeated shoe Goomba leaves its empty shoe behind (unless it fell into lava).
+    fn drop_shoes(&mut self) {
+        let mut shoes = Vec::new();
+        for a in &mut self.actors {
+            if let Kind::ShoeGoomba { heels } = a.kind
+                && !a.alive()
+                && a.chain == 0
+            {
+                a.chain = 1;
+                let mut s = Actor::new(Kind::Shoe { heels }, a.x, a.y);
+                s.big = a.big;
+                shoes.push(s);
+            }
+        }
+        for s in shoes {
+            self.add_actor(s);
+        }
+    }
+
     /// Defeated enemies count toward a "defeat N" condition once each (placed objects by their
     /// spawn record; others every time).
     fn tally_defeats(&mut self) {
@@ -635,6 +839,8 @@ impl World {
         let prev_head = self.player.y + self.player.sensors().head_y;
         let was_ground = self.player.on_ground;
         let jump_held = input.held(input::JUMP);
+        self.run_held = input.held(input::RUN);
+        self.player.style = self.style;
         self.player.on_ice = self.ice_under_player();
         self.player.low_gravity = self.level.theme == 8 && self.level.night;
         self.step_wind();
@@ -649,8 +855,13 @@ impl World {
         self.step_platforms(jump_held, input.dir_x());
         self.conveyor_carry();
         let prev_x = self.player.x;
-        self.player.step(input, &self.level);
-        if self.player.spiked && self.player.hurt() {
+        if self.player.clown.is_some() {
+            self.fly_clown_car(input);
+        } else {
+            self.player.step(input, &self.level);
+        }
+        let shoe_safe = self.player.shoe.is_some() && self.player.on_ground;
+        if self.player.spiked && !shoe_safe && self.player.hurt() {
             self.events.push(if self.player.alive() {
                 Event::PowerDown
             } else {
@@ -759,7 +970,11 @@ impl World {
         let px = self.player.x;
         let py = self.player.y;
         let mut born = Vec::new();
+        self.carry_held();
         for a in &mut self.actors {
+            if a.held {
+                continue;
+            }
             if a.kind.is_platform() {
                 continue; // already moved before the player
             }
@@ -770,7 +985,7 @@ impl World {
             if a.kind == Kind::Lakitu {
                 a.speed = self.player.vx;
             }
-            if let Kind::CheepCheep { .. } = a.kind {
+            if matches!(a.kind, Kind::CheepCheep { .. } | Kind::FishBone) {
                 a.ridden = self
                     .liquid
                     .is_some_and(|l| l.water() && l.covers(a.y + 16.0));
@@ -791,12 +1006,16 @@ impl World {
         self.magikoopas();
         self.claws(input);
         self.pow_quake();
+        self.bump_moving_block();
         self.check_checkpoints();
         self.shell_walls();
         self.actor_interactions();
         self.player_interactions(jump_held);
         self.step_effects();
+        self.carry_clown_riders();
+        self.boss_keys();
         self.tally_defeats();
+        self.drop_shoes();
         self.despawn();
         self.actors.retain(|a| a.mode != Mode::Dead);
         // action conditions: damage taken this frame, landings
@@ -953,6 +1172,9 @@ impl World {
                     kills += 1;
                     scores.push((a.x, a.y + 24.0));
                 }
+                k if k.is_boss() => {
+                    a.boss_hit(crate::actors::BossAttack::BlockHit, cx);
+                }
                 k if k.is_item() => {
                     a.vy = 3.0;
                     a.dir = if a.x < cx { -1 } else { 1 };
@@ -1072,6 +1294,27 @@ impl World {
         for _ in 0..got {
             self.add_coin();
         }
+        // pink coins (92-pink-coin.md): each counts once; the last one gives the key
+        let mut newly = 0;
+        for c in &self.level.pink_coins {
+            let cb = (
+                c.x as f32 * TILE,
+                c.y as f32 * TILE,
+                (c.x + 1) as f32 * TILE,
+                (c.y + 1) as f32 * TILE,
+            );
+            if overlap(b, cb) && self.pink.insert((self.area, c.x, c.y)) {
+                newly += 1;
+            }
+        }
+        if newly > 0 {
+            self.events.push(Event::Coin);
+            if self.pink.len() >= self.pink_total {
+                // [inf] the key flies straight to the player (event kind 0)
+                self.keys += 1;
+                self.events.push(Event::OneUp);
+            }
+        }
     }
 
     /// Sliding shells hit the block they run into (side hits bump upward, bricks break).
@@ -1114,13 +1357,22 @@ impl World {
                     if f.kind == Kind::Fireball && e.kind.is_enemy() && f.mode != Mode::Dead {
                         let fx = f.x;
                         f.mode = Mode::Dead;
-                        if !e.fire_proof() {
+                        if e.kind.is_boss() {
+                            let hit = e.boss_hit(crate::actors::BossAttack::Fire, fx);
+                            if hit == crate::actors::BossHit::Defeated {
+                                scores.push((SCORE_TABLE[0], e.x, e.y + 24.0));
+                            }
+                        } else if !e.fire_proof() {
                             e.die_fall(fx);
                             scores.push((SCORE_TABLE[0], e.x, e.y + 24.0));
                         }
                     }
                 }
                 if !(ae && be) || !a.solid_contact() || !b.solid_contact() {
+                    continue;
+                }
+                if let Some(score) = bosses::boss_shell_hit(a, b) {
+                    scores.extend(score);
                     continue;
                 }
                 let walkers = a.kind.is_walker() && b.kind.is_walker();
@@ -1266,9 +1518,11 @@ impl World {
                 continue;
             }
             if let (Kind::Muncher, Some((x0, y0, x1, y1, _))) = (a.kind, a.solid_box()) {
-                // a Muncher hurts on every side, including from on top
+                // a Muncher hurts on every side, including from on top (not through a shoe)
+                let shod = self.player.shoe.is_some() && self.player.y >= y1 - 2.0;
                 if overlap(hurt, (x0 - 1.5, y0 - 1.5, x1 + 1.5, y1 + 1.5))
                     && !star
+                    && !shod
                     && self.player.hurt()
                 {
                     self.events.push(if self.player.alive() {
@@ -1337,6 +1591,45 @@ impl World {
                 });
                 return;
             }
+            if a.kind == Kind::FloatCoin {
+                if overlap(contact, ab) {
+                    self.actors[i].mode = Mode::Dead;
+                    self.add_coin();
+                }
+                i += 1;
+                continue;
+            }
+            if let Kind::ClownCar { .. } = a.kind {
+                // climb in by dropping into an empty car
+                if a.phase == 0
+                    && overlap(contact, ab)
+                    && self.player.vy <= 0.0
+                    && self.player.y >= a.y + 10.0
+                    && self.player.clown.is_none()
+                {
+                    let id = a.id;
+                    self.actors[i].phase = 2;
+                    self.player.clown = Some(id);
+                    self.player.vy = 0.0;
+                    self.events.push(Event::Pipe);
+                }
+                i += 1;
+                continue;
+            }
+            if let Kind::Shoe { heels } = a.kind {
+                // climb in by landing on it
+                if overlap(contact, ab)
+                    && self.player.vy <= 0.0
+                    && self.player.y >= a.y + 4.0
+                    && self.player.shoe.is_none()
+                {
+                    self.actors[i].mode = Mode::Dead;
+                    self.player.shoe = Some(heels);
+                    self.events.push(Event::PowerUp);
+                }
+                i += 1;
+                continue;
+            }
             if a.kind == (Kind::AngrySun { moon: true }) && overlap(contact, ab) {
                 // the Moon wipes out the enemies on screen and disappears [ext behaviour]
                 self.actors[i].mode = Mode::Dead;
@@ -1354,6 +1647,13 @@ impl World {
                     }
                 }
                 self.events.push(Event::EnemyDown);
+                i += 1;
+                continue;
+            }
+            if a.kind.is_boss() || matches!(a.kind, Kind::BowserFire | Kind::Shuriken) {
+                if self.boss_contact(i, jump_held) {
+                    return;
+                }
                 i += 1;
                 continue;
             }
@@ -1380,6 +1680,31 @@ impl World {
             }
             // stomp: falling with the feet in the enemy's upper half [inf: window not traced]
             let stomp = p.vy < 0.0 && p.y >= ay + ah * 0.5 && !a.kind.unstompable();
+            // a shoe stomp defeats most enemies, spiny or not (stamp_shoe in EnemyDB)
+            let shoe_stomp = self.player.shoe.is_some()
+                && p.vy < 0.0
+                && p.y >= ay + ah * 0.5
+                && !matches!(
+                    a.kind,
+                    Kind::Thwomp { .. }
+                        | Kind::Boo
+                        | Kind::AngrySun { .. }
+                        | Kind::EnemyFire
+                        | Kind::Hammer
+                        | Kind::Magic
+                        | Kind::Wrench
+                );
+            if shoe_stomp && (a.kind.unstompable() || a.kind.stomp_bounces()) {
+                let px = p.x;
+                self.actors[i].die_fall(px);
+                self.player.bounce(jump_held);
+                let n = self.player.stomp_chain;
+                self.player.stomp_chain += 1;
+                self.add_score(Self::chain_score(n), ax, ay + 24.0);
+                self.events.push(Event::Stomp);
+                i += 1;
+                continue;
+            }
             if stomp && a.kind.stomp_bounces() {
                 self.player.bounce(jump_held);
                 self.events.push(Event::Bump);
@@ -1387,6 +1712,19 @@ impl World {
                 continue;
             }
             let still_shell = a.mode == Mode::ShellWait;
+            if a.held {
+                i += 1;
+                continue;
+            }
+            if still_shell && self.style.can_carry() && self.run_held && self.player.held.is_none()
+            {
+                // pick it up (player-physics.md §5.5; not in SMB1)
+                let id = a.id;
+                self.actors[i].held = true;
+                self.player.held = Some(id);
+                i += 1;
+                continue;
+            }
             if still_shell {
                 let dir = if ax >= p.x { 1 } else { -1 };
                 let pvx = p.vx;
@@ -1492,6 +1830,21 @@ impl World {
             let visible = s.x >= v.0 && s.x <= v.2 && s.y >= v.1 - 32.0 && s.y <= v.3;
             let spawn_now = visible && !rec.was_visible && !rec.alive && !rec.killed;
             self.spawns[idx].was_visible = visible;
+            // a boss riding a Clown Car draws its own car: skip the linked car object
+            let boss_car = matches!(s.kind, Kind::ClownCar { .. })
+                && s.link >= 0
+                && self.spawns.iter().any(|r| {
+                    r.spawn.clown
+                        && r.spawn.link == s.link
+                        && matches!(
+                            r.spawn.kind,
+                            Kind::Bowser { .. } | Kind::BoomBoom { .. } | Kind::BowserJr { .. }
+                        )
+                });
+            if spawn_now && boss_car {
+                self.spawns[idx].killed = true;
+                continue;
+            }
             if spawn_now {
                 let mut a = Actor::new(s.kind, s.x, s.y);
                 a.big = s.big;
@@ -1698,7 +2051,11 @@ impl World {
                     && (cx - bx).abs() < 32.0
                     && (cy - by).abs() < 32.0
                 {
-                    a.die_fall(bx);
+                    if a.kind.is_boss() {
+                        a.boss_hit(crate::actors::BossAttack::Blast, bx);
+                    } else {
+                        a.die_fall(bx);
+                    }
                 }
             }
             let (tx, ty) = ((bx / TILE).floor() as i32, (by / TILE).floor() as i32);
@@ -1957,6 +2314,56 @@ impl World {
             self.player.vy = (self.player.vy + 0.6).min(4.5);
             self.player.on_ground = false;
         }
+    }
+
+    /// A moving block (wings / track) hit from below releases its contents once and is used up.
+    fn bump_moving_block(&mut self) {
+        let Some(id) = self.player.head_solid else {
+            return;
+        };
+        let Some(i) = self.actors.iter().position(|a| a.id == id) else {
+            return;
+        };
+        let Kind::MovingBlock {
+            block,
+            contents: Some(c),
+        } = self.actors[i].kind
+        else {
+            return;
+        };
+        let (x, y) = (self.actors[i].x, self.actors[i].y);
+        self.actors[i].kind = Kind::MovingBlock {
+            block: if block == BlockKind::Question {
+                BlockKind::Empty
+            } else {
+                block
+            },
+            contents: None,
+        };
+        self.events.push(Event::Bump);
+        let contents = if c.is_powerup() && !self.player.big() {
+            Contents::Mushroom
+        } else {
+            c
+        };
+        let kind = match contents {
+            Contents::Coin => {
+                self.effects.push(Effect::coin_pop(x, y, false));
+                return;
+            }
+            Contents::Mushroom => Kind::Mushroom,
+            Contents::FireFlower => Kind::FireFlower,
+            Contents::Star => Kind::Star,
+            Contents::OneUp => Kind::OneUp,
+            Contents::Goomba => Kind::Goomba,
+            Contents::Koopa { red } => Kind::Koopa { red },
+        };
+        let mut a = Actor::new(kind, x, y);
+        a.dir = 1;
+        a.vy = 0.5;
+        a.mode = Mode::Emerge { until: y + 16.0 };
+        self.events.push(Event::ItemAppear);
+        self.add_actor(a);
     }
 
     /// POW block hit from below: every grounded enemy in view is knocked out; the POW is used up.
@@ -2444,12 +2851,7 @@ impl World {
             return;
         }
         // a clear condition not met: the goal lets the player pass
-        let form = match p.form {
-            Form::Small => 0,
-            Form::Super => 1,
-            Form::Fire => 2,
-        };
-        if !self.clear.met(p.star > 0, form) {
+        if !self.clear.met(p.at_goal()) {
             return;
         }
         // grab: snap to the pole, score by height
@@ -2620,6 +3022,7 @@ impl World {
     /// Re-centre the camera on the player, as the game does after a respawn or a pipe exit (also
     /// used by the debug teleport).
     pub fn reset_camera(&mut self) {
+        self.custom_scroll = None;
         let area = self.camera_area();
         let (x, y) = (self.player.x, self.player.y);
         let level = &self.level;
@@ -2667,11 +3070,62 @@ impl World {
                 self.camera_x = self.autoscroll_pos;
             }
         }
+        if self.level.autoscroll == 4 && !self.level.scroll_nodes.is_empty() {
+            self.custom_autoscroll();
+        }
+    }
+
+    /// Custom autoscroll (89-autoscroll-camera.md, themes.md §4.3): the view centre starts at
+    /// the nearest node not behind it and travels node to node at the speed of each segment's
+    /// start node (setting 0–2 → 0.5 / 1.0 / 2.0 px/f [inf: field + 1 = slow/normal/fast]),
+    /// easing by max(0.03·|Δ|, 0.01) per frame; it pauses during warps, deaths and the goal.
+    fn custom_autoscroll(&mut self) {
+        let mut nodes = self.level.scroll_nodes.clone();
+        nodes.sort_by_key(|n| n.0);
+        let vertical = self.level.vertical;
+        let (next, mut v, (mut cx, mut cy)) = match self.custom_scroll {
+            Some(s) => s,
+            None => {
+                let c = (self.camera_x + VIEW_W / 2.0, self.camera_y + VIEW_H / 2.0);
+                let key = |n: &(u8, f32, f32, u8)| if vertical { n.2 - c.1 } else { n.1 - c.0 };
+                let nearest = (0..nodes.len())
+                    .min_by(|&a, &b| key(&nodes[a]).abs().total_cmp(&key(&nodes[b]).abs()))
+                    .unwrap_or(0);
+                let next = (nearest..nodes.len())
+                    .find(|&i| key(&nodes[i]) >= 0.0)
+                    .unwrap_or(nodes.len());
+                (next, 0.0, c)
+            }
+        };
+        let paused =
+            !self.player.alive() || self.goal_phase != GoalPhase::None || self.transit.is_some();
+        let mut next = next;
+        if !paused && next < nodes.len() {
+            let from = next.saturating_sub(1);
+            let target = [0.5, 1.0, 2.0][nodes[from].3.min(2) as usize];
+            let dv = target - v;
+            v += dv.signum() * (dv.abs() * 0.03).max(0.01).min(dv.abs());
+            let (tx, ty) = (nodes[next].1, nodes[next].2);
+            let (dx, dy) = (tx - cx, ty - cy);
+            let d = (dx * dx + dy * dy).sqrt();
+            if d <= v {
+                (cx, cy) = (tx, ty);
+                next += 1;
+            } else {
+                cx += dx / d * v;
+                cy += dy / d * v;
+            }
+        }
+        self.custom_scroll = Some((next, v, (cx, cy)));
+        let l = &self.level;
+        self.camera_x = (cx - VIEW_W / 2.0).clamp(l.left, (l.right - VIEW_W).max(l.left));
+        self.camera_y = (cy - VIEW_H / 2.0).clamp(l.bottom, (l.top - VIEW_H).max(l.bottom));
     }
 
     /// Autoscroll pushes the player with the view edges; squeezed against a wall = death.
     fn autoscroll_push(&mut self) {
-        if !matches!(self.level.autoscroll, 1..=3)
+        let custom = self.level.autoscroll == 4 && !self.level.scroll_nodes.is_empty();
+        if !(matches!(self.level.autoscroll, 1..=3) || custom)
             || self.level.vertical
             || !self.player.alive()
             || self.player.control != Control::Normal
@@ -2789,6 +3243,21 @@ impl World {
                 out.push(tile(px, py, 7, 20));
             }
         }
+        for c in &self.level.pink_coins {
+            let (px, py) = (c.x as f32 * TILE, c.y as f32 * TILE);
+            if visible(px, py) && !self.pink.contains(&(self.area, c.x, c.y)) {
+                out.push(Self::model_sprite(
+                    "M1_Object_coinrotate_pink",
+                    ["wait.0", "wait.1", "wait.2", "wait.3"][(self.tick as usize / 8) % 4],
+                    px,
+                    py,
+                    16.0,
+                    16.0,
+                    false,
+                    20,
+                ));
+            }
+        }
         self.goal_sprites(&mut out);
         for (i, cp) in self.level.checkpoints.iter().enumerate() {
             if !visible(cp.x, cp.y) {
@@ -2860,6 +3329,7 @@ impl World {
                 x += TILE;
             }
         }
+        self.clown_sprites(&mut out);
         // Chain Chomp stakes and chains (the chain is cosmetic: 4 links, stake to Chomp)
         for a in &self.actors {
             if a.kind != (Kind::ChainChomp { chained: true }) || !visible(a.home_x, a.home_y) {
@@ -3265,8 +3735,32 @@ impl World {
                 Effect::Score { .. } => {}
             }
         }
-        if let Some(s) = self.player_sprite() {
-            out.push(s);
+        if let Some(mut s) = self.player_sprite() {
+            if let Some(heels) = self.player.shoe {
+                // the player stands in the shoe: shoe at the feet, the player drawn 8 px higher
+                let p = &self.player;
+                let model = if heels {
+                    "M1_Enemy_kutsu_kuriboB"
+                } else {
+                    "M1_Enemy_kutsu_kuriboA"
+                };
+                let mut sh = Self::model_sprite(
+                    model,
+                    "wait.0",
+                    p.x - 8.0,
+                    p.y,
+                    16.0,
+                    16.0,
+                    p.facing > 0,
+                    s.layer + 1,
+                );
+                sh.image.rect = Some((0.0, 16.0, 16.0, 16.0));
+                s.y += 8.0;
+                out.push(s);
+                out.push(sh);
+            } else {
+                out.push(s);
+            }
         }
         out
     }
@@ -3619,7 +4113,81 @@ impl World {
                 false,
             ),
             Kind::Wiggler => ("M1_Enemy_hanachan", "head.0", 16.0, 32.0, a.dir > 0),
+            Kind::Bowser { .. }
+            | Kind::BowserFire
+            | Kind::BoomBoom { .. }
+            | Kind::Shuriken
+            | Kind::BowserJr { .. } => a.boss_look()?,
             Kind::LavaBubble => ("M1_Enemy_bubble", "wait.0", 16.0, 16.0, false),
+            Kind::FloatCoin => {
+                let field = self.field_model;
+                let mut sp =
+                    Self::model_sprite(field, field, a.x - 8.0, a.y, TILE, TILE, false, 25);
+                sp.image.rect = Some((7.0 * TILE, 0.0, TILE, TILE));
+                return Some(sp);
+            }
+            Kind::FishBone => (
+                "M1_Enemy_fishbone",
+                if a.phase == 2 {
+                    walk_frame(&["attack.0", "attack.1"], a.age, 4)
+                } else {
+                    walk_frame(&["swim.0", "swim.1"], a.age, 10)
+                },
+                16.0,
+                16.0,
+                a.dir > 0,
+            ),
+            Kind::MovingBlock { block, .. } => {
+                let i = crate::level::block_atlas(block);
+                let field = self.field_model;
+                let mut sp =
+                    Self::model_sprite(field, field, a.x - 8.0, a.y, TILE, TILE, false, 25);
+                sp.image.rect = Some(((i % 16) as f32 * TILE, (i / 16) as f32 * TILE, TILE, TILE));
+                return Some(sp);
+            }
+            Kind::ClownCar { fire } => (
+                if fire {
+                    "M1_Enemy_koopaclownfire"
+                } else {
+                    "M1_Enemy_koopaclown"
+                },
+                ["wait.0", "wait.1", "wait.2", "wait.3"][(self.tick as usize / 8) % 4],
+                32.0,
+                32.0,
+                a.dir > 0,
+            ),
+            Kind::ShoeGoomba { heels } => (
+                if heels {
+                    "M1_Enemy_kutsu_kuriboB"
+                } else {
+                    "M1_Enemy_kutsu_kuriboA"
+                },
+                walk_frame(&["wait.0", "wait.1"], a.age, 8),
+                16.0,
+                32.0,
+                a.dir > 0,
+            ),
+            Kind::Shoe { heels } => {
+                // the shoe is the lower half of the shoe Goomba's art
+                let model = if heels {
+                    "M1_Enemy_kutsu_kuriboB"
+                } else {
+                    "M1_Enemy_kutsu_kuriboA"
+                };
+                let s = if a.big { 2.0 } else { 1.0 };
+                let mut sp = Self::model_sprite(
+                    model,
+                    "wait.0",
+                    a.x - 8.0 * s,
+                    a.y,
+                    16.0 * s,
+                    16.0 * s,
+                    false,
+                    layer,
+                );
+                sp.image.rect = Some((0.0, 16.0, 16.0, 16.0));
+                return Some(sp);
+            }
             Kind::MontyMole => (
                 "M1_Enemy_choropoo",
                 match a.phase {
@@ -3809,6 +4377,13 @@ impl World {
                 }
             }
             Pose::Pole => "climb.0",
+            Pose::Climb => {
+                if ((p.walk_phase / 8.0) as i32) % 2 == 0 {
+                    "climb.0"
+                } else {
+                    "climb.1"
+                }
+            }
             Pose::Swim => ["swim.0", "swim.1", "swim.2", "swim.3", "swim.4", "swim.5"]
                 [((p.walk_phase / 4.0) as usize).min(5)],
             Pose::Fire => {
@@ -3818,6 +4393,21 @@ impl World {
                     "jump.0"
                 }
             }
+        };
+        // carrying (not in SMB1): the carry poses, named per style
+        let frame = if p.held.is_some() {
+            let k = ((p.walk_phase / 6.0) as usize) % 3;
+            match (p.pose, self.style) {
+                (Pose::Walk, crate::player::Style::MW) => {
+                    ["walk_carry.0", "walk_carry.1", "walk_carry.2"][k]
+                }
+                (Pose::Walk, _) => ["carry_walk.0", "carry_walk.1", "carry_walk.2"][k],
+                (Pose::Jump, _) => "carry_jump.0",
+                (Pose::Dead, _) => "dead.0",
+                _ => "carry_wait.0",
+            }
+        } else {
+            frame
         };
         let frame = if p.pose == Pose::Dead {
             "dead.0"
@@ -3948,6 +4538,8 @@ mod tests {
             pipe: None,
             parachute: false,
             rail: None,
+            link: -1,
+            clown: false,
         });
         let mut w = World::with_level(lvl);
         assert_eq!(w.actors.len(), 1);
@@ -3982,6 +4574,8 @@ mod tests {
             pipe: None,
             parachute: false,
             rail: None,
+            link: -1,
+            clown: false,
         });
         let mut w = World::with_level(lvl);
         let lives = w.lives;
@@ -4074,7 +4668,7 @@ mod tests {
         }
         run(&mut w, 0, 1);
         assert_eq!(w.clear.count, 2);
-        assert!(w.clear.met(false, 0));
+        assert!(w.clear.met(Default::default()));
     }
 
     #[test]
@@ -4162,6 +4756,8 @@ mod tests {
             pipe: Some((PipeDir::Up, 336.0, 64.0)),
             parachute: false,
             rail: None,
+            link: -1,
+            clown: false,
         });
         let mut w = World::with_level(lvl);
         w.player.x = 200.0;
@@ -4248,6 +4844,8 @@ mod tests {
             pipe: None,
             parachute: false,
             rail: None,
+            link: -1,
+            clown: false,
         }
     }
 
@@ -4601,6 +5199,282 @@ mod tests {
         run(&mut w, 0, 120 + 36 + 130);
         let x1 = w.actors[0].x - w.camera_x;
         assert!((x1 - 48.0).abs() < 2.0, "left corner: {x1}");
+    }
+
+    #[test]
+    fn vines_are_climbed_up_to_their_top() {
+        let mut lvl = Level::flat(40);
+        // a 6-tile vine standing on the ground at tile 10
+        lvl.vines.push((10.0 * TILE + 8.0, 2.0 * TILE, 8.0 * TILE));
+        let mut w = World::with_level(lvl);
+        w.player.x = 10.0 * TILE + 4.0;
+        run(&mut w, input::UP, 1);
+        assert!(w.player.climbing.is_some());
+        assert_eq!(w.player.x, 10.0 * TILE + 8.0 - 6.0, "hangs 6 px beside it");
+        run(&mut w, input::UP, 200);
+        let top = w.player.y;
+        assert!(
+            top + 16.0 >= 8.0 * TILE - 1.0 && top < 8.0 * TILE,
+            "stops at the top: {top}"
+        );
+        // jump off, and no re-grab for 30 frames
+        run(&mut w, input::JUMP, 1);
+        assert!(w.player.climbing.is_none());
+        assert!(w.player.vy > 0.0);
+    }
+
+    #[test]
+    fn shoe_goomba_hops_drops_its_shoe_and_the_player_wears_it() {
+        let mut lvl = Level::flat(60);
+        lvl.spawns
+            .push(spawn(Kind::ShoeGoomba { heels: false }, 300.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 150.0;
+        run(&mut w, 0, 49);
+        assert!(w.actors[0].on_ground);
+        run(&mut w, 0, 3);
+        assert!(
+            w.actors[0].vy > 0.0 && w.actors[0].vx < 0.0,
+            "hops toward the player"
+        );
+        // defeat it: the empty shoe stays
+        w.actors[0].stomp();
+        run(&mut w, 0, 2);
+        assert!(w.actors.iter().any(|a| matches!(a.kind, Kind::Shoe { .. })));
+        run(&mut w, 0, 60);
+        let shoe = w
+            .actors
+            .iter()
+            .find(|a| matches!(a.kind, Kind::Shoe { .. }))
+            .unwrap();
+        let (sx, sy) = (shoe.x, shoe.y);
+        w.player.x = sx;
+        w.player.y = sy + 12.0;
+        w.player.vy = -1.0;
+        w.player_interactions(false);
+        assert_eq!(w.player.shoe, Some(false));
+        // a shoe stomp defeats a Spiny
+        w.add_actor(Actor::new(Kind::Spiny, w.player.x + 60.0, 32.0));
+        let i = w.actors.iter().position(|a| a.kind == Kind::Spiny).unwrap();
+        let (ax, ay) = (w.actors[i].x, w.actors[i].y);
+        w.player.x = ax;
+        w.player.y = ay + 12.0;
+        w.player.vy = -2.0;
+        w.player_interactions(false);
+        assert!(!w.actors[i].alive());
+        // a hit only knocks the shoe off
+        assert!(w.player.hurt());
+        assert_eq!(w.player.shoe, None);
+        assert_eq!(w.player.form, Form::Small);
+        assert!(w.player.alive());
+    }
+
+    #[test]
+    fn collecting_every_pink_coin_gives_a_key() {
+        let mut lvl = Level::flat(40);
+        lvl.pink_coins.push(CoinTile { x: 6, y: 2 });
+        lvl.pink_coins.push(CoinTile { x: 9, y: 2 });
+        let mut w = World::with_level(lvl);
+        assert_eq!(w.pink_total, 2);
+        w.player.x = 6.0 * TILE + 8.0;
+        run(&mut w, 0, 1);
+        assert_eq!((w.pink.len(), w.keys), (1, 0));
+        w.player.x = 9.0 * TILE + 8.0;
+        run(&mut w, 0, 1);
+        assert_eq!((w.pink.len(), w.keys), (2, 1));
+        run(&mut w, 0, 1);
+        assert_eq!(w.keys, 1, "counted once");
+    }
+
+    #[test]
+    fn clown_car_is_flown_and_carries_riders() {
+        let mut lvl = Level::flat(80);
+        lvl.spawns
+            .push(spawn(Kind::ClownCar { fire: false }, 120.0, 64.0));
+        let mut car2 = spawn(Kind::ClownCar { fire: false }, 300.0, 80.0);
+        car2.link = 4;
+        lvl.spawns.push(car2);
+        let mut rider = spawn(Kind::Goomba, 300.0, 104.0);
+        rider.link = 4;
+        rider.clown = true;
+        lvl.spawns.push(rider);
+        let mut w = World::with_level(lvl);
+        w.player.x = 40.0;
+        run(&mut w, 0, 2);
+        // the Goomba rides its car, which chases the player
+        let car = w.actors.iter().find(|a| a.spawn == Some(1)).unwrap();
+        let g = w.actors.iter().find(|a| a.kind == Kind::Goomba).unwrap();
+        assert_eq!((g.x, g.y), (car.x, car.y + 24.0));
+        assert_eq!(car.phase, 1);
+        // drop into the empty car
+        let i = w.actors.iter().position(|a| a.spawn == Some(0)).unwrap();
+        let (cx, cy) = (w.actors[i].x, w.actors[i].y);
+        w.player.x = cx;
+        w.player.y = cy + 14.0;
+        w.player.vy = -1.0;
+        w.player_interactions(false);
+        assert!(w.player.clown.is_some());
+        // fly right: 0.05/frame up to 2 px/f
+        run(&mut w, input::RIGHT, 60);
+        let car = w.actors.iter().find(|a| a.spawn == Some(0)).unwrap();
+        assert!((car.vx - 2.0).abs() < 1e-3, "{}", car.vx);
+        assert_eq!(w.player.x, car.x);
+        // Down + Jump: out
+        run(&mut w, input::DOWN | input::JUMP, 1);
+        assert!(w.player.clown.is_none());
+    }
+
+    #[test]
+    fn winged_blocks_bob_and_release_their_contents() {
+        let mut lvl = Level::flat(40);
+        let mut b = spawn(
+            Kind::MovingBlock {
+                block: BlockKind::Question,
+                contents: Some(Contents::Coin),
+            },
+            200.0,
+            80.0,
+        );
+        b.wings = true;
+        lvl.spawns.push(b);
+        let mut lift = spawn(
+            Kind::Lift {
+                width: 3,
+                falling: false,
+            },
+            300.0,
+            80.0,
+        );
+        lift.wings = true;
+        lvl.spawns.push(lift);
+        let mut w = World::with_level(lvl);
+        w.player.x = 40.0;
+        run(&mut w, 0, 33);
+        // a quarter period (90° / 2.8125° = 32 frames): 16 px up
+        let blk = w
+            .actors
+            .iter()
+            .find(|a| matches!(a.kind, Kind::MovingBlock { .. }))
+            .unwrap();
+        assert!((blk.y - 96.0).abs() < 0.5, "{}", blk.y);
+        let l = w
+            .actors
+            .iter()
+            .find(|a| matches!(a.kind, Kind::Lift { .. }))
+            .unwrap();
+        assert!((l.y - 96.0).abs() < 0.5, "{}", l.y);
+        // bump from below: one coin, then used
+        let i = w
+            .actors
+            .iter()
+            .position(|a| matches!(a.kind, Kind::MovingBlock { .. }))
+            .unwrap();
+        let id = w.actors[i].id;
+        w.player.head_solid = Some(id);
+        w.bump_moving_block();
+        assert_eq!(
+            w.actors[i].kind,
+            Kind::MovingBlock {
+                block: BlockKind::Empty,
+                contents: None
+            }
+        );
+        assert!(
+            w.effects
+                .iter()
+                .any(|e| matches!(e, Effect::CoinPop { .. }))
+        );
+    }
+
+    #[test]
+    fn fish_bone_aims_charges_and_shatters() {
+        let mut lvl = Level::flat(40);
+        lvl.liquid = Some(crate::level::LiquidSpec {
+            kind: 1,
+            start: 400.0,
+            end: 400.0,
+            mode: 0,
+            speed: 0,
+            full: true,
+        });
+        // a wall the charge will hit
+        for y in 2..12 {
+            lvl.set(4, y, Cell::Solid);
+        }
+        lvl.spawns.push(spawn(Kind::FishBone, 200.0, 80.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 140.0;
+        w.player.y = 80.0;
+        run(&mut w, 0, 2);
+        let a = &w.actors[0];
+        assert!(
+            a.dir < 0 && a.phase == 1,
+            "spots the player it faces: {} {}",
+            a.dir,
+            a.phase
+        );
+        w.player.x = 300.0; // step aside; it charges along the aim regardless
+        run(&mut w, 0, 41);
+        assert_eq!(w.actors[0].phase, 2);
+        run(&mut w, 0, 120);
+        assert!(
+            w.actors.iter().all(|a| a.kind != Kind::FishBone),
+            "shattered on the wall"
+        );
+    }
+
+    #[test]
+    fn custom_autoscroll_follows_its_nodes() {
+        let mut lvl = Level::flat(200);
+        lvl.autoscroll = 4;
+        // two nodes along the floor: from the start view to x = 1000 at the fast setting
+        lvl.scroll_nodes.push((2, 1000.0, 120.0, 0));
+        lvl.scroll_nodes.push((1, 200.0, 120.0, 2));
+        let mut w = World::with_level(lvl);
+        w.reset_camera();
+        let x0 = w.camera_x;
+        run(&mut w, input::RIGHT, 300);
+        let moved = w.camera_x - x0;
+        // eases toward 2 px/f (0.03 smoothing): well past 300 px in 300 frames
+        assert!(moved > 300.0 && moved < 600.0, "{moved}");
+        run(&mut w, input::RIGHT | input::RUN, 400);
+        assert!(
+            (w.camera_x + VIEW_W / 2.0 - 1000.0).abs() < 1.0,
+            "stops at the last node"
+        );
+    }
+
+    #[test]
+    fn shells_are_carried_outside_smb1_and_kicked_on_release() {
+        for style in [crate::player::Style::M3, crate::player::Style::M1] {
+            let mut lvl = Level::flat(40);
+            lvl.spawns
+                .push(spawn(Kind::Koopa { red: false }, 120.0, 32.0));
+            let mut w = World::with_level(lvl);
+            w.style = style;
+            w.player.x = 60.0;
+            run(&mut w, 0, 1);
+            assert!(w.actors[0].stomp(), "into its shell");
+            let sx = w.actors[0].x;
+            w.player.x = sx - 10.0;
+            run(&mut w, input::RUN, 2);
+            if style == crate::player::Style::M1 {
+                assert!(w.player.held.is_none(), "SMB1 kicks");
+                assert_eq!(w.actors[0].mode, Mode::ShellSlide);
+                continue;
+            }
+            assert!(w.player.held.is_some());
+            run(&mut w, input::RUN | input::RIGHT, 30);
+            let a = &w.actors[0];
+            assert!(
+                a.held && (a.x - (w.player.x + 11.0)).abs() < 0.01,
+                "in front of the player"
+            );
+            run(&mut w, 0, 1);
+            assert!(w.player.held.is_none());
+            assert_eq!(w.actors[0].mode, Mode::ShellSlide);
+            assert!(w.actors[0].vx > 0.0, "kicked forward");
+        }
     }
 
     #[test]
@@ -5055,6 +5929,8 @@ mod tests {
                     pipe: None,
                     parachute: false,
                     rail: None,
+                    link: -1,
+                    clown: false,
                 });
             }
             World::with_level(lvl)

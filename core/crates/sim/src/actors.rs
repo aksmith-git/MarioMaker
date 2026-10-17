@@ -7,6 +7,9 @@
 
 use crate::level::{Cell, Level, PipeDir, TILE};
 
+mod bosses;
+pub use bosses::{BossAttack, BossHit};
+
 pub const WALK_SPEED: f32 = 0.5;
 pub const ENEMY_GRAVITY: f32 = -0.1875;
 pub const MAX_FALL: f32 = -4.0;
@@ -135,6 +138,29 @@ pub enum Kind {
     Wrench,
     /// Wiggler: head + 4 trailing segments; a stomp makes it angry (52-wiggler.md).
     Wiggler,
+    /// Goomba in a Goomba's Shoe (45; `heels` = Stiletto): hops toward the player; leaves the
+    /// empty shoe when defeated.
+    ShoeGoomba {
+        heels: bool,
+    },
+    /// An empty Goomba's Shoe: the player climbs in by landing on it.
+    Shoe {
+        heels: bool,
+    },
+    /// A block that moves (wings or a track): brick, ?, hard, ice or cloud, with its contents.
+    MovingBlock {
+        block: crate::blocks::BlockKind,
+        contents: Option<crate::blocks::Contents>,
+    },
+    /// Koopa Clown Car (42; `fire` = the Fire Koopa Clown Car). Phases: 0 empty (floats),
+    /// 1 an enemy rides it (chases the player), 2 the player flies it (the world drives it).
+    ClownCar {
+        fire: bool,
+    },
+    /// A coin that moves (wings or a track): collected on touch.
+    FloatCoin,
+    /// Fish Bone (103): patrols in water, aims and charges; shatters on anything it hits.
+    FishBone,
     /// Lava Bubble (60): leaps from the lava (or the area floor) to its placed height.
     LavaBubble,
     /// Monty Mole (102): buried until the player comes near, then chases.
@@ -151,6 +177,28 @@ pub enum Kind {
     LavaLift {
         fast: bool,
     },
+    /// Bowser (62): 20 HP (big 40), paces around home, jumps and breathes fire (actors/bosses.rs).
+    /// `key`: holds a Key (child object 95) that drops on defeat; `clown`: rides a Koopa Clown
+    /// Car (flag 0x200).
+    Bowser {
+        key: bool,
+        clown: bool,
+    },
+    /// Bowser's (and Bowser Jr.'s) flame: flies level, settling onto its lane (`home_y`).
+    BowserFire,
+    /// Boom Boom (77): 3 HP plus a fireball counter; `pom` = Pom Pom (the 3D World alternate).
+    BoomBoom {
+        key: bool,
+        clown: bool,
+        pom: bool,
+    },
+    /// Pom Pom's shuriken: flies straight (velocity in vx, vy).
+    Shuriken,
+    /// Bowser Jr. (98): 3 HP plus a fireball counter.
+    BowserJr {
+        key: bool,
+        clown: bool,
+    },
 }
 
 impl Kind {
@@ -158,6 +206,9 @@ impl Kind {
         matches!(
             self,
             Kind::Goomba
+                | Kind::Bowser { .. }
+                | Kind::BoomBoom { .. }
+                | Kind::BowserJr { .. }
                 | Kind::Koopa { .. }
                 | Kind::Shell { .. }
                 | Kind::Piranha { .. }
@@ -180,13 +231,19 @@ impl Kind {
                 | Kind::LavaBubble
                 | Kind::MontyMole
                 | Kind::AngrySun { moon: false }
+                | Kind::ShoeGoomba { .. }
+                | Kind::FishBone
         )
     }
     /// Clear-condition enemy class (clear.rs) of a defeated actor of this kind.
     pub fn defeat_class(self, buzzy: bool) -> Option<u8> {
         use crate::clear::enemy as e;
         Some(match self {
-            Kind::Goomba => e::GOOMBA,
+            Kind::Goomba | Kind::ShoeGoomba { .. } => e::GOOMBA,
+            Kind::Bowser { .. } => e::BOWSER,
+            Kind::BoomBoom { pom: true, .. } => e::POM_POM,
+            Kind::BoomBoom { .. } => e::BOOM_BOOM,
+            Kind::BowserJr { .. } => e::BOWSER_JR,
             Kind::Koopa { .. } => e::KOOPA,
             Kind::Shell { .. } if buzzy => e::BUZZY,
             Kind::Shell { .. } => e::KOOPA,
@@ -204,6 +261,7 @@ impl Kind {
             Kind::SpikeTop => e::SPIKE_TOP,
             Kind::ChainChomp { .. } => e::CHAIN_CHOMP,
             Kind::LavaBubble => e::LAVA_BUBBLE,
+            Kind::FishBone => e::FISH_BONE,
             Kind::MontyMole => e::MONTY_MOLE,
             Kind::AngrySun { moon: false } => e::ANGRY_SUN,
             Kind::Wiggler => e::WIGGLER,
@@ -239,6 +297,9 @@ impl Kind {
         matches!(
             self,
             Kind::Piranha { .. }
+                | Kind::Bowser { .. }
+                | Kind::BowserFire
+                | Kind::Shuriken
                 | Kind::EnemyFire
                 | Kind::Spiny
                 | Kind::SpikeTop
@@ -268,6 +329,7 @@ impl Kind {
                 | Kind::Cloud
                 | Kind::Pow
                 | Kind::LavaLift { .. }
+                | Kind::MovingBlock { .. }
         )
     }
     pub fn is_item(self) -> bool {
@@ -369,6 +431,8 @@ pub struct Actor {
     pub rail_off: (f32, f32),
     /// Counted toward a "defeat N" clear condition.
     pub tallied: bool,
+    /// Carried by the player: the world positions it; it doesn't step on its own.
+    pub held: bool,
     /// Set by the world each frame: the camera's bottom-left corner, and the reference level a
     /// Lava Bubble leaps from (the liquid surface, else the area bottom − 12).
     pub camera: (f32, f32),
@@ -415,6 +479,7 @@ impl Actor {
             rail: None,
             rail_off: (0.0, 0.0),
             tallied: false,
+            held: false,
             camera: (0.0, 0.0),
             floor_ref: 0.0,
         }
@@ -432,6 +497,7 @@ impl Actor {
                 | Kind::ChainChomp { .. }
                 | Kind::LavaBubble
                 | Kind::AngrySun { .. }
+                | Kind::FishBone
         ) || (matches!(self.kind, Kind::Shell { .. }) && self.buzzy)
     }
 
@@ -469,6 +535,11 @@ impl Actor {
             Kind::Seesaw { width } => {
                 let hw = width as f32 * 8.0;
                 Some((self.x - hw, self.y + 8.0, self.x + hw, self.y + 16.0, true))
+            }
+            Kind::MovingBlock { block, .. } => {
+                use crate::blocks::BlockKind as B;
+                let top_only = matches!(block, B::Cloud | B::Donut);
+                Some((self.x - 8.0, self.y, self.x + 8.0, self.y + 16.0, top_only))
             }
             Kind::Donut => Some((
                 self.x - 8.0,
@@ -740,10 +811,34 @@ impl Actor {
     /// Thwomp (12-thwomp.md): Wait (notices a player below within |dx| < W + 32) → Fall
     /// (g −0.25, cap −5) → FallWait 64 → Return (≤ 0.875, +0.2/frame) to the home height.
     /// Side Thwomp [inf]: charges toward a player level with it (0.075/frame² to 3.0), waits, returns.
+    /// Winged blocks and lifts (4-brick.md B12 "Wing"): a vertical sine bob around home at
+    /// 2.8125°/frame [inf: amplitude 16 px, 48 for the helper's special mode (hard, ice, donut,
+    /// cloud)]. Angle in `heading`.
+    fn wing_bob(&mut self, amp: f32) {
+        self.heading = (self.heading + 2.8125) % 360.0;
+        self.y = self.home_y + amp * self.heading.to_radians().sin();
+    }
+
     fn step_thwomp(&mut self, level: &Level, side: bool) {
         let (px, py) = self.target;
         let w = if self.big { 32.0 } else { 16.0 };
         match self.phase {
+            0 if self.wings => {
+                // winged: patrol at 0.3 px/f (0.003/frame²), turning at walls, bobbing with
+                // vy = 0.15·sin(2°·t) while waiting (12-thwomp.md)
+                let target = 0.3 * self.dir as f32;
+                self.vx += (target - self.vx).clamp(-0.003, 0.003);
+                self.vy = 0.15 * (2.0 * self.age as f32).to_radians().sin();
+                self.collide(level);
+                if self.wall {
+                    self.turn();
+                }
+                if (px - self.x).abs() < w + 32.0 && py < self.y + w && py > self.y + w - 260.0 {
+                    self.phase = 1;
+                    self.vx = 0.0;
+                    self.vy = 0.0;
+                }
+            }
             0 => {
                 self.vx = 0.0;
                 self.vy = 0.0;
@@ -821,6 +916,10 @@ impl Actor {
     pub fn half_w(&self) -> f32 {
         match self.kind {
             Kind::Fireball | Kind::EnemyFire => 4.0,
+            Kind::Bowser { .. } | Kind::BoomBoom { .. } if self.big => 32.0,
+            Kind::Bowser { .. } | Kind::BoomBoom { .. } => 16.0,
+            Kind::BowserFire => 12.0,
+            Kind::Shuriken => 4.0,
             Kind::BigCoin { .. } => 15.0,
             Kind::BanzaiBill { .. } => 32.0,
             Kind::Thwomp { .. } => {
@@ -831,6 +930,7 @@ impl Actor {
                 }
             }
             Kind::Lift { width, .. } => width as f32 * 8.0,
+            Kind::ClownCar { .. } => 14.0,
             _ if self.big => 16.0,
             _ => 8.0,
         }
@@ -839,6 +939,9 @@ impl Actor {
     pub fn height(&self) -> f32 {
         match self.kind {
             Kind::Fireball | Kind::EnemyFire => 8.0,
+            Kind::Bowser { .. } | Kind::BoomBoom { .. } if self.big => 64.0,
+            Kind::Bowser { .. } | Kind::BoomBoom { .. } => 32.0,
+            Kind::BowserFire | Kind::Shuriken => 8.0,
             Kind::BigCoin { .. } => 30.0,
             Kind::BanzaiBill { .. } => 64.0,
             Kind::Thwomp { .. } => {
@@ -885,6 +988,7 @@ impl Actor {
     pub fn solid_contact(&self) -> bool {
         matches!(self.mode, Mode::Normal | Mode::ShellWait | Mode::ShellSlide)
             && !(matches!(self.kind, Kind::LavaBubble | Kind::MontyMole) && self.phase == 0)
+            && !self.boss_hidden()
             && !(matches!(self.kind, Kind::Piranha { .. }) && self.piranha_hidden())
     }
 
@@ -961,6 +1065,16 @@ impl Actor {
                 self.mode = Mode::DieFall;
                 self.vx = 0.0;
                 self.vy = 0.0;
+                true
+            }
+            Kind::FishBone => {
+                // it crumbles (DieVanish)
+                self.mode = Mode::Dead;
+                true
+            }
+            Kind::ShoeGoomba { .. } => {
+                // the Goomba falls out of its shoe (the world drops the empty shoe)
+                self.die_fall(self.x - self.dir as f32);
                 true
             }
             Kind::Goomba => {
@@ -1343,7 +1457,8 @@ impl Actor {
     fn step_normal(&mut self, level: &Level, player_x: f32) -> Option<Actor> {
         if self.wings {
             match self.kind {
-                Kind::Goomba | Kind::Koopa { .. } => {} // their own wing behaviour below
+                Kind::Goomba | Kind::Koopa { .. } | Kind::Thwomp { .. } => {} // their own wing behaviour
+                Kind::Bowser { .. } | Kind::BoomBoom { .. } | Kind::BowserJr { .. } => {}
                 Kind::Piranha { .. } | Kind::Muncher if self.pipe.is_none() => {
                     self.step_winged_plant(level);
                     return None;
@@ -1374,8 +1489,25 @@ impl Actor {
                 self.y += self.vy;
             }
             Kind::Boo => self.step_boo(),
+            Kind::Bowser { .. } => return self.step_bowser(level),
+            Kind::BoomBoom { .. } => return self.step_boom_boom(level),
+            Kind::BowserJr { .. } => return self.step_bowser_jr(level),
+            Kind::BowserFire | Kind::Shuriken => self.step_boss_shot(),
             Kind::ChainChomp { chained } => self.step_chomp(level, chained),
             Kind::LavaBubble => self.step_lava_bubble(),
+            Kind::FishBone => self.step_fish_bone(level),
+            Kind::FloatCoin => {
+                if self.wings {
+                    self.wing_bob(16.0);
+                }
+            }
+            Kind::ClownCar { .. } => self.step_clown_car(level),
+            Kind::ShoeGoomba { .. } => self.step_shoe_goomba(level),
+            Kind::Shoe { .. } => {
+                self.vx = 0.0;
+                self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+                self.collide(level);
+            }
             Kind::MontyMole => self.step_monty(level),
             Kind::AngrySun { moon } => self.step_sun(moon),
             Kind::Goomba
@@ -1466,6 +1598,18 @@ impl Actor {
                 }
             }
             Kind::Thwomp { side } => self.step_thwomp(level, side),
+            Kind::MovingBlock { block, .. } => {
+                if self.wings {
+                    use crate::blocks::BlockKind as B;
+                    let amp = if matches!(block, B::Hard | B::Ice | B::Donut | B::Cloud) {
+                        48.0
+                    } else {
+                        16.0
+                    };
+                    self.wing_bob(amp);
+                }
+            }
+            Kind::Lift { .. } if self.wings => self.wing_bob(16.0),
             Kind::Lift { falling, .. } => {
                 if falling && (self.ridden || self.phase == 1) {
                     self.phase = 1;
@@ -1869,6 +2013,136 @@ impl Actor {
         self.vy = self.speed * s + w * c;
         self.x += self.vx;
         self.y += self.vy;
+    }
+
+    /// Koopa Clown Car (42-koopa-clown-car.md). Empty: velocity × 0.95 with a ±0.2 bob in 0.01
+    /// steps. With an enemy rider: homes on the player at up to 1.0 px/f, accelerating 0.02.
+    /// Flown by the player: moved by the world (`World::fly_clown_car`). Bob speed in `heading`.
+    fn step_clown_car(&mut self, level: &Level) {
+        match self.phase {
+            0 => {
+                self.vx *= 0.95;
+                if self.timer <= 0 {
+                    self.timer = 40;
+                    self.hops ^= 1;
+                }
+                self.timer -= 1;
+                self.heading =
+                    (self.heading + if self.hops == 0 { 0.01 } else { -0.01 }).clamp(-0.2, 0.2);
+                self.vy = self.heading;
+                self.collide(level);
+            }
+            1 => {
+                let (px, py) = self.target;
+                let (dx, dy) = (px - self.x, py + 8.0 - self.y);
+                let d = (dx * dx + dy * dy).sqrt().max(1.0);
+                self.vx += 0.02 * dx / d;
+                self.vy += 0.02 * dy / d;
+                let v = (self.vx * self.vx + self.vy * self.vy).sqrt();
+                if v > 1.0 {
+                    self.vx /= v;
+                    self.vy /= v;
+                }
+                self.dir = if dx < 0.0 { -1 } else { 1 };
+                self.collide(level);
+            }
+            _ => {}
+        }
+    }
+
+    /// Goomba's Shoe enemy (45-goombas-shoe.md): on the ground it brakes to 0 by 0.5/frame and
+    /// pauses 50 frames, then hops toward the player (vy 4.5, vx 1.5); in the air a wall flips
+    /// it (4-frame lock). Pause in `timer`.
+    fn step_shoe_goomba(&mut self, level: &Level) {
+        let (px, _) = self.target;
+        if self.on_ground {
+            self.vx -= self.vx.clamp(-0.5, 0.5);
+            if self.timer <= 0 {
+                self.timer = 50;
+            }
+            self.timer -= 1;
+            if self.timer == 0 {
+                self.dir = if px < self.x { -1 } else { 1 };
+                self.vy = 4.5;
+                self.vx = 1.5 * self.dir as f32;
+                self.on_ground = false;
+            }
+        }
+        self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+        self.collide(level);
+        if self.wall && !self.on_ground && self.turn_lock == 0 {
+            self.turn();
+            self.vx = 1.5 * self.dir as f32;
+            self.turn_lock = 4;
+        }
+        if self.on_ground && self.vy <= 0.0 && self.timer <= 0 {
+            self.timer = 50;
+        }
+    }
+
+    /// Fish Bone (103-fish-bone.md). `ridden` = in water (set by the world). Phases: 0 swim
+    /// (0.5 px/f, 1.0 winged, ±64 px around home, turning at walls; vy decays by
+    /// max(0.1·|vy|, 0.01)), 1 aim (40 frames, stopped), 2 charge (+0.25/frame to 2.0, 6.0 winged,
+    /// along the aim; shatters on a wall, floor, ceiling or leaving the water), 3 fall (out of
+    /// water, −0.1875). Detection: within 80 px (160 winged) on the facing side. Aim in `heading`.
+    fn step_fish_bone(&mut self, level: &Level) {
+        let (px, py) = self.target;
+        let winged = self.wings;
+        if self.age <= 1 {
+            self.home_x = self.x;
+        }
+        match self.phase {
+            0 => {
+                if !self.ridden {
+                    self.phase = 3;
+                    return;
+                }
+                self.vx = if winged { 1.0 } else { 0.5 } * self.dir as f32;
+                self.vy -= self.vy.signum() * (self.vy.abs() * 0.1).max(0.01).min(self.vy.abs());
+                self.collide(level);
+                let past = (self.x - self.home_x) * self.dir as f32 > 64.0;
+                if (self.wall || past) && self.turn_lock == 0 {
+                    self.turn();
+                    self.turn_lock = 8;
+                }
+                let (dx, dy) = (px - self.x, py - self.y);
+                let reach = if winged { 160.0 } else { 80.0 };
+                let facing = dx * self.dir as f32 > 0.0;
+                if facing && (dx * dx + dy * dy).sqrt() <= reach && (!winged || dy.abs() <= 80.0) {
+                    self.phase = 1;
+                    self.timer = 40;
+                    self.heading = dy.atan2(dx).to_degrees();
+                }
+            }
+            1 => {
+                self.vx = 0.0;
+                self.vy = 0.0;
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    self.phase = 2;
+                    self.speed = 0.0;
+                }
+            }
+            2 => {
+                self.speed = (self.speed + 0.25).min(if winged { 6.0 } else { 2.0 });
+                let (s, c) = self.heading.to_radians().sin_cos();
+                self.vx = self.speed * c;
+                self.vy = self.speed * s;
+                let up = self.vy > 0.0;
+                self.collide(level);
+                let ceiling = up && self.vy <= 0.0;
+                if self.wall || ceiling || (self.on_ground && !up) || !self.ridden {
+                    self.mode = Mode::Dead; // shatters
+                }
+            }
+            _ => {
+                self.vy = (self.vy - 0.1875).max(MAX_FALL);
+                self.collide(level);
+                if self.ridden {
+                    self.phase = 0;
+                }
+            }
+        }
     }
 
     /// Lava Bubble (60-lava-bubble.md). Hidden 120 frames 16 px below the reference level L, then

@@ -438,11 +438,38 @@ pub unsafe extern "C" fn mmk_engine_snapshot(engine: *mut MmkEngine, out: *mut M
         let mut sprites = e.world.sprites();
         sprites.sort_by_key(|s| s.layer);
         e.sprites.clear();
+        // the sim names SMB1 models; other styles use the same names with their own prefix
+        // (M3_, MW_, …) and fall back to the SMB1 art where a style has no such model
+        let style = e.world.level.style.clone();
         for s in sprites {
             let key = (s.image.model, s.image.texture);
             let found = *e.lookup.entry(key).or_insert_with(|| {
-                let i = assets.cache.texture_index(key.0, key.1)?;
-                Some((i as u32, assets.cache.sprite_quad(key.0, key.1)))
+                let resolve = |model: &str| {
+                    let i = assets.cache.texture_index(model, key.1)?;
+                    Some((i as u32, assets.cache.sprite_quad(model, key.1)))
+                };
+                let resolve_tex = |model: &str, tex: &str| {
+                    let i = assets.cache.texture_index(model, tex)?;
+                    Some((i as u32, assets.cache.sprite_quad(model, tex)))
+                };
+                let styled = key
+                    .0
+                    .strip_prefix("M1_")
+                    .filter(|_| style != "M1")
+                    .map(|rest| format!("{style}_{rest}"));
+                // a style with fewer animation frames: use its last lower frame ("walk.2" →
+                // "walk.1") rather than mixing in SMB1 art
+                let lower_frame = |model: &str| {
+                    let (stem, n) = key.1.rsplit_once('.')?;
+                    let n: u32 = n.parse().ok()?;
+                    (0..n)
+                        .rev()
+                        .find_map(|k| resolve_tex(model, &format!("{stem}.{k}")))
+                };
+                styled
+                    .as_deref()
+                    .and_then(|m| resolve(m).or_else(|| lower_frame(m)))
+                    .or_else(|| resolve(key.0))
             });
             // missing art (placeholder mode, or not imported yet): report the sprite with
             // MMK_TEXTURE_NONE so the app can draw a stand-in shape

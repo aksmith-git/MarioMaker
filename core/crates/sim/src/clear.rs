@@ -35,6 +35,7 @@ pub mod enemy {
     pub const FIRE_PIRANHA: u8 = 7;
     pub const MUNCHER: u8 = 8;
     pub const DRY_BONES: u8 = 10;
+    pub const FISH_BONE: u8 = 11;
     pub const ROCKY_WRENCH: u8 = 12;
     pub const MONTY_MOLE: u8 = 13;
     pub const HAMMER_BRO: u8 = 14;
@@ -58,6 +59,16 @@ pub mod enemy {
     pub const BULLET_BILL: u8 = 41;
 }
 
+/// The player's state when touching the goal (status conditions).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AtGoal {
+    pub star: bool,
+    /// 0 small, 1 super, 2 fire.
+    pub form: u8,
+    pub shoe: bool,
+    pub clown_car: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Goal {
     None,
@@ -74,6 +85,9 @@ pub enum Goal {
     Star,
     Super,
     Fire,
+    /// Reach the goal wearing a Goomba's Shoe / flying a Koopa Clown Car.
+    Shoe,
+    ClownCar,
     /// Reach the goal without taking damage / without landing after leaving the ground.
     NoDamage,
     NoLanding,
@@ -123,6 +137,8 @@ impl ClearCondition {
                 42 => Goal::Super,
                 44 => Goal::Fire,
                 45 => Goal::Star,
+                58 => Goal::Shoe,
+                62 => Goal::ClownCar,
                 _ => Goal::Unsupported(i),
             },
             (3, Some(70)) => Goal::NoDamage,
@@ -201,7 +217,13 @@ impl ClearCondition {
 
     /// Is the goal open? `star`, `form`: the player's state when touching it (form 0 small,
     /// 1 super, 2 fire).
-    pub fn met(&self, star: bool, form: u8) -> bool {
+    pub fn met(&self, at: AtGoal) -> bool {
+        let AtGoal {
+            star,
+            form,
+            shoe,
+            clown_car,
+        } = at;
         match self.goal {
             Goal::None => true,
             Goal::Defeat(_) | Goal::OneUps | Goal::Coins(_) | Goal::Pow | Goal::PSwitch => {
@@ -210,6 +232,8 @@ impl ClearCondition {
             Goal::Star => star,
             Goal::Super => form == 1,
             Goal::Fire => form == 2,
+            Goal::Shoe => shoe,
+            Goal::ClownCar => clown_car,
             Goal::NoDamage | Goal::NoLanding => !self.violated,
             Goal::Unsupported(_) => false,
         }
@@ -256,9 +280,9 @@ mod tests {
         assert_eq!(c.defeated(enemy::GOOMBA, Some(7)), Some(false));
         assert_eq!(c.defeated(enemy::GOOMBA, Some(7)), Some(false), "respawn");
         assert_eq!(c.defeated(enemy::KOOPA, Some(8)), None);
-        assert!(!c.met(false, 0));
+        assert!(!c.met(AtGoal::default()));
         assert_eq!(c.defeated(enemy::GOOMBA, None), Some(true));
-        assert!(c.met(false, 0));
+        assert!(c.met(AtGoal::default()));
     }
 
     #[test]
@@ -276,8 +300,8 @@ mod tests {
         c.ground(false);
         c.ground(true);
         c.ground(true);
-        assert!(c.met(false, 0), "two frames of grace");
+        assert!(c.met(AtGoal::default()), "two frames of grace");
         c.ground(true);
-        assert!(!c.met(false, 0));
+        assert!(!c.met(AtGoal::default()));
     }
 }

@@ -154,6 +154,10 @@ pub struct Spawn {
     pub parachute: bool,
     /// On a track (flag 0x400): the start-direction field ((flags >> 20) & 3).
     pub rail: Option<u8>,
+    /// Link id (−1 none) and "rides a Koopa Clown Car" (flag 0x200): a rider and its car share
+    /// the link id.
+    pub link: i16,
+    pub clown: bool,
 }
 
 /// An airship cannon (47): block origin, barrel angle (degrees), next shot timer kept by the
@@ -288,6 +292,8 @@ pub struct Level {
     cells: Vec<Cell>,
     pub tiles: Vec<TileDraw>,
     pub coins: Vec<CoinTile>,
+    /// Pink coins (92): all of them, in both areas, make a key.
+    pub pink_coins: Vec<CoinTile>,
     pub slopes: Vec<Slope>,
     pub blocks: Vec<BlockPlacement>,
     pub spawns: Vec<Spawn>,
@@ -306,6 +312,10 @@ pub struct Level {
     pub snakes: Vec<(i32, i32, usize, bool, bool, Vec<u16>)>,
     /// Track graph (59-track.md).
     pub tracks: crate::track::Tracks,
+    /// Custom autoscroll path (89 nodes): (node number, x, y, speed setting 0–2), in px.
+    pub scroll_nodes: Vec<(u8, f32, f32, u8)>,
+    /// Vines (64): climb areas (centre x, bottom, top) in px.
+    pub vines: Vec<(f32, f32, f32)>,
     pub liquid: Option<LiquidSpec>,
     /// One-way walls (drawing): centre x, bottom y, orientation.
     pub oneway: Vec<(f32, f32, u8)>,
@@ -370,15 +380,16 @@ pub fn switch_atlas(kind: BlockKind, on: bool) -> u32 {
 /// (sound effect) are decoration only.
 pub const SUPPORTED_PARTS: &[i16] = &[
     0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
-    27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 43, 44, 46, 47, 48, 52, 53, 54, 55,
-    56, 57, 58, 60, 61, 63, 66, 67, 68, 70, 71, 76, 82, 83, 84, 87, 88, 90, 91, 95, 99, 100, 102,
-    104, 105, 109,
+    27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 52, 53,
+    54, 55, 56, 57, 58, 60, 61, 62, 63, 64, 66, 67, 68, 70, 71, 76, 77, 82, 83, 84, 87, 88, 89, 90,
+    91, 92, 94, 95, 98, 99, 100, 102, 103, 104, 105, 109,
 ];
 
 /// Parts that become actors and so can ride a track (59-track.md).
 const RIDES_TRACKS: &[i16] = &[
-    0, 1, 2, 3, 10, 11, 12, 15, 18, 19, 20, 25, 28, 30, 31, 32, 33, 34, 35, 36, 39, 40, 41, 44, 46,
-    48, 52, 56, 57, 58, 60, 61, 68, 70, 76, 82, 83, 91, 95, 102, 105,
+    0, 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 15, 18, 19, 20, 22, 23, 25, 28, 30, 31, 32, 33, 34, 35, 36,
+    39, 40, 41, 42, 44, 45, 46, 48, 52, 56, 57, 58, 60, 61, 62, 63, 68, 70, 76, 77, 82, 83, 91, 95,
+    98, 102, 103, 105,
 ];
 
 /// Why a course is not fully playable yet: one entry per missing feature (empty = playable).
@@ -390,8 +401,8 @@ pub fn unsupported_features(course: &Course) -> Vec<String> {
             continue; // unused sub-area
         }
 
-        if h.autoscroll_type == 4 {
-            out.insert("custom autoscroll".to_string());
+        if h.autoscroll_type == 4 && !area.objects.iter().any(|o| o.id == 89) {
+            out.insert("custom autoscroll without nodes".to_string());
         }
 
         for o in area.objects.iter() {
@@ -400,8 +411,8 @@ pub fn unsupported_features(course: &Course) -> Vec<String> {
             } else if o.flags & 0x400 != 0 && !RIDES_TRACKS.contains(&o.id) {
                 // blocks, coins and fixed objects on tracks need moving versions: not yet
                 out.insert(format!("part {} on a track", o.id));
-            } else if o.flags & 0x2 != 0 && matches!(o.id, 4 | 5 | 6 | 11 | 12 | 13 | 29) {
-                // winged blocks, lifts, Thwomps and Bill Blasters fly as actors: not yet
+            } else if o.flags & 0x2 != 0 && matches!(o.id, 13 | 29) {
+                // winged Bill Blasters and hidden blocks fly as actors: not yet
                 out.insert(format!("wings on part {}", o.id));
             }
         }
@@ -474,6 +485,9 @@ impl Level {
             firebars: Vec::new(),
             cannons: Vec::new(),
             snakes: Vec::new(),
+            scroll_nodes: Vec::new(),
+            pink_coins: Vec::new(),
+            vines: Vec::new(),
             tracks: Default::default(),
             liquid: None,
             oneway: Vec::new(),
@@ -617,7 +631,29 @@ impl Level {
                 39 => Some(Kind::Magikoopa),
                 58 => Some(Kind::RockyWrench),
                 52 => Some(Kind::Wiggler),
+                42 => Some(Kind::ClownCar {
+                    fire: o.flags & 0x4 != 0,
+                }),
                 60 => Some(Kind::LavaBubble),
+                103 => Some(Kind::FishBone),
+                45 => Some(Kind::ShoeGoomba {
+                    heels: o.flags & 0x4 != 0,
+                }),
+                // bosses: a child Key (95) drops on defeat; flag 0x200 = in a Koopa Clown Car;
+                // Boom Boom's alternate form is Pom Pom only in 3D World (Bunbun3W → Punpun)
+                62 => Some(Kind::Bowser {
+                    key: o.child_id == 95,
+                    clown: o.flags & 0x200 != 0,
+                }),
+                77 => Some(Kind::BoomBoom {
+                    key: o.child_id == 95,
+                    clown: o.flags & 0x200 != 0,
+                    pom: o.flags & 0x4 != 0 && lvl.style == "3W",
+                }),
+                98 => Some(Kind::BowserJr {
+                    key: o.child_id == 95,
+                    clown: o.flags & 0x200 != 0,
+                }),
                 102 => Some(Kind::MontyMole),
                 104 => Some(Kind::AngrySun {
                     moon: o.flags & 0x4 != 0,
@@ -702,6 +738,8 @@ impl Level {
                             pipe: Some((dir, ex, ey)),
                             parachute: false,
                             rail: None,
+                            link: -1,
+                            clown: false,
                         });
                     } else {
                         lvl.generators.push(PipeGenerator {
@@ -726,6 +764,8 @@ impl Level {
                     pipe: None,
                     parachute: o.flags & 0x8000 != 0,
                     rail: (o.flags & 0x400 != 0).then_some(((o.flags >> 20) & 3) as u8),
+                    link: o.link_id,
+                    clown: o.flags & 0x200 != 0,
                 });
                 continue;
             }
@@ -747,6 +787,44 @@ impl Level {
                     h: hgt.max(2),
                     contents,
                 });
+                continue;
+            }
+            if o.id == 89 {
+                // custom autoscroll node (89-autoscroll-camera.md): number (flags >> 20) & 0xF,
+                // speed (flags >> 18) & 3; the camera centre follows the nodes in order
+                lvl.scroll_nodes.push((
+                    ((o.flags >> 20) & 0xF) as u8,
+                    o.x as f32 / 10.0,
+                    o.y as f32 / 10.0,
+                    ((o.flags >> 18) & 3) as u8,
+                ));
+                continue;
+            }
+            if o.id == 64 {
+                // vine: a climb area, not solid; extended data holds the top and bottom tile ids
+                // (0x7F00_7D / 0x7F00_7E), the middle uses 0x7E (64-vine.md)
+                let top = (o.extended_data >> 16) & 0xFF;
+                let bottom = o.extended_data & 0xFF;
+                for dy in 0..hgt {
+                    let atlas = if dy == hgt - 1 && top != 0 {
+                        top
+                    } else if dy == 0 && bottom != 0 {
+                        bottom
+                    } else {
+                        0x7E
+                    };
+                    lvl.tiles.push(TileDraw {
+                        x: tx,
+                        y: ty + dy,
+                        atlas,
+                        flip: 0,
+                    });
+                }
+                lvl.vines.push((
+                    tx as f32 * TILE + 8.0,
+                    ty as f32 * TILE,
+                    (ty + hgt) as f32 * TILE,
+                ));
                 continue;
             }
             if o.id == 53 {
@@ -885,8 +963,44 @@ impl Level {
                 });
                 continue;
             }
+            if actorish && o.id == 8 {
+                lvl.spawns.push(Spawn {
+                    kind: Kind::FloatCoin,
+                    x: tx as f32 * TILE + 8.0,
+                    y: ty as f32 * TILE,
+                    big: false,
+                    wings: o.flags & 0x2 != 0,
+                    pipe: None,
+                    parachute: false,
+                    rail: (o.flags & 0x400 != 0).then_some(((o.flags >> 20) & 3) as u8),
+                    link: -1,
+                    clown: false,
+                });
+                continue;
+            }
+            if actorish && matches!(o.id, 4 | 5 | 6 | 22 | 23 | 63) {
+                // a winged or tracked block becomes a moving solid actor (4-brick.md B12)
+                let block = block_kind(o.id).unwrap();
+                lvl.spawns.push(Spawn {
+                    kind: Kind::MovingBlock {
+                        block,
+                        contents: Contents::from_part(o.child_id, o.child_flags),
+                    },
+                    x: tx as f32 * TILE + 8.0,
+                    y: ty as f32 * TILE,
+                    big: false,
+                    wings: o.flags & 0x2 != 0,
+                    pipe: None,
+                    parachute: false,
+                    rail: (o.flags & 0x400 != 0).then_some(((o.flags >> 20) & 3) as u8),
+                    link: -1,
+                    clown: false,
+                });
+                continue;
+            }
             match o.id {
                 8 if !actorish => lvl.coins.push(CoinTile { x: tx, y: ty }),
+                92 => lvl.pink_coins.push(CoinTile { x: tx, y: ty }),
                 id if !actorish && block_kind(id).is_some() => {
                     let mut kind = block_kind(id).unwrap();
                     if id == 100 && o.flags & 0x4 != 0 {
@@ -983,10 +1097,22 @@ impl Level {
                         });
                     }
                 }
-                87 | 88 => {
-                    // slopes: bit 20 = 0 rises to the right ("/"), 1 falls to the right ("\")
+                87 | 88 | 94 => {
+                    // slopes: bit 20 = 0 rises to the right ("/"), 1 falls to the right ("\");
+                    // a conveyor slope (94) is a steep slope that carries like a belt
+                    // (53-conveyor-belt.md: vector (±1, ±1), fast (±2, ±2))
                     let rising = (o.flags >> 20) & 1 == 0;
-                    let steep = o.id == 88;
+                    let steep = o.id != 87;
+                    if o.id == 94 {
+                        let right = (o.flags >> 3) & 3 == 1;
+                        let fast = (o.flags >> 18) & 3 == 1;
+                        let speed = if fast { 2.0 } else { 1.0 } * if right { 1.0 } else { -1.0 };
+                        for dx in 0..w {
+                            for dy in 0..hgt {
+                                lvl.conveyors.push((tx + dx, tx + dx, ty + dy, speed));
+                            }
+                        }
+                    }
                     let slope = Slope {
                         left: tx,
                         bottom: ty,
@@ -1193,6 +1319,8 @@ impl Level {
             pipe: None,
             parachute: false,
             rail: None,
+            link: -1,
+            clown: false,
         });
         lvl.spawns.push(Spawn {
             kind: Kind::Koopa { red: false },
@@ -1203,6 +1331,8 @@ impl Level {
             pipe: None,
             parachute: false,
             rail: None,
+            link: -1,
+            clown: false,
         });
         // pipe
         lvl.add_pipe(46, 2, 2, PipeDir::Up);
@@ -1235,6 +1365,9 @@ impl Level {
             firebars: Vec::new(),
             cannons: Vec::new(),
             snakes: Vec::new(),
+            scroll_nodes: Vec::new(),
+            pink_coins: Vec::new(),
+            vines: Vec::new(),
             tracks: Default::default(),
             liquid: None,
             oneway: Vec::new(),

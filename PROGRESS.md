@@ -179,6 +179,31 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   lets the player pass until met; HUD shows progress · holding / riding conditions ⬜ (no carry,
   Yoshi, shoe yet) — SMB1 sample 53 → 65 playable
 - ✅ Chain Chomp (chained + unchained)
+- ✅ Koopa Clown Car (and Fire car): floats empty, chases with an enemy rider (riders linked by
+  link id, carried on top), flown by the player (2 px/f, 0.05 accel, Fire shoots, Down+Jump exits
+  [inf]); "goal in a Clown Car" condition
+- ✅ Winged / tracked blocks (brick, ?, hard, ice, cloud) as moving solid actors that release
+  their contents when bumped; winged lifts bob; winged Thwomps patrol and bob (12-thwomp.md)
+- ✅ Fish Bone: patrol, 40-frame aim, charge (2 / 6 px/f), shatters on contact; fire-proof
+- ✅ Custom autoscroll: camera centre follows the area's part-89 nodes (speed per segment,
+  0.03 easing, pauses during warps/death/goal; the player is pushed at the edges)
+- ✅ Conveyor slopes (steep slope + belt carry); winged/tracked coins and note blocks —
+  SMB1 sample 148/150 playable (left: a Bill Blaster and a Burner on tracks)
+- ✅ Pink coins: counted once each across both areas; the last one gives the key
+- ✅ Goomba's Shoe / Stiletto: shoe Goomba hops (50-frame pause, 4.5 / 1.5), leaves the empty
+  shoe; the player wears it (spikes and Munchers underfoot safe, shoe stomps, a hit knocks it
+  off); "goal in a shoe" condition · shoe ground-pound, Yoshi (SMW/NSMBU) ⬜ — SMB1 sample 93/150
+- ✅ Vines: climb areas with tile art from the course data; climbing (1.0 / 1.5 px/f, 6 px
+  hang, side switch, jump off with 30-frame lock) · vines sprouting from blocks ⬜
+
+- ✅ Bowser: 20 HP (big 40; fire 1, shell 3; star / POW / lava kill), ±64 px patrol facing the
+  player, middle jumps and SMB1 Fly, fire every 40–79 frames + breath with level lane flames; SMB3
+  big jump + hip drop; key drop · hip-drop quake, water timers, helper modes ⬜
+- ✅ Boom Boom: 3 HP + fireball counter 5 / 10, run 0.75 / 0.75 / 1.5, wall jumps (3 per side),
+  charge → Defend spin, DamageDown 70, winged cruise + swoop; Pom Pom (3D World alternate) [inf]
+- ✅ Bowser Jr.: 3 HP + fireball counter, wait / walk ±24 / fire / hammer / hop / shift jump →
+  hover → hip drop, DamageDown → shell slide; Clown Car riders for all three [inf] — SMB1 sample
+  77 → 97 playable
 - ✅ Lava Bubble (hide / cosine rise / fall), Monty Mole (buried, mound, leap, chase), Angry Sun
   (corner wait, spin, half-ellipse swoop) and Moon (wipes on-screen enemies)
 - ✅ Tracks: graph from track records (lines + quarter arcs), rail follower (0.75 / 1.5 px/f),
