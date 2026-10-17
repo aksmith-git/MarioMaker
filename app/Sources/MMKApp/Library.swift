@@ -53,8 +53,26 @@ struct CourseEntry: Identifiable, Hashable {
     let url: URL
     let info: CourseInfo
     var meta = CourseMeta()
+    /// From the owner's game data (Story Mode, lessons, title courses), not the library folder.
+    var builtIn = false
 
-    var name: String { info.name.isEmpty ? url.deletingPathExtension().lastPathComponent : info.name }
+    /// "Story Mode", "Lesson", "Title" for built-in courses (from the archive name).
+    var collection: String? {
+        guard builtIn else { return nil }
+        let n = url.deletingPathExtension().lastPathComponent
+        if n.hasPrefix("quest") { return "Story Mode" }
+        if n.hasPrefix("lesson") { return "Lesson" }
+        if n.hasPrefix("title") { return "Title" }
+        return "Built-in"
+    }
+
+    var name: String {
+        if !info.name.isEmpty { return info.name }
+        let stem = url.deletingPathExtension().lastPathComponent
+        // built-in courses keep their names in the game's text files: number them instead
+        if let c = collection, let n = Int(stem.split(separator: "_").last ?? "") { return "\(c) \(n + 1)" }
+        return stem
+    }
 }
 
 /// The course library: every course file under `AppPaths.courses` (any depth). Files that are
@@ -106,11 +124,18 @@ final class CourseLibrary: ObservableObject {
             var found: [CourseEntry] = []
             var bad: [(String, String)] = []
             let meta = CourseMeta.scan(under: folder)
-            for url in Self.files(under: folder) {
+            // the library folder, then the built-in courses the importer exported from the
+            // owner's game (<asset cache>/courses)
+            var sources = Self.files(under: folder).map { ($0, false) }
+            if let root = assets?.url?.appendingPathComponent("courses", isDirectory: true) {
+                sources += Self.files(under: root).map { ($0, true) }
+            }
+            for (url, builtIn) in sources {
                 guard let data = try? Data(contentsOf: url) else { continue }
                 switch CourseInfo.read(data, assets: assets) {
                 case .success(let info):
-                    found.append(CourseEntry(url: url, info: info, meta: meta[url.standardizedFileURL.path] ?? CourseMeta()))
+                    found.append(CourseEntry(url: url, info: info, meta: meta[url.standardizedFileURL.path] ?? CourseMeta(),
+                                             builtIn: builtIn))
                 case .failure(let e): bad.append((url.path, e.description))
                 }
             }
@@ -181,6 +206,7 @@ struct LibraryView: View {
 
     enum Filter: String, CaseIterable, Identifiable {
         case all = "All", playable = "Playable", notCleared = "Not cleared", cleared = "Cleared"
+        case builtIn = "Built-in (Story Mode, lessons)"
         var id: String { rawValue }
     }
 
@@ -213,6 +239,7 @@ struct LibraryView: View {
                 case .playable: r.entry.info.playable
                 case .notCleared: !r.record.cleared
                 case .cleared: r.record.cleared
+                case .builtIn: r.entry.builtIn
                 }
             }
             .filter { r in
@@ -288,7 +315,13 @@ struct LibraryView: View {
             }
             .width(22)
             TableColumn("Name", value: \.name) { r in
-                Text(r.name).fontWeight(.medium)
+                HStack(spacing: 6) {
+                    Text(r.name).fontWeight(.medium)
+                    if let c = r.entry.collection {
+                        Text(c).font(.caption2.weight(.semibold)).padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.accentColor.opacity(0.2)))
+                    }
+                }
             }
             .width(min: 180, ideal: 280)
             TableColumn("Style", value: \.style).width(48)

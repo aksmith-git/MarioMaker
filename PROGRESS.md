@@ -111,7 +111,8 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   (stored for the audio engine: `volume.master/music/sfx`)
 - ✅ Save data: per course (content hash) cleared flag, best time, clears, attempts in `saves.json`
 - ✅ "Playable" / "Not yet supported" marking (style M1 for now; `unsupported` object count hook)
-- ⬜ Built-in courses from the dump in the library (needs the importer to export them)
+- ✅ Built-in courses from the owner's dump in the library: the importer exports the 120 Story Mode,
+  50 lesson and 10 title courses (encrypted, decrypted with the cached key table); "Built-in" filter
 - ⬜ Cancel button for a running import; incremental re-import
 - 🔄 SMM1 importer + layout player started: `mmk import-smm1` converts the owner's Wii U UI
   (337 layouts, 1698 animations, 2576 textures, 9 fonts, English text) into a cache; the `ui`

@@ -136,10 +136,20 @@ fn builtin_bcds(romfs: &Path) -> Result<Vec<(String, Vec<u8>)>> {
     paths.sort();
     let mut out = Vec::new();
     for p in paths {
-        for (name, data) in open_sarc(&p)?.files() {
-            if name.ends_with(".bcd") {
-                out.push((name.to_string(), data.to_vec()));
-            }
+        // name: archive stem (quest_012, lesson_003, title_course_data_4) [+ member if several]
+        let stem = p
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let sarc = open_sarc(&p)?;
+        let members: Vec<_> = sarc.files().filter(|(n, _)| n.ends_with(".bcd")).collect();
+        for (name, data) in &members {
+            let id = if members.len() == 1 {
+                stem.clone()
+            } else {
+                format!("{stem}-{}", name.trim_end_matches(".bcd").replace('/', "_"))
+            };
+            out.push((id, data.to_vec()));
         }
     }
     Ok(out)
@@ -300,6 +310,9 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
     for (i, (name, data)) in courses.iter().enumerate() {
         decrypt_bcd(data, &table, true)
             .map_err(|e| ImportError::Invalid(format!("{name}: {e}")))?;
+        // the owner's built-in courses (Story Mode, lessons, title courses) for the library;
+        // kept encrypted, the app decrypts them with the key table above
+        write(&out.join(format!("courses/{name}.bcd")), data)?;
         progress("keys", i + 1, courses.len());
     }
     let table_bytes: Vec<u8> = table.iter().flat_map(|w| w.to_le_bytes()).collect();
