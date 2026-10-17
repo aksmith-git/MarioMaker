@@ -62,14 +62,23 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   M1 goal pole (height score, slide, walk to castle, time → score countdown, castle flag)
 - ⬜ 7. Play real courses start to goal; tune against Ryujinx (needs a Ryujinx build with a GDB stub)
 
-### Phase 5b — Native app (must be done before Phase 6) ⬜
-- ⬜ Signed `.app` bundle with icon
-- ⬜ First-launch import screen (point at dump → extract; placeholder fallback)
-- ⬜ Course library screen: browse and play local courses
-- ⬜ Pause / restart / exit
-- ⬜ Settings: keyboard + controller mapping, window/fullscreen, volume
-- ⬜ Persistent save data (clears, settings)
-- ⬜ Per-course "playable / not yet supported" marking
+### Phase 5b — Native app (must be done before Phase 6) 🔄
+- ✅ `.app` bundle: `scripts/make-app.sh` → `build/MMK.app` (Info.plist, generated placeholder icon,
+  ad-hoc signature); working name "MMK" kept in one file (`Identity.swift`)
+- ✅ First-launch import screen: RomFS/ExeFS (+ optional update) pickers, importer on a background
+  thread with progress (`mmk_import_run`, update RomFS overlaid via symlinks); "use placeholder art"
+  fallback draws coloured boxes per sprite layer (`MMK_TEXTURE_NONE`)
+- ✅ Course library (home): scans the library folder, name/style/theme/timer via `mmk_course_info`,
+  search, filter, sort, add files/folders (deduplicated by content hash), double-click to play
+- ✅ Pause (Esc/P/+): Continue, Restart (`mmk_engine_restart`), Exit; course clear and game over
+  overlays → library; menus work with keyboard, controller and mouse
+- ✅ Settings window: keyboard + controller remapping, full screen, integer scaling, volume sliders
+  (stored for the audio engine: `volume.master/music/sfx`)
+- ✅ Save data: per course (content hash) cleared flag, best time, clears, attempts in `saves.json`
+- ✅ "Playable" / "Not yet supported" marking (style M1 for now; `unsupported` object count hook)
+- ⬜ Built-in courses from the dump in the library (needs the importer to export them)
+- ⬜ Cancel button for a running import; incremental re-import
+- ⬜ Shared menu look with the SMM1 layout player (Phase 6)
 
 ### Phase 6 — 100 Mario Challenge ⬜ (owner: SMM1 presentation like-for-like)
 - ⬜ Research: SMM1 100 Mario screen sequence from Block.rpx v208 + layout data — title/mode select,

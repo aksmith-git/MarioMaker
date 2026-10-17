@@ -2,6 +2,30 @@
 
 Newest first. Each entry: what was decided, why, and what would change it.
 
+## 2026-10-18 — App shell: working name "MMK", storage locations, shell-owned pause
+- **Name:** the app is called "MMK" (bundle id `dev.mmk.engine`) until the owner picks a name. No
+  Nintendo names or marks in the app name, icon or bundle id. Name, bundle id and version live
+  only in `app/Sources/MMKApp/Identity.swift`; `scripts/make-app.sh` reads them from there and the
+  Application Support folder is named after it, so renaming is a one-line change (existing data
+  would then need moving from the old folder).
+- **Storage:** `~/Library/Application Support/MMK/` holds `assets/<build>/` (importer output),
+  `courses/` (the library; added files are copied in, so the library survives the originals
+  moving) and `saves.json`. The older `…/mmk/assets` and `~/smm-work/cache` locations are still
+  searched for an asset cache. Settings are UserDefaults keys (README "Settings").
+- **Save key:** FNV-1a 64 of the decoded course data, so a course keeps its record whether it was
+  added as `.bcd`, zlib or raw data, and wherever the file lives. Not a security hash; collisions
+  only merge two records.
+- **Pause is the shell's job:** the start/pause button no longer reaches the engine; the shell stops
+  stepping it. Course clear = HUD flag bit 0 (set when the goal sequence ends); clear time runs
+  from the attempt's start (course start, death restart or menu restart) to the Goal event.
+  Game over at 0 lives is an app rule for now (SMM2 normal play has no lives); revisit for Phase 6.
+- **Placeholder art:** without a dump the engine still runs; sprites whose texture isn't in the
+  cache come out of the snapshot as `MMK_TEXTURE_NONE` and the renderer draws a box coloured by
+  draw layer (only in placeholder mode or with `MMK_DEBUG_MISSING_ART=1`, so a real import
+  with a missing texture looks as before).
+- **`mmk_course_info` takes an assets handle** (may be NULL) in addition to the bytes: encrypted
+  `.bcd` files need the key table from the asset cache.
+
 ## 2026-10-18 — Core-object choices where the specs have no number (Phase 5 step 6)
 Values read from the binary are used as-is (bump curve, coin pop, item emergence, walker speeds,
 shell wake 511, kick 2.5 + 0.5·|v|, death 45-frame pose → vy 3.2 / g −0.16 / restart after 140,

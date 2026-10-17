@@ -26,8 +26,10 @@ typedef struct {
     size_t len;
 } MmkTextureInfo;                                                      // 48 bytes
 
+#define MMK_TEXTURE_NONE 0xFFFFFFFFu   // MmkSprite.texture when the art is not in the cache
+
 typedef struct {
-    uint32_t texture;
+    uint32_t texture;           // texture index, or MMK_TEXTURE_NONE
     float x, y, w, h;           // bottom-left in world px (y up), size px
     float u0, v0, u1, v1;       // texture coords, (0,0) top-left
     uint32_t layer;
@@ -48,9 +50,29 @@ typedef struct {
     uint32_t events;            // bit n: event n this tick (see mmk_sim::Event)
 } MmkHud;                                                              // 24 bytes
 
+typedef struct {
+    char name[128];             // UTF-8, NUL-terminated
+    char description[320];      // UTF-8, NUL-terminated
+    char style[4];              // "M1", "M3", "MW", "WU", "3W"
+    uint8_t theme, sub_theme;   // 0 ground … 9 forest (docs/formats/smm2-course.md)
+    uint8_t night;              // bit 0 main area, bit 1 sub area
+    uint8_t playable;           // 1 = the engine can play it
+    int16_t timer;              // seconds, 0 = none
+    uint8_t encrypted;          // input was a .bcd
+    uint8_t clear_condition_category;
+    uint32_t clear_condition;
+    uint32_t object_count;
+    uint32_t unsupported;       // objects the engine can't run yet (0 until the sim reports them)
+    uint64_t content_hash;      // FNV-1a 64 of the decoded course data (save-data key)
+} MmkCourseInfo;                                                       // 480 bytes
+
+// stage is a short name ("identify", "keys", "tables", "textures"); called on the import thread
+typedef void (*MmkImportProgress)(void *user, const char *stage, size_t done, size_t total);
+
 const char *mmk_last_error(void);
 
 MmkAssets *mmk_assets_open(const char *path);
+MmkAssets *mmk_assets_placeholder(void);   // no textures, no keys: run without a game dump
 void mmk_assets_free(MmkAssets *assets);
 size_t mmk_assets_texture_count(const MmkAssets *assets);
 bool mmk_assets_texture(const MmkAssets *assets, size_t index, MmkTextureInfo *out);
@@ -61,4 +83,13 @@ bool mmk_engine_load_course(MmkEngine *engine, const uint8_t *data, size_t len);
 void mmk_engine_step(MmkEngine *engine, const MmkInput *input);
 void mmk_engine_snapshot(MmkEngine *engine, MmkSnapshot *out);
 void mmk_engine_hud(const MmkEngine *engine, MmkHud *out);
+void mmk_engine_restart(MmkEngine *engine);
 void mmk_engine_debug_teleport(MmkEngine *engine, float x, float y);
+
+// assets may be NULL (then encrypted .bcd files fail). Thread-safe.
+bool mmk_course_info(const MmkAssets *assets, const uint8_t *data, size_t len, MmkCourseInfo *out);
+
+// Blocks until done; run off the main thread. update_* may be NULL. Writes <out_root>/smm2-<build>/.
+bool mmk_import_run(const char *romfs, const char *exefs, const char *update_romfs,
+                    const char *update_exefs, const char *out_root,
+                    MmkImportProgress progress, void *user);

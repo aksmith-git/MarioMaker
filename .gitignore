@@ -36,3 +36,6 @@ __pycache__/
 
 # Swift
 /app/.build/
+
+# App bundle output (scripts/make-app.sh)
+/build/
