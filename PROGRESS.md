@@ -1,6 +1,6 @@
 # Progress
 
-## Phase 1 — Environment and extraction (in progress)
+## Phase 1 — Environment and extraction (complete, awaiting go-ahead)
 
 ### Done
 - Repo initialised; remote `aksmith-git/MarioMaker` (private). `.gitignore` excludes dumps, keys,
@@ -31,7 +31,34 @@
 Styles: `M1` SMB1, `M3` SMB3, `MW` SMW, `WU` NSMBU. Themes: plain, underground, castle, airship,
 water, haunted house.
 
-### Blocked
-- **SMM2**: no dump yet from the owner's own cartridge/eShop copy. The `.xci` in the project folder
-  is the same file as the one named `[romstorage.com]` (identical size and timestamp), so it is not used.
-- **SMM2 saved courses** for Phase 2 round-trip tests: none in Ryujinx's save folders.
+- **SMM2** from `MarioMaker2.NSP` (owner's dump; v1.0.0, title `01009B90006DC000`, SDK 7.4.0, no update):
+  - `~/smm-work/extracted/smm2-nsp/exefs/` — `main` (NSO, 17 MiB), `sdk`, `rtld`, `main.npdm`
+  - `~/smm-work/extracted/smm2-romfs/` → symlink to `/Volumes/SSD/smm-work/extracted/smm2-romfs` (2.7 GiB; internal disk is full)
+  - `SMM2.xci` is NOT used (it is the `[romstorage.com]` file renamed).
+- **Course sample**: `tools/fetch_courses.py` pulled 550 courses into `~/smm-work/courses/mm2_level/`
+  from the public `TheGreatRambler/mm2_level` dataset (CC BY-NC-SA 4.0): 25 per style x difficulty
+  plus 50 extra SMB1 ground courses. All from June–July 2019 uploads, so they only use v1.0.0 content.
+  All 550 decompress to 0x5BFC0 bytes and their headers (timer, style, name) match the metadata.
+
+### SMM2 layout summary (v1.0.0)
+| Area | Where | Format |
+|---|---|---|
+| Main executable | `exefs/main` | NSO (AArch64); Ghidra Switch Loader |
+| Built-in courses | `Course/*.szs` (120 story `quest`, 50 `lesson`, 10 `title`) | Yaz0 → SARC → `.bcd` (to confirm in Phase 2 whether encrypted) |
+| Online/save courses | (from dataset) | 0x5BFC0-byte decrypted course; on-console `.bcd` is encrypted |
+| Tilesets / scenery | `Model/{M1,M3,MW,WU,3W}_Field_<theme>`, `_DV_` (background), `_S_DV_` | zstd → SARC → BFRES (+ BFSHA) |
+| Theme animation | `Pack/<style>_FieldAnime_{Normal,Dark,Ice,Snow,Water,Yogan}.pack` | SARC |
+| Sprites / objects | `Pack/<style>_Model.pack`, `Static*.pack`, `Model/` | SARC of zstd SARCs → BFRES |
+| Params / physics candidates | `Pack/*.pack` → 423 BYML; `Bake/*.bkres` | BYML; SARC (to be mapped in Phase 3) |
+| Text | `Message/*.szs` | Yaz0 → SARC → MSBT (3038) + MSBP |
+| UI | `Layout/*.szs` | Yaz0 → SARC → SARC (BFLYT etc.) |
+| Music & SFX | `Sound/Resource/**` (471 BWAV, 2.1 GiB), `Pack/<style>_bars.pack` | BWAV, BARS |
+| Sound delay/env per theme | `Sound/Effect/delay_<style><theme>.byml` | BYML |
+
+Styles: `M1` SMB1, `M3` SMB3, `MW` SMW, `WU` NSMBU, `3W` SM3DW. Themes: plain, underground, castle,
+airship, water, hauntedhouse, snow, desert, athletic (sky), woods.
+
+### Open
+- SMM2 update (v3.0.x) not dumped. Courses made after Dec 2019 can use 2.0/3.0 items that v1.0.0 has
+  no assets or code for. Needed before Phase 7 and for a realistic 100 Mario Challenge pool.
+- Owner's own saved courses: not yet exported from the Switch; the dataset sample covers Phase 2 for now.

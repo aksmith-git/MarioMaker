@@ -2,6 +2,18 @@
 
 Newest first. Each entry: what was decided, why, and what would change it.
 
+## 2026-10-17 — Course sample from the public mm2_level dataset
+TGRCode's API returned 502 and SMMDB served a self-signed certificate. TheGreatRambler's Hugging
+Face dataset (26.6M courses, Feb 2022, CC BY-NC-SA 4.0) is read remotely with DuckDB range requests.
+It also carries Nintendo's own difficulty bucket and clear rates, useful for Phase 6. Shard 0 is
+used first: its uploads predate game v2.0, matching the v1.0.0 dump. Courses stay outside the repo.
+
+## 2026-10-17 — SMM2 extracted with hactool rather than Ryujinx's Extract Data
+Same output, but scriptable and repeatable. Keys are read in place from Ryujinx's folder.
+
+## 2026-10-17 — SMM2 RomFS lives on the external SSD
+Internal disk had ~1 GB free. `~/smm-work/extracted/smm2-romfs` is a symlink, so paths are unchanged.
+
 ## 2026-10-17 — CDecrypt patched to take the common key at runtime
 Upstream CDecrypt embeds the Wii U common key. Rule: key material only comes from the owner's
 console. The local build reads `$WIIU_COMMON_KEY_FILE` instead. Patch kept outside the repo.
