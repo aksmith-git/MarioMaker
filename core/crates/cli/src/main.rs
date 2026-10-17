@@ -53,6 +53,9 @@ enum Cmd {
         files: Vec<PathBuf>,
         #[arg(long)]
         each: bool,
+        /// Course key table for encrypted .bcd files (an asset cache's keys/course_table.bin).
+        #[arg(long)]
+        keys: Option<PathBuf>,
     },
     /// Import the user's own extracted SMM2 RomFS + ExeFS into an engine asset cache.
     Import {
@@ -445,7 +448,17 @@ fn main() -> ExitCode {
                 ExitCode::SUCCESS
             }
         }
-        Cmd::Coverage { files, each } => {
+        Cmd::Coverage { files, each, keys } => {
+            let table: Option<mmk_formats::smm2::KeyTable> = keys.and_then(|p| {
+                let b = std::fs::read(p).ok()?;
+                let words: Vec<u32> = b
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| u32::from_le_bytes(*c))
+                    .collect();
+                words.try_into().ok()
+            });
             let mut blockers: std::collections::BTreeMap<String, usize> = Default::default();
             let (mut total, mut ok) = (0usize, 0usize);
             let mut by_style: std::collections::BTreeMap<String, (usize, usize)> =
@@ -454,6 +467,12 @@ fn main() -> ExitCode {
                 let Ok(raw) = std::fs::read(f) else { continue };
                 let data = if raw.len() == mmk_formats::smm2::COURSE_SIZE {
                     raw
+                } else if raw.len() == mmk_formats::smm2::BCD_SIZE {
+                    let Some(t) = &table else { continue };
+                    let Ok(b) = mmk_formats::smm2::crypto::decrypt_bcd(&raw, t, false) else {
+                        continue;
+                    };
+                    b.body
                 } else {
                     let mut out = Vec::new();
                     if flate2::read::ZlibDecoder::new(&raw[..])
