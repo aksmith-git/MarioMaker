@@ -63,12 +63,17 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
 - ⬜ Persistent save data (clears, settings)
 - ⬜ Per-course "playable / not yet supported" marking
 
-### Phase 6 — 100 Mario Challenge ⬜
-- ⬜ Local library + pluggable remote source (SmmServer/SMMDB-style API)
-- ⬜ Difficulty tiers (Nintendo's rating + clear rates)
-- ⬜ Mode: 100 lives, fixed course count, skip, completion/unlock tracking
+### Phase 6 — 100 Mario Challenge ⬜ (owner: SMM1 presentation like-for-like)
+- ⬜ Research: SMM1 100 Mario screen sequence from Block.rpx v208 + layout data — title/mode select,
+  difficulty select, world map + Mario walking between courses, course intro card, lives / extra-life
+  counting, course clear, skip, game over, final rescue scene, costume reward, Save & Quit
+- ⬜ SMM1 asset import (owner's disc dump): BFLYT/BFLAN layouts, GX2 textures, BFFNT fonts,
+  BFSTM/BARS audio, MSBT text (English first)
+- ⬜ Layout player (panes, text, keyframed animations) — shared with the app menus
+- ⬜ Mode logic per research/specs (lives cap 100, ≤3 banked lives/course, free skip, unlocks, rewards)
+- ⬜ Course pool: local library + pluggable remote source (SmmServer/SMMDB-style), difficulty tiers
 - ⬜ Pool limited to courses marked playable; grows with Phase 7
-- ⬜ SMM1 → SMM2 import design + documented losses
+- ⬜ SMM1 → SMM2 course import design + documented losses
 
 ### Phase 7 — Expansion ⬜
 - ⬜ Measure object/style/theme frequency in real courses

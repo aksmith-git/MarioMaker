@@ -2,6 +2,14 @@
 
 Newest first. Each entry: what was decided, why, and what would change it.
 
+## 2026-10-18 — 100 Mario Challenge uses SMM1's own presentation, like-for-like
+Owner request: title/menu/world map and the before/after screens and animations as in SMM1.
+Assets come from the owner's SMM1 dump at first launch (never committed). Rendered by a layout
+player for Nintendo's BFLYT/BFLAN format so screens run from the original layout and animation
+data. Courses themselves are SMM2 courses on the SMM2 engine. Roughly doubles Phase 6; the SMM1
+importer and the layout player start in Phase 5b because the app menus reuse them.
+Pending owner choice: SMM1 HUD during 100 Mario courses (default yes), languages (default EN-US).
+
 ## 2026-10-18 — For now the Swift render loop drives the 60 Hz tick
 docs/architecture.md plans a Rust-owned sim thread. Until there is audio and heavier simulation,
 the renderer steps the engine from an accumulator (fixed 1/60 s ticks, capped catch-up) on the
