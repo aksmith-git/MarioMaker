@@ -144,6 +144,11 @@ pub enum Kind {
     Shoe {
         heels: bool,
     },
+    /// A block that moves (wings or a track): brick, ?, hard, ice or cloud, with its contents.
+    MovingBlock {
+        block: crate::blocks::BlockKind,
+        contents: Option<crate::blocks::Contents>,
+    },
     /// Koopa Clown Car (42; `fire` = the Fire Koopa Clown Car). Phases: 0 empty (floats),
     /// 1 an enemy rides it (chases the player), 2 the player flies it (the world drives it).
     ClownCar {
@@ -283,6 +288,7 @@ impl Kind {
                 | Kind::Cloud
                 | Kind::Pow
                 | Kind::LavaLift { .. }
+                | Kind::MovingBlock { .. }
         )
     }
     pub fn is_item(self) -> bool {
@@ -484,6 +490,11 @@ impl Actor {
             Kind::Seesaw { width } => {
                 let hw = width as f32 * 8.0;
                 Some((self.x - hw, self.y + 8.0, self.x + hw, self.y + 16.0, true))
+            }
+            Kind::MovingBlock { block, .. } => {
+                use crate::blocks::BlockKind as B;
+                let top_only = matches!(block, B::Cloud | B::Donut);
+                Some((self.x - 8.0, self.y, self.x + 8.0, self.y + 16.0, top_only))
             }
             Kind::Donut => Some((
                 self.x - 8.0,
@@ -755,10 +766,34 @@ impl Actor {
     /// Thwomp (12-thwomp.md): Wait (notices a player below within |dx| < W + 32) → Fall
     /// (g −0.25, cap −5) → FallWait 64 → Return (≤ 0.875, +0.2/frame) to the home height.
     /// Side Thwomp [inf]: charges toward a player level with it (0.075/frame² to 3.0), waits, returns.
+    /// Winged blocks and lifts (4-brick.md B12 "Wing"): a vertical sine bob around home at
+    /// 2.8125°/frame [inf: amplitude 16 px, 48 for the helper's special mode (hard, ice, donut,
+    /// cloud)]. Angle in `heading`.
+    fn wing_bob(&mut self, amp: f32) {
+        self.heading = (self.heading + 2.8125) % 360.0;
+        self.y = self.home_y + amp * self.heading.to_radians().sin();
+    }
+
     fn step_thwomp(&mut self, level: &Level, side: bool) {
         let (px, py) = self.target;
         let w = if self.big { 32.0 } else { 16.0 };
         match self.phase {
+            0 if self.wings => {
+                // winged: patrol at 0.3 px/f (0.003/frame²), turning at walls, bobbing with
+                // vy = 0.15·sin(2°·t) while waiting (12-thwomp.md)
+                let target = 0.3 * self.dir as f32;
+                self.vx += (target - self.vx).clamp(-0.003, 0.003);
+                self.vy = 0.15 * (2.0 * self.age as f32).to_radians().sin();
+                self.collide(level);
+                if self.wall {
+                    self.turn();
+                }
+                if (px - self.x).abs() < w + 32.0 && py < self.y + w && py > self.y + w - 260.0 {
+                    self.phase = 1;
+                    self.vx = 0.0;
+                    self.vy = 0.0;
+                }
+            }
             0 => {
                 self.vx = 0.0;
                 self.vy = 0.0;
@@ -1364,7 +1399,7 @@ impl Actor {
     fn step_normal(&mut self, level: &Level, player_x: f32) -> Option<Actor> {
         if self.wings {
             match self.kind {
-                Kind::Goomba | Kind::Koopa { .. } => {} // their own wing behaviour below
+                Kind::Goomba | Kind::Koopa { .. } | Kind::Thwomp { .. } => {} // their own wing behaviour
                 Kind::Piranha { .. } | Kind::Muncher if self.pipe.is_none() => {
                     self.step_winged_plant(level);
                     return None;
@@ -1494,6 +1529,18 @@ impl Actor {
                 }
             }
             Kind::Thwomp { side } => self.step_thwomp(level, side),
+            Kind::MovingBlock { block, .. } => {
+                if self.wings {
+                    use crate::blocks::BlockKind as B;
+                    let amp = if matches!(block, B::Hard | B::Ice | B::Donut | B::Cloud) {
+                        48.0
+                    } else {
+                        16.0
+                    };
+                    self.wing_bob(amp);
+                }
+            }
+            Kind::Lift { .. } if self.wings => self.wing_bob(16.0),
             Kind::Lift { falling, .. } => {
                 if falling && (self.ridden || self.phase == 1) {
                     self.phase = 1;

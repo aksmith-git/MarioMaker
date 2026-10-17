@@ -385,8 +385,8 @@ pub const SUPPORTED_PARTS: &[i16] = &[
 
 /// Parts that become actors and so can ride a track (59-track.md).
 const RIDES_TRACKS: &[i16] = &[
-    0, 1, 2, 3, 10, 11, 12, 15, 18, 19, 20, 25, 28, 30, 31, 32, 33, 34, 35, 36, 39, 40, 41, 42, 44,
-    45, 46, 48, 52, 56, 57, 58, 60, 61, 68, 70, 76, 82, 83, 91, 95, 102, 105,
+    0, 1, 2, 3, 4, 5, 6, 10, 11, 12, 15, 18, 19, 20, 22, 25, 28, 30, 31, 32, 33, 34, 35, 36, 39,
+    40, 41, 42, 44, 45, 46, 48, 52, 56, 57, 58, 60, 61, 63, 68, 70, 76, 82, 83, 91, 95, 102, 105,
 ];
 
 /// Why a course is not fully playable yet: one entry per missing feature (empty = playable).
@@ -408,8 +408,8 @@ pub fn unsupported_features(course: &Course) -> Vec<String> {
             } else if o.flags & 0x400 != 0 && !RIDES_TRACKS.contains(&o.id) {
                 // blocks, coins and fixed objects on tracks need moving versions: not yet
                 out.insert(format!("part {} on a track", o.id));
-            } else if o.flags & 0x2 != 0 && matches!(o.id, 4 | 5 | 6 | 11 | 12 | 13 | 29) {
-                // winged blocks, lifts, Thwomps and Bill Blasters fly as actors: not yet
+            } else if o.flags & 0x2 != 0 && matches!(o.id, 13 | 29) {
+                // winged Bill Blasters and hidden blocks fly as actors: not yet
                 out.insert(format!("wings on part {}", o.id));
             }
         }
@@ -929,6 +929,26 @@ impl Level {
                     x: o.x as f32 / 10.0,
                     y: o.y as f32 / 10.0 - 8.0,
                     contents: Contents::from_part(o.child_id, o.child_flags),
+                });
+                continue;
+            }
+            if actorish && matches!(o.id, 4 | 5 | 6 | 22 | 63) {
+                // a winged or tracked block becomes a moving solid actor (4-brick.md B12)
+                let block = block_kind(o.id).unwrap();
+                lvl.spawns.push(Spawn {
+                    kind: Kind::MovingBlock {
+                        block,
+                        contents: Contents::from_part(o.child_id, o.child_flags),
+                    },
+                    x: tx as f32 * TILE + 8.0,
+                    y: ty as f32 * TILE,
+                    big: false,
+                    wings: o.flags & 0x2 != 0,
+                    pipe: None,
+                    parachute: false,
+                    rail: (o.flags & 0x400 != 0).then_some(((o.flags >> 20) & 3) as u8),
+                    link: -1,
+                    clown: false,
                 });
                 continue;
             }

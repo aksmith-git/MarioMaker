@@ -937,6 +937,7 @@ impl World {
         self.magikoopas();
         self.claws(input);
         self.pow_quake();
+        self.bump_moving_block();
         self.check_checkpoints();
         self.shell_walls();
         self.actor_interactions();
@@ -2184,6 +2185,56 @@ impl World {
             self.player.vy = (self.player.vy + 0.6).min(4.5);
             self.player.on_ground = false;
         }
+    }
+
+    /// A moving block (wings / track) hit from below releases its contents once and is used up.
+    fn bump_moving_block(&mut self) {
+        let Some(id) = self.player.head_solid else {
+            return;
+        };
+        let Some(i) = self.actors.iter().position(|a| a.id == id) else {
+            return;
+        };
+        let Kind::MovingBlock {
+            block,
+            contents: Some(c),
+        } = self.actors[i].kind
+        else {
+            return;
+        };
+        let (x, y) = (self.actors[i].x, self.actors[i].y);
+        self.actors[i].kind = Kind::MovingBlock {
+            block: if block == BlockKind::Question {
+                BlockKind::Empty
+            } else {
+                block
+            },
+            contents: None,
+        };
+        self.events.push(Event::Bump);
+        let contents = if c.is_powerup() && !self.player.big() {
+            Contents::Mushroom
+        } else {
+            c
+        };
+        let kind = match contents {
+            Contents::Coin => {
+                self.effects.push(Effect::coin_pop(x, y, false));
+                return;
+            }
+            Contents::Mushroom => Kind::Mushroom,
+            Contents::FireFlower => Kind::FireFlower,
+            Contents::Star => Kind::Star,
+            Contents::OneUp => Kind::OneUp,
+            Contents::Goomba => Kind::Goomba,
+            Contents::Koopa { red } => Kind::Koopa { red },
+        };
+        let mut a = Actor::new(kind, x, y);
+        a.dir = 1;
+        a.vy = 0.5;
+        a.mode = Mode::Emerge { until: y + 16.0 };
+        self.events.push(Event::ItemAppear);
+        self.add_actor(a);
     }
 
     /// POW block hit from below: every grounded enemy in view is knocked out; the POW is used up.
@@ -3881,6 +3932,14 @@ impl World {
             ),
             Kind::Wiggler => ("M1_Enemy_hanachan", "head.0", 16.0, 32.0, a.dir > 0),
             Kind::LavaBubble => ("M1_Enemy_bubble", "wait.0", 16.0, 16.0, false),
+            Kind::MovingBlock { block, .. } => {
+                let i = crate::level::block_atlas(block);
+                let field = self.field_model;
+                let mut sp =
+                    Self::model_sprite(field, field, a.x - 8.0, a.y, TILE, TILE, false, 25);
+                sp.image.rect = Some(((i % 16) as f32 * TILE, (i / 16) as f32 * TILE, TILE, TILE));
+                return Some(sp);
+            }
             Kind::ClownCar { fire } => (
                 if fire {
                     "M1_Enemy_koopaclownfire"
@@ -5043,6 +5102,68 @@ mod tests {
         // Down + Jump: out
         run(&mut w, input::DOWN | input::JUMP, 1);
         assert!(w.player.clown.is_none());
+    }
+
+    #[test]
+    fn winged_blocks_bob_and_release_their_contents() {
+        let mut lvl = Level::flat(40);
+        let mut b = spawn(
+            Kind::MovingBlock {
+                block: BlockKind::Question,
+                contents: Some(Contents::Coin),
+            },
+            200.0,
+            80.0,
+        );
+        b.wings = true;
+        lvl.spawns.push(b);
+        let mut lift = spawn(
+            Kind::Lift {
+                width: 3,
+                falling: false,
+            },
+            300.0,
+            80.0,
+        );
+        lift.wings = true;
+        lvl.spawns.push(lift);
+        let mut w = World::with_level(lvl);
+        w.player.x = 40.0;
+        run(&mut w, 0, 33);
+        // a quarter period (90° / 2.8125° = 32 frames): 16 px up
+        let blk = w
+            .actors
+            .iter()
+            .find(|a| matches!(a.kind, Kind::MovingBlock { .. }))
+            .unwrap();
+        assert!((blk.y - 96.0).abs() < 0.5, "{}", blk.y);
+        let l = w
+            .actors
+            .iter()
+            .find(|a| matches!(a.kind, Kind::Lift { .. }))
+            .unwrap();
+        assert!((l.y - 96.0).abs() < 0.5, "{}", l.y);
+        // bump from below: one coin, then used
+        let i = w
+            .actors
+            .iter()
+            .position(|a| matches!(a.kind, Kind::MovingBlock { .. }))
+            .unwrap();
+        let id = w.actors[i].id;
+        w.player.head_solid = Some(id);
+        w.bump_moving_block();
+        assert_eq!(
+            w.actors[i].kind,
+            Kind::MovingBlock {
+                block: BlockKind::Empty,
+                contents: None
+            }
+        );
+        assert!(
+            w.effects
+                .iter()
+                .any(|e| matches!(e, Effect::CoinPop { .. }))
+        );
     }
 
     #[test]
