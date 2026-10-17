@@ -95,7 +95,7 @@ Off-console copies (the public dataset, community servers) are the plain body, z
 | 0x0C | s32 | boundary top | 0x1B0 in horizontal areas |
 | 0x10 | s32 | boundary left | 0 |
 | 0x14 | s32 | boundary bottom | usually 0 |
-| 0x18 | u32 | area flags | values seen: 0, 2, 3. Night mode is bit 1 (value 2) per most sources; one source says bit 0. **Unresolved.** |
+| 0x18 | u32 | area flags | values seen: 0, 2, 3. **Night mode is bit 1 (value 2)** — confirmed in the game's code (Phase 3); one community source says bit 0, which is wrong. Bit 0's meaning is unknown (only seen together with bit 1). SM3DW has no night mode. |
 | 0x1C–0x44 | s32 × 11 | counts | objects, sound effects, snake blocks, clear pipes, piranha creepers, ! blocks, track blocks, (reserved), ground, tracks, icicles |
 
 ### 2.3 Entity arrays (area-relative, fixed capacity, always present)
@@ -131,10 +131,26 @@ u32 extended data, s16 id, s16 child id (−1 none), s16 link id (−1 none), s1
 `extended data`: fire bar angle (5° units); snake block path index in the low nibble (bit 0x10 =
 start from the other end); piranha creeper / ! block / track block path index.
 
-Common flag bits: 0x2 wings, 0x4 alternate form, 0x8000 parachute, `(flags >> 24) & 7` facing
-(0 left, 2 right, 4 down, 6 up). Pipes: `flags & 0x60` direction, `(flags >> 18) & 3` colour,
-`(flags >> 20) & 0xF` warp id. The "big" bit is disputed (0x400 vs 0x4000). Per-object meanings
-are catalogued in `smmfmt/smm2/enums.py` (ids) and will be expanded in Phase 3 from the executable.
+Flag bits interpreted at spawn (confirmed in the game's code, Phase 3):
+
+| Bit(s) | Meaning |
+|---|---|
+| 0x1 | emerges from a pipe (link id = the pipe) |
+| 0x2 | wings |
+| 0x4 | alternate form |
+| 0x60 | direction (pipes: right / left / up / down) |
+| 0x200 | rides a Koopa Clown Car |
+| 0x400 | on a track |
+| 0x1000 | part of a stack |
+| 0x6000 | size field: `(flags & 0x6000) == 0x4000` = big (doubled size) |
+| 0x8000 | parachute |
+| 0x10000, 0x20000 | rides a Lakitu cloud |
+| 0x8000000 | held by a swinging claw |
+| `(flags >> 24) & 7` | facing (0 left, 2 right, 4 down, 6 up) |
+
+Pipes also use `(flags >> 18) & 3` colour and `(flags >> 20) & 0xF` warp id. Blocks and coins only
+become live actors when they have wings or are on a track; otherwise they are tiles.
+Per-object meanings of the remaining bits are listed in `smmfmt/smm2/enums.py` (ids).
 
 **Sound effect (4):** u8 id, u8 x, u8 y, u8 pad.
 **Ground tile (4):** u8 x, u8 y, u8 tile id, u8 background id. Viewers usually auto-tile instead.
@@ -154,8 +170,9 @@ up→left, right→down, down→right, right→up, up→right), 13–16 ends (ri
 ## 3. Object ids
 
 0–132, from Goomba (0) to ON/OFF trampoline (132). Full list in
-[`smmfmt/smm2/enums.py`](../../smmfmt/smm2/enums.py). Ids 0–118 exist in v1.0.0; 119–132 were added
-in later versions (Koopalings, masks, boxes, ! block etc.). In the 730-course sample, 102 distinct
+[`smmfmt/smm2/enums.py`](../../smmfmt/smm2/enums.py). v1.0.0 accepts ids 0–119 (the ! block, 119,
+is already there) but 74, 78–81 and 111 are empty; later versions fill those and add 120–132
+(Koopalings, masks, boxes, ON/OFF trampoline). v1.0.0 silently drops ids above 119. In the 730-course sample, 102 distinct
 ids appear; the most common are hard block, coin, brick, spike trap, dotted-line block, ice block.
 
 ## 4. Course codes
@@ -167,8 +184,10 @@ Implemented and tested in [`smmfmt/course_id.py`](../../smmfmt/course_id.py).
 
 ## 5. Open questions
 
-- Night-mode bit (area 0x18): bit 0 vs bit 1. Verify in Phase 3 or in Ryujinx.
-- "Big" object flag: 0x400 vs 0x4000.
+- ~~Night-mode bit~~ resolved: bit 1. Area-flag bit 0: meaning unknown.
+- Clear condition values are the CRC32 of the game's internal condition names; all 29 distinct
+  values in the 550-course sample match a known name.
+- ~~"Big" object flag~~ resolved: size field 0x6000, big = 0x4000; 0x400 = on a track.
 - Header 0xF0, track bytes 0/8/10, the path "in-use" bytes: meaning unknown, preserved verbatim.
 - Ground tile ids vs auto-tiling: does the game use the stored ids? (Phase 3.)
 

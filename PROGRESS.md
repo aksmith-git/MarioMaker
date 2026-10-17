@@ -18,11 +18,25 @@
 - ✅ Finding: path arrays (snake, clear pipe, creeper, ! block, track block) are slot-indexed and can be sparse
 - ⏳ Owner's own saved courses (optional; not needed to proceed)
 
-### Phase 3 — Binary analysis ⬜
-- ⬜ Course-loading pipeline · player physics per style · game-parameter file mapping
-- ⬜ Object behaviours (most common first) · style and theme differences
-- ⬜ SMM1 100 Mario Challenge logic (from `Block.rpx` v208)
-- ⬜ Behavioural specs in `research/` (private)
+### Phase 3 — Binary analysis ✅ (awaiting go-ahead)
+Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no decompiled code.
+- ✅ Ghidra headless analysis of SMM2 v1.0.0 and v3.0.3 (≈7–8 min each), SMM1 `Block.rpx` v16 + v208
+  (own RPX→ELF converter, nothing installed); query scripts in `tools/ghidra/`
+- ✅ Data-file survey: physics is in code; EnemyDB attack matrix, EditDB parts, per-style SceneDB,
+  263 player states are data; 108 lesson input replays found
+- ✅ Course-loading pipeline: decrypt → validate → placements → actors; part→actor tables per style;
+  flag bits resolved (big = 0x4000 size field, 0x400 = on track, 0x1 from pipe, …)
+- ✅ Player physics: one shared model for all styles (style = feature switches); SMB1 constants
+  complete (walk 1.5 / run 3.0, jump 3.628 + speed bonus, held-jump gravity bands, fall cap −4.0);
+  simulated jump heights 4.2 / 5.4 tiles match the game; unchanged in v3.0.3
+- ✅ Themes: night = area flag bit 1; per-theme day/night effects, wind, liquids, autoscroll, timer,
+  clear conditions (CRC32 of internal names)
+- ✅ Objects: 82 object specs + shared mechanics (actor base, 18 enemy contexts, generic walker,
+  attack/reaction matrix, blocks); all top-25 objects in depth
+- ✅ SMM1 100 Mario Challenge code: 11/14 open questions answered (requests 50 courses per band,
+  lives cap 100, ≤3 banked lives per course, free unlimited skip, unlock rules, reward selection)
+- ⬜ Left for later phases: enemy stomp bounce speed, activation range, 44 style power-up and 42 clown
+  car specs, remaining 51 rarer/2.0+ object ids (Phase 7)
 
 ### Phase 4 — Engine architecture ⬜
 - ⬜ 2–3 native options (all native Apple Silicon `.app`, Metal-backed) with trade-offs

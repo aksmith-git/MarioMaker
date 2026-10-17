@@ -2,6 +2,16 @@
 
 Newest first. Each entry: what was decided, why, and what would change it.
 
+## 2026-10-18 — Behavioural specs stay private; the engine is written from them
+Phase 3 specs (`research/specs/`) describe behaviour in prose, tables and maths with evidence tags,
+never decompiled code. They stay gitignored because they cite addresses and quote game data values
+from the owner's dump. Public docs (`docs/formats/`) only carry format facts.
+
+## 2026-10-18 — Ghidra headless directly, REA for spot checks
+REA's MCP calls time out (330 s) before Ghidra finishes auto-analysing a 36 MB binary. Headless
+analysis runs in ~7 min; small read-only query scripts (`tools/ghidra/`) do the rest. Parallel
+agents each get a private copy of the analysed project.
+
 ## 2026-10-17 — Course key table is located at runtime, never shipped
 `smmfmt.smm2.keyfind` scans the user's own executable for the 64-word table that decrypts one of
 the user's own `.bcd` files (cheap one-block test, then full CRC32 + CMAC). The engine's
