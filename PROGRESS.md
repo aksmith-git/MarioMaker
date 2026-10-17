@@ -179,7 +179,8 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   art (SMB1 fallback per model/frame); carrying shells, slope slide (not SMB1), SMW spin jump (new
   Spin button: C / R / ZR); the sim owns the playable-style gate — sample 319/550 (M1 148, M3 94,
   MW 77) · Yoshi, cape dive flight ⬜
-- 🔄 NSMBU / 3D World rendering (3D mesh renderer; the sim's style gate still holds them back):
+- 🔄 NSMBU / 3D World rendering (3D mesh renderer; both styles playable since the merge —
+  sample NSMBU 99/100, 3D World 21/100, the rest blocked on 3D World-only parts):
   - ✅ BFRES reader: shapes with index buffers per LOD and skinning attributes, skeleton matrix
     palette + inverse bind matrices, skeletal animations (cubic / linear / step / baked curves,
     wrap modes), bone visibility animations; real files checked in tests
@@ -274,9 +275,8 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
 ### Phase 9 — SMM2 single-player like-for-like ⬜ (owner request 2026-10-18)
 - ⬜ SMM2 layouts: Switch BFLYT/BFLAN + BNTX textures through the same layout player; title
   screen, main menu, Course World, Story Mode map, pause, clear/death screens, HUD
-- ⬜ All five styles (SMB1, SMB3, SMW, NSMBU, 3D World) and all themes (day/night) — physics
-  feature switches per style already specced; NSMBU / 3D World art drawn by the 3D mesh
-  renderer (Phase 7, 🔄)
+- 🔄 All five styles (SMB1, SMB3, SMW, NSMBU, 3D World) and all themes (day/night) — all five
+  playable; 3D World-only parts (Super Bell, ! block, warp box, crate, …) ⬜
 - ⬜ Every part (0–132, incl. 2.0/3.0 items from the update dump), Yoshi, shoes, clown cars,
   power-ups per style, Koopalings, Master Sword, etc.
 - 🔄 Course Maker (editor): core crate `editor` ✅ (place / erase parts with default sizes, child items,

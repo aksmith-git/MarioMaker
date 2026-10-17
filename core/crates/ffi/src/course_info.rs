@@ -200,8 +200,8 @@ mod tests {
         let b = course_info(&z.finish().unwrap(), None).unwrap();
         assert_eq!(a.content_hash, b.content_hash);
 
-        let other = course_info(&Course::blank("WU").to_bytes().unwrap(), None).unwrap(); // NSMBU: not yet
-        assert_eq!(other.playable, 0);
+        let other = course_info(&Course::blank("WU").to_bytes().unwrap(), None).unwrap();
+        assert_eq!(other.playable, 1);
         assert_ne!(other.content_hash, a.content_hash);
     }
 

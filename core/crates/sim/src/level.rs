@@ -391,7 +391,7 @@ pub const SUPPORTED_PARTS: &[i16] = &[
 ];
 
 /// Game styles the engine plays.
-pub const PLAYABLE_STYLES: &[&str] = &["M1", "M3", "MW"];
+pub const PLAYABLE_STYLES: &[&str] = &["M1", "M3", "MW", "WU", "3W"];
 
 /// Parts that become actors and so can ride a track (59-track.md).
 const RIDES_TRACKS: &[i16] = &[
@@ -403,8 +403,8 @@ const RIDES_TRACKS: &[i16] = &[
 /// Why a course is not fully playable yet: one entry per missing feature (empty = playable).
 pub fn unsupported_features(course: &Course) -> Vec<String> {
     let mut out = std::collections::BTreeSet::new();
-    // styles: SMB3 and SMW are 2D sprite styles drawn like SMB1; NSMBU and 3D World use 3D
-    // models (a mesh renderer is still to come)
+    // styles: SMB3 and SMW are 2D sprite styles drawn like SMB1; NSMBU and 3D World draw 3D
+    // models where the cache has them (ffi mesh module)
     let style = course.header.game_style.as_str_lossy();
     if !PLAYABLE_STYLES.contains(&style.as_str()) {
         out.insert(format!("style {style}"));
