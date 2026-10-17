@@ -155,6 +155,8 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   lets the player pass until met; HUD shows progress · holding / riding conditions ⬜ (no carry,
   Yoshi, shoe yet) — SMB1 sample 53 → 65 playable
 - ✅ Chain Chomp (chained + unchained)
+- ✅ Lava Bubble (hide / cosine rise / fall), Monty Mole (buried, mound, leap, chase), Angry Sun
+  (corner wait, spin, half-ellipse swoop) and Moon (wipes on-screen enemies)
 - ✅ Tracks: graph from track records (lines + quarter arcs), rail follower (0.75 / 1.5 px/f),
   any actor rides (lifts, seesaws, grinders, claws, items, enemies); drawn as lines · junctions,
   open ends, blocks/coins on tracks, exact track tiles ⬜ — SMB1 sample 49 → 52 playable

@@ -739,7 +739,11 @@ impl World {
                 return;
             }
             for a in &mut self.actors {
-                if a.alive() && l.covers(a.y + 2.0) && !a.kind.is_platform() {
+                if a.alive()
+                    && l.covers(a.y + 2.0)
+                    && !a.kind.is_platform()
+                    && a.kind != Kind::LavaBubble
+                {
                     a.mode = Mode::Dead;
                 }
             }
@@ -761,6 +765,8 @@ impl World {
             }
             a.target = (px, py);
             a.target_facing = self.player.facing;
+            a.camera = (self.camera_x, self.camera_y);
+            a.floor_ref = self.liquid.map(|l| l.y).unwrap_or(self.level.bottom - 12.0);
             if a.kind == Kind::Lakitu {
                 a.speed = self.player.vx;
             }
@@ -1331,6 +1337,26 @@ impl World {
                 });
                 return;
             }
+            if a.kind == (Kind::AngrySun { moon: true }) && overlap(contact, ab) {
+                // the Moon wipes out the enemies on screen and disappears [ext behaviour]
+                self.actors[i].mode = Mode::Dead;
+                let v = self.view_rect(0.0);
+                let px = self.player.x;
+                for e in &mut self.actors {
+                    if e.kind.is_enemy()
+                        && e.alive()
+                        && e.x >= v.0
+                        && e.x <= v.2
+                        && e.y >= v.1
+                        && e.y <= v.3
+                    {
+                        e.die_fall(px);
+                    }
+                }
+                self.events.push(Event::EnemyDown);
+                i += 1;
+                continue;
+            }
             let harmful = a.kind.is_enemy()
                 || matches!(
                     a.kind,
@@ -1534,7 +1560,13 @@ impl World {
                 (_, true) => (48.0, 48.0),
                 _ => (32.0, 32.0),
             };
-            let (cx, cy) = (a.x, a.y + a.height() / 2.0);
+            // a Lava Bubble hiding under the lava is still at home
+            let cy = if a.kind == Kind::LavaBubble {
+                a.home_y
+            } else {
+                a.y
+            } + a.height() / 2.0;
+            let cx = a.x;
             let outside = cx + hx < v.0 || cx - hx > v.2 || cy + hy < v.1 || cy - hy > v.3;
             if outside && a.mode != Mode::Dead {
                 a.mode = Mode::Dead;
@@ -3587,6 +3619,31 @@ impl World {
                 false,
             ),
             Kind::Wiggler => ("M1_Enemy_hanachan", "head.0", 16.0, 32.0, a.dir > 0),
+            Kind::LavaBubble => ("M1_Enemy_bubble", "wait.0", 16.0, 16.0, false),
+            Kind::MontyMole => (
+                "M1_Enemy_choropoo",
+                match a.phase {
+                    0 => return None,
+                    1 => "appear.0",
+                    _ => walk_frame(&["walk.0", "walk.1"], a.age, 6),
+                },
+                16.0,
+                16.0,
+                a.dir > 0,
+            ),
+            Kind::AngrySun { moon } => (
+                "M1_Object_sun",
+                if moon || a.phase == 0 {
+                    "wait.0"
+                } else if (self.tick / 6).is_multiple_of(2) {
+                    "attack.0"
+                } else {
+                    "attack.1"
+                },
+                32.0,
+                32.0,
+                false,
+            ),
             Kind::ChainChomp { .. } => (
                 "M1_Enemy_wanwan",
                 if a.phase == 2 || a.phase == 3 || (self.tick / 8).is_multiple_of(2) {
@@ -4478,6 +4535,72 @@ mod tests {
         w.player_interactions(false);
         assert!(w.player.vy > 0.0);
         assert!(w.actors[0].alive());
+    }
+
+    #[test]
+    fn lava_bubble_hides_then_leaps_to_its_height() {
+        let mut lvl = Level::flat(40);
+        lvl.bottom = 0.0;
+        // placed 5 tiles above the reference level (bottom − 12)
+        let home = -12.0 + 5.0 * TILE;
+        lvl.spawns.push(spawn(Kind::LavaBubble, 200.0, home));
+        let mut w = World::with_level(lvl);
+        w.player.x = 40.0;
+        run(&mut w, 0, 60);
+        assert!(!w.actors[0].solid_contact(), "hidden");
+        let mut top = f32::MIN;
+        let mut first_vy = 0.0;
+        for _ in 0..200 {
+            run(&mut w, 0, 1);
+            let a = &w.actors[0];
+            if a.phase == 1 && first_vy == 0.0 {
+                first_vy = a.vy;
+            }
+            top = top.max(a.y);
+        }
+        // H = 6 tiles: A = 6·4/7 + 1 = 4.43
+        assert!((first_vy - 4.43).abs() < 0.05, "{first_vy}");
+        assert!(
+            top <= home + 4.0 && top > home - 24.0,
+            "top {top} home {home}"
+        );
+    }
+
+    #[test]
+    fn monty_mole_wakes_near_the_player_and_chases() {
+        let mut lvl = Level::flat(60);
+        // buried in a 2-tile-high mound of ground
+        for x in 20..23 {
+            lvl.set(x, 2, Cell::Solid);
+        }
+        lvl.spawns
+            .push(spawn(Kind::MontyMole, 21.0 * TILE + 8.0, 2.0 * TILE));
+        let mut w = World::with_level(lvl);
+        w.player.x = 21.0 * TILE - 120.0;
+        run(&mut w, 0, 30);
+        assert_eq!(w.actors[0].phase, 0, "too far to wake");
+        w.player.x = 21.0 * TILE - 60.0;
+        run(&mut w, 0, 1);
+        assert_eq!(w.actors[0].phase, 1);
+        run(&mut w, 0, 200);
+        let a = &w.actors[0];
+        assert_eq!(a.phase, 3);
+        assert!(a.vx < 0.0, "runs toward the player");
+    }
+
+    #[test]
+    fn angry_sun_waits_in_a_corner_then_swoops_across() {
+        let mut lvl = Level::flat(60);
+        lvl.spawns
+            .push(spawn(Kind::AngrySun { moon: false }, 200.0, 150.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 100.0;
+        run(&mut w, 0, 2);
+        let x0 = w.actors[0].x - w.camera_x;
+        assert!((x0 - (VIEW_W - 48.0)).abs() < 1.0, "right corner: {x0}");
+        run(&mut w, 0, 120 + 36 + 130);
+        let x1 = w.actors[0].x - w.camera_x;
+        assert!((x1 - 48.0).abs() < 2.0, "left corner: {x1}");
     }
 
     #[test]

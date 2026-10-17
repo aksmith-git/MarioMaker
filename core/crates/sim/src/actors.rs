@@ -135,6 +135,14 @@ pub enum Kind {
     Wrench,
     /// Wiggler: head + 4 trailing segments; a stomp makes it angry (52-wiggler.md).
     Wiggler,
+    /// Lava Bubble (60): leaps from the lava (or the area floor) to its placed height.
+    LavaBubble,
+    /// Monty Mole (102): buried until the player comes near, then chases.
+    MontyMole,
+    /// Angry Sun (104), screen-locked swooper; `moon` = the alternate form (wipes enemies).
+    AngrySun {
+        moon: bool,
+    },
     /// Chain Chomp (61): chained to a stake at (home_x, home_y), or free (alternate form).
     ChainChomp {
         chained: bool,
@@ -169,6 +177,9 @@ impl Kind {
                 | Kind::DryBones
                 | Kind::Boo
                 | Kind::ChainChomp { .. }
+                | Kind::LavaBubble
+                | Kind::MontyMole
+                | Kind::AngrySun { moon: false }
         )
     }
     /// Clear-condition enemy class (clear.rs) of a defeated actor of this kind.
@@ -192,6 +203,9 @@ impl Kind {
             Kind::CheepCheep { .. } => e::CHEEP_CHEEP,
             Kind::SpikeTop => e::SPIKE_TOP,
             Kind::ChainChomp { .. } => e::CHAIN_CHOMP,
+            Kind::LavaBubble => e::LAVA_BUBBLE,
+            Kind::MontyMole => e::MONTY_MOLE,
+            Kind::AngrySun { moon: false } => e::ANGRY_SUN,
             Kind::Wiggler => e::WIGGLER,
             Kind::BobOmb => e::BOB_OMB,
             Kind::Thwomp { .. } => e::THWOMP,
@@ -230,6 +244,8 @@ impl Kind {
                 | Kind::SpikeTop
                 | Kind::Boo
                 | Kind::Hammer
+                | Kind::LavaBubble
+                | Kind::AngrySun { .. }
         )
     }
     /// Walkers that turn back at ledges.
@@ -353,6 +369,10 @@ pub struct Actor {
     pub rail_off: (f32, f32),
     /// Counted toward a "defeat N" clear condition.
     pub tallied: bool,
+    /// Set by the world each frame: the camera's bottom-left corner, and the reference level a
+    /// Lava Bubble leaps from (the liquid surface, else the area bottom − 12).
+    pub camera: (f32, f32),
+    pub floor_ref: f32,
 }
 
 impl Actor {
@@ -395,6 +415,8 @@ impl Actor {
             rail: None,
             rail_off: (0.0, 0.0),
             tallied: false,
+            camera: (0.0, 0.0),
+            floor_ref: 0.0,
         }
     }
 
@@ -408,6 +430,8 @@ impl Actor {
                 | Kind::Boo
                 | Kind::Thwomp { .. }
                 | Kind::ChainChomp { .. }
+                | Kind::LavaBubble
+                | Kind::AngrySun { .. }
         ) || (matches!(self.kind, Kind::Shell { .. }) && self.buzzy)
     }
 
@@ -860,6 +884,7 @@ impl Actor {
     /// Can touch the player / other actors.
     pub fn solid_contact(&self) -> bool {
         matches!(self.mode, Mode::Normal | Mode::ShellWait | Mode::ShellSlide)
+            && !(matches!(self.kind, Kind::LavaBubble | Kind::MontyMole) && self.phase == 0)
             && !(matches!(self.kind, Kind::Piranha { .. }) && self.piranha_hidden())
     }
 
@@ -1350,6 +1375,9 @@ impl Actor {
             }
             Kind::Boo => self.step_boo(),
             Kind::ChainChomp { chained } => self.step_chomp(level, chained),
+            Kind::LavaBubble => self.step_lava_bubble(),
+            Kind::MontyMole => self.step_monty(level),
+            Kind::AngrySun { moon } => self.step_sun(moon),
             Kind::Goomba
             | Kind::Koopa { .. }
             | Kind::Spiny
@@ -1841,6 +1869,181 @@ impl Actor {
         self.vy = self.speed * s + w * c;
         self.x += self.vx;
         self.y += self.vy;
+    }
+
+    /// Lava Bubble (60-lava-bubble.md). Hidden 120 frames 16 px below the reference level L, then
+    /// rises with vy = A·cos θ, θ = 90°·(risen / (H·16)) changing ≤ 10°/frame, where H = (home −
+    /// L + 16)/16 tiles and A = clamp(min(H·4/7, 8) + 1, 1, H + 1); within 20 px of the top it
+    /// falls under gravity −0.1875 (≥ −6), upside down, until it is below the hide depth again.
+    /// Phases: 0 hidden, 1 rising, 2 falling. θ (degrees) in `heading`.
+    fn step_lava_bubble(&mut self) {
+        let s = if self.big { 2.0 } else { 1.0 };
+        let hide = self.floor_ref - 16.0 * s;
+        match self.phase {
+            0 => {
+                if self.age <= 1 {
+                    self.timer = 120;
+                }
+                self.y = hide;
+                self.vy = 0.0;
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    self.phase = 1;
+                    self.heading = 0.0;
+                }
+            }
+            1 => {
+                let h_tiles = ((self.home_y - self.floor_ref + 16.0) / 16.0).max(1.0);
+                let a = ((h_tiles * 4.0 / 7.0).min(8.0) + 1.0)
+                    .min(h_tiles + 1.0)
+                    .max(1.0);
+                let want = 90.0 * ((self.y - hide) / (h_tiles * 16.0)).clamp(0.0, 1.0);
+                self.heading += (want - self.heading).clamp(-10.0, 10.0);
+                self.vy = (a * self.heading.to_radians().cos()).max(0.25);
+                self.y += self.vy;
+                if self.home_y - self.y < 20.0 {
+                    self.phase = 2;
+                }
+            }
+            _ => {
+                self.vy = (self.vy - 0.1875).max(-6.0);
+                self.y += self.vy;
+                if self.y < hide {
+                    self.phase = 0;
+                    self.timer = 120;
+                }
+            }
+        }
+    }
+
+    /// Monty Mole (102-monty-mole.md). Buried (phase 0) until the player is within 96 × 64 px,
+    /// then a 60-frame mound (1), a leap out at vy 5.0 through the terrain (2), and a chase (3):
+    /// toward the player at up to 1.7 px/f, accelerating 0.018 (0.03 when turning), re-aiming at
+    /// most every 64 frames; walls bounce it back at 0.675× (≥ 0.5). Not buried → leaps at once.
+    fn step_monty(&mut self, level: &Level) {
+        let (px, py) = self.target;
+        match self.phase {
+            0 => {
+                let covered = level.cell_at(self.x, self.y + 8.0).is_solid();
+                let near = (px - self.x).abs() <= 96.0 && (py - (self.y - 1.0)).abs() <= 64.0;
+                if !covered {
+                    self.phase = 2;
+                    self.vy = 5.0;
+                } else if near {
+                    self.phase = 1;
+                    self.timer = 60;
+                }
+            }
+            1 => {
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    self.phase = 2;
+                    self.vy = 5.0;
+                }
+            }
+            2 => {
+                // through the terrain until clear of it, then normal physics
+                self.vy = (self.vy - 0.1875).max(MAX_FALL);
+                let inside = level.cell_at(self.x, self.y + 1.0).is_solid()
+                    || level
+                        .cell_at(self.x, self.y + self.height() - 1.0)
+                        .is_solid();
+                if inside && self.vy > 0.0 {
+                    self.y += self.vy;
+                } else {
+                    self.collide(level);
+                    if self.on_ground {
+                        self.phase = 3;
+                        self.dir = if px < self.x { -1 } else { 1 };
+                        self.turn_lock = 64;
+                    }
+                }
+            }
+            _ => {
+                if self.turn_lock == 0 {
+                    let d = if px < self.x { -1 } else { 1 };
+                    if d != self.dir {
+                        self.dir = d;
+                        self.turn_lock = 64;
+                    }
+                }
+                if self.on_ground {
+                    let target = 1.7 * self.dir as f32;
+                    let acc = if self.vx * (self.dir as f32) < 0.0 {
+                        0.03
+                    } else {
+                        0.018
+                    };
+                    self.vx += (target - self.vx).clamp(-acc, acc);
+                    if self.wings && self.age.is_multiple_of(48) {
+                        self.vy = 3.5625;
+                    }
+                }
+                let vx = self.vx;
+                self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+                self.collide(level);
+                if self.wall {
+                    let b = -0.675 * vx;
+                    self.vx = if b.abs() < 0.5 { 0.5 * b.signum() } else { b };
+                }
+            }
+        }
+    }
+
+    /// Angry Sun (104-angry-sun.md): hovers 48 px in from a top corner of the view and 64 px below
+    /// its top edge, following the camera; waits 120 frames, spins one turn (circling 16 px around
+    /// the anchor, 36 frames), then swoops along a half-ellipse 121 px deep to the other corner at
+    /// 1.40°/frame. The Moon (alternate) only hangs in its corner. Phases: 0 wait, 1 spin, 2 swoop;
+    /// side in `hops` (0 right, 1 left), angle in `heading`. The first wait is [inf] 120 frames.
+    fn step_sun(&mut self, moon: bool) {
+        use crate::world::{VIEW_H, VIEW_W};
+        let (cx0, cy0) = self.camera;
+        let side = if self.hops == 0 { 1.0 } else { -1.0 };
+        let centre = cx0 + VIEW_W / 2.0;
+        let r = VIEW_W / 2.0 - 48.0;
+        let top = cy0 + VIEW_H - 64.0;
+        let anchor = (centre + side * r, top);
+        if self.age <= 1 {
+            self.timer = 120;
+        }
+        if moon {
+            self.x = anchor.0;
+            self.y = anchor.1 - 16.0;
+            return;
+        }
+        match self.phase {
+            0 => {
+                self.x = anchor.0;
+                self.y = anchor.1 - 16.0;
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    self.phase = 1;
+                    self.heading = 0.0;
+                }
+            }
+            1 => {
+                self.heading += 10.0;
+                let a = self.heading.to_radians();
+                self.x = anchor.0 + 16.0 * a.sin();
+                self.y = anchor.1 - 16.0 + 8.0 * (1.0 - a.cos());
+                if self.heading >= 360.0 {
+                    self.phase = 2;
+                    self.heading = 0.0;
+                }
+            }
+            _ => {
+                self.heading = (self.heading + 1.40).min(180.0);
+                let a = self.heading.to_radians();
+                self.x = centre + side * r * a.cos();
+                self.y = top - 16.0 - 121.0 * a.sin().abs();
+                self.dir = -side as i32;
+                if self.heading >= 180.0 {
+                    self.hops ^= 1;
+                    self.phase = 0;
+                    self.timer = 120;
+                }
+            }
+        }
     }
 
     /// Chain Chomp (61-chain-chomp.md). Chained: hops around the stake (0.8 px/f, 1.5 hop on each
