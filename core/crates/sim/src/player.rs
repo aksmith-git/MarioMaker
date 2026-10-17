@@ -193,6 +193,54 @@ impl Player {
             SkidPhase::None => {}
         }
 
+        if let Some((steep, rises)) = self.slope {
+            // §5.2: rows chosen by whether the motion is downhill or uphill
+            let moving = if dir != 0 {
+                dir
+            } else {
+                self.vx.signum() as i32
+            };
+            let downhill = moving != 0 && moving != rises;
+            let (mult, acc, dec) = if downhill {
+                (
+                    SLOPE_TARGET_DOWN[steep],
+                    SLOPE_ACCEL_DOWN[steep],
+                    SLOPE_DECEL_DOWN[steep],
+                )
+            } else {
+                (
+                    SLOPE_TARGET_UP[steep],
+                    SLOPE_ACCEL_UP[steep],
+                    SLOPE_DECEL_UP[steep],
+                )
+            };
+            if dir == 0 {
+                self.vx = approach(self.vx, 0.0, dec);
+            } else {
+                self.facing = dir;
+                let target = dir as f32 * if run { RUN_MAX } else { WALK_MAX } * mult;
+                let reversing = self.vx != 0.0 && self.vx.signum() as i32 != dir;
+                let a = if reversing {
+                    // reversing: max(1.1 × the other row's no-input value, the input accel)
+                    let other = if downhill {
+                        SLOPE_DECEL_UP[steep]
+                    } else {
+                        SLOPE_DECEL_DOWN[steep]
+                    };
+                    acc.max(1.1 * other)
+                } else {
+                    acc
+                };
+                self.vx = approach(self.vx, target, a);
+            }
+            self.pose = if self.vx == 0.0 && dir == 0 {
+                Pose::Wait
+            } else {
+                Pose::Walk
+            };
+            return;
+        }
+
         let (target, table) = if dir == 0 {
             (0.0, &GROUND_IDLE)
         } else {
@@ -515,6 +563,45 @@ mod tests {
             "should end up on the plateau, y = {max_y}"
         );
         assert!(p.on_ground);
+    }
+
+    #[test]
+    fn slope_speed_rules() {
+        // walking (not running) down a steep slope targets 1.5 × 1.44; uphill 1.5 × 0.5
+        let mut level = Level::flat(80);
+        level.add_test_slope(
+            Slope {
+                left: 10,
+                bottom: 2,
+                width: 9,
+                height: 8,
+                rising: false,
+                steep: true,
+            },
+            99,
+            0,
+        );
+        let mut p = Player::new(10.0 * TILE + 8.0, 10.0 * TILE);
+        let mut fastest: f32 = 0.0;
+        for _ in 0..90 {
+            p.step(
+                Input {
+                    buttons: input::RIGHT,
+                },
+                &level,
+            );
+            if p.slope.is_some() {
+                fastest = fastest.max(p.vx);
+            }
+        }
+        assert!(
+            fastest > WALK_MAX + 0.1,
+            "downhill should exceed walk speed, got {fastest}"
+        );
+        assert!(
+            fastest <= WALK_MAX * 1.44 + 1e-4,
+            "downhill cap is 1.5 x 1.44, got {fastest}"
+        );
     }
 
     #[test]
