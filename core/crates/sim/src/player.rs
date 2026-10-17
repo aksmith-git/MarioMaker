@@ -221,6 +221,10 @@ pub struct Player {
     pub stomp_chain: u32,
     /// Standing on ice (set by the world from the ground under the feet).
     pub on_ice: bool,
+    /// Actor id of the moving solid the player stands on.
+    pub ride: Option<u32>,
+    /// Touched a spike trap this frame while moving into it (the world applies the damage).
+    pub spiked: bool,
     skid: SkidPhase,
     prev_jump: bool,
     prev_run: bool,
@@ -249,6 +253,8 @@ impl Player {
             hidden: false,
             stomp_chain: 0,
             on_ice: false,
+            ride: None,
+            spiked: false,
             skid: SkidPhase::None,
             prev_jump: false,
             prev_run: false,
@@ -679,7 +685,11 @@ impl Player {
     }
 
     fn solid(level: &Level, px: f32, py: f32) -> bool {
-        level.cell_at(px, py) == Cell::Solid
+        level.cell_at(px, py).is_solid()
+    }
+
+    fn spike(level: &Level, px: f32, py: f32) -> bool {
+        level.cell_at(px, py) == Cell::Spike
     }
 
     /// Axis-separated movement against the tile grid using the spec's sensor points.
@@ -696,12 +706,21 @@ impl Player {
             _ => 1.0,
         };
         let was_on_ground = self.on_ground;
+        self.spiked = false;
         self.x += self.vx * cos;
         for dir in [-1.0f32, 1.0] {
             let wx = self.x + dir * s.wall_x;
             let hit = [s.wall_y0, s.wall_y1]
                 .iter()
                 .any(|&wy| Self::solid(level, wx, self.y + wy));
+            // spikes hurt only when moving into them along that axis
+            if self.vx * dir > 0.0
+                && [s.wall_y0, s.wall_y1]
+                    .iter()
+                    .any(|&wy| Self::spike(level, wx, self.y + wy))
+            {
+                self.spiked = true;
+            }
             if hit {
                 let tile_edge = if dir > 0.0 {
                     (wx / TILE).floor() * TILE
@@ -714,12 +733,47 @@ impl Player {
                 }
             }
         }
+        // moving solids: sides (full solids only)
+        for b in level.solids.iter().filter(|b| !b.top_only) {
+            let (y0, y1) = (self.y + s.wall_y0, self.y + s.wall_y1);
+            if y1 <= b.y0 || y0 >= b.y1 {
+                continue;
+            }
+            let (l, r) = (self.x - s.wall_x, self.x + s.wall_x);
+            if r > b.x0 && l < b.x1 {
+                if self.x < (b.x0 + b.x1) / 2.0 {
+                    self.x = b.x0 - s.wall_x - 0.001;
+                    self.vx = self.vx.min(0.0);
+                } else {
+                    self.x = b.x1 + s.wall_x + 0.001;
+                    self.vx = self.vx.max(0.0);
+                }
+            }
+        }
         self.x = self.x.clamp(level.left + s.wall_x, level.right - s.wall_x);
 
         // vertical
         let prev_y = self.y;
         self.y += self.vy;
+        self.ride = None;
         if self.vy > 0.0 {
+            let hy = self.y + s.head_y;
+            if [-s.head_x, s.head_x]
+                .iter()
+                .any(|&hx| Self::spike(level, self.x + hx, hy))
+            {
+                self.spiked = true;
+            }
+            for b in level.solids.iter().filter(|b| !b.top_only) {
+                if self.x + s.head_x > b.x0
+                    && self.x - s.head_x < b.x1
+                    && hy > b.y0
+                    && prev_y + s.head_y <= b.y0 + 0.01
+                {
+                    self.y = b.y0 - s.head_y - 0.001;
+                    self.vy = 0.0;
+                }
+            }
             let hy = self.y + s.head_y;
             let hits: Vec<f32> = [-s.head_x, s.head_x]
                 .into_iter()
@@ -745,7 +799,7 @@ impl Player {
                 let (px, py) = (self.x + fx, self.y);
                 let top = ((py / TILE).floor() + 1.0) * TILE;
                 let cell = level.cell_at(px, py);
-                let ok = cell == Cell::Solid || (cell == Cell::SemiTop && prev_y >= top - 0.01);
+                let ok = cell.is_solid() || (cell == Cell::SemiTop && prev_y >= top - 0.01);
                 if ok {
                     landed = Some(landed.map_or(top, |t: f32| t.max(top)));
                 }
@@ -764,6 +818,29 @@ impl Player {
                     }
                 }
             }
+            if [-s.foot_x, s.foot_x]
+                .iter()
+                .any(|&fx| Self::spike(level, self.x + fx, self.y))
+                && self.vy < 0.0
+            {
+                self.spiked = true;
+            }
+            // moving solids: land on their tops if the feet were above last frame
+            let mut ride = None;
+            for b in &level.solids {
+                let over = self.x + s.foot_x > b.x0 && self.x - s.foot_x < b.x1;
+                let reach = if was_on_ground { 2.0 } else { 0.0 };
+                if over
+                    && self.y <= b.y1 + reach
+                    && prev_y >= b.y1 - b.dy.abs() - 1.0
+                    && landed.is_none_or(|t| b.y1 >= t)
+                {
+                    landed = Some(b.y1);
+                    ride = Some(b.owner);
+                    on_slope = None;
+                }
+            }
+            self.ride = ride;
             match landed {
                 Some(top) => {
                     self.y = top;

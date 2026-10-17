@@ -147,6 +147,9 @@ pub struct World {
     pub checkpoint: Option<(usize, usize)>,
     /// Big coins taken: (area, spawn index). Kept across a checkpoint respawn.
     big_coins: std::collections::BTreeSet<(usize, usize)>,
+    next_id: u32,
+    /// Bill Blaster countdowns (main timer, cooldown) for the current area.
+    blaster_timers: Vec<(i32, i32)>,
 }
 
 impl Default for World {
@@ -232,6 +235,8 @@ impl World {
             gen_timers: Vec::new(),
             checkpoint: None,
             big_coins: Default::default(),
+            next_id: 1,
+            blaster_timers: Vec::new(),
         };
         w.field_model = Box::leak(field_model(&w.level.style, w.level.theme).into_boxed_str());
         w.reset_course();
@@ -312,7 +317,14 @@ impl World {
         self.reset_generators();
     }
 
+    fn add_actor(&mut self, mut a: Actor) {
+        a.id = self.next_id;
+        self.next_id += 1;
+        self.actors.push(a);
+    }
+
     fn reset_generators(&mut self) {
+        self.blaster_timers = self.level.blasters.iter().map(|_| (60, 0)).collect();
         self.gen_timers = self
             .level
             .generators
@@ -433,8 +445,16 @@ impl World {
         let was_ground = self.player.on_ground;
         let jump_held = input.held(input::JUMP);
         self.player.on_ice = self.ice_under_player();
+        self.step_platforms(jump_held);
         let prev_x = self.player.x;
         self.player.step(input, &self.level);
+        if self.player.spiked && self.player.hurt() {
+            self.events.push(if self.player.alive() {
+                Event::PowerDown
+            } else {
+                Event::Death
+            });
+        }
         // pipes and doors
         let up_pressed = input.held(input::UP) && !self.prev_up;
         self.prev_up = input.held(input::UP);
@@ -500,13 +520,19 @@ impl World {
         let py = self.player.y;
         let mut born = Vec::new();
         for a in &mut self.actors {
+            if a.kind.is_platform() {
+                continue; // already moved before the player
+            }
             a.target = (px, py);
             if let Some(n) = a.step_spawning(&self.level) {
                 born.push(n);
             }
         }
-        self.actors.extend(born);
+        for n in born {
+            self.add_actor(n);
+        }
         self.step_generators();
+        self.step_blasters();
         self.check_checkpoints();
         self.shell_walls();
         self.actor_interactions();
@@ -720,7 +746,7 @@ impl World {
                 a.vy = 2.5;
             }
         }
-        self.actors.push(a);
+        self.add_actor(a);
     }
 
     fn throw_fireball(&mut self) {
@@ -745,7 +771,7 @@ impl World {
             };
         f.vy = -3.0;
         f.timer = FIREBALL_LIFE;
-        self.actors.push(f);
+        self.add_actor(f);
         self.events.push(Event::Fireball);
     }
 
@@ -899,6 +925,21 @@ impl World {
                 i += 1;
                 continue;
             }
+            if let (Kind::Thwomp { .. }, Some((x0, y0, x1, y1, _))) = (a.kind, a.solid_box()) {
+                // touching a Thwomp's sides or bottom hurts; standing on it is fine
+                let touching = overlap(hurt, (x0 - 1.5, y0 - 1.5, x1 + 1.5, y1));
+                let on_top = self.player.ride == Some(a.id) || self.player.y >= y1 - 0.5;
+                if touching && !on_top && !star && self.player.hurt() {
+                    self.events.push(if self.player.alive() {
+                        Event::PowerDown
+                    } else {
+                        Event::Death
+                    });
+                    return;
+                }
+                i += 1;
+                continue;
+            }
             let harmful = a.kind.is_enemy() || a.kind == Kind::EnemyFire;
             if !harmful || !overlap(hurt, ab) {
                 i += 1;
@@ -1027,7 +1068,7 @@ impl World {
                 } else {
                     1
                 };
-                self.actors.push(a);
+                self.add_actor(a);
                 self.spawns[idx].alive = true;
             }
         }
@@ -1146,7 +1187,104 @@ impl World {
                 }
             };
             a.mode = Mode::DokanOut { tx, ty };
-            self.actors.push(a);
+            self.add_actor(a);
+        }
+    }
+
+    // ---------------------------------------------------------------- platforms
+
+    /// Moving solids step before the player; riders are carried by their movement. A spring
+    /// launches its rider: 6.0, or 4.43 with the jump button held (the held-jump gravity then
+    /// gives the high bounce) (10-spring.md).
+    fn step_platforms(&mut self, jump_held: bool) {
+        let (px, py) = (self.player.x, self.player.y);
+        let ride = self.player.ride;
+        for a in &mut self.actors {
+            if !a.kind.is_platform() {
+                continue;
+            }
+            a.target = (px, py);
+            a.ridden = ride == Some(a.id);
+            a.step_spawning(&self.level);
+        }
+        self.level.solids = self
+            .actors
+            .iter()
+            .filter_map(|a| {
+                a.solid_box()
+                    .map(|(x0, y0, x1, y1, top_only)| crate::level::Solid {
+                        x0,
+                        y0,
+                        x1,
+                        y1,
+                        dx: a.moved.0,
+                        dy: a.moved.1,
+                        top_only,
+                        owner: a.id,
+                    })
+            })
+            .collect();
+        if let Some(id) = ride {
+            if let Some(s) = self.level.solids.iter().find(|s| s.owner == id) {
+                self.player.x += s.dx;
+                self.player.y = s.y1;
+            }
+            let launch = self
+                .actors
+                .iter()
+                .any(|a| a.id == id && a.kind == Kind::Spring && a.chain == 1);
+            if launch {
+                self.player.vy = if jump_held { 4.43 } else { 6.0 };
+                self.player.on_ground = false;
+                self.player.ride = None;
+                self.events.push(Event::Jump);
+            }
+        }
+    }
+
+    /// Bill Blasters fire toward the player (13-bill-blaster.md): the first shot 60 frames after
+    /// the muzzle is on screen with no player at the blaster, then every 190 frames (random
+    /// extras 0–59 are [inf] seeded per blaster).
+    fn step_blasters(&mut self) {
+        let v = self.view_rect(0.0);
+        for bi in 0..self.level.blasters.len() {
+            let b = self.level.blasters[bi];
+            let h = b.h as f32 * TILE;
+            let dir = if self.player.x < b.x { -1 } else { 1 };
+            let mx = b.x + dir as f32 * 8.0;
+            let my = b.y + h - 16.0;
+            let on_screen = mx >= v.0 && mx <= v.2 && my >= v.1 && my <= v.3;
+            let p = &self.player;
+            let at_blaster =
+                (p.x - b.x).abs() < 24.0 && (p.y - (b.y + h / 2.0)).abs() < h / 2.0 + 20.0;
+            let (main, cool) = &mut self.blaster_timers[bi];
+            if !on_screen || at_blaster {
+                *main = 60;
+                continue;
+            }
+            *main -= 1;
+            *cool -= 1;
+            if *main > 0 || *cool > 0 {
+                continue;
+            }
+            *cool = 190;
+            let alive = self
+                .actors
+                .iter()
+                .filter(|a| a.kind == Kind::BulletBill)
+                .count();
+            let blocked = self.level.cell_at(mx + dir as f32 * 15.0, my).is_solid();
+            if alive >= 10 || blocked {
+                continue;
+            }
+            let kind = b.contents.unwrap_or(Kind::BulletBill);
+            let mut a = Actor::new(kind, mx, my - 8.0);
+            a.dir = dir;
+            if kind == Kind::BulletBill {
+                a.vx = dir as f32;
+            }
+            self.add_actor(a);
+            self.events.push(Event::Kick);
         }
     }
 
@@ -1476,7 +1614,60 @@ impl World {
                 8,
             ));
         }
+        for b in &self.level.blasters {
+            if !visible(b.x, b.y) && !visible(b.x, b.y + b.h as f32 * TILE) {
+                continue;
+            }
+            let top = b.y + (b.h - 2) as f32 * TILE;
+            out.push(Self::model_sprite(
+                "M1_Enemy_killer_houdai",
+                "wait.0",
+                b.x - 8.0,
+                top,
+                16.0,
+                32.0,
+                false,
+                11,
+            ));
+            for i in 0..(b.h - 2).max(0) {
+                out.push(Self::model_sprite(
+                    "M1_Enemy_killer_houdai",
+                    "unit.0",
+                    b.x - 8.0,
+                    b.y + i as f32 * TILE,
+                    16.0,
+                    16.0,
+                    false,
+                    11,
+                ));
+            }
+        }
         for a in &self.actors {
+            if let Kind::Lift { width, falling } = a.kind {
+                let x0 = a.x - width as f32 * 8.0;
+                for i in 0..width {
+                    let tex = if i == 0 {
+                        "lift_sideL.00"
+                    } else if i == width - 1 {
+                        "lift_sideR.00"
+                    } else if falling {
+                        "lift_center.01"
+                    } else {
+                        "lift_center.00"
+                    };
+                    out.push(Self::model_sprite(
+                        "M1_Object_lift_unite",
+                        tex,
+                        x0 + i as f32 * TILE,
+                        a.y,
+                        16.0,
+                        16.0,
+                        false,
+                        15,
+                    ));
+                }
+                continue;
+            }
             if !visible(a.x, a.y) {
                 continue;
             }
@@ -1684,6 +1875,26 @@ impl World {
                 32.0,
                 a.dir > 0,
             ),
+            Kind::Thwomp { .. } => (
+                "M1_Enemy_dossun",
+                match a.phase {
+                    1 => "down.0",
+                    0 if (a.target.0 - a.x).abs() < 64.0 => "look.0",
+                    _ => "wait.0",
+                },
+                24.0,
+                32.0,
+                false,
+            ),
+            Kind::Spring => (
+                "M1_Object_jumpstep",
+                ["jump.0", "jump.1", "jump.1", "jump.2", "jump.2"][a.pause.clamp(0, 4) as usize],
+                16.0,
+                16.0,
+                false,
+            ),
+            Kind::BulletBill => ("M1_Enemy_killer", "wait.0", 16.0, 16.0, a.dir > 0),
+            Kind::Lift { .. } => return None,
             Kind::BigCoin { value } => (
                 ["M1_Object_coin10", "M1_Object_coin30", "M1_Object_coin50"][value as usize],
                 ["wait.0", "wait.1", "wait.2", "wait.3"][(self.tick as usize / 8) % 4],
@@ -2155,6 +2366,109 @@ mod tests {
         run(&mut w, 0, 200);
         assert!(w.player.alive());
         assert_eq!(w.player.x, 20.0 * TILE);
+    }
+
+    fn spawn(kind: Kind, x: f32, y: f32) -> Spawn {
+        Spawn {
+            kind,
+            x,
+            y,
+            big: false,
+            wings: false,
+            pipe: None,
+        }
+    }
+
+    #[test]
+    fn spring_launches_higher_with_jump_held() {
+        let peak = |held: bool| {
+            let mut lvl = Level::flat(40);
+            lvl.spawns.push(spawn(Kind::Spring, 120.0, 32.0));
+            let mut w = World::with_level(lvl);
+            run(&mut w, 0, 5);
+            // drop onto the spring
+            w.player.x = 120.0;
+            w.player.y = 80.0;
+            let mut top: f32 = 0.0;
+            let mut launched = false;
+            for _ in 0..240 {
+                w.step(Input {
+                    buttons: if held { input::JUMP } else { 0 },
+                });
+                launched |= w.events.contains(&Event::Jump);
+                if launched {
+                    top = top.max(w.player.y);
+                }
+            }
+            assert!(launched);
+            top - 44.5
+        };
+        let low = peak(false);
+        let high = peak(true);
+        assert!(low > 40.0, "low {low}");
+        assert!(high > low + 40.0, "high {high} low {low}");
+    }
+
+    #[test]
+    fn thwomp_slams_and_returns() {
+        let mut lvl = Level::flat(40);
+        lvl.spawns
+            .push(spawn(Kind::Thwomp { side: false }, 200.0, 120.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 60.0;
+        run(&mut w, 0, 10);
+        assert_eq!(w.actors[0].y, 120.0);
+        // walk underneath: it drops to the ground
+        w.player.x = 200.0 - 40.0;
+        let mut landed = false;
+        for _ in 0..60 {
+            w.step(Input::default());
+            if w.actors[0].y == 32.0 {
+                landed = true;
+                break;
+            }
+        }
+        assert!(landed);
+        w.player.x = 60.0;
+        run(&mut w, 0, 64 + 120);
+        assert_eq!(w.actors[0].y, 120.0);
+    }
+
+    #[test]
+    fn standing_on_a_falling_lift() {
+        let mut lvl = Level::flat(40);
+        lvl.spawns.push(spawn(
+            Kind::Lift {
+                width: 4,
+                falling: true,
+            },
+            200.0,
+            96.0,
+        ));
+        let mut w = World::with_level(lvl);
+        w.player.x = 200.0;
+        w.player.y = 130.0;
+        run(&mut w, 0, 40);
+        assert!(w.player.ride.is_some(), "y {}", w.player.y);
+        let y0 = w.actors[0].y;
+        run(&mut w, 0, 20);
+        assert!(w.actors[0].y < y0);
+        assert_eq!(w.player.y, w.actors[0].y + 16.0);
+    }
+
+    #[test]
+    fn spikes_hurt() {
+        let mut lvl = Level::flat(40);
+        lvl.set(6, 2, Cell::Spike);
+        let mut w = World::with_level(lvl);
+        let mut hurt = false;
+        for _ in 0..60 {
+            w.step(Input {
+                buttons: input::RIGHT,
+            });
+            hurt |= !w.player.alive();
+        }
+        assert!(hurt);
     }
 
     #[test]

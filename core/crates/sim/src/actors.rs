@@ -51,13 +51,30 @@ pub enum Kind {
     },
     /// Fire Piranha Plant's fireball: straight line at 1 px/frame.
     EnemyFire,
+    /// Thwomp (side = Side Thwomp, alternate form). A solid that slams down.
+    Thwomp {
+        side: bool,
+    },
+    /// One-way lift, `width` tiles; falling = drops once stood on.
+    Lift {
+        width: u8,
+        falling: bool,
+    },
+    /// Trampoline.
+    Spring,
+    /// Bullet Bill from a blaster: flies straight at 1 px/frame, through terrain.
+    BulletBill,
 }
 
 impl Kind {
     pub fn is_enemy(self) -> bool {
         matches!(
             self,
-            Kind::Goomba | Kind::Koopa { .. } | Kind::Shell { .. } | Kind::Piranha { .. }
+            Kind::Goomba
+                | Kind::Koopa { .. }
+                | Kind::Shell { .. }
+                | Kind::Piranha { .. }
+                | Kind::BulletBill
         )
     }
     /// Walks along the ground (turns at walls and other walkers).
@@ -67,6 +84,10 @@ impl Kind {
     /// Hurts the player on touch but cannot be stomped.
     pub fn unstompable(self) -> bool {
         matches!(self, Kind::Piranha { .. } | Kind::EnemyFire)
+    }
+    /// Moves before the player and offers a solid surface (riders are carried).
+    pub fn is_platform(self) -> bool {
+        matches!(self, Kind::Thwomp { .. } | Kind::Lift { .. } | Kind::Spring)
     }
     pub fn is_item(self) -> bool {
         matches!(
@@ -126,6 +147,7 @@ pub struct Actor {
     pub hops: u8,
     pub pause: i32,
     pub home_y: f32,
+    pub home_x: f32,
     /// Index into World::spawns, if this actor came from a course object.
     pub spawn: Option<usize>,
     /// Hit a wall this frame (in the movement direction).
@@ -140,6 +162,12 @@ pub struct Actor {
     pub rng: u32,
     /// Nearest player's position, set by the world before each step.
     pub target: (f32, f32),
+    /// Stable id (moving solids are tracked by it).
+    pub id: u32,
+    /// Something stands on this platform (set by the world).
+    pub ridden: bool,
+    /// Position change this frame (for carrying riders).
+    pub moved: (f32, f32),
 }
 
 impl Actor {
@@ -163,6 +191,7 @@ impl Actor {
             hops: 0,
             pause: 0,
             home_y: y,
+            home_x: x,
             spawn: None,
             wall: false,
             pipe: None,
@@ -170,6 +199,109 @@ impl Actor {
             phase: 0,
             rng: 0x9e37_79b9 ^ (x.to_bits().rotate_left(7)) ^ y.to_bits(),
             target: (0.0, 0.0),
+            id: 0,
+            ridden: false,
+            moved: (0.0, 0.0),
+        }
+    }
+
+    /// The solid surface this actor offers (for platforms): (x0, y0, x1, y1, top_only).
+    pub fn solid_box(&self) -> Option<(f32, f32, f32, f32, bool)> {
+        match self.kind {
+            Kind::Thwomp { .. } if self.mode == Mode::Normal => {
+                let hw = if self.big { 32.0 } else { 16.0 };
+                Some((self.x - hw, self.y, self.x + hw, self.y + 2.0 * hw, false))
+            }
+            Kind::Lift { width, .. } => {
+                let hw = width as f32 * 8.0;
+                Some((self.x - hw, self.y + 8.0, self.x + hw, self.y + 16.0, true))
+            }
+            Kind::Spring if self.mode == Mode::Normal => {
+                let top = self.y + 12.5 - self.aux_compression();
+                Some((self.x - 8.0, top - 4.0, self.x + 8.0, top, true))
+            }
+            _ => None,
+        }
+    }
+
+    /// Spring compression c (0…4 px), kept in `pause`.
+    pub fn aux_compression(&self) -> f32 {
+        if self.kind == Kind::Spring {
+            self.pause as f32
+        } else {
+            0.0
+        }
+    }
+
+    /// Thwomp (12-thwomp.md): Wait (notices a player below within |dx| < W + 32) → Fall
+    /// (g −0.25, cap −5) → FallWait 64 → Return (≤ 0.875, +0.2/frame) to the home height.
+    /// Side Thwomp [inf]: charges toward a player level with it (0.075/frame² to 3.0), waits, returns.
+    fn step_thwomp(&mut self, level: &Level, side: bool) {
+        let (px, py) = self.target;
+        let w = if self.big { 32.0 } else { 16.0 };
+        match self.phase {
+            0 => {
+                self.vx = 0.0;
+                self.vy = 0.0;
+                let triggered = if side {
+                    (py - self.y).abs() < 2.0 * w && (px - self.x).abs() < 256.0
+                } else {
+                    (px - self.x).abs() < w + 32.0 && py > self.y + w - 260.0 && py < self.y + w
+                };
+                if triggered {
+                    self.phase = 1;
+                    if side {
+                        self.dir = if px < self.x { -1 } else { 1 };
+                    }
+                }
+            }
+            1 => {
+                if side {
+                    let t = 3.0 * self.dir as f32;
+                    self.vx = if self.vx < t {
+                        (self.vx + 0.075).min(t)
+                    } else {
+                        (self.vx - 0.075).max(t)
+                    };
+                    self.vy = 0.0;
+                } else {
+                    self.vy = (self.vy - 0.25).max(-5.0);
+                }
+                let before = (self.x, self.y);
+                self.collide(level);
+                let stuck = (self.x - before.0).abs() < 1e-5 && (self.y - before.1).abs() < 1e-5;
+                if (!side && self.on_ground) || (side && self.wall) || stuck {
+                    self.phase = 2;
+                    self.timer = 64;
+                    self.vx = 0.0;
+                    self.vy = 0.0;
+                }
+            }
+            2 => {
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    self.phase = 3;
+                }
+            }
+            _ => {
+                if side {
+                    let d = self.home_x - self.x;
+                    let step = d.abs().min(0.875);
+                    self.x += step * d.signum();
+                    if d.abs() < 0.01 {
+                        self.phase = 0;
+                    }
+                } else {
+                    self.vy = (self.vy + 0.2).min(0.875);
+                    let target = self.home_y;
+                    self.y = (self.y + self.vy).min(target);
+                    if self.y >= target {
+                        self.y = target;
+                        self.vy = 0.0;
+                        self.phase = 0;
+                    }
+                }
+            }
         }
     }
 
@@ -186,6 +318,14 @@ impl Actor {
         match self.kind {
             Kind::Fireball | Kind::EnemyFire => 4.0,
             Kind::BigCoin { .. } => 15.0,
+            Kind::Thwomp { .. } => {
+                if self.big {
+                    32.0
+                } else {
+                    16.0
+                }
+            }
+            Kind::Lift { width, .. } => width as f32 * 8.0,
             _ if self.big => 16.0,
             _ => 8.0,
         }
@@ -195,6 +335,13 @@ impl Actor {
         match self.kind {
             Kind::Fireball | Kind::EnemyFire => 8.0,
             Kind::BigCoin { .. } => 30.0,
+            Kind::Thwomp { .. } => {
+                if self.big {
+                    64.0
+                } else {
+                    32.0
+                }
+            }
             Kind::Piranha { .. } => PIRANHA_H * if self.big { 2.0 } else { 1.0 },
             Kind::Koopa { .. } if !self.big => 16.0, // body box 16×16 (art is 16×32)
             _ if self.big => 32.0,
@@ -266,6 +413,13 @@ impl Actor {
             return true;
         }
         match self.kind {
+            Kind::BulletBill => {
+                // DieStamp for a Bullet Bill: it drops away
+                self.mode = Mode::DieFall;
+                self.vx = 0.0;
+                self.vy = 0.0;
+                true
+            }
             Kind::Goomba => {
                 self.mode = Mode::Stomped;
                 self.timer = STOMP_FRAMES;
@@ -323,6 +477,13 @@ impl Actor {
 
     /// One frame; may return a new actor to add (a Fire Piranha's fireball). Uses `target`.
     pub fn step_spawning(&mut self, level: &Level) -> Option<Actor> {
+        let before = (self.x, self.y);
+        let out = self.step_inner(level);
+        self.moved = (self.x - before.0, self.y - before.1);
+        out
+    }
+
+    fn step_inner(&mut self, level: &Level) -> Option<Actor> {
         let player_x = self.target.0;
         let mut spawned = None;
         self.age += 1;
@@ -680,6 +841,54 @@ impl Actor {
                     self.collide(level);
                 }
             }
+            Kind::Thwomp { side } => self.step_thwomp(level, side),
+            Kind::Lift { falling, .. } => {
+                if falling && (self.ridden || self.phase == 1) {
+                    self.phase = 1;
+                    self.vy = (self.vy - 0.0625).max(-4.0);
+                    self.y += self.vy;
+                }
+            }
+            Kind::Spring => {
+                // compress 1 px/frame for 4 frames, hold 5, then launch and release over 4
+                // (10-spring.md); `chain` = 1 on the launch frame (the world launches the rider)
+                self.chain = 0;
+                match self.phase {
+                    0 => {
+                        if self.ridden {
+                            self.phase = 1;
+                        }
+                    }
+                    1 => {
+                        self.pause += 1;
+                        if self.pause >= 4 {
+                            self.phase = 2;
+                            self.timer = 5;
+                        }
+                    }
+                    2 => {
+                        self.timer -= 1;
+                        if self.timer <= 0 {
+                            self.phase = 3;
+                            self.chain = 1;
+                        }
+                    }
+                    _ => {
+                        self.pause -= 1;
+                        if self.pause <= 0 {
+                            self.pause = 0;
+                            self.phase = 0;
+                        }
+                    }
+                }
+                self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+                self.vx = 0.0;
+                self.collide(level);
+            }
+            Kind::BulletBill => {
+                self.vx = self.dir as f32;
+                self.x += self.vx;
+            }
             Kind::BigCoin { .. } | Kind::Shell { .. } => {}
         }
     }
@@ -760,7 +969,7 @@ impl Actor {
     pub fn collide(&mut self, level: &Level) {
         let (hw, h) = (self.half_w(), self.height());
         let was_ground = self.on_ground;
-        let solid = |px: f32, py: f32| level.cell_at(px, py) == Cell::Solid;
+        let solid = |px: f32, py: f32| level.cell_at(px, py).is_solid();
 
         // horizontal
         self.x += self.vx;
@@ -804,7 +1013,7 @@ impl Actor {
                 let (px, py) = (self.x + dx, self.y);
                 let top = ((py / TILE).floor() + 1.0) * TILE;
                 let cell = level.cell_at(px, py);
-                if cell == Cell::Solid || (cell == Cell::SemiTop && prev_y >= top - 0.01) {
+                if cell.is_solid() || (cell == Cell::SemiTop && prev_y >= top - 0.01) {
                     landed = Some(landed.map_or(top, |t: f32| t.max(top)));
                 }
             }

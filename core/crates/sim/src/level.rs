@@ -21,6 +21,30 @@ pub enum Cell {
     Solid,
     /// One-way platform: solid only from above.
     SemiTop,
+    /// Spike trap: solid on every side, hurts the player on contact (43-spike-trap.md).
+    Spike,
+}
+
+impl Cell {
+    pub fn is_solid(self) -> bool {
+        matches!(self, Cell::Solid | Cell::Spike)
+    }
+}
+
+/// A moving solid owned by an actor (Thwomp, lift, spring), rebuilt by the world every frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Solid {
+    pub x0: f32,
+    pub y0: f32,
+    pub x1: f32,
+    pub y1: f32,
+    /// How far it moved this frame (riders are carried by this).
+    pub dx: f32,
+    pub dy: f32,
+    /// Only the top surface collides (lifts, springs).
+    pub top_only: bool,
+    /// Actor id.
+    pub owner: u32,
 }
 
 /// A tile to draw: grid position and atlas index (row-major, 16 per row).
@@ -126,6 +150,16 @@ pub struct PipeGenerator {
     pub colour: u8,
 }
 
+/// A Bill Blaster column: x centre, y bottom (px), height in tiles, what it fires.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Blaster {
+    pub x: f32,
+    pub y: f32,
+    pub h: i32,
+    /// None = Bullet Bill.
+    pub contents: Option<Kind>,
+}
+
 /// A checkpoint flag: origin (bottom centre) and the power-up inside.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Checkpoint {
@@ -196,8 +230,11 @@ pub struct Level {
     pub blocks: Vec<BlockPlacement>,
     pub spawns: Vec<Spawn>,
     pub warps: Vec<Warp>,
+    /// Moving solids this frame (runtime, filled by the world).
+    pub solids: Vec<Solid>,
     pub generators: Vec<PipeGenerator>,
     pub checkpoints: Vec<Checkpoint>,
+    pub blasters: Vec<Blaster>,
     /// Doors to draw: origin (bottom centre) and type.
     pub doors: Vec<(f32, f32, u8)>,
     /// Goal pole position (X0, Y0): pole x and the top of its base block (main area only).
@@ -275,8 +312,10 @@ impl Level {
             blocks: Vec::new(),
             spawns: Vec::new(),
             warps: Vec::new(),
+            solids: Vec::new(),
             generators: Vec::new(),
             checkpoints: Vec::new(),
+            blasters: Vec::new(),
             doors: Vec::new(),
             goal: None,
             style: course.header.game_style.as_str_lossy(),
@@ -370,6 +409,14 @@ impl Level {
                 70 => Some(Kind::BigCoin {
                     value: ((o.flags >> 18) & 3).min(2) as u8,
                 }),
+                10 => Some(Kind::Spring),
+                12 => Some(Kind::Thwomp {
+                    side: o.flags & 0x4 != 0,
+                }),
+                11 => Some(Kind::Lift {
+                    width: o.width.max(1),
+                    falling: o.flags & 0x4 != 0,
+                }),
                 _ => None,
             };
             if let Some(kind) = actor {
@@ -427,6 +474,34 @@ impl Level {
                     wings,
                     pipe: None,
                 });
+                continue;
+            }
+            if o.id == 13 {
+                // Bill Blaster: a solid column, anchored at its bottom tile
+                for dy in 0..hgt {
+                    lvl.set(tx, ty + dy, Cell::Solid);
+                }
+                let contents = match o.child_id {
+                    0 => Some(Kind::Goomba),
+                    1 => Some(Kind::Koopa {
+                        red: o.child_flags & 0x4 != 0,
+                    }),
+                    _ => None,
+                };
+                lvl.blasters.push(Blaster {
+                    x: tx as f32 * TILE + TILE / 2.0,
+                    y: ty as f32 * TILE,
+                    h: hgt.max(2),
+                    contents,
+                });
+                continue;
+            }
+            if o.id == 43 {
+                for dx in 0..w {
+                    for dy in 0..hgt {
+                        lvl.set(tx + dx, ty + dy, Cell::Spike);
+                    }
+                }
                 continue;
             }
             if o.id == 90 {
@@ -771,8 +846,10 @@ impl Level {
             blocks: Vec::new(),
             spawns: Vec::new(),
             warps: Vec::new(),
+            solids: Vec::new(),
             generators: Vec::new(),
             checkpoints: Vec::new(),
+            blasters: Vec::new(),
             doors: Vec::new(),
             goal: None,
             style: "M1".into(),

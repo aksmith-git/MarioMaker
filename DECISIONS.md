@@ -18,6 +18,13 @@ them:
 - Goal pole stands in the goal ground's second column (X0 = left + 24): with the castle door at
   X0 + 112 the 80-px castle then ends flush with the goal ground's right edge.
 - Pole touch uses body box B (a small player on the base block only touches the box with box A).
+- Lifts placed off a track are static (the binary has an oscillating Move state, ±48 px, but
+  which lift actor the course loader picks was not traced; course makers use plain lifts as
+  fixed platforms). Verify in Ryujinx.
+- Spring launch: 6.0 px/frame, or 4.43 with jump held (the held-jump gravity bands then give
+  the high bounce) — the binary pairs the speeds with "jump profile" ids whose meaning is [inf].
+- Side Thwomp charge trigger: player within 2 × its half-width vertically and 256 px horizontally
+  [inf]; the normal Thwomp uses the spec's |dx| < W + 32 zone.
 - Sprite art offsets inside textures are measured from the textures (e.g. the Goomba sits in the
   top half of its 16×32 image) until BFRES quad placement is imported.
 

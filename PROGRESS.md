@@ -62,6 +62,9 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   M1 goal pole (height score, slide, walk to castle, time → score countdown, castle flag)
 - 🔄 Navigation: warp pipes in all four directions (entry windows, align / 0.75 px/f travel, 30 + 30
   frame holds with fade), main ↔ sub-area with per-area state kept, doors (same-area pairs)
+- 🔄 More objects: Piranha Plants (free / pipe / fire), pipe generators, big coins, checkpoints
+  (respawn, big coins kept), Thwomp (+ side), lifts (static / falling), springs (normal / held high
+  bounce), Bill Blasters + Bullet Bills, spike traps; moving-solid layer with rider carry
 - ⬜ 7. Play real courses start to goal; tune against Ryujinx (needs a Ryujinx build with a GDB stub)
 
 ### Phase 5b — Native app (must be done before Phase 6) ⬜
