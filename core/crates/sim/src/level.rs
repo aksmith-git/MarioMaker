@@ -144,6 +144,19 @@ pub struct Spawn {
     pub parachute: bool,
 }
 
+/// The area's liquid (themes.md §3): kind 1 water, 2 lava, 3 poison; heights in px
+/// (h × 16 + 12); mode 1 one-way, 2 oscillate (else static); speed 1–3.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LiquidSpec {
+    pub kind: u8,
+    pub start: f32,
+    pub end: f32,
+    pub mode: u8,
+    pub speed: u8,
+    /// The whole area is water (underwater theme).
+    pub full: bool,
+}
+
 /// A Burner (54): block origin, flame direction (0 left, 1 right, 2 down, 3 up), alternate phase.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Burner {
@@ -267,6 +280,7 @@ pub struct Level {
     pub conveyors: Vec<(i32, i32, i32, f32)>,
     pub burners: Vec<Burner>,
     pub firebars: Vec<FireBar>,
+    pub liquid: Option<LiquidSpec>,
     /// One-way walls (drawing): centre x, bottom y, orientation.
     pub oneway: Vec<(f32, f32, u8)>,
     /// Doors to draw: origin (bottom centre) and type.
@@ -340,14 +354,9 @@ pub fn unsupported_features(course: &Course) -> Vec<String> {
         if ai == 1 && area.objects.is_empty() && area.ground.is_empty() {
             continue; // unused sub-area
         }
-        if h.theme == 4 {
-            out.insert("theme: underwater (swimming)".to_string());
-        }
+
         if h.autoscroll_type != 0 {
             out.insert("autoscroll".to_string());
-        }
-        if h.liquid_mode != 0 || h.liquid_start_height != 0 {
-            out.insert("rising/still liquid (lava, poison, water)".to_string());
         }
 
         for o in area.objects.iter() {
@@ -421,6 +430,7 @@ impl Level {
             conveyors: Vec::new(),
             burners: Vec::new(),
             firebars: Vec::new(),
+            liquid: None,
             oneway: Vec::new(),
             doors: Vec::new(),
             goal: None,
@@ -436,6 +446,34 @@ impl Level {
             vertical: h.orientation != 0,
             main_area: area_index == 0,
             timer: course.header.timer,
+        };
+
+        // liquid by theme: underwater = all water; castle = lava; forest = water (poison at night)
+        let height = |b: u8| b as f32 * TILE + 12.0;
+        lvl.liquid = match h.theme {
+            4 => Some(LiquidSpec {
+                kind: 1,
+                start: f32::MAX,
+                end: f32::MAX,
+                mode: 0,
+                speed: 0,
+                full: true,
+            }),
+            2 | 9 => Some(LiquidSpec {
+                kind: if h.theme == 2 {
+                    2
+                } else if lvl.night {
+                    3
+                } else {
+                    1
+                },
+                start: height(h.liquid_start_height),
+                end: height(h.liquid_end_height),
+                mode: h.liquid_mode,
+                speed: h.liquid_speed,
+                full: false,
+            }),
+            _ => None,
         };
 
         // ground records
@@ -1060,6 +1098,7 @@ impl Level {
             conveyors: Vec::new(),
             burners: Vec::new(),
             firebars: Vec::new(),
+            liquid: None,
             oneway: Vec::new(),
             doors: Vec::new(),
             goal: None,

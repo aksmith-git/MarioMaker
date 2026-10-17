@@ -11,6 +11,7 @@ pub mod blocks;
 pub mod camera;
 pub mod input;
 pub mod level;
+pub mod liquid;
 pub mod player;
 pub mod render;
 pub mod warp;

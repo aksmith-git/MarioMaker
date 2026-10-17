@@ -82,7 +82,9 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   (brick ↔ coin swap, P doors), ON/OFF switch + dotted-line blocks, falling donuts, Munchers,
   conveyor belts; Spiny, Buzzy Beetle (+ fire-proof shell), Spike Top (floor only), Hammer Bro +
   hammers, Bob-omb (fuse, kick, explosion), Dry Bones (collapse/reassemble), Boo; parachutes,
-  one-way walls, Burners, Fire Bars, Banzai Bills; vertical areas
+  one-way walls, Burners, Fire Bars, Banzai Bills; vertical areas; liquids (static / one-way /
+  oscillating water, lava, poison; deadly kinds kill) and swimming (strokes, sink, swim table,
+  jump-out window; underwater theme, castle-night air swimming)
 - 🔄 Coverage (`mmk coverage`): 33 of 150 sample SMB1 courses fully playable (was 20); biggest
   blockers now Chain Chomp, tracks, Bowser, clear conditions, swinging claw, grinder, liquids
 - ⬜ 7. Play real courses start to goal; tune against Ryujinx (needs a Ryujinx build with a GDB stub)

@@ -11,6 +11,7 @@ use crate::blocks::{self, Block, BlockKind, Blocks, Contents, HitPower, HitResul
 use crate::camera::{self, Camera};
 use crate::input::{self, Input};
 use crate::level::{Cell, CoinTile, Level, PipeDir, Spawn, TILE, switch_atlas};
+use crate::liquid::Liquid;
 use crate::player::{Control, Form, Player, Pose, STAR_FRAMES};
 use crate::render::{Sprite, SpriteImage};
 use crate::warp::{self, SideHold, Transit};
@@ -170,6 +171,8 @@ pub struct World {
     donut_respawn: Vec<((i32, i32), i32)>,
     /// Conveyor carry applied to the player (px/frame).
     carry: f32,
+    /// The current area's liquid level, if any.
+    pub liquid: Option<Liquid>,
 }
 
 impl Default for World {
@@ -265,6 +268,7 @@ impl World {
             donut_ride: None,
             donut_respawn: Vec::new(),
             carry: 0.0,
+            liquid: None,
         };
         w.field_model = Box::leak(field_model(&w.level.style, w.level.theme).into_boxed_str());
         w.reset_course();
@@ -354,6 +358,7 @@ impl World {
         self.actors.clear();
         self.effects.clear();
         self.reset_generators();
+        self.liquid = self.level.liquid.map(Liquid::new);
     }
 
     fn add_actor(&mut self, mut a: Actor) {
@@ -394,6 +399,8 @@ impl World {
                 self.actors.clear();
                 self.effects.clear();
                 self.reset_generators();
+                // [?] whether the liquid keeps moving while the player is away; it restarts here
+                self.liquid = self.level.liquid.map(Liquid::new);
             }
             None => self.load_area_fresh(),
         }
@@ -487,6 +494,13 @@ impl World {
         let was_ground = self.player.on_ground;
         let jump_held = input.held(input::JUMP);
         self.player.on_ice = self.ice_under_player();
+        if let Some(l) = &mut self.liquid {
+            l.step();
+        }
+        self.player.in_water = self
+            .liquid
+            .is_some_and(|l| l.water() && l.covers(self.player.y + 8.0))
+            || (self.level.theme == 2 && self.level.night); // castle night: swim in the air
         self.step_platforms(jump_held);
         self.conveyor_carry();
         let prev_x = self.player.x;
@@ -558,6 +572,23 @@ impl World {
         if !self.player.alive() {
             self.events.push(Event::Death);
             return;
+        }
+        // lava and poison kill (the player sinks below the surface)
+        if let Some(l) = self.liquid
+            && l.deadly()
+        {
+            if l.covers(self.player.y + 4.0) {
+                self.player.star = 0;
+                self.player.invuln = 0;
+                self.player.kill();
+                self.events.push(Event::Death);
+                return;
+            }
+            for a in &mut self.actors {
+                if a.alive() && l.covers(a.y + 2.0) && !a.kind.is_platform() {
+                    a.mode = Mode::Dead;
+                }
+            }
         }
         self.collect_coins();
         self.step_donuts();
@@ -2072,6 +2103,32 @@ impl World {
                 8,
             ));
         }
+        // liquid surface strip (16×32 animated tiles) and fill below it
+        if let Some(l) = self.liquid
+            && !l.spec.full
+            && l.y > self.camera_y - 32.0
+        {
+            let model = match l.spec.kind {
+                2 => "M1_Object_magmahalf",
+                3 => "M1_Object_poisonhalf",
+                _ => "M1_Object_waterhalf",
+            };
+            let frame = ["wait.0", "wait.1", "wait.2", "wait.3"][(self.tick as usize / 8) % 4];
+            let mut x = (self.camera_x / TILE).floor() * TILE;
+            while x < self.camera_x + VIEW_W + TILE {
+                let mut s = Self::model_sprite(model, frame, x, l.y - 32.0, 16.0, 32.0, false, 48);
+                s.image.rect = Some((0.0, 0.0, 16.0, 32.0));
+                out.push(s);
+                let mut y = l.y - 48.0;
+                while y > self.camera_y - TILE {
+                    let mut f = Self::model_sprite(model, "wait.0", x, y, 16.0, 16.0, false, 48);
+                    f.image.rect = Some((0.0, 16.0, 16.0, 16.0));
+                    out.push(f);
+                    y -= TILE;
+                }
+                x += TILE;
+            }
+        }
         for b in &self.level.burners {
             if !visible(b.x, b.y) {
                 continue;
@@ -2596,6 +2653,8 @@ impl World {
                 }
             }
             Pose::Pole => "climb.0",
+            Pose::Swim => ["swim.0", "swim.1", "swim.2", "swim.3", "swim.4", "swim.5"]
+                [((p.walk_phase / 4.0) as usize).min(5)],
             Pose::Fire => {
                 if form == Form::Fire {
                     "fire_attack.0"
@@ -3333,6 +3392,57 @@ mod tests {
             hurt |= !w3.player.alive();
         }
         assert!(hurt);
+    }
+
+    #[test]
+    fn swimming_strokes_and_slow_sink() {
+        let mut lvl = Level::flat(40);
+        lvl.liquid = Some(crate::level::LiquidSpec {
+            kind: 1,
+            start: f32::MAX,
+            end: f32::MAX,
+            mode: 0,
+            speed: 0,
+            full: true,
+        });
+        let mut w = World::with_level(lvl);
+        w.player.y = 150.0;
+        w.player.on_ground = false;
+        run(&mut w, 0, 120);
+        assert!(
+            w.player.vy >= -1.5 - 1e-4,
+            "sink capped at -1.5: {}",
+            w.player.vy
+        );
+        // tap jump: each stroke rises
+        let y0 = w.player.y;
+        for i in 0..60 {
+            w.step(Input {
+                buttons: if i % 10 == 0 { input::JUMP } else { 0 },
+            });
+        }
+        assert!(w.player.y > y0, "strokes lift the player");
+        assert_eq!(w.player.pose, Pose::Swim);
+    }
+
+    #[test]
+    fn rising_lava_kills() {
+        let mut lvl = Level::flat(40);
+        lvl.liquid = Some(crate::level::LiquidSpec {
+            kind: 2,
+            start: 12.0,
+            end: 140.0,
+            mode: 1,
+            speed: 3,
+            full: false,
+        });
+        let mut w = World::with_level(lvl);
+        let mut died = false;
+        for _ in 0..600 {
+            w.step(Input::default());
+            died |= !w.player.alive();
+        }
+        assert!(died);
     }
 
     #[test]

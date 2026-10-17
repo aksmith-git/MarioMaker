@@ -181,6 +181,7 @@ pub enum Pose {
     Dead,
     Pole,
     Fire,
+    Swim,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -225,6 +226,11 @@ pub struct Player {
     pub ride: Option<u32>,
     /// Touched a spike trap this frame while moving into it (the world applies the damage).
     pub spiked: bool,
+    /// Below a water surface (set by the world each frame): swim physics.
+    pub in_water: bool,
+    was_in_water: bool,
+    /// Jump pressed in the last 20 frames (a jump out of the water when leaving it).
+    exit_window: i32,
     skid: SkidPhase,
     prev_jump: bool,
     prev_run: bool,
@@ -255,6 +261,9 @@ impl Player {
             on_ice: false,
             ride: None,
             spiked: false,
+            in_water: false,
+            was_in_water: false,
+            exit_window: 0,
             skid: SkidPhase::None,
             prev_jump: false,
             prev_run: false,
@@ -631,26 +640,38 @@ impl Player {
             inp
         };
 
-        if self.on_ground {
-            self.ground(inp);
-            if pressed {
-                self.vy = JUMP_BASE + jump_bonus(self.vx.abs());
-                self.on_ground = false;
-                self.skid = SkidPhase::None;
-            }
-        } else {
-            self.air(inp);
+        if self.exit_window > 0 {
+            self.exit_window -= 1;
         }
-
-        // gravity (§3.2): ground uses the fixed −0.34; airborne picks a band each frame
-        let g = if self.on_ground {
-            GRAVITY_GROUND
-        } else if jump {
-            GRAVITY_HELD[vy_band(self.vy)]
+        if self.in_water {
+            self.swim(inp, pressed);
         } else {
-            GRAVITY_RELEASED[vy_band(self.vy)]
-        };
-        self.vy = (self.vy + g).max(FALL_CAP);
+            if self.was_in_water && self.exit_window > 0 && self.vy > 0.0 {
+                // leaving the water within 20 frames of a stroke: jump out (vy 3.5)
+                self.vy = 3.5;
+            }
+            if self.on_ground {
+                self.ground(inp);
+                if pressed {
+                    self.vy = JUMP_BASE + jump_bonus(self.vx.abs());
+                    self.on_ground = false;
+                    self.skid = SkidPhase::None;
+                }
+            } else {
+                self.air(inp);
+            }
+
+            // gravity (§3.2): ground uses the fixed −0.34; airborne picks a band each frame
+            let g = if self.on_ground {
+                GRAVITY_GROUND
+            } else if jump {
+                GRAVITY_HELD[vy_band(self.vy)]
+            } else {
+                GRAVITY_RELEASED[vy_band(self.vy)]
+            };
+            self.vy = (self.vy + g).max(FALL_CAP);
+        }
+        self.was_in_water = self.in_water;
 
         let sensors = self.sensors();
         self.move_and_collide(level, sensors);
@@ -660,6 +681,9 @@ impl Player {
         }
         if self.crouch {
             self.pose = Pose::Crouch;
+        } else if self.in_water && !self.on_ground {
+            self.pose = Pose::Swim;
+            self.walk_phase += 1.0;
         } else if !self.on_ground {
             self.pose = Pose::Jump;
         } else if self.pose == Pose::Walk {
@@ -673,6 +697,67 @@ impl Player {
         }
         if self.y < -2.0 * TILE {
             self.kill(); // fell into a pit
+        }
+    }
+
+    /// Swimming (§5.1): strokes add 1.0 (1.25 from the bottom), the player sinks toward −1.5
+    /// (−0.043/frame while rising, −0.027 while sinking), upward cap 1.8; horizontal speeds from
+    /// the swim table (row 0 swimming, row 3 walking on the bottom).
+    fn swim(&mut self, inp: Input, pressed: bool) {
+        if !self.was_in_water {
+            self.vy = self.vy.max(-1.5);
+            self.vx = self.vx.clamp(-1.125, 1.125);
+        }
+        // vertical
+        if self.vy >= 0.0 {
+            self.vy -= 0.043;
+        } else if self.vy > -1.5 {
+            self.vy = (self.vy - 0.027).max(-1.5);
+        } else {
+            self.vy = (self.vy + 0.094).min(-1.5);
+        }
+        self.vy = self.vy.min(1.8);
+        if pressed {
+            if self.on_ground {
+                self.vy = 1.25;
+                self.on_ground = false;
+            } else {
+                self.vy += 1.0;
+            }
+            self.exit_window = 20;
+            self.walk_phase = 0.0;
+        }
+        // horizontal: (target, reverse, accel ≤ target, decel > target, idle ≤, idle >, cap, above cap)
+        let row = if self.on_ground {
+            (0.5625, 0.05, 0.025, 0.05, 0.004, 0.04, 1.0, 0.05)
+        } else {
+            (1.125, 0.03, 0.025, 0.025, 0.004, 0.02, 1.5, 0.03)
+        };
+        let dir = inp.dir_x();
+        let v = self.vx;
+        if v.abs() > row.6 {
+            self.vx = approach(v, row.6 * v.signum(), row.7);
+        } else if dir == 0 {
+            let a = if v.abs() <= row.0 { row.4 } else { row.5 };
+            self.vx = approach(v, 0.0, a);
+        } else {
+            self.facing = dir;
+            let target = row.0 * dir as f32;
+            let a = if v != 0.0 && v.signum() as i32 != dir {
+                row.1
+            } else if v.abs() <= row.0 {
+                row.2
+            } else {
+                row.3
+            };
+            self.vx = approach(v, target, a);
+        }
+        if self.on_ground {
+            self.pose = if self.vx == 0.0 {
+                Pose::Wait
+            } else {
+                Pose::Walk
+            };
         }
     }
 
