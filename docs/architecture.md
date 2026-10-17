@@ -1,8 +1,9 @@
 # Engine architecture
 
 Chosen: **Option B — Rust core + thin Swift shell** (2026-10-18; options and trade-offs in
-[architecture-options.md](architecture-options.md)). This page is the working design; it changes
-as the code does.
+[architecture-options.md](architecture-options.md)), plus a **portable Rust shell** for Windows,
+Linux and the web (DECISIONS.md 2026-10-18 "Cross-platform shell"; §5b). This page is the working
+design; it changes as the code does.
 
 ## 1. Repository layout
 
@@ -21,7 +22,12 @@ core/                       Cargo workspace (Rust, toolchain pinned in rust-tool
     audio/                  mixer: voices, loops, effects → interleaved f32 PCM
     modes/                  100 Mario / 10 Mario run manager, course pools (CourseSource trait),
                             Continue/unlock save data (implemented: hundred.rs, pool.rs, save.rs)
+    host/                   front-end glue shared by both shells: course bytes (zlib/raw/.bcd),
+                            sprite placement (BFRES quads, flips) and resolution, clear colour,
+                            audio handle + sound director (sim events → mixer commands)
     ffi/                    C ABI static library for the Swift app (cbindgen header)
+    shell/                  portable shell `mmk-play`: winit + wgpu + gilrs + cpal; native
+                            (macOS, Windows, Linux) and wasm32 (WebGPU/WebGL2); web/index.html
     cli/                    `mmk` tool: import, inspect, headless run/replay, golden dumps
 app/                        Xcode project (Swift 6, SwiftUI + Metal + GameController + AVAudioEngine)
   Shell/  Render/  Input/  AudioOut/  Bridge/ (module map for the core library)
@@ -30,6 +36,10 @@ smmfmt/  tests/             Python reference implementation of the course format
 ```
 
 ## 2. Runtime structure
+
+Two shells drive the same core: the Swift app (macOS now, iOS later) through the C ABI, and the
+portable Rust shell (§5b) by calling the crates directly. Both use `host` for everything between
+the sim and the screen/speakers, so placement and sound rules exist once.
 
 ```
  ┌───────────────────────── Swift app ─────────────────────────┐
@@ -155,6 +165,59 @@ labels resolve in the layout's own MSBT, and part-property text ids in the enclo
   `MMK_UI_LAYOUT=<name> [MMK_UI_ANIM=a,b~,c@30] [MMK_UI_TEXT=pane=text;…]
   [MMK_SCREENSHOT=<png> MMK_SCREENSHOT_TICKS=<n>]` (`UIPreview.swift`).
 
+## 5b. Portable shell (`shell` crate, `mmk-play`)
+
+Plays a course with the Rust core everywhere the Swift app can't go (Windows, Linux, browsers),
+and on macOS too. No platform code outside this crate; everything below `shell` is shared.
+
+```
+ ┌──────────────── mmk-play (shell) ─────────────────┐
+ │ app: winit window + loop ── session: 60 Hz fixed  │
+ │      step, pause / clear / game over ── input:    │
+ │      keys + gilrs pads → Input                    │
+ │ render: wgpu (Metal/Vulkan/DX12/GL/WebGPU)        │
+ │ hud: built-in 5×7 font   audio_out: cpal stream   │
+ │ source: AssetSource (dir / memory / later OPFS)   │
+ └───────────────▲───────────────┬───────────────────┘
+                 │ Rust calls    │
+   host (place, resolver, clear colour, director, course bytes)
+   sim · assets · audio · formats
+```
+
+- **Loop** (`app`, `session`): one redraw per display frame (presenting waits for vsync); each
+  redraw adds the host time to an accumulator and runs whole 60 Hz ticks (at most 0.25 s of
+  catch-up), like `GameSession.frame` in the Swift app. Start (Esc/P/Enter, pad Start) pauses;
+  R restarts; clear and game over wait for jump/start. A hidden (occluded) window keeps ticking
+  but draws nothing.
+- **Renderer** (`render`): port of `Renderer.swift`. Letterboxed 384×216 view at a whole-number
+  scale; sky = theme clear colour (`host::clear_color`); sprites from `host::SpriteResolver`
+  (texture index + BFRES quad placement + flips, sorted by layer), snapped to whole pixels, one
+  draw per run of sprites sharing a texture, nearest sampling, alpha blend + discard below 0.01;
+  upside-down view for underground night; HUD image on top; placeholder boxes by layer when the
+  art is missing (placeholder mode). Output is pixel-identical to the Swift app's `MMK_SCREENSHOT`
+  frames below the HUD strip (checked on a ground course and an underground-night area).
+- **Textures** (`texture`, `bc7`): RGBA8 as is; BC1–7 sampled by the GPU when the adapter has
+  `TEXTURE_COMPRESSION_BC` (desktop), otherwise decoded on the CPU (`formats::bcn` for BC1–5,
+  `shell::bc7` for BC7; BC6H unsupported). Channel selects are applied on the CPU (WebGPU has no
+  view swizzle). `mmk-play --check-textures` compares GPU sampling with the CPU decoders for every
+  BC texture of a cache (BC4/5/7 exact, BC1–3 within 3 steps of interpolation rounding).
+- **Input** (`input`): physical key codes (arrows/WASD, Z/Space jump, X/Shift run) and gilrs
+  gamepads by button position (south/east jump, west/north run, d-pad or left stick).
+- **Audio** (`audio_out`, native): cpal default output; the mixer (`host::audio::AudioOut`)
+  renders at the device's rate on the callback thread, fed by the session's `Director`.
+- **Assets** (`source`): every cache read goes through `AssetSource` (`DirSource` on disk,
+  `MemorySource` for files handed over by the browser); `assets::Cache::load` and
+  `audio::Bank::load_cache_with` take a read function for this.
+- **Web** (`web`, wasm32): the same app in `<canvas id="mmk">`; WebGPU, or WebGL2 where WebGPU is
+  missing (`wgpu::util::new_instance_with_webgpu_detection`); graphics start asynchronously and
+  arrive as a winit user event. Today it plays the built-in demo strip with placeholder art; next:
+  the owner's cache from the browser's file picker (OPFS/IndexedDB, nothing uploaded), WebAudio.
+  Build: `scripts/build-web.sh` (wasm-bindgen CLI matching `Cargo.lock`), serve the folder.
+- **Smoke tests:** `mmk-play <course> --screenshot out.png --ticks N [--scale S] [--idle]
+  [--cpu-textures]` runs N ticks of the Swift app's scripted input (run right, jump every 90
+  ticks) and renders one frame offscreen to PNG; `--quit-after S [--scripted]` runs the real
+  window for S seconds and reports frames and ticks.
+
 ## 6. Testing
 
 | Layer | How |
@@ -166,7 +229,9 @@ labels resolve in the layout's own MSBT, and part-property text ids in the enclo
 | app | Swift build in CI; manual play testing against Ryujinx |
 | guard | `scripts/check_no_proprietary.py` (unchanged) |
 
-CI: `cargo test` on Linux and macOS, Swift build on macOS, guard.
+CI: `cargo test` on Linux and macOS, Swift build on macOS, guard; the portable shell is built,
+clippy-checked and tested on Windows and Ubuntu (binaries uploaded), and its wasm32 build is
+checked on Ubuntu.
 
 ## 7. Dependencies (proposed; mainstream crates, versions pinned in Cargo.lock)
 
@@ -182,6 +247,12 @@ CI: `cargo test` on Linux and macOS, Swift build on macOS, guard.
 | clap | CLI | MIT/Apache-2.0 |
 | cbindgen (build) | C header | MPL-2.0 (build tool only) |
 | ureq (later) | HTTP course sources | MIT/Apache-2.0 |
+| winit 0.30 | shell: window, event loop (native + web) | Apache-2.0 |
+| wgpu 30 | shell: renderer (Metal, Vulkan, DX12, GL, WebGPU) | MIT/Apache-2.0 |
+| gilrs 0.11 | shell: gamepads | MIT/Apache-2.0 |
+| cpal 0.18 | shell: audio output (native) | Apache-2.0 |
+| png, pollster, bytemuck | shell: screenshots, blocking on GPU setup, vertex bytes | MIT/Apache-2.0 (bytemuck also Zlib) |
+| wasm-bindgen, web-sys, wasm-bindgen-futures, console_error_panic_hook | shell: web build | MIT/Apache-2.0 |
 
 The Swift app uses only Apple frameworks.
 

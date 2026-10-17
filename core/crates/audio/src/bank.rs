@@ -127,9 +127,17 @@ impl Bank {
 
     /// Load `<cache>/audio/index.json` and decode every sound it lists, in name order.
     pub fn load_cache(root: impl AsRef<Path>) -> Result<Self, BankError> {
+        Self::load_cache_with(root, &|p| std::fs::read(p))
+    }
+
+    /// [`Bank::load_cache`] through `read` (full path → bytes) instead of the file system.
+    pub fn load_cache_with(
+        root: impl AsRef<Path>,
+        read: &dyn Fn(&Path) -> std::io::Result<Vec<u8>>,
+    ) -> Result<Self, BankError> {
         let dir = root.as_ref().join("audio");
         let index_path = dir.join("index.json");
-        let raw = std::fs::read(&index_path).map_err(|source| BankError::Io {
+        let raw = read(&index_path).map_err(|source| BankError::Io {
             path: index_path.clone(),
             source,
         })?;
@@ -150,7 +158,7 @@ impl Bank {
             let entry = &map[name];
             let file = entry["file"].as_str().unwrap_or_default();
             let path = dir.join(file);
-            let bytes = std::fs::read(&path).map_err(|source| BankError::Io {
+            let bytes = read(&path).map_err(|source| BankError::Io {
                 path: path.clone(),
                 source,
             })?;

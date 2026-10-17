@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mmk-play</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; color: #ccc; font: 14px system-ui, sans-serif; }
+    body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }
+    canvas#mmk { width: min(100vw, calc(100vh * 16 / 9 - 40px)); aspect-ratio: 16 / 9; display: block; outline: none; }
+    p { margin: 0; opacity: .7; }
+  </style>
+</head>
+<body>
+  <!-- the shell draws into this canvas (WebGPU, or WebGL2 where WebGPU is missing) -->
+  <canvas id="mmk" tabindex="0"></canvas>
+  <p>Demo strip. Arrows/WASD move, Z/Space jump, X/Shift run, Esc/P pause, R restart. Gamepads work too.</p>
+  <script type="module">
+    import init from "./mmk-play.js";
+    await init();
+    document.getElementById("mmk").focus();
+  </script>
+</body>
+</html>
