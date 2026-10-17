@@ -313,6 +313,14 @@ pub struct Player {
     /// Ground pound: > 0 wind-up frames left, −1 diving; `pound_landed` for the world this frame.
     pub pound: i32,
     pub pound_landed: bool,
+    /// Riding Yoshi (his actor id), the re-mount lockout, and what the world must do with
+    /// Yoshi this frame (dismounted / knocked off by a hit).
+    pub yoshi: Option<u32>,
+    pub yoshi_lock: i32,
+    pub yoshi_off: bool,
+    pub yoshi_hit: bool,
+    /// NSMBU flutter: 1 fluttering, 0 ready, −1 used this jump.
+    flutter: i32,
     /// Propeller: rise frames left, falling slowly, used since the last landing.
     pub prop_rise: i32,
     pub prop_fall: bool,
@@ -379,6 +387,11 @@ impl Player {
             land_timer: 0,
             pound: 0,
             pound_landed: false,
+            yoshi: None,
+            yoshi_lock: 0,
+            yoshi_off: false,
+            yoshi_hit: false,
+            flutter: 0,
             prop_rise: 0,
             prop_fall: false,
             prop_used: false,
@@ -441,6 +454,17 @@ impl Player {
         if self.shoe.take().is_some() {
             // [ext] a hit in the shoe only knocks the shoe off
             self.invuln = INVULN_DAMAGE;
+            return true;
+        }
+        if self.yoshi.take().is_some() {
+            // yoshi.md §6: no power-down; the rider pops up (vy 4.628) and Yoshi runs away
+            self.yoshi_off = true;
+            self.yoshi_hit = true;
+            self.yoshi_lock = 10;
+            self.invuln = INVULN_DAMAGE;
+            self.vy = 4.628;
+            self.vx = 0.0;
+            self.on_ground = false;
             return true;
         }
         match self.form {
@@ -741,8 +765,36 @@ impl Player {
         let pressed = jump && !self.prev_jump;
         self.prev_jump = jump;
         let spin = inp.held(input::SPIN);
-        let spin_pressed = spin && !self.prev_spin;
+        let mut spin_pressed = spin && !self.prev_spin;
         self.prev_spin = spin;
+        if self.yoshi_lock > 0 {
+            self.yoshi_lock -= 1;
+        }
+        if self.yoshi.is_some() && spin_pressed {
+            // dismount (yoshi.md §3): SMW — a spin jump off him on the ground (vy 3.228, speed
+            // −1·facing), a normal jump in the air; NSMBU — a back-hop (vy 2.85, −0.8·facing,
+            // 30-frame lockout) on the ground, vy 3.728 in the air
+            spin_pressed = false;
+            self.yoshi = None;
+            self.yoshi_off = true;
+            self.y += 8.0;
+            let wu = self.style == Style::WU;
+            self.yoshi_lock = if wu && self.on_ground { 30 } else { 10 };
+            match (wu, self.on_ground) {
+                (true, true) => {
+                    self.vy = 2.85;
+                    self.vx = -0.8 * self.facing as f32;
+                }
+                (true, false) => self.vy = 3.728,
+                (false, true) => {
+                    self.vy = 3.228;
+                    self.vx = -(self.facing as f32);
+                    self.spinning = true;
+                }
+                (false, false) => self.vy = JUMP_BASE,
+            }
+            self.on_ground = false;
+        }
         let run = inp.held(input::RUN);
         if run && !self.prev_run && self.form == Form::Fire && !self.crouch {
             self.throw = true;
@@ -883,6 +935,23 @@ impl Player {
         }
         self.step_wall_and_pound(inp, pressed, level);
         self.step_propeller(inp, spin_pressed, vy_before);
+        // NSMBU flutter (yoshi.md §4): falling faster than 2.0 with jump held, Yoshi flutters —
+        // gravity turns upward (+0.2, +0.07 above −1.0) until vy > 2.4 or jump is released;
+        // once per jump
+        if self.yoshi.is_some() && self.style == Style::WU {
+            if self.on_ground {
+                self.flutter = 0;
+            } else if self.flutter == 0 && jump && self.vy < -2.0 {
+                self.flutter = 1;
+            }
+            if self.flutter == 1 {
+                if !jump || vy_before > 2.4 {
+                    self.flutter = -1;
+                } else {
+                    self.vy = vy_before + if vy_before <= -1.0 { 0.2 } else { 0.07 };
+                }
+            }
+        }
         // raccoon flaps (vy 1.5, no gravity, 18 frames) and slow fall (≥ −1.0, 15 frames); the
         // cape glides (≥ −1.0) while jump is held
         if !self.on_ground && !self.in_water {
@@ -950,6 +1019,7 @@ impl Player {
             shoe: self.shoe.is_some(),
             clown_car: self.clown.is_some(),
             holding_shell: false,
+            yoshi: self.yoshi.is_some(),
         }
     }
 

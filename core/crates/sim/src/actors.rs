@@ -161,6 +161,14 @@ pub enum Kind {
     },
     /// A coin that moves (wings or a track): collected on touch.
     FloatCoin,
+    /// Yoshi's Egg (45 in SMW / NSMBU): hatches into Yoshi; `red` = Red Yoshi [inf: alt flag].
+    YoshiEgg {
+        red: bool,
+    },
+    /// Yoshi: ridden by the player (the world moves him), or waiting / running away (phase 1).
+    Yoshi {
+        red: bool,
+    },
     /// Fish Bone (103): patrols in water, aims and charges; shatters on anything it hits.
     FishBone,
     /// Lava Bubble (60): leaps from the lava (or the area floor) to its placed height.
@@ -1498,6 +1506,19 @@ impl Actor {
             Kind::ChainChomp { chained } => self.step_chomp(level, chained),
             Kind::LavaBubble => self.step_lava_bubble(),
             Kind::FishBone => self.step_fish_bone(level),
+            Kind::YoshiEgg { red } => {
+                // [inf: the hatch trigger isn't decoded] it hatches 30 frames after appearing
+                self.vy = (self.vy - 0.34).max(-4.0);
+                self.vx *= 0.9;
+                self.collide(level);
+                self.timer += 1;
+                if self.timer >= 30 && self.on_ground {
+                    self.kind = Kind::Yoshi { red };
+                    self.timer = 0;
+                    self.vx = 0.0;
+                }
+            }
+            Kind::Yoshi { .. } => self.step_yoshi(level),
             Kind::StyleItem => self.step_style_item(level),
             Kind::FloatCoin => {
                 if self.wings {
@@ -2116,6 +2137,29 @@ impl Actor {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Yoshi without a rider (yoshi.md §6): stands, slowing by 0.07/frame (gravity −0.34, max
+    /// −4); after his rider was hit (phase 1) he runs at 2.0 (accel 0.1), turning at walls with a
+    /// 10-frame lock, until remounted.
+    fn step_yoshi(&mut self, level: &Level) {
+        if self.phase == 1 {
+            let target = 2.0 * self.dir as f32;
+            self.vx += (target - self.vx).clamp(-0.1, 0.1);
+        } else if self.on_ground {
+            self.vx -= self.vx.clamp(-0.07, 0.07);
+        } else {
+            self.vx *= 0.98;
+        }
+        self.vy = (self.vy - 0.34).max(-4.0);
+        self.collide(level);
+        if self.wall && self.turn_lock == 0 {
+            self.turn();
+            self.turn_lock = 10;
+            if self.phase != 1 {
+                self.vx = -self.vx;
+            }
         }
     }
 

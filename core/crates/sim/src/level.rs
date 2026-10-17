@@ -427,10 +427,6 @@ pub fn unsupported_features(course: &Course) -> Vec<String> {
                 out.insert(format!("{style} power-up (44)"));
                 continue;
             }
-            if o.id == 45 && matches!(style.as_str(), "MW" | "WU") {
-                out.insert("Yoshi (45)".to_string());
-                continue;
-            }
             if !SUPPORTED_PARTS.contains(&o.id) {
                 out.insert(format!("part {}", o.id));
             } else if o.flags & 0x400 != 0 && !RIDES_TRACKS.contains(&o.id) {
@@ -667,6 +663,9 @@ impl Level {
                 }),
                 60 => Some(Kind::LavaBubble),
                 103 => Some(Kind::FishBone),
+                45 if matches!(lvl.style.as_str(), "MW" | "WU") => Some(Kind::YoshiEgg {
+                    red: o.flags & 0x4 != 0,
+                }),
                 45 => Some(Kind::ShoeGoomba {
                     heels: o.flags & 0x4 != 0,
                 }),

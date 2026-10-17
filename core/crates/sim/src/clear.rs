@@ -69,6 +69,7 @@ pub struct AtGoal {
     pub clown_car: bool,
     /// Carrying a Koopa shell.
     pub holding_shell: bool,
+    pub yoshi: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,8 +94,9 @@ pub enum Goal {
     /// Reach the goal wearing a Goomba's Shoe / flying a Koopa Clown Car.
     Shoe,
     ClownCar,
-    /// Reach the goal holding a Koopa shell.
+    /// Reach the goal holding a Koopa shell / riding Yoshi.
     HoldingShell,
+    Yoshi,
     /// Reach the goal without taking damage / without landing after leaving the ground.
     NoDamage,
     NoLanding,
@@ -150,6 +152,7 @@ impl ClearCondition {
                 58 => Goal::Shoe,
                 62 => Goal::ClownCar,
                 72 => Goal::HoldingShell,
+                59 => Goal::Yoshi,
                 _ => Goal::Unsupported(i),
             },
             (3, Some(70)) => Goal::NoDamage,
@@ -235,6 +238,7 @@ impl ClearCondition {
             shoe,
             clown_car,
             holding_shell,
+            yoshi,
         } = at;
         match self.goal {
             Goal::None => true,
@@ -250,6 +254,7 @@ impl ClearCondition {
             Goal::Shoe => shoe,
             Goal::ClownCar => clown_car,
             Goal::HoldingShell => holding_shell,
+            Goal::Yoshi => yoshi,
             Goal::NoDamage | Goal::NoLanding => !self.violated,
             Goal::Unsupported(_) => false,
         }
@@ -284,8 +289,8 @@ mod tests {
             Goal::Fire
         );
         assert!(
-            !ClearCondition::from_header(2, 0xfae86a49, 0).supported(),
-            "Yoshi"
+            !ClearCondition::from_header(2, 0xb4fa3d4b, 0).supported(),
+            "helmet"
         );
         assert_eq!(ClearCondition::none().goal, Goal::None);
     }

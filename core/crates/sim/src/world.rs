@@ -215,6 +215,12 @@ pub struct World {
     pub others: Vec<Player>,
     /// Which character each extra player is (index into Mario, Luigi, Toad, Toadette).
     pub other_chars: Vec<usize>,
+    /// Yoshi's mouth: what he holds to spit (an enemy kind; fire), tongue frames left, the Red
+    /// Yoshi fire cooldown, and Run last frame (tongue presses).
+    pub yoshi_mouth: Option<Kind>,
+    pub tongue: i32,
+    yoshi_fire_cd: i32,
+    yoshi_prev_run: bool,
     /// Character of player 1's slot (changes when another player takes the goal).
     pub main_char: usize,
     /// Run held this frame (carrying).
@@ -403,6 +409,10 @@ impl World {
             others: Vec::new(),
             other_chars: Vec::new(),
             main_char: 0,
+            yoshi_mouth: None,
+            tongue: 0,
+            yoshi_fire_cd: 0,
+            yoshi_prev_run: false,
             run_held: false,
             unlocked_doors: Default::default(),
             snakes: Vec::new(),
@@ -801,6 +811,222 @@ impl World {
         }
     }
 
+    /// Yoshi follows his rider; a dismount leaves him standing, a hit sends him running away.
+    /// Run while riding works the tongue (or Red Yoshi's fire, 60-frame cooldown).
+    fn step_yoshi_rider(&mut self) {
+        let run = self.run_held;
+        let run_pressed = run && !self.yoshi_prev_run;
+        self.yoshi_prev_run = run;
+        if self.yoshi_fire_cd > 0 {
+            self.yoshi_fire_cd -= 1;
+        }
+        let p = &self.player;
+        let (px, py, facing, pvx) = (p.x, p.y, p.facing, p.vx);
+        if p.yoshi_off {
+            let hit = p.yoshi_hit;
+            self.player.yoshi_off = false;
+            self.player.yoshi_hit = false;
+            for a in &mut self.actors {
+                if matches!(a.kind, Kind::Yoshi { .. }) && a.held {
+                    a.held = false;
+                    a.x = px;
+                    a.y = py - if hit { 0.0 } else { 8.0 };
+                    a.vy = 0.0;
+                    a.vx = if hit { 0.0 } else { pvx };
+                    a.dir = facing;
+                    a.phase = hit as u8;
+                }
+            }
+            self.yoshi_mouth = None;
+            self.tongue = 0;
+            return;
+        }
+        let Some(id) = self.player.yoshi else { return };
+        let Some(i) = self.actors.iter().position(|a| a.id == id) else {
+            self.player.yoshi = None;
+            return;
+        };
+        {
+            let y = &mut self.actors[i];
+            y.x = px;
+            y.y = py;
+            y.dir = facing;
+            y.vx = pvx;
+        }
+        let red = matches!(self.actors[i].kind, Kind::Yoshi { red: true });
+        if run_pressed {
+            if red {
+                if self.yoshi_fire_cd == 0 {
+                    self.yoshi_fire_cd = 60;
+                    self.spit_fire(px, py, facing, pvx, 1);
+                }
+            } else if let Some(k) = self.yoshi_mouth.take() {
+                self.spit(k, px, py, facing, pvx);
+            } else if self.tongue == 0 {
+                self.tongue = 10;
+                self.events.push(Event::Kick);
+            }
+        }
+        if self.tongue > 0 {
+            self.tongue -= 1;
+            // the tip goes out and back over 10 frames, up to 32 px [inf: reach comes from the
+            // animation]
+            let t = 10 - self.tongue;
+            let reach = 32.0 * (1.0 - ((t as f32 - 5.0).abs() / 5.0));
+            let x0 = px + facing as f32 * 8.0;
+            let x1 = x0 + facing as f32 * reach.max(4.0);
+            let tip = (x0.min(x1), py + 6.0, x0.max(x1), py + 18.0);
+            let hit = self.actors.iter().position(|a| {
+                a.id != id && a.alive() && a.solid_contact() && !a.held && overlap(tip, a.bbox())
+            });
+            if let Some(j) = hit {
+                self.tongue = 0;
+                self.eat(j);
+            }
+        }
+    }
+
+    /// Yoshi's tongue caught actor `j` (yoshi.md §5.3 eat reactions, simplified [inf]): eaten
+    /// (GulpDown; a coin counts), held to spit (SpitOut enemies, fire, bones), or a power-up
+    /// for the rider [inf]; Invalid things are left alone.
+    fn eat(&mut self, j: usize) {
+        let a = &self.actors[j];
+        if a.big {
+            return;
+        }
+        let (ax, ay, kind) = (a.x, a.y, a.kind);
+        match kind {
+            Kind::Goomba
+            | Kind::ShoeGoomba { .. }
+            | Kind::Piranha { fire: false }
+            | Kind::HammerBro
+            | Kind::BulletBill
+            | Kind::MontyMole
+            | Kind::BobOmb
+            | Kind::SpikeTop
+            | Kind::Lakitu
+            | Kind::Magikoopa
+            | Kind::Blooper
+            | Kind::Wiggler
+            | Kind::CheepCheep { .. }
+            | Kind::ChainChomp { .. } => {
+                self.actors[j].mode = Mode::Dead;
+                self.add_score(200, ax, ay + 16.0);
+                self.events.push(Event::Stomp);
+            }
+            Kind::Koopa { .. } if self.style == crate::player::Style::MW => {
+                self.actors[j].mode = Mode::Dead;
+                self.add_score(200, ax, ay + 16.0);
+                self.events.push(Event::Stomp);
+            }
+            Kind::FloatCoin => {
+                self.actors[j].mode = Mode::Dead;
+                self.add_coin();
+            }
+            Kind::Koopa { .. } | Kind::Shell { .. } | Kind::Spiny | Kind::Buzzy => {
+                self.actors[j].mode = Mode::Dead;
+                self.actors[j].tallied = true;
+                self.yoshi_mouth = Some(kind);
+            }
+            Kind::Piranha { fire: true } | Kind::LavaBubble => {
+                self.actors[j].mode = Mode::Dead;
+                self.yoshi_mouth = Some(Kind::EnemyFire);
+            }
+            Kind::DryBones | Kind::FishBone => {
+                self.actors[j].mode = Mode::Dead;
+                self.yoshi_mouth = Some(Kind::Hammer);
+            }
+            Kind::Mushroom | Kind::FireFlower | Kind::Star | Kind::OneUp | Kind::StyleItem => {
+                self.actors[j].mode = Mode::Dead;
+                self.collect_item(kind, ax, ay);
+            }
+            _ => {}
+        }
+    }
+
+    /// Spit what Yoshi holds: a shell kicked forward, or 3 fireballs / bones (yoshi.md §5.5:
+    /// speed |v|·0.35 + 3.25 (bones + 2.0) at 0 and ±15°).
+    fn spit(&mut self, k: Kind, px: f32, py: f32, facing: i32, pvx: f32) {
+        match k {
+            Kind::EnemyFire => self.spit_fire(px, py, facing, pvx, 3),
+            Kind::Hammer => {
+                for dy in [-0.54f32, 0.0, 0.54] {
+                    let mut b = Actor::new(Kind::Fireball, px + facing as f32 * 12.0, py + 12.0);
+                    b.dir = facing;
+                    b.vx = (pvx.abs() * 0.35 + 2.0) * facing as f32;
+                    b.vy = dy;
+                    self.add_actor(b);
+                }
+            }
+            _ => {
+                let red = matches!(k, Kind::Koopa { red: true } | Kind::Shell { red: true });
+                let mut s = Actor::new(Kind::Shell { red }, px + facing as f32 * 16.0, py + 2.0);
+                s.buzzy = matches!(k, Kind::Buzzy);
+                s.tallied = true;
+                s.kick(facing, pvx);
+                self.add_actor(s);
+            }
+        }
+        self.events.push(Event::Kick);
+    }
+
+    fn spit_fire(&mut self, px: f32, py: f32, facing: i32, pvx: f32, n: usize) {
+        let speed = pvx.abs() * 0.35 + 3.25;
+        let angles: &[f32] = if n == 1 { &[0.0] } else { &[-15.0, 0.0, 15.0] };
+        for &deg in angles {
+            let (s, c) = deg.to_radians().sin_cos();
+            let mut f = Actor::new(Kind::Fireball, px + facing as f32 * 12.0, py + 12.0);
+            f.dir = facing;
+            f.vx = speed * c * facing as f32;
+            f.vy = speed * s;
+            self.add_actor(f);
+        }
+        self.events.push(Event::Fireball);
+    }
+
+    /// Yoshi's body and head sprites (SMW draws him in two parts placed by their quads).
+    fn yoshi_sprites(&self, out: &mut Vec<Sprite>) {
+        for a in &self.actors {
+            let Kind::Yoshi { red } = a.kind else {
+                continue;
+            };
+            let model = if red {
+                "M1_Player_Yoshi_Red"
+            } else {
+                "M1_Player_Yoshi"
+            };
+            let ridden = a.held;
+            let moving = a.vx.abs() > 0.1;
+            let k3 = (self.tick as usize / 4) % 3;
+            let (body, head) = if ridden && !self.player.on_ground {
+                (
+                    ["jump_body.0", "jump_body.1", "jump_body.2"][k3.min(2)],
+                    "jump_head.0",
+                )
+            } else if moving || a.phase == 1 {
+                (
+                    ["run_body.0", "run_body.1", "run_body.2"][k3],
+                    "wait_head.0",
+                )
+            } else {
+                ("wait_body.0", "wait_head.0")
+            };
+            let head = if ridden && self.tongue > 0 {
+                "eat_head.2"
+            } else {
+                head
+            };
+            let flip = a.dir < 0; // the art faces right
+            // the body and head textures are laid out to compose when drawn at the same place
+            // (the model's bone placement isn't applied)
+            for tex in [body, head] {
+                let mut sp = Self::model_sprite(model, tex, a.x - 16.0, a.y, 32.0, 32.0, flip, 34);
+                sp.image.rect = Some((0.0, 0.0, 32.0, 32.0));
+                out.push(sp);
+            }
+        }
+    }
+
     /// A defeated shoe Goomba leaves its empty shoe behind (unless it fell into lava).
     fn drop_shoes(&mut self) {
         let mut shoes = Vec::new();
@@ -1077,6 +1303,7 @@ impl World {
         self.bump_moving_block();
         self.tail_attack();
         self.pound_blocks();
+        self.step_yoshi_rider();
         self.check_checkpoints();
         self.shell_walls();
         self.actor_interactions();
@@ -1371,6 +1598,7 @@ impl World {
             Contents::Coin => None,
             Contents::Goomba => Some(Kind::Goomba),
             Contents::Koopa { red } => Some(Kind::Koopa { red }),
+            Contents::YoshiEgg => Some(Kind::YoshiEgg { red: false }),
         };
         let Some(kind) = item else { return };
         let mut a = Actor::new(kind, bx, by);
@@ -1754,6 +1982,26 @@ impl World {
                 i += 1;
                 continue;
             }
+            if let Kind::Yoshi { .. } = a.kind {
+                // mount (yoshi.md §3): falling onto him from above, lockout over
+                if overlap(contact, ab)
+                    && self.player.vy <= 0.0
+                    && self.player.y >= a.y + 10.0
+                    && self.player.yoshi.is_none()
+                    && self.player.yoshi_lock == 0
+                    && self.player.held.is_none()
+                    && self.player.shoe.is_none()
+                {
+                    let id = a.id;
+                    self.actors[i].held = true;
+                    self.actors[i].phase = 0;
+                    self.player.yoshi = Some(id);
+                    self.player.vy = 0.0;
+                    self.events.push(Event::PowerUp);
+                }
+                i += 1;
+                continue;
+            }
             if let Kind::ClownCar { .. } = a.kind {
                 // climb in by dropping into an empty car
                 if a.phase == 0
@@ -1864,6 +2112,20 @@ impl World {
                         | Kind::Magic
                         | Kind::Wrench
                 );
+            // on Yoshi, stomps kill spiny enemies too (EnemyDB stamp_yoshi): not Piranha Plants or
+            // Spike Tops
+            if self.player.yoshi.is_some()
+                && p.vy < 0.0
+                && p.y >= ay + ah * 0.5
+                && matches!(a.kind, Kind::Spiny | Kind::SpinyEgg | Kind::Buzzy)
+            {
+                let px = p.x;
+                self.actors[i].die_fall(px);
+                self.player.bounce(jump_held);
+                self.events.push(Event::Stomp);
+                i += 1;
+                continue;
+            }
             // a ground pound dive knocks out what it lands on (hipatk), bosses and the
             // indestructible aside
             if self.player.pound == -1 && p.vy < 0.0 && p.y >= ay + ah * 0.5 {
@@ -2728,6 +2990,7 @@ impl World {
             Contents::OneUp => Kind::OneUp,
             Contents::Goomba => Kind::Goomba,
             Contents::Koopa { red } => Kind::Koopa { red },
+            Contents::YoshiEgg => Kind::YoshiEgg { red: false },
         };
         let mut a = Actor::new(kind, x, y);
         a.dir = 1;
@@ -4144,7 +4407,13 @@ impl World {
                 out.push(s);
             }
         }
+        self.yoshi_sprites(&mut out);
         if let Some(mut s) = self.player_sprite() {
+            if self.player.yoshi.is_some() {
+                // the rider sits on Yoshi's saddle [inf: saddle offset not decoded]
+                s.y += 14.0;
+                s.image.texture = "yoshi_wait.0";
+            }
             if let Some(heels) = self.player.shoe {
                 // the player stands in the shoe: shoe at the feet, the player drawn 8 px higher
                 let p = &self.player;
@@ -4535,6 +4804,9 @@ impl World {
             | Kind::Shuriken
             | Kind::BowserJr { .. } => a.boss_look()?,
             Kind::LavaBubble => ("M1_Enemy_bubble", "wait.0", 16.0, 16.0, false),
+            // [placeholder: the egg uses Yoshi's hatching frame; drawn per style by the remap]
+            Kind::YoshiEgg { .. } => ("M1_Player_Yoshi", "born_body.0", 32.0, 32.0, false),
+            Kind::Yoshi { .. } => return None, // drawn with his rider (see `yoshi_sprites`)
             Kind::FloatCoin => {
                 let field = self.field_model;
                 let mut sp =
@@ -6126,6 +6398,63 @@ mod tests {
         w.step_players(&[Input::default(), Input::default()]);
         assert!((w.others[0].x - w.player.x).abs() < 1.0);
         assert!(w.sprites().len() > 2);
+    }
+
+    #[test]
+    fn yoshi_hatches_is_ridden_eats_and_runs_off_when_hit() {
+        let mut lvl = Level::flat(60);
+        lvl.spawns
+            .push(spawn(Kind::YoshiEgg { red: false }, 100.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.style = crate::player::Style::MW;
+        w.player.x = 40.0;
+        run(&mut w, 0, 40);
+        let yi = w
+            .actors
+            .iter()
+            .position(|a| matches!(a.kind, Kind::Yoshi { .. }))
+            .unwrap();
+        // drop onto him
+        let (yx, yy) = (w.actors[yi].x, w.actors[yi].y);
+        w.player.x = yx;
+        w.player.y = yy + 14.0;
+        w.player.vy = -1.0;
+        w.player.on_ground = false;
+        w.player_interactions(false);
+        assert!(w.player.yoshi.is_some());
+        // he follows the rider
+        run(&mut w, input::RIGHT, 20);
+        let yi = w
+            .actors
+            .iter()
+            .position(|a| matches!(a.kind, Kind::Yoshi { .. }))
+            .unwrap();
+        assert_eq!(w.actors[yi].x, w.player.x);
+        // the tongue eats a Goomba in front
+        let gx = w.player.x + 24.0;
+        w.add_actor(Actor::new(Kind::Goomba, gx, w.player.y));
+        run(&mut w, 0, 1);
+        run(&mut w, input::RUN, 8);
+        assert!(
+            w.actors
+                .iter()
+                .all(|a| a.kind != Kind::Goomba || !a.alive()),
+            "eaten"
+        );
+        // a hit knocks the rider off without a power-down; Yoshi runs away
+        let form = w.player.form;
+        assert!(w.player.hurt());
+        run(&mut w, 0, 1);
+        assert!(w.player.yoshi.is_none());
+        assert_eq!(w.player.form, form);
+        let yi = w
+            .actors
+            .iter()
+            .position(|a| matches!(a.kind, Kind::Yoshi { .. }))
+            .unwrap();
+        assert_eq!(w.actors[yi].phase, 1);
+        run(&mut w, 0, 30);
+        assert!(w.actors[yi].vx.abs() > 1.5, "running away");
     }
 
     #[test]

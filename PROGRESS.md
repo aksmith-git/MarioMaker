@@ -207,6 +207,10 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   drill −6; goal-as-Propeller (ready for when NSMBU renders)
 - ✅ 3D World blinking blocks (two groups, 240-frame swap) and spike blocks (shared timer: warning
   118–177, out 178–239; ON/OFF-linked modes [inf]) — placeholder tile art until 3W models draw
+- ✅ Yoshi (SMW / NSMBU, yoshi.md): egg hatches [inf: 30 frames], mount from above, riding with the
+  on-foot tables, Spin dismount per style, NSMBU flutter, tongue (eat / hold & spit shells, fire,
+  bones; power-ups to the rider [inf]), Red Yoshi fire (60-frame cooldown), stomps kill spiny
+  enemies, hit → rider pops up and Yoshi runs off; goal-on-Yoshi condition — SMW sample 97/100
 - ✅ Pink coins: counted once each across both areas; the last one gives the key
 - ✅ Goomba's Shoe / Stiletto: shoe Goomba hops (50-frame pause, 4.5 / 1.5), leaves the empty
   shoe; the player wears it (spikes and Munchers underfoot safe, shoe stomps, a hit knocks it

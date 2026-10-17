@@ -43,6 +43,8 @@ pub enum Contents {
     Koopa {
         red: bool,
     },
+    /// Yoshi's Egg (SMW / NSMBU style; other styles' 45 is the Goomba's Shoe).
+    YoshiEgg,
 }
 
 impl Contents {
@@ -59,6 +61,7 @@ impl Contents {
             1 => Contents::Koopa {
                 red: child_flags & 0x4 != 0,
             },
+            45 => Contents::YoshiEgg,
             _ => return None,
         })
     }
