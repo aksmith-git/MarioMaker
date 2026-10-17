@@ -60,6 +60,8 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   Koopa green/red (+ Paratroopas), shells (kick, slide, chain kills, wake-up); stomp chains, damage
   (Fire → Super → Small), invincibility, death sequence, restart, lives; course timer + hurry;
   M1 goal pole (height score, slide, walk to castle, time → score countdown, castle flag)
+- 🔄 Navigation: warp pipes in all four directions (entry windows, align / 0.75 px/f travel, 30 + 30
+  frame holds with fade), main ↔ sub-area with per-area state kept, doors (same-area pairs)
 - ⬜ 7. Play real courses start to goal; tune against Ryujinx (needs a Ryujinx build with a GDB stub)
 
 ### Phase 5b — Native app (must be done before Phase 6) ⬜

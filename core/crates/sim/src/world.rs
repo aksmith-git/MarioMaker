@@ -12,6 +12,7 @@ use crate::input::{self, Input};
 use crate::level::{Cell, Level, Spawn, TILE, block_atlas};
 use crate::player::{Control, Form, Player, Pose, STAR_FRAMES};
 use crate::render::{Sprite, SpriteImage};
+use crate::warp::{self, SideHold, Transit};
 
 /// SMM2 shows 24 × 13.5 tiles.
 pub const VIEW_W: f32 = 24.0 * TILE;
@@ -51,6 +52,7 @@ pub enum Event {
     Hurry,
     TimeCount,
     Clear,
+    Pipe,
 }
 
 /// Goal pole demo (27-goal.md, GoalPole M1).
@@ -78,6 +80,14 @@ pub enum GoalPhase {
     /// Waiting for the 340-frame mark and the timer countdown, then fade.
     Finish,
     Done,
+}
+
+/// The saved state of the area the player is not in.
+#[derive(Clone, Debug)]
+struct AreaStash {
+    level: Level,
+    blocks: Blocks,
+    spawns: Vec<SpawnRecord>,
 }
 
 #[derive(Clone, Debug)]
@@ -116,6 +126,15 @@ pub struct World {
     pub events: Vec<Event>,
     rng: u32,
     field_model: &'static str,
+    /// Both areas as loaded (main, sub); index of the current one; the other area's live state.
+    area_initial: Vec<Level>,
+    pub area: usize,
+    stash: Option<AreaStash>,
+    transit: Option<Transit>,
+    side_hold: SideHold,
+    prev_up: bool,
+    /// Screen fade for area changes (0 clear … 1 black).
+    pub fade: f32,
 }
 
 impl Default for World {
@@ -155,10 +174,17 @@ impl World {
     }
 
     pub fn from_course(course: &Course) -> Self {
-        Self::with_level(Level::from_course(course, 0))
+        let main = Level::from_course(course, 0);
+        let sub = Level::from_course(course, 1);
+        Self::with_areas(vec![main, sub])
     }
 
     pub fn with_level(level: Level) -> Self {
+        Self::with_areas(vec![level])
+    }
+
+    pub fn with_areas(areas: Vec<Level>) -> Self {
+        let level = areas[0].clone();
         let mut w = Self {
             tick: 0,
             initial: level.clone(),
@@ -184,6 +210,13 @@ impl World {
             events: Vec::new(),
             rng: 0x2545_f491,
             field_model: "",
+            area_initial: areas,
+            area: 0,
+            stash: None,
+            transit: None,
+            side_hold: SideHold::default(),
+            prev_up: false,
+            fade: 0.0,
         };
         w.field_model = Box::leak(field_model(&w.level.style, w.level.theme).into_boxed_str());
         w.reset_course();
@@ -192,9 +225,37 @@ impl World {
 
     /// (Re)build the course state from the loaded course; keeps lives.
     fn reset_course(&mut self) {
-        self.level = self.initial.clone();
+        self.area = 0;
+        self.stash = None;
+        self.transit = None;
+        self.fade = 0.0;
+        self.initial = self.area_initial[0].clone();
+        self.load_area_fresh();
+        self.score = 0;
+        self.coins = 0;
+        self.time = if self.level.timer > 0 {
+            self.level.timer as i32 * 60
+        } else {
+            -1
+        };
+        self.goal_phase = GoalPhase::None;
+        self.goal_flag = 144.0;
+        self.tower_flag = -24.0;
+        self.goal_frames = 0;
+        self.countdown = false;
+        self.cleared = false;
         let (sx, sy) = self.level.start;
         self.player = Player::new(sx, sy);
+        self.camera_y = 0.0;
+        self.update_camera();
+        self.activate();
+    }
+
+    /// Build the current area's live state from its loaded level.
+    fn load_area_fresh(&mut self) {
+        self.level = self.initial.clone();
+        self.field_model =
+            Box::leak(field_model(&self.level.style, self.level.theme).into_boxed_str());
         self.blocks = Blocks::default();
         for b in &self.level.blocks {
             self.blocks
@@ -214,22 +275,36 @@ impl World {
             .collect();
         self.actors.clear();
         self.effects.clear();
-        self.score = 0;
-        self.coins = 0;
-        self.time = if self.level.timer > 0 {
-            self.level.timer as i32 * 60
-        } else {
-            -1
+    }
+
+    /// Switch to the other area, keeping the state of the one being left.
+    fn switch_area(&mut self, to: usize) {
+        if to == self.area {
+            return;
+        }
+        let leaving = AreaStash {
+            level: std::mem::replace(&mut self.level, Level::flat(1)),
+            blocks: std::mem::take(&mut self.blocks),
+            spawns: std::mem::take(&mut self.spawns),
         };
-        self.goal_phase = GoalPhase::None;
-        self.goal_flag = 144.0;
-        self.tower_flag = -24.0;
-        self.goal_frames = 0;
-        self.countdown = false;
-        self.cleared = false;
-        self.camera_y = 0.0;
-        self.update_camera();
-        self.activate();
+        self.area = to;
+        self.initial = self.area_initial[to].clone();
+        match self.stash.replace(leaving) {
+            Some(st) => {
+                self.level = st.level;
+                self.blocks = st.blocks;
+                self.spawns = st.spawns;
+                self.field_model =
+                    Box::leak(field_model(&self.level.style, self.level.theme).into_boxed_str());
+                self.actors.clear();
+                self.effects.clear();
+            }
+            None => self.load_area_fresh(),
+        }
+        for s in &mut self.spawns {
+            s.alive = false;
+            s.was_visible = false;
+        }
     }
 
     fn rand(&mut self) -> f32 {
@@ -294,6 +369,12 @@ impl World {
             self.player.step(input, &self.level);
             return;
         }
+        if self.transit.is_some() {
+            self.step_transit();
+            self.step_effects();
+            self.update_camera();
+            return;
+        }
         if self.goal_phase != GoalPhase::None {
             self.step_goal();
             self.step_effects();
@@ -306,7 +387,49 @@ impl World {
         let was_ground = self.player.on_ground;
         let jump_held = input.held(input::JUMP);
         self.player.on_ice = self.ice_under_player();
+        let prev_x = self.player.x;
         self.player.step(input, &self.level);
+        // pipes and doors
+        let up_pressed = input.held(input::UP) && !self.prev_up;
+        self.prev_up = input.held(input::UP);
+        self.side_hold.update(input, self.player.on_ground);
+        if self.player.control == Control::Normal {
+            let pushing = (self.player.x - prev_x).abs() < 0.01 && input.dir_x() != 0;
+            let entry = warp::pipe_entry(
+                &self.player,
+                input,
+                self.side_hold,
+                pushing,
+                &self.level.warps,
+            )
+            .map(|w| (w, true))
+            .or_else(|| {
+                warp::door_entry(&self.player, input, up_pressed, &self.level.warps)
+                    .map(|w| (w, false))
+            });
+            if let Some((from, is_pipe)) = entry {
+                let warps: Vec<Vec<crate::level::Warp>> =
+                    self.area_initial.iter().map(|l| l.warps.clone()).collect();
+                if let Some((to_area, to)) = warp::destination(&from, self.area, &warps) {
+                    self.player.control = Control::Demo;
+                    self.player.vx = 0.0;
+                    self.player.vy = 0.0;
+                    self.player.crouch = false;
+                    self.transit = Some(Transit {
+                        phase: if is_pipe {
+                            warp::Phase::Align
+                        } else {
+                            warp::Phase::DoorIn(warp::DOOR_IN_FRAMES)
+                        },
+                        from,
+                        to,
+                        to_area,
+                    });
+                    self.events.push(Event::Pipe);
+                    return;
+                }
+            }
+        }
         if was_ground && !self.player.on_ground && self.player.vy > 3.0 {
             self.events.push(Event::Jump);
         }
@@ -867,6 +990,42 @@ impl World {
         }
     }
 
+    // ---------------------------------------------------------------- pipes and doors
+
+    fn step_transit(&mut self) {
+        let Some(mut t) = self.transit else { return };
+        if warp::step(&mut t, &mut self.player) {
+            self.switch_area(t.to_area);
+            self.camera_y = 0.0;
+            self.update_camera();
+            self.activate();
+        }
+        self.fade = warp::fade(&t);
+        self.player.hidden = warp::hidden(&t);
+        if warp::finished(&t) {
+            self.transit = None;
+            self.player.control = Control::Normal;
+            self.player.hidden = false;
+            self.player.on_ground = true;
+            self.fade = 0.0;
+            if let crate::level::WarpKind::Pipe(dir) = t.to.kind {
+                match dir {
+                    crate::level::PipeDir::Left => self.player.facing = -1,
+                    crate::level::PipeDir::Right => self.player.facing = 1,
+                    _ => {}
+                }
+            }
+        } else {
+            self.transit = Some(t);
+        }
+    }
+
+    /// The player is travelling through a pipe (drawn behind terrain).
+    pub fn in_pipe(&self) -> bool {
+        self.transit
+            .is_some_and(|t| matches!(t.phase, warp::Phase::In | warp::Phase::Out))
+    }
+
     // ---------------------------------------------------------------- goal
 
     fn check_goal(&mut self) {
@@ -1073,7 +1232,10 @@ impl World {
         for t in &self.level.tiles {
             let (px, py) = (t.x as f32 * TILE, t.y as f32 * TILE);
             if visible(px, py) {
-                out.push(tile(px, py, t.atlas, 10));
+                let mut s = tile(px, py, t.atlas, 10);
+                s.flip_x = t.flip & 1 != 0;
+                s.flip_y = t.flip & 2 != 0;
+                out.push(s);
             }
         }
         for (&(bx, by), b) in &self.blocks.map {
@@ -1090,6 +1252,26 @@ impl World {
             }
         }
         self.goal_sprites(&mut out);
+        for &(dx, dy, kind) in &self.level.doors {
+            if !visible(dx, dy) {
+                continue;
+            }
+            let tex = match kind {
+                1 => "door_p",
+                2 => "key_wait.0",
+                _ => "wait.0",
+            };
+            out.push(Self::model_sprite(
+                "M1_Object_door",
+                tex,
+                dx - 8.0,
+                dy,
+                16.0,
+                32.0,
+                false,
+                8,
+            ));
+        }
         for a in &self.actors {
             if !visible(a.x, a.y) {
                 continue;
@@ -1381,7 +1563,8 @@ impl World {
             h,
             flip_x: p.facing < 0,
             flip_y: false,
-            layer: 50,
+            // behind terrain while sliding through a pipe
+            layer: if self.in_pipe() { 5 } else { 50 },
         })
     }
 
@@ -1591,6 +1774,50 @@ mod tests {
         assert!(w.cleared);
         assert_eq!(w.time, 0);
         assert!(w.player.hidden);
+    }
+
+    #[test]
+    fn pipe_to_sub_area_and_back() {
+        use crate::level::PipeDir;
+        let mut main = Level::flat(60);
+        main.add_pipe(10, 2, 2, PipeDir::Up);
+        main.warps.push(crate::level::Warp {
+            kind: crate::level::WarpKind::Pipe(PipeDir::Up),
+            id: 1,
+            x: 10.0 * TILE + TILE,
+            y: 3.0 * TILE + 8.0,
+            len: 2,
+        });
+        let mut sub = Level::flat(40);
+        sub.theme = 1;
+        sub.add_pipe(20, 2, 3, PipeDir::Up);
+        sub.warps.push(crate::level::Warp {
+            kind: crate::level::WarpKind::Pipe(PipeDir::Up),
+            id: 1,
+            x: 20.0 * TILE + TILE,
+            y: 4.0 * TILE + 8.0,
+            len: 3,
+        });
+        sub.coins.push(CoinTile { x: 3, y: 2 });
+        let mut w = World::with_areas(vec![main, sub]);
+        // jump onto the pipe (top at y 64), stand at its centre, press Down
+        w.player.x = 10.0 * TILE + TILE;
+        w.player.y = 4.0 * TILE;
+        run(&mut w, 0, 5);
+        assert!(w.player.on_ground);
+        run(&mut w, input::DOWN, 1);
+        assert!(w.transit.is_some());
+        run(&mut w, 0, 200);
+        assert!(w.transit.is_none());
+        assert_eq!(w.area, 1);
+        assert_eq!((w.player.x, w.player.y), (20.0 * TILE + TILE, 5.0 * TILE));
+        assert_eq!(w.field_model, "M1_Field_underground");
+        // collect the sub-area coin, then go back: the coin stays collected
+        w.level.coins.clear();
+        run(&mut w, input::DOWN, 1);
+        run(&mut w, 0, 200);
+        assert_eq!(w.area, 0);
+        assert!(w.stash.as_ref().unwrap().level.coins.is_empty());
     }
 
     #[test]

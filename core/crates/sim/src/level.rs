@@ -29,6 +29,8 @@ pub struct TileDraw {
     pub x: i32,
     pub y: i32,
     pub atlas: u32,
+    /// bit 0: mirror horizontally, bit 1: mirror vertically
+    pub flip: u8,
 }
 
 impl TileDraw {
@@ -108,6 +110,48 @@ pub struct Spawn {
     pub wings: bool,
 }
 
+/// Pipe mouth direction ((flags >> 5) & 3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PipeDir {
+    Right,
+    Left,
+    Up,
+    Down,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WarpKind {
+    Pipe(PipeDir),
+    /// type: 0 normal, 1 P-switch door, 2 key door
+    Door(u8),
+}
+
+/// A warp entrance/exit (9-pipe.md, 55-door.md). Pipes link to the same id in the other area;
+/// doors link 2k ↔ 2k+1 in the same area.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Warp {
+    pub kind: WarpKind,
+    pub id: u8,
+    /// Pipe: centre of the mouth tile pair. Door: origin (bottom centre).
+    pub x: f32,
+    pub y: f32,
+    /// Pipe length in tiles.
+    pub len: i32,
+}
+
+impl Warp {
+    /// Outer edge of a pipe mouth (the entry point), or the door origin.
+    pub fn entry(&self) -> (f32, f32) {
+        match self.kind {
+            WarpKind::Pipe(PipeDir::Right) => (self.x + 8.0, self.y),
+            WarpKind::Pipe(PipeDir::Left) => (self.x - 8.0, self.y),
+            WarpKind::Pipe(PipeDir::Up) => (self.x, self.y + 8.0),
+            WarpKind::Pipe(PipeDir::Down) => (self.x, self.y - 8.0),
+            WarpKind::Door(_) => (self.x, self.y),
+        }
+    }
+}
+
 /// A coin placed as a tile (collectable).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CoinTile {
@@ -127,6 +171,9 @@ pub struct Level {
     pub slopes: Vec<Slope>,
     pub blocks: Vec<BlockPlacement>,
     pub spawns: Vec<Spawn>,
+    pub warps: Vec<Warp>,
+    /// Doors to draw: origin (bottom centre) and type.
+    pub doors: Vec<(f32, f32, u8)>,
     /// Goal pole position (X0, Y0): pole x and the top of its base block (main area only).
     pub goal: Option<(f32, f32)>,
     pub style: String,
@@ -192,6 +239,8 @@ impl Level {
             slopes: Vec::new(),
             blocks: Vec::new(),
             spawns: Vec::new(),
+            warps: Vec::new(),
+            doors: Vec::new(),
             goal: None,
             style: course.header.game_style.as_str_lossy(),
             theme: h.theme,
@@ -208,6 +257,7 @@ impl Level {
             let (x, y) = (g.x as i32, g.y as i32);
             lvl.set(x, y, Cell::Solid);
             lvl.tiles.push(TileDraw {
+                flip: 0,
                 x,
                 y,
                 atlas: GROUND_ATLAS_BASE + g.id as u32,
@@ -295,19 +345,48 @@ impl Level {
                     }
                 }
                 9 => {
-                    // pipe: solid rectangle; art for an upward pipe (lip on top)
-                    for dx in 0..w {
-                        for dy in 0..hgt {
-                            lvl.set(tx + dx, ty + dy, Cell::Solid);
-                            let lip = dy == hgt - 1;
-                            let col = if dx == 0 { 14 } else { 15 };
-                            lvl.tiles.push(TileDraw {
-                                x: tx + dx,
-                                y: ty + dy,
-                                atlas: if lip { col } else { 16 + col },
-                            });
-                        }
+                    // pipe (9-pipe.md): anchor = base tile; 2 wide, `height` long, mouth at the
+                    // far end; direction (flags >> 5) & 3, warp id (flags >> 20) & 0x1F
+                    let len = hgt;
+                    let dir = match (o.flags >> 5) & 3 {
+                        0 => PipeDir::Right,
+                        1 => PipeDir::Left,
+                        2 => PipeDir::Up,
+                        _ => PipeDir::Down,
+                    };
+                    let (ax, ay) = (o.x as f32 / 10.0, o.y as f32 / 10.0);
+                    let (ix, iy) = ((ax / TILE).floor() as i32, (ay / TILE).floor() as i32);
+                    lvl.add_pipe(ix, iy, len, dir);
+                    let l = (len - 1) as f32 * TILE;
+                    let (mx, my) = match dir {
+                        PipeDir::Right => (ax + l, ay - 8.0),
+                        PipeDir::Left => (ax - l, ay + 8.0),
+                        PipeDir::Up => (ax + 8.0, ay + l),
+                        PipeDir::Down => (ax - 8.0, ay - l),
+                    };
+                    let id = ((o.flags >> 20) & 0x1F) as u8;
+                    if id != 0 {
+                        lvl.warps.push(Warp {
+                            kind: WarpKind::Pipe(dir),
+                            id,
+                            x: mx,
+                            y: my,
+                            len,
+                        });
                     }
+                }
+                55 => {
+                    // door: 1×2 tiles, origin at the bottom centre
+                    let (dx, dy) = (o.x as f32 / 10.0, o.y as f32 / 10.0 - 8.0);
+                    let kind = ((o.flags >> 18) & 3) as u8;
+                    lvl.doors.push((dx, dy, kind));
+                    lvl.warps.push(Warp {
+                        kind: WarpKind::Door(kind),
+                        id: ((o.flags >> 20) & 0x1F) as u8,
+                        x: dx,
+                        y: dy,
+                        len: 2,
+                    });
                 }
                 16 | 14 | 17 | 71 => {
                     // semisolid / mushroom platform / bridge / half-collision platform: one-way top row
@@ -336,6 +415,7 @@ impl Level {
                             }
                         };
                         lvl.tiles.push(TileDraw {
+                            flip: 0,
                             x: tx + dx,
                             y: y_top,
                             atlas,
@@ -390,6 +470,7 @@ impl Level {
             let row = (lo / TILE).floor() as i32;
             for y in sl.bottom..row {
                 self.tiles.push(TileDraw {
+                    flip: 0,
                     x,
                     y,
                     atlas: GROUND_ATLAS_BASE + 12,
@@ -407,7 +488,40 @@ impl Level {
                     (false, false) => 28 * 16 + 3,
                 }
             };
-            self.tiles.push(TileDraw { x, y: row, atlas });
+            self.tiles.push(TileDraw {
+                flip: 0,
+                x,
+                y: row,
+                atlas,
+            });
+        }
+    }
+
+    /// Pipe terrain and art. (ix, iy) is the anchor tile; see 9-pipe.md for the shapes: up =
+    /// columns ix, ix+1 rising from iy; down = columns ix−1, ix falling; right = rows iy−1, iy
+    /// running right; left = rows iy, iy+1 running left. Atlas (M1): vertical lip 14/15 over body
+    /// 30/31 (row 1); horizontal lip 11 (+16 for the lower half) with body 12/28, drawn for a
+    /// left-facing mouth and mirrored for right.
+    pub fn add_pipe(&mut self, ix: i32, iy: i32, len: i32, dir: PipeDir) {
+        for i in 0..len {
+            let lip = i == len - 1;
+            for k in 0..2 {
+                let (x, y, atlas, flip) = match dir {
+                    PipeDir::Up => (ix + k, iy + i, if lip { 14 } else { 30 } + k as u32, 0),
+                    PipeDir::Down => (ix - 1 + k, iy - i, if lip { 14 } else { 30 } + k as u32, 2),
+                    PipeDir::Left => (
+                        ix - i,
+                        iy + 1 - k,
+                        if lip { 11 } else { 12 } + 16 * k as u32,
+                        0,
+                    ),
+                    PipeDir::Right => {
+                        (ix + i, iy - k, if lip { 11 } else { 12 } + 16 * k as u32, 1)
+                    }
+                };
+                self.set(x, y, Cell::Solid);
+                self.tiles.push(TileDraw { x, y, atlas, flip });
+            }
         }
     }
 
@@ -426,6 +540,7 @@ impl Level {
                 self.set(x, y, Cell::Solid);
                 let id = if y == height - 1 { 10 } else { 12 }; // top edge / interior
                 self.tiles.push(TileDraw {
+                    flip: 0,
                     x,
                     y,
                     atlas: GROUND_ATLAS_BASE + id,
@@ -523,18 +638,7 @@ impl Level {
             wings: false,
         });
         // pipe
-        for y in 2..4 {
-            for x in 46..48 {
-                lvl.set(x, y, Cell::Solid);
-                let lip = y == 3;
-                let col = if x == 46 { 14 } else { 15 };
-                lvl.tiles.push(TileDraw {
-                    x,
-                    y,
-                    atlas: if lip { col } else { 16 + col },
-                });
-            }
-        }
+        lvl.add_pipe(46, 2, 2, PipeDir::Up);
         // goal: pole on a hard block 2 tiles from the end, as from a course header
         let pole = 66;
         block(&mut lvl, pole, 2, BlockKind::Hard, None);
@@ -554,6 +658,8 @@ impl Level {
             slopes: Vec::new(),
             blocks: Vec::new(),
             spawns: Vec::new(),
+            warps: Vec::new(),
+            doors: Vec::new(),
             goal: None,
             style: "M1".into(),
             theme: 0,

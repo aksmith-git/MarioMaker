@@ -12,6 +12,7 @@ pub mod input;
 pub mod level;
 pub mod player;
 pub mod render;
+pub mod warp;
 pub mod world;
 
 pub use input::Input;
