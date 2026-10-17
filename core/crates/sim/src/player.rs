@@ -166,6 +166,10 @@ impl Style {
     pub fn can_carry(self) -> bool {
         self != Style::M1
     }
+    /// Consecutive (double / triple) jumps and the ground pound (NSMBU, 3D World).
+    pub fn has_jump_chain(self) -> bool {
+        matches!(self, Style::WU | Style::W3)
+    }
     /// Spin jump from the ground (SMW, NSMBU, 3D World).
     pub fn can_spin(self) -> bool {
         matches!(self, Style::MW | Style::WU | Style::W3)
@@ -298,6 +302,16 @@ pub struct Player {
     pub attack: i32,
     pub flap: i32,
     pub slow_fall: i32,
+    /// Wall slide: the wall's side (−1 / +1, 0 = not sliding) and frames of stick held away.
+    pub wall_slide: i32,
+    wall_release: i32,
+    /// Jump chain (NSMBU / 3DW): 0 single, 1 second, 2 third jump; frames since landing.
+    pub jump_count: u8,
+    land_timer: i32,
+    /// Ground pound: > 0 wind-up frames left, −1 diving; `pound_landed` for the world this frame.
+    pub pound: i32,
+    pub pound_landed: bool,
+    prev_down: bool,
     prev_spin: bool,
     /// Climbing a vine: its centre x and the side the player hangs on (−1 left, +1 right).
     pub climbing: Option<(f32, i32)>,
@@ -353,6 +367,13 @@ impl Player {
             attack: 0,
             flap: 0,
             slow_fall: 0,
+            wall_slide: 0,
+            wall_release: 0,
+            jump_count: 0,
+            land_timer: 0,
+            pound: 0,
+            pound_landed: false,
+            prev_down: false,
             prev_spin: false,
         }
     }
@@ -796,7 +817,27 @@ impl Player {
                     self.skid = SkidPhase::None;
                 } else if pressed {
                     self.sliding = false;
+                    // jump chain (§3.1): within the landing window and fast enough (NSMBU ≥ 3.0,
+                    // 3DW any speed) the counter advances; the third jump is ×1.05
+                    // [inf: window 10 frames]
+                    let fast = if self.style == Style::W3 {
+                        self.vx != 0.0
+                    } else {
+                        self.vx.abs() >= 3.0
+                    };
+                    self.jump_count = if self.style.has_jump_chain()
+                        && (1..=10).contains(&self.land_timer)
+                        && fast
+                        && self.jump_count < 2
+                    {
+                        self.jump_count + 1
+                    } else {
+                        0
+                    };
                     self.vy = JUMP_BASE + jump_bonus(self.vx.abs());
+                    if self.jump_count == 2 {
+                        self.vy *= 1.05;
+                    }
                     if self.low_gravity {
                         self.vy = (self.vy * 0.7).min(2.7);
                     }
@@ -821,6 +862,14 @@ impl Player {
                 self.vy = (self.vy + g).max(FALL_CAP);
             }
         }
+        // frames on the ground since the last landing (the jump-chain window)
+        if self.on_ground {
+            self.land_timer = (self.land_timer + 1).min(1000);
+        } else if self.land_timer > 0 && self.vy > 0.0 {
+            // left the ground: the window counts again from the next landing
+            self.land_timer = 0;
+        }
+        self.step_wall_and_pound(inp, pressed, level);
         // raccoon flaps (vy 1.5, no gravity, 18 frames) and slow fall (≥ −1.0, 15 frames); the
         // cape glides (≥ −1.0) while jump is held
         if !self.on_ground && !self.in_water {
@@ -915,6 +964,84 @@ impl Player {
             self.facing = self.vx.signum() as i32;
         }
         self.pose = Pose::Slide;
+    }
+
+    fn wall_at(&self, level: &Level, dir: i32) -> bool {
+        let s = self.sensors();
+        let x = self.x + dir as f32 * (s.wall_x + 0.5);
+        level.cell_at(x, self.y + s.wall_y0).is_solid()
+            && level.cell_at(x, self.y + s.wall_y1).is_solid()
+    }
+
+    /// Wall slide / wall jump (§3.3, every style): falling against a wall with the stick toward
+    /// it slides at ≥ −2.0; jump → vy 3.5 and 2.25 px/f away; 15 frames of stick held away let go.
+    /// Ground pound (NSMBU / 3DW): Down in the air → a wind-up with no speed or gravity
+    /// [inf: 12 frames], then a dive at −6.0 until landing.
+    fn step_wall_and_pound(&mut self, inp: Input, pressed: bool, level: &Level) {
+        let down = inp.held(input::DOWN);
+        let down_pressed = down && !self.prev_down;
+        self.prev_down = down;
+        self.pound_landed = false;
+        if self.on_ground || self.in_water {
+            if self.pound == -1 && self.on_ground {
+                self.pound_landed = true;
+            }
+            self.pound = 0;
+            self.wall_slide = 0;
+            return;
+        }
+        if self.style.has_jump_chain()
+            && down_pressed
+            && self.pound == 0
+            && self.held.is_none()
+            && self.shoe.is_none()
+        {
+            self.pound = 12;
+            self.wall_slide = 0;
+        }
+        if self.pound > 0 {
+            self.pound -= 1;
+            self.vx = 0.0;
+            self.vy = 0.0;
+            if self.pound == 0 {
+                self.pound = -1;
+            }
+            return;
+        }
+        if self.pound == -1 {
+            self.vx = 0.0;
+            self.vy = -6.0;
+            return;
+        }
+        let dir = inp.dir_x();
+        let able = self.held.is_none() && self.shoe.is_none() && self.vy <= 0.0;
+        if self.wall_slide == 0 && able && dir != 0 && self.wall_at(level, dir) {
+            self.wall_slide = dir;
+            self.wall_release = 0;
+        }
+        if self.wall_slide != 0 {
+            let w = self.wall_slide;
+            if !self.wall_at(level, w) {
+                self.wall_slide = 0;
+            } else if pressed {
+                self.vy = 3.5;
+                self.vx = -w as f32 * 2.25;
+                self.facing = -w;
+                self.wall_slide = 0;
+                self.spinning = false;
+            } else {
+                if dir == -w {
+                    self.wall_release += 1;
+                    if self.wall_release >= 15 {
+                        self.wall_slide = 0;
+                    }
+                } else {
+                    self.wall_release = 0;
+                }
+                self.vy = self.vy.max(-2.0);
+                self.facing = w;
+            }
+        }
     }
 
     /// P-meter (SMB3) / cape meter (SMW), raccoon flaps (player-physics.md §2.5, §5.4): the

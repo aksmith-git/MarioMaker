@@ -200,6 +200,9 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
 - ✅ Theme music per style: the importer copies every style's theme / hurry / star tracks (105
   streams); the player decodes only the course's tracks into per-course mixer slots · per-style
   sound effects ✅ (style variants of SFX and fanfares, SMB1 fallback), sub-area music ⬜
+- ✅ Wall slide (≥ −2.0) and wall jump (vy 3.5, 2.25 away) in every style; NSMBU/3DW jump chain
+  (third jump ×1.05, 10-frame window [inf]) and ground pound (wind-up, −6.0 dive, hits blocks and
+  enemies below)
 - ✅ Pink coins: counted once each across both areas; the last one gives the key
 - ✅ Goomba's Shoe / Stiletto: shoe Goomba hops (50-frame pause, 4.5 / 1.5), leaves the empty
   shoe; the player wears it (spikes and Munchers underfoot safe, shoe stomps, a hit knocks it

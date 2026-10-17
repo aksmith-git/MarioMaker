@@ -1008,6 +1008,7 @@ impl World {
         self.pow_quake();
         self.bump_moving_block();
         self.tail_attack();
+        self.pound_blocks();
         self.check_checkpoints();
         self.shell_walls();
         self.actor_interactions();
@@ -1717,6 +1718,28 @@ impl World {
                         | Kind::Magic
                         | Kind::Wrench
                 );
+            // a ground pound dive knocks out what it lands on (hipatk), bosses and the
+            // indestructible aside
+            if self.player.pound == -1 && p.vy < 0.0 && p.y >= ay + ah * 0.5 {
+                let tough = matches!(
+                    a.kind,
+                    Kind::Bowser { .. }
+                        | Kind::BoomBoom { .. }
+                        | Kind::BowserJr { .. }
+                        | Kind::Thwomp { .. }
+                        | Kind::Boo
+                        | Kind::LavaBubble
+                        | Kind::AngrySun { .. }
+                        | Kind::ChainChomp { .. }
+                );
+                if !tough && !a.kind.is_platform() {
+                    let px = p.x;
+                    self.actors[i].die_fall(px);
+                    self.events.push(Event::Stomp);
+                    i += 1;
+                    continue;
+                }
+            }
             // a spin jump: stomped enemies vanish; spiky ones are bounced off safely ("Pass")
             let spin_stomp = self.player.spinning && p.vy < 0.0 && p.y >= ay + ah * 0.5;
             let spin_safe = matches!(
@@ -2379,6 +2402,31 @@ impl World {
             self.player.vy = (self.player.vy + 0.6).min(4.5);
             self.player.on_ground = false;
         }
+    }
+
+    /// A ground pound landing hits the blocks under the feet from above (bricks break when big).
+    fn pound_blocks(&mut self) {
+        if !self.player.pound_landed {
+            return;
+        }
+        let p = &self.player;
+        let ty = ((p.y - 1.0) / TILE).floor() as i32;
+        let power = if p.big() {
+            HitPower::Break
+        } else {
+            HitPower::Bump
+        };
+        let mut cols = vec![
+            ((p.x - 4.0) / TILE).floor() as i32,
+            ((p.x + 4.0) / TILE).floor() as i32,
+        ];
+        cols.dedup();
+        for tx in cols {
+            if self.blocks.get(tx, ty).is_some() {
+                self.hit_block(tx, ty, false, power);
+            }
+        }
+        self.events.push(Event::Bump);
     }
 
     /// Raccoon tail swing / cape spin [inf: hit window frames 12–4 of the 16-frame swing, reach
@@ -5706,6 +5754,39 @@ mod tests {
         assert!(!w.player.on_ground);
         run(&mut w, input::RIGHT | input::RUN | input::JUMP, 2);
         assert_eq!(w.player.vy, 1.5, "flapping");
+    }
+
+    #[test]
+    fn wall_jumps_in_every_style_and_ground_pounds_in_nsmbu() {
+        let mut lvl = Level::flat(40);
+        for y in 2..12 {
+            lvl.set(12, y, Cell::Solid);
+        }
+        let mut w = World::with_level(lvl);
+        w.player.x = 11.0 * TILE + 4.0;
+        w.player.y = 120.0;
+        w.player.on_ground = false;
+        run(&mut w, input::RIGHT, 20);
+        assert_eq!(w.player.wall_slide, 1, "sliding on the wall");
+        assert!(w.player.vy >= -2.0);
+        run(&mut w, input::RIGHT | input::JUMP, 1);
+        assert_eq!(w.player.wall_slide, 0);
+        assert!(
+            w.player.vx < -2.0 && w.player.vy > 3.0,
+            "wall jump {} {}",
+            w.player.vx,
+            w.player.vy
+        );
+        // NSMBU ground pound: wind-up, then -6
+        let mut w = World::with_level(Level::flat(40));
+        w.style = crate::player::Style::WU;
+        w.player.x = 100.0;
+        w.player.y = 120.0;
+        w.player.on_ground = false;
+        run(&mut w, input::DOWN, 1);
+        assert!(w.player.pound > 0);
+        run(&mut w, input::DOWN, 12);
+        assert_eq!(w.player.vy, -6.0);
     }
 
     #[test]
