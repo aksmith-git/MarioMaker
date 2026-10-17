@@ -1,0 +1,12 @@
+[package]
+name = "mmk-server"
+description = "Self-hostable open-source course server: upload, search, download, stats, 100 Mario pools"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+mmk-formats = { path = "../formats" }
+serde_json.workspace = true
+tiny_http = "0.12.0"

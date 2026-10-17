@@ -82,6 +82,38 @@ enum Cmd {
     },
     /// Decode a BFLYT / BFLAN / BFFNT / MSBT file (Yaz0 removed) and print it as JSON.
     Lyt { file: PathBuf },
+    /// Run the open-source course server (courses + index in DIR).
+    Server {
+        #[arg(long, default_value = "mmk-server-data")]
+        dir: PathBuf,
+        #[arg(long, default_value = "0.0.0.0:8640")]
+        addr: String,
+    },
+    /// Upload a course (raw, zlib or .bcd needs decrypting first) to a course server.
+    Upload {
+        file: PathBuf,
+        #[arg(long, default_value = "http://localhost:8640")]
+        server: String,
+        #[arg(long, default_value = "anonymous")]
+        maker: String,
+    },
+    /// Search a course server.
+    Search {
+        #[arg(default_value = "")]
+        query: String,
+        #[arg(long, default_value = "http://localhost:8640")]
+        server: String,
+        #[arg(long, default_value = "new")]
+        sort: String,
+    },
+    /// Download a course from a course server by code.
+    Download {
+        code: String,
+        #[arg(long, default_value = "http://localhost:8640")]
+        server: String,
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
     /// Write a texture as PNG for inspection: an engine `.mtex` file, a Wii U `.bflim`, or one
     /// glyph sheet of a `.bffnt` (`--sheet`, optional GX2 `--swizzle` 0-7 to experiment).
     TexPng {
@@ -628,6 +660,97 @@ fn main() -> ExitCode {
             }
         },
 
+        Cmd::Server { dir, addr } => {
+            let store = match mmk_server::Store::open(&dir) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("{}: {e:?}", dir.display());
+                    return ExitCode::FAILURE;
+                }
+            };
+            eprintln!("mmk-server: {} on http://{addr}", dir.display());
+            match mmk_server::serve(store, &addr) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("server: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Cmd::Upload {
+            file,
+            server,
+            maker,
+        } => {
+            let data = match std::fs::read(&file) {
+                Ok(raw) if raw.len() == mmk_formats::smm2::COURSE_SIZE => raw,
+                Ok(raw) => {
+                    let mut out = Vec::new();
+                    if flate2::read::ZlibDecoder::new(&raw[..])
+                        .read_to_end(&mut out)
+                        .is_err()
+                    {
+                        eprintln!("{}: not raw or zlib course data", file.display());
+                        return ExitCode::FAILURE;
+                    }
+                    out
+                }
+                Err(e) => {
+                    eprintln!("{}: {e}", file.display());
+                    return ExitCode::FAILURE;
+                }
+            };
+            match mmk_online::Client::new(server).upload(&data, &maker) {
+                Ok(l) => {
+                    println!("{} {}", l.code, l.name);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("upload: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Cmd::Search {
+            query,
+            server,
+            sort,
+        } => match mmk_online::Client::new(server).search(&query, None, &sort, 0, 50) {
+            Ok(list) => {
+                for l in list {
+                    println!(
+                        "{}  {:<3} {:>3}%  {:>5} plays  {}  — {}",
+                        l.code, l.style, l.difficulty, l.plays, l.name, l.maker
+                    );
+                }
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("search: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Cmd::Download { code, server, out } => {
+            match mmk_online::Client::new(server).download(&code) {
+                Ok(b) => {
+                    let path = out.unwrap_or_else(|| PathBuf::from(format!("{code}.bin")));
+                    match std::fs::write(&path, b) {
+                        Ok(()) => {
+                            println!("{}", path.display());
+                            ExitCode::SUCCESS
+                        }
+                        Err(e) => {
+                            eprintln!("{}: {e}", path.display());
+                            ExitCode::FAILURE
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("download: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Cmd::Lyt { file } => match dump_lyt(&file) {
             Ok(v) => {
                 println!("{}", serde_json::to_string_pretty(&v).unwrap());

@@ -271,8 +271,11 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
 
 ### Phase 10 — Online with an open-source server ⬜ (owner request 2026-10-18)
 Not Nintendo's network: the engine talks to an open-source server the owner can run or join.
-- ⬜ Pick / write the server (proposal: our own MIT/Apache Rust server — course upload/download,
-  search, likes, makers, Endless pools, rankings; optional SMMDB import) ⏳ owner choice
+- 🔄 Server: our own open-source course server `mmk-server` ✅ (directory store, REST API: upload
+  with validation, search/sort, download, play/clear/like stats → difficulty, 100 Mario pools by
+  fail-rate band; `mmk server`) and client crate `mmk-online` ✅ (`mmk upload/search/download`,
+  `RemoteSource` for 100 Mario) · accounts, makers, rankings, SMMDB import ⬜ · ⏳ owner: keep this or
+  connect to another open-source server
 - ⬜ Course World client: browse, play, like/boo, comment, upload from the editor
 - ⬜ Real-time multiplayer (co-op / versus, up to 4): rollback netcode on the deterministic sim
   over WebRTC (open-source `matchbox` signalling) so native and web players can meet
