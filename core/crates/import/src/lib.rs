@@ -1,8 +1,10 @@
 //! First-launch importer: the user's own extracted SMM2 RomFS + ExeFS → engine asset cache.
 //!
 //! Stages implemented so far (docs/architecture.md §4): identify, course key table, tables,
-//! manifest. Textures, models and audio follow in later steps. Nothing read or written here ever
+//! textures, audio, manifest. Models follow in a later step. Nothing read or written here ever
 //! goes into the repository; the cache lives in the user's Application Support folder.
+
+pub mod audio;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,7 +17,7 @@ use mmk_formats::smm2::crypto::{KeyTable, decrypt_bcd};
 use mmk_formats::smm2::keyfind;
 use serde_json::{Value, json};
 
-pub const IMPORTER_VERSION: u32 = 1;
+pub const IMPORTER_VERSION: u32 = 2;
 
 /// Builds this importer knows, identified by the NSO module id (first 16 bytes; the rest is 0).
 pub const KNOWN_BUILDS: &[(&str, &str)] = &[
@@ -58,6 +60,7 @@ pub struct ImportReport {
     pub out_dir: PathBuf,
     pub tables: usize,
     pub textures: usize,
+    pub sounds: usize,
     pub builtin_courses_verified: usize,
 }
 
@@ -294,15 +297,19 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
     // 4. textures of every model of the imported styles
     let texture_count = import_textures(cfg, &out, progress)?;
 
-    // 5. manifest
+    // 5. sounds of the imported styles
+    let sound_count = audio::import_audio(&cfg.romfs, &out, STYLES, audio::M1_SOUNDS, progress)?;
+
+    // 6. manifest
     let manifest: Value = json!({
         "importer_version": IMPORTER_VERSION,
         "game": "SMM2",
         "build": build,
         "module_id": nso.module_id_hex(),
-        "stages": ["identify", "keys", "tables", "textures"],
+        "stages": ["identify", "keys", "tables", "textures", "audio"],
         "texture_styles": STYLES,
         "textures": texture_count,
+        "sounds": sound_count,
         "tables": tables,
         "builtin_courses": courses.len(),
     });
@@ -317,6 +324,7 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
         out_dir: out,
         tables: tables.len(),
         textures: texture_count,
+        sounds: sound_count,
         builtin_courses_verified: courses.len(),
     })
 }

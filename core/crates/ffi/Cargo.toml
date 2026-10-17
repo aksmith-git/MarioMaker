@@ -14,5 +14,6 @@ crate-type = ["staticlib", "rlib"]
 mmk-assets = { path = "../assets" }
 mmk-import = { path = "../import" }
 mmk-sim = { path = "../sim" }
+mmk-audio = { path = "../audio" }
 mmk-formats = { path = "../formats" }
 flate2.workspace = true

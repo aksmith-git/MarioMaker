@@ -25,6 +25,8 @@ final class GameSession: ObservableObject, Identifiable {
     /// Save-data key (nil for the demo strip).
     let courseKey: String?
     let input = InputState()
+    /// Sound output (nil when muted or the cache has no audio).
+    private var audio: AudioOutput?
 
     @Published private(set) var phase: Phase = .playing
     @Published var pauseSelection = 0
@@ -68,6 +70,12 @@ final class GameSession: ObservableObject, Identifiable {
             }
         }
         if let courseKey { saves?.addAttempt(courseKey) }
+        // sound: the mixer is fed by the engine's events; silent if the cache has no audio
+        if let url = assets.url {
+            audio = AudioOutput(cachePath: url.path)
+            if let h = audio?.handle { mmk_engine_set_audio(e, h) }
+        }
+        applyVolumes()
         // switching to another app pauses (not during scripted runs)
         resignObserver = NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -78,7 +86,18 @@ final class GameSession: ObservableObject, Identifiable {
 
     deinit {
         if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+        mmk_engine_set_audio(engine, nil)
+        audio = nil
         mmk_engine_free(engine)
+    }
+
+    /// Volumes from Settings (UserDefaults, default 1); music is turned down while paused.
+    func applyVolumes() {
+        guard let h = audio?.handle else { return }
+        let d = UserDefaults.standard
+        func vol(_ k: String) -> Float { d.object(forKey: k) == nil ? 1 : Float(d.double(forKey: k)) }
+        let music = vol(SettingsKey.volumeMusic) * (phase == .paused ? 0.3 : 1)
+        mmk_audio_set_volumes(h, vol(SettingsKey.volumeMaster), music, vol(SettingsKey.volumeSfx))
     }
 
     var hud: MmkHud {
@@ -158,6 +177,7 @@ final class GameSession: ObservableObject, Identifiable {
         phase = p
         phaseFrames = 0
         heldMenu = input.menu // don't treat buttons already down as presses
+        applyVolumes()
     }
 
     // MARK: actions (menu, mouse)

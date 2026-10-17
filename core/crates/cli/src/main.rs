@@ -38,6 +38,15 @@ enum Cmd {
     /// Export the textures inside a BFRES/BNTX file (wrappers removed) as PNG for inspection.
     /// RGBA8 only; block-compressed textures are listed but not written.
     Textures { file: PathBuf, out: PathBuf },
+    /// List the sounds in a BARS, a BWAV, or a SARC pack of BARS (wrappers removed): one JSON line
+    /// per sound. With --name and --wav, decode that sound to a 16-bit WAV for inspection.
+    Audio {
+        file: PathBuf,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        wav: Option<PathBuf>,
+    },
     /// Import the user's own extracted SMM2 RomFS + ExeFS into an engine asset cache.
     Import {
         #[arg(long)]
@@ -124,6 +133,87 @@ fn export_textures(file: &PathBuf, out: &std::path::Path) -> Result<(), String> 
                 .map_err(|e| e.to_string())?;
             }
         }
+    }
+    Ok(())
+}
+
+/// Minimal WAV writer (PCM16, interleaved) for inspection output.
+fn write_wav(path: &std::path::Path, channels: u16, rate: u32, pcm: &[i16]) -> std::io::Result<()> {
+    let data_len = (pcm.len() * 2) as u32;
+    let mut out = Vec::with_capacity(44 + pcm.len() * 2);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data_len).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&channels.to_le_bytes());
+    out.extend_from_slice(&rate.to_le_bytes());
+    out.extend_from_slice(&(rate * channels as u32 * 2).to_le_bytes());
+    out.extend_from_slice(&(channels * 2).to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_len.to_le_bytes());
+    for s in pcm {
+        out.extend_from_slice(&s.to_le_bytes());
+    }
+    std::fs::write(path, out)
+}
+
+fn audio_cmd(
+    file: &PathBuf,
+    name: Option<&str>,
+    wav: Option<&std::path::Path>,
+) -> Result<(), String> {
+    use mmk_formats::audio::{self, Bars, Bwav};
+    let data = std::fs::read(file).map_err(|e| e.to_string())?;
+    let data = mmk_formats::archive::unwrap(data).map_err(|e| e.to_string())?;
+    let mut blobs: Vec<(String, Vec<u8>)> = Vec::new();
+    if data.starts_with(b"SARC") {
+        let sarc = mmk_formats::archive::Sarc::parse(data).map_err(|e| e.to_string())?;
+        for (n, d) in sarc.files() {
+            blobs.push((n.to_string(), d.to_vec()));
+        }
+    } else {
+        blobs.push((file.display().to_string(), data));
+    }
+    let describe = |container: &str, sound: &str, w: &Bwav| {
+        let c = &w.channels[0];
+        json!({ "container": container, "name": sound, "channels": w.channels.len(),
+            "codec": format!("{:?}", c.codec), "rate": c.sample_rate, "samples": c.samples,
+            "samples_here": c.samples_here, "loop": w.loop_range(), "prefetch": w.prefetch })
+    };
+    let mut found = false;
+    for (container, blob) in &blobs {
+        let mut sounds: Vec<(String, Bwav)> = Vec::new();
+        if blob.starts_with(b"BARS") {
+            let bars = Bars::parse(blob).map_err(|e| format!("{container}: {e}"))?;
+            for e in &bars.entries {
+                if let Some(w) = bars.bwav(e) {
+                    sounds.push((e.name.clone(), w));
+                }
+            }
+        } else if blob.starts_with(b"BWAV") {
+            let stem = std::path::Path::new(container)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            sounds.push((stem, Bwav::parse(blob).map_err(|e| e.to_string())?));
+        }
+        for (sound, w) in sounds {
+            if name.is_some_and(|n| n != sound) {
+                continue;
+            }
+            found = true;
+            println!("{}", describe(container, &sound, &w));
+            if let Some(path) = wav {
+                let (ch, _, pcm) = audio::decode_interleaved(&w, 2).map_err(|e| e.to_string())?;
+                write_wav(path, ch as u16, w.sample_rate(), &pcm).map_err(|e| e.to_string())?;
+                return Ok(());
+            }
+        }
+    }
+    if !found && name.is_some() {
+        return Err("sound not found".into());
     }
     Ok(())
 }
@@ -256,6 +346,13 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Cmd::Audio { file, name, wav } => match audio_cmd(&file, name.as_deref(), wav.as_deref()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("{}: {e}", file.display());
+                ExitCode::FAILURE
+            }
+        },
         Cmd::Import { romfs, exefs, out } => {
             let out_root = out.unwrap_or_else(|| {
                 PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
@@ -276,10 +373,11 @@ fn main() -> ExitCode {
             match mmk_import::run(&cfg, &mut progress) {
                 Ok(r) => {
                     println!(
-                        "imported SMM2 {} ({} tables, {} textures, {} built-in courses verified) into {}",
+                        "imported SMM2 {} ({} tables, {} textures, {} sounds, {} built-in courses verified) into {}",
                         r.build,
                         r.tables,
                         r.textures,
+                        r.sounds,
                         r.builtin_courses_verified,
                         r.out_dir.display()
                     );

@@ -53,7 +53,14 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   M1 textures (RGBA8 + BCn, Tegra unswizzle) into a Metal-ready cache outside the repo
 - 🔄 3. Rendering: tiles, sprites, letterboxed integer scaling ✅ · exact BFRES quad placement and
   animation timing ⬜ (sprite offsets currently measured from the textures)
-- ⬜ 4. Audio (BWAV DSP-ADPCM decode, mixer, music + sound effects)
+- ✅ 4. Audio: BWAV/BARS parsers + DSP-ADPCM/PCM16 decode; importer `audio` stage (22 SMB1 sounds:
+  jump, coin, stomp, kick, bump, break, item, power-up/down, 1-UP, fireball, pole, time count,
+  death / clear / hurry fanfares, ground + hurry + star music) into `<cache>/audio/`; `mmk-audio`
+  mixer (32 voices, loops, music chaining, fades, exclusive groups, linear resampling to 48 kHz,
+  master/music/SFX volumes); engine maps sim events to sounds (hurry jingle → fast music, star
+  music, death and clear fanfares, count-down loop); AVAudioEngine output (`MMK_MUTE=1` to
+  silence); `mmk audio` CLI lists/decodes sounds to WAV · other themes' music, night music and
+  object sounds beyond the slice ⬜
 - 🔄 5. Terrain: ground, blocks, pipes, semisolids, slopes ✅ · ice ✅ · exact camera rules ⬜
 - ✅ 6. Core objects: coins; ? / brick / hidden / hard / note blocks (bump curve, contents, multi-coin,
   breaking + debris); Super Mushroom, Fire Flower + fireballs, Star, 1-Up; Goomba (+ Paragoomba),

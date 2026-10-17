@@ -26,6 +26,27 @@ Newest first. Each entry: what was decided, why, and what would change it.
 - **`mmk_course_info` takes an assets handle** (may be NULL) in addition to the bytes: encrypted
   `.bcd` files need the key table from the asset cache.
 
+## 2026-10-18 — Audio: game BWAVs in the cache, decoded at load, mixed in Rust (Phase 5 step 4)
+- The importer copies each needed sound's BWAV unchanged into `<cache>/audio/` (outside the
+  repo) with an `index.json`; the engine decodes DSP-ADPCM/PCM16 to PCM16 once when the audio
+  handle opens (≈30 MB for the slice, mostly the two ground music streams). Simpler than decoding
+  in the render path and loop points need no ADPCM history bookkeeping. Revisit (stream from
+  ADPCM) when more themes' music is loaded at once.
+- Engine sound ids → game wave names live in a code table (`import::audio::M1_SOUNDS`), with the
+  game's per-sound volumes as gains (numbers, like the sim's physics constants). The mapping comes
+  from the game's own sound-link data; evidence is in the private research notes.
+- Mixer: 32 voices, 32.32 fixed-point positions, linear interpolation to 48 kHz, short
+  anti-click fade on cuts, three exclusive groups modelled on the NES pulse 1 / pulse 2 / noise
+  channels (a new sound in a group cuts the previous one), same sound retriggers instead of
+  stacking, fixed ×2 output gain (the game's waves peak around 0.2 FS). The group behaviour and
+  the kick sound's two takes alternating are inferred, not read from the game.
+- Threads: the engine (game thread) only sends commands over a bounded `std::sync::mpsc` channel;
+  the mixer is owned by the audio handle and locked only by `mmk_audio_render`. No new crates.
+- The sim now emits `PowerUp` for every mushroom/flower pickup (the game plays the sound even
+  when the form does not change).
+- Only the M1 ground (day) music is imported; other themes play it too until their streams are
+  added. `MMK_MUTE=1` disables audio in the app.
+
 ## 2026-10-18 — Core-object choices where the specs have no number (Phase 5 step 6)
 Values read from the binary are used as-is (bump curve, coin pop, item emergence, walker speeds,
 shell wake 511, kick 2.5 + 0.5·|v|, death 45-frame pose → vy 3.2 / g −0.16 / restart after 140,
