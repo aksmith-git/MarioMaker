@@ -311,8 +311,9 @@ pub unsafe extern "C" fn mmk_ui_message(
     cap: usize,
 ) -> usize {
     guard(0, || {
-        let (Some(l), Some(label)) = (unsafe { layout.as_ref() }, unsafe { str_arg(label, "label") })
-        else {
+        let (Some(l), Some(label)) = (unsafe { layout.as_ref() }, unsafe {
+            str_arg(label, "label")
+        }) else {
             return 0;
         };
         let Some(text) = l.player.message(label) else {
@@ -461,7 +462,34 @@ mod tests {
             assert!(mmk_ui_texture_count(ui) > 10);
             let mut info = std::mem::zeroed::<MmkTextureInfo>();
             assert!(mmk_ui_texture(ui, 0, &mut info));
+            // Mario walks along MoveMario onto the first course dot (same parent pane)
+            let mut dot = MmkUiPane::default();
+            assert!(mmk_ui_pane(l, c"L_WorldMapCourseEsy_00".as_ptr(), &mut dot));
+            let reached = (0..200).any(|f| {
+                mmk_ui_play(l, c"MoveMario".as_ptr(), f as f32);
+                let mut m = MmkUiPane::default();
+                mmk_ui_pane(l, c"N_WorldMapMario_00".as_ptr(), &mut m)
+                    && (m.translate[0] - dot.translate[0]).abs() < 1.5
+                    && (m.translate[1] - dot.translate[1]).abs() < 1.5
+            });
+            assert!(reached);
+            assert!(mmk_ui_set_visible(l, c"N_WorldMapMario_00".as_ptr(), 0));
+            assert!(!mmk_ui_set_visible(l, c"N_NoSuchPane".as_ptr(), 0));
             mmk_ui_layout_free(l);
+            // the pause menu's mode line takes two numbers (n/total)
+            let p = mmk_ui_layout(ui, c"Cmn_PauseMenu_00".as_ptr());
+            assert!(!p.is_null());
+            let n = mmk_ui_message(p, c"T_Mode100Mario_00".as_ptr(), std::ptr::null_mut(), 0);
+            let mut buf = vec![0 as c_char; n + 1];
+            mmk_ui_message(
+                p,
+                c"T_Mode100Mario_00".as_ptr(),
+                buf.as_mut_ptr(),
+                buf.len(),
+            );
+            let s = CStr::from_ptr(buf.as_ptr()).to_str().unwrap();
+            assert_eq!(s.matches('\u{FFFC}').count(), 2);
+            mmk_ui_layout_free(p);
             mmk_ui_free(ui);
         }
     }

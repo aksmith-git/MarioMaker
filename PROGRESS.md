@@ -117,7 +117,7 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   (337 layouts, 1698 animations, 2576 textures, 9 fonts, English text) into a cache; the `ui`
   crate plays layouts + animations into quads; the app draws them (`UILayer`, debug view
   `MMK_UI_LAYOUT`) — world map, course intro, course clear, game over, title menus verified
-- ⬜ Shared menu look with the SMM1 layout player (Phase 6)
+- 🔄 Shared menu look with the SMM1 layout player (Phase 6): 100 Mario screens done
 
 ### Phase 6 — 100 Mario Challenge 🔄 (owner: SMM1 presentation like-for-like)
 - 🔄 Research: SMM1 100 Mario screen sequence from Block.rpx v208 + layout data — scene → layout
@@ -129,7 +129,12 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   1D/2D untiling) ✅, BFFNT fonts ✅, MSBT text (English) ✅, BFSTM/BARS audio ⬜
 - 🔄 Layout player (panes, text, keyframed animations) — pane tree, parts, pictures, windows,
   text with font fallback, SRT/visibility/alpha/colour/texture-pattern/texture-SRT curves ✅;
-  per-character transforms, alpha compare, indirect textures, non-text part overrides ⬜
+  part property overrides: picture material from the enclosing layout (course-dot numbers,
+  castle variants) and basic values (visibility, translate, size, scale, rotate, alpha; import
+  now keeps them) ✅; "influenced alpha" fades the whole subtree incl. parts ✅; children without
+  anchor bits sit on the parent's origin point [inf] ✅; caller visibility, pane query, message
+  templates with value placeholders (FFI `mmk_ui_set_visible/pane/message`) ✅;
+  per-character transforms (GAME OVER letters), alpha compare, indirect textures ⬜
 - ✅ Mode logic (`core/crates/modes`): run lengths 8/16/16/6 (10 Mario 8), 100 lives = cap, ≤3
   banked extra lives paid on clear (+1 refund in 100 Mario), death retries from the course-start
   state, free skip (100 Mario only), Save & Quit, game over, completion; course pools by
@@ -145,7 +150,26 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
 - ✅ Pool limited to courses marked playable; grows with Phase 7
 - ✅ App flow (functional stand-in screens): difficulty select with locks and Continue, course
   intro card, run banner, pause menu Skip / Start over (−1 life) / Save & Quit, game over, run
-  cleared + unlock + course credits; `hundred.json` save · SMM1 layouts ⬜ (layout player)
+  cleared + unlock + course credits; `hundred.json` save (kept as the fallback without the
+  SMM1 import)
+- ✅ SMM1 layout screens (`ChallengeScreens.swift`, plain classes stepped at 60 Hz; screenshots
+  via `MMK_UI_SCREEN=challenge*`):
+  - ✅ difficulty tabs `Nwk_ListTitle_00` over the selected `Nwk_WorldMap*_00` (pre-MapIn view),
+    New Game / Continue, lives and n/total from the Continue record, locked tiers greyed
+    (Invalid) — the game hides them instead [obs data], see DECISIONS
+  - ✅ world map: MapIn, Goombas carry Peach under the banner (Telop + MoveKuribo), Peach on the
+    castle (AnimB), Mario jumps out and walks (MoveMario, stops found from the dot positions),
+    cleared dots (Type) with the Clear pop, Mario walks to the next dot after each clear, Out
+  - ✅ intro card `Play_CourseIn100Mario_00`: name, maker, SMM2 code (from the dataset id), lives,
+    n/total, one Mario per life; AnimA → AnimB → hold; after a death AnimB + OutMiss over the game
+  - ✅ in-course overlays drawn by the game Renderer: `Cmn_PauseMenu_00` (mode line
+    "100 Mario Challenge (n/total)", Start Over, Save & Quit, close), `Play_CourseClear_00`
+    (times incl. the dataset's world record, Save & Quit / Next), skip countdown
+    `Play_SlidePassIconKey_00` (hold − / Tab / controller −, 3 × 32 frames, release cancels)
+  - ✅ `Cmn_GameOver_00`; ending: `Play_EndingText_00` over the finished map (Easy: another
+    castle; Normal; Expert/Super Expert) then `Nwk_StaffCredit_01/00/03` with the cleared courses
+  - 🔄 timings between screens, the rescue scene (not a layout), Mii/flag/Star/comment areas
+    (hidden: no data), per-character GAME OVER letters, UI sounds ⬜
 - ⬜ SMM1 → SMM2 course import design + documented losses
 - ⬜ App screens drawn with the SMM1 layouts (world map walk, intro card, clear, game over, ending)
 

@@ -20,14 +20,7 @@ enum UIPreview {
 
     /// The SMM1 UI import to use.
     static func cacheDir() -> URL? {
-        if let d = env["MMK_UI_CACHE"], !d.isEmpty { return URL(fileURLWithPath: d, isDirectory: true) }
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        for root in [AppPaths.assetsRoot, home.appendingPathComponent("smm-work/cache", isDirectory: true)] {
-            let dirs = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
-            if let d = dirs.filter({ $0.lastPathComponent.hasPrefix("smm1-") && AppPaths.isAssetCache($0) })
-                .sorted(by: { $0.path > $1.path }).first { return d }
-        }
-        return nil
+        AppPaths.findSMM1Cache()
     }
 }
 

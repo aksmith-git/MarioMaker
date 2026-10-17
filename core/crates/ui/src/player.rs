@@ -4,10 +4,13 @@
 //! order) at its frame, then walk the pane tree (parents first) computing each pane's global
 //! matrix, alpha and visibility, and emit quads for pictures, windows, text and parts.
 //!
-//! Pane transform: `parent · T(translate + anchor offset) · Rz · Ry · Rx · S(scale)`. The anchor
-//! offset places the child relative to a point of the parent's rectangle (pane origin byte
-//! bits 4-7; centre by default): `(anchor factor − parent origin factor) × parent size`.
-//! Alpha: a pane's alpha multiplies into its children when it has the "influenced alpha" flag.
+//! Pane transform: `parent · T(translate + anchor offset) · Rz · Ry · Rx · S(scale)`. A child is
+//! placed relative to its parent's origin point. When the origin byte's bits 4-7 (parent anchor)
+//! are set, the offset `(anchor factor − parent origin factor) × parent size` moves it to that
+//! point of the parent's rectangle [inf: bits 0 = "parent origin" fits the SMM1 data, e.g. the
+//! castle flags and the ending balloon text; set bits are rare].
+//! Alpha: a pane with the "influenced alpha" flag multiplies its alpha into all its descendants
+//! (a part pane into its part layout).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -566,6 +569,9 @@ impl LayoutPlayer {
         let n = self.res.nodes.len();
         let mut mtx = vec![Mtx::IDENTITY; n];
         let mut alpha = vec![1f32; n]; // global alpha of each pane
+        // alpha multiplier handed to each pane's descendants: an "influenced alpha" pane fades its
+        // whole subtree (also through panes without the flag), as ui2d's draw info does
+        let mut passed = vec![1f32; n];
         let mut visible = vec![false; n];
         let ctx = Ctx {
             res: &self.res,
@@ -580,18 +586,28 @@ impl LayoutPlayer {
                 Some(p) => {
                     let pn = &self.res.nodes[p].pane;
                     let ps = &panes[p];
-                    let anchor = [
-                        (factor(node.pane.origin >> 4) - factor(pn.origin)) * ps.size[0],
-                        (factor(pn.origin >> 2) - factor(node.pane.origin >> 6)) * ps.size[1],
-                    ];
-                    let inherited = if pn.influenced_alpha() { alpha[p] } else { 1.0 };
-                    (mtx[p], inherited, visible[p], anchor)
+                    // anchor bits 0: relative to the parent's origin point (castle flags sit on
+                    // a bottom-origin castle, the ending text in its bottom-origin balloon)
+                    let anchor = if node.pane.origin >> 4 == 0 {
+                        [0.0, 0.0]
+                    } else {
+                        [
+                            (factor(node.pane.origin >> 4) - factor(pn.origin)) * ps.size[0],
+                            (factor(pn.origin >> 2) - factor(node.pane.origin >> 6)) * ps.size[1],
+                        ]
+                    };
+                    (mtx[p], passed[p], visible[p], anchor)
                 }
                 None => (*base, base_alpha, true, [0.0, 0.0]),
             };
             let t = [st.t[0] + anchor[0], st.t[1] + anchor[1], st.t[2]];
             mtx[i] = parent_mtx.mul(&Mtx::srt(t, st.r, st.s));
             alpha[i] = own * inherited;
+            passed[i] = if node.pane.influenced_alpha() {
+                alpha[i]
+            } else {
+                inherited
+            };
             visible[i] = parent_visible && st.visible;
             if !visible[i] {
                 continue;
@@ -599,25 +615,28 @@ impl LayoutPlayer {
             let rect = pane_rect(node.pane.origin, st.size);
             ctx.pane_size.set(st.size);
             match &node.pane.kind {
-                PaneKind::Picture(pic) => {
-                    match self.pane_overrides.get(&node.pane.name) {
-                        Some((owner, Pane { kind: PaneKind::Picture(op), .. })) => {
-                            let owner_mats = base_mats(owner);
-                            let octx = Ctx {
-                                res: owner,
-                                mats: &owner_mats,
-                                pane_size: std::cell::Cell::new(st.size),
-                            };
-                            let colors =
-                                vertex_colors(&op.vertex_colors.map(rgba_f), alpha[i]);
-                            octx.picture(op.material, &op.tex_coords, rect, &mtx[i], colors, out);
-                        }
-                        _ => {
-                            let colors = vertex_colors(&st.colors, alpha[i]);
-                            ctx.picture(pic.material, &pic.tex_coords, rect, &mtx[i], colors, out);
-                        }
+                PaneKind::Picture(pic) => match self.pane_overrides.get(&node.pane.name) {
+                    Some((
+                        owner,
+                        Pane {
+                            kind: PaneKind::Picture(op),
+                            ..
+                        },
+                    )) => {
+                        let owner_mats = base_mats(owner);
+                        let octx = Ctx {
+                            res: owner,
+                            mats: &owner_mats,
+                            pane_size: std::cell::Cell::new(st.size),
+                        };
+                        let colors = vertex_colors(&op.vertex_colors.map(rgba_f), alpha[i]);
+                        octx.picture(op.material, &op.tex_coords, rect, &mtx[i], colors, out);
                     }
-                }
+                    _ => {
+                        let colors = vertex_colors(&st.colors, alpha[i]);
+                        ctx.picture(pic.material, &pic.tex_coords, rect, &mtx[i], colors, out);
+                    }
+                },
                 PaneKind::Window(w) => {
                     let colors = vertex_colors(&st.colors, alpha[i]);
                     ctx.window(w, rect, &mtx[i], colors, alpha[i], out);
@@ -647,11 +666,7 @@ impl LayoutPlayer {
                 PaneKind::Part(p) => {
                     if let Some(inst) = self.parts.get(&i) {
                         let m = mtx[i].mul(&Mtx::scale(p.magnify[0], p.magnify[1]));
-                        let a = if node.pane.influenced_alpha() {
-                            alpha[i]
-                        } else {
-                            inherited
-                        };
+                        let a = passed[i];
                         let mut chain: Vec<&HashMap<String, String>> = outer.to_vec();
                         chain.push(&self.res.messages);
                         inst.draw_at(&m, a, &chain, out);

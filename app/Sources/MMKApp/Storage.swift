@@ -6,6 +6,11 @@ import Foundation
 ///       assets/<build>/      asset cache written by the importer (e.g. smm2-3.0.3)
 ///       courses/             the course library (files the user added)
 ///       saves.json           per-course save data
+///       hundred.json         100 Mario Challenge save (Continue records, clears, unlocks)
+///
+/// The SMM1 UI import (`mmk import-smm1`, drives the 100 Mario screens) is looked for in
+/// `MMK_UI_CACHE`, then `assets/smm1-<build>/` here, then `~/smm-work/cache/smm1-<build>/`
+/// (DECISIONS.md, "SMM1 UI cache location"). Without one the app uses its stand-in screens.
 ///
 /// Settings live in UserDefaults (see `SettingsKey`).
 enum AppPaths {
@@ -59,6 +64,22 @@ enum AppPaths {
     static func findAssetCache() -> URL? {
         forcePlaceholder ? nil : assetCandidates().first(where: isAssetCache)
     }
+
+    /// SMM1 UI import folders to try, best first (see the type comment).
+    static func smm1Candidates() -> [URL] {
+        var list: [URL] = []
+        if let d = ProcessInfo.processInfo.environment["MMK_UI_CACHE"], !d.isEmpty {
+            list.append(URL(fileURLWithPath: d, isDirectory: true))
+        }
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        for root in [assetsRoot, home.appendingPathComponent("smm-work/cache", isDirectory: true)] {
+            let dirs = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+            list += dirs.filter { $0.lastPathComponent.hasPrefix("smm1-") }.sorted { $0.path > $1.path }
+        }
+        return list
+    }
+
+    static func findSMM1Cache() -> URL? { smm1Candidates().first(where: isAssetCache) }
 
     static func ensureDirectories() {
         for dir in [support, assetsRoot, courses] {

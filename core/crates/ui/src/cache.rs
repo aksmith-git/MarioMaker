@@ -288,7 +288,11 @@ impl UiCache {
     /// (plain texts, templates) of a layout's message table.
     fn messages_for(&mut self, layout: &str) -> (HashMap<String, String>, HashMap<String, String>) {
         if let Some(m) = self.messages.get(layout) {
-            let t = self.templates.get(layout).cloned().unwrap_or_else(|| m.clone());
+            let t = self
+                .templates
+                .get(layout)
+                .cloned()
+                .unwrap_or_else(|| m.clone());
             return (m.clone(), t);
         }
         let mut out = HashMap::new();

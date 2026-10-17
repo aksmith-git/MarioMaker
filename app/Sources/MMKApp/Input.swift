@@ -9,6 +9,8 @@ struct MenuInput: OptionSet {
     static let down = MenuInput(rawValue: 2)
     static let confirm = MenuInput(rawValue: 4)
     static let back = MenuInput(rawValue: 8)
+    static let left = MenuInput(rawValue: 16)
+    static let right = MenuInput(rawValue: 32)
 }
 
 /// Keyboard and game controllers (Switch Pro, Joy-Con, DualSense, Xbox via GameController) →
@@ -105,18 +107,28 @@ final class InputState {
         return MmkInput(buttons: b)
     }
 
+    /// The 100 Mario skip key is held (Settings: "Skip course", default − / Tab, controller −).
+    var skipHeld: Bool {
+        if held(.skip) { return true }
+        return GCController.controllers().contains { c in c.extendedGamepad.map { padHeld(.skip, $0) } ?? false }
+    }
+
     /// Buttons held for menu navigation.
     var menu: MenuInput {
         var m: MenuInput = []
         if held(.up) { m.insert(.up) }
         if held(.down) { m.insert(.down) }
+        if held(.left) { m.insert(.left) }
+        if held(.right) { m.insert(.right) }
         if !keysDown.isDisjoint(with: Self.confirmKeys) || held(.jump) { m.insert(.confirm) }
         if held(.pause) { m.insert(.back) }
         for c in GCController.controllers() {
             guard let g = c.extendedGamepad else { continue }
-            let y = g.leftThumbstick.yAxis.value
+            let x = g.leftThumbstick.xAxis.value, y = g.leftThumbstick.yAxis.value
             if g.dpad.up.isPressed || y > 0.5 { m.insert(.up) }
             if g.dpad.down.isPressed || y < -0.5 { m.insert(.down) }
+            if g.dpad.left.isPressed || x < -0.5 { m.insert(.left) }
+            if g.dpad.right.isPressed || x > 0.5 { m.insert(.right) }
             if g.buttonA.isPressed { m.insert(.confirm) }
             if g.buttonB.isPressed || padHeld(.pause, g) { m.insert(.back) }
         }

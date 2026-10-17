@@ -135,11 +135,22 @@ AddrLib (R6xx/R7xx) address functions; stored sizes match the computed padding f
 `LayoutPlayer` holds bound animations (per part instance too) and text overrides. Each draw
 starts from the base pane/material values, applies the bound curves (pane SRT/size, visibility,
 vertex colours + pane alpha, material colours, texture SRT, texture pattern; hermite and step
-keys), walks the pane tree parents-first (transform `T·Rz·Ry·Rx·S` with the parent-anchor
-offset; alpha passed on by "influenced alpha" panes) and emits quads for pictures, window frames
-(1/2/4/8-frame kinds) and text glyphs (BFFNT metrics, text position and line alignment, shadow
-pass, per-character fallback font). Deterministic; unit-tested on synthetic layouts. Message
-labels resolve in the layout's own MSBT, and part-property text ids in the enclosing screen's. The **placeholder pack** uses exactly the same format and is built from
+keys), walks the pane tree parents-first (transform `T·Rz·Ry·Rx·S`, children placed at the
+parent's origin point unless anchor bits say otherwise; an "influenced alpha" pane fades its whole
+subtree) and emits quads for pictures, window frames (1/2/4/8-frame kinds) and text glyphs (BFFNT
+metrics, text position and line alignment, shadow pass, per-character fallback font).
+Deterministic; unit-tested on synthetic layouts. Message labels resolve in the layout's own MSBT,
+and part-property text ids in the enclosing screen's. Part properties also override picture
+content (a material of the enclosing layout) and basic values (visibility, translate, size,
+scale, rotate, alpha). Callers can force pane visibility, read a pane's animated values and get
+message templates with value placeholders (U+FFFC).
+
+### 100 Mario screens (app)
+`ChallengeScreens.swift` sequences SMM1 layouts in plain Swift classes (`UIScene`: 60 Hz `step`,
+`layers` to draw): the menu (tabs over the world map), the map walk + intro card, game over and
+the ending; `RunOverlay` holds the in-course layouts (pause, clear, skip countdown, card after a
+death) that the game Renderer draws over the course. `UILayout` keeps a small animation timeline
+per layout. Hosts only step and draw them, so the same classes can move to the portable shell. The **placeholder pack** uses exactly the same format and is built from
 `assets/placeholder/` (original art), so the engine always has something to draw.
 
 ## 5. Rendering (Swift, Metal)

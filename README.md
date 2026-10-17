@@ -53,6 +53,12 @@ scripts/run-app.sh         # or: build and run without bundling
   styles the engine doesn't support yet are marked **Not yet supported**.
 - **In game:** Esc / P / controller + pauses: Continue, Restart course, Exit to library. Clearing
   a course or losing all lives returns to the library.
+- **100 Mario Challenge:** with the owner's SMM1 UI import (`mmk import-smm1`, found in
+  `MMK_UI_CACHE`, `…/MMK/assets/smm1-*` or `~/smm-work/cache/smm1-*`) the screens are SMM1's own
+  layouts: difficulty tabs over the world map (←/→ difficulty, ↑/↓ Continue / New Game), Mario's
+  walk, the intro card, pause, course clear, game over, ending and credits. Hold **−** or **Tab**
+  (controller −; Settings "Skip course") through the 3-step countdown to skip a course; letting go
+  cancels. Without the import, simple stand-in screens are used (`MMK_UI_SMM1=off` forces them).
 - **Save data:** best time, clears and attempts per course in
   `~/Library/Application Support/MMK/saves.json`, keyed by a hash of the course data.
 
@@ -63,8 +69,8 @@ scripts/run-app.sh         # or: build and run without bundling
 | `volume.master`, `volume.music`, `volume.sfx` | Double 0…1 | 1 | audio output |
 | `display.integerScale` | Bool | true | renderer (whole-number scaling, letterboxed) |
 | `display.fullscreen` | Bool | false | window (kept in sync both ways) |
-| `input.keys` | JSON `{action: [key code]}` | arrows/WASD, Z/Space jump, X/Shift run, Esc/P pause | input |
-| `input.pad` | JSON `{action: [button]}` | A/B jump, X/Y run, Menu pause | input |
+| `input.keys` | JSON `{action: [key code]}` | arrows/WASD, Z/Space jump, X/Shift run, Esc/P pause, −/Tab skip (100 Mario) | input |
+| `input.pad` | JSON `{action: [button]}` | A/B jump, X/Y run, Menu pause, Options (−) skip | input |
 | `assets.placeholder` | Bool | false | user chose to run without a dump |
 
 Read them with `UserDefaults.standard.double(forKey: "volume.music")` etc.; defaults are
@@ -79,5 +85,6 @@ registered at launch (`SettingsKey.registerDefaults`).
 | `MMK_START_X/Y=<px>` | start the player somewhere else (with the two above) |
 | `MMK_ASSETS=<dir>` | asset cache to use; `placeholder` = none |
 | `MMK_SUPPORT_DIR=<dir>` | data folder instead of `~/Library/Application Support/MMK` |
-| `MMK_UI_SCREENSHOT=<png>` [`MMK_UI_SCREENSHOT_DELAY=<s>`] [`MMK_UI_SCREEN=import\|settings`] | capture the window (UI included) and quit; with `MMK_COURSE`, `MMK_UI_PAUSE_TICKS=<n>` pauses after n ticks and `MMK_UI_SCRIPTED=1` uses the scripted run |
+| `MMK_UI_SCREENSHOT=<png>` [`MMK_UI_SCREENSHOT_DELAY=<s>`] [`MMK_UI_SCREEN=import\|settings`] | capture the window (UI included) and quit; with `MMK_COURSE`, `MMK_UI_PAUSE_TICKS=<n>` pauses after n ticks and `MMK_UI_SCRIPTED=1` uses the scripted run. More screens: `challenge`, `challenge-intro`/`-map`, `-walk`, `-pause`, `-clear`, `-skip`, `-card`, `-gameover`, `-ending` (`DebugCapture.swift`); `MMK_UI_TICKS=<n>` holds SMM1 layout screens at tick n; `MMK_UI_DIFFICULTY=<0-3>`, `MMK_UI_CLEARED=<n>` |
+| `MMK_UI_CACHE=<dir>` | SMM1 UI import to use; `MMK_UI_SMM1=off` = stand-in 100 Mario screens |
 | `MMK_DEBUG_MISSING_ART=1` | draw boxes for sprites whose art isn't in the cache |

@@ -217,12 +217,26 @@ fn alpha_inheritance_and_anchor() {
     assert_eq!(q.len(), 2);
     assert_eq!(q[0].color[0][3], 128);
     assert_eq!(q[1].color[0][3], 255); // parent does not pass its alpha on
-    // child (anchor: centre of the parent rect) sits at (50, −50)
-    assert!(close(q[1].pos[0], [45.0, -45.0]));
+    // child without anchor bits sits on the parent's origin point (its top-left corner)
+    assert!(close(q[1].pos[0], [-5.0, 5.0]));
     parent.flags |= 2; // influenced alpha
+    // explicit anchor bits: left (1) / top (1), i.e. 0x50
+    parent.children[0].origin = 0x50;
     add(&mut c, layout("B", vec![parent]));
     let q = LayoutPlayer::new(c.layout("B").unwrap()).draw_list();
     assert_eq!(q[1].color[0][3], 128);
+    // the parent's left-top point is its origin point: offset 0
+    assert!(close(q[1].pos[0], [-5.0, 5.0]));
+    // anchor centre of a bigger parent: bits right (2) / bottom (2) = 0xA0 → (100, −100)
+    let child = Pane {
+        origin: 0xA0,
+        ..picture("P_C", 0, [0.0, 0.0], [10.0, 10.0], vec![])
+    };
+    let mut p2 = picture("P_P", 0, [0.0, 0.0], [100.0, 100.0], vec![child]);
+    p2.origin = 5;
+    add(&mut c, layout("C", vec![p2]));
+    let q = LayoutPlayer::new(c.layout("C").unwrap()).draw_list();
+    assert!(close(q[1].pos[0], [95.0, -95.0]));
 }
 
 #[test]
@@ -404,6 +418,42 @@ fn part_pane(name: &str, sub: &str, props: Vec<mmk_formats::lyt::PartProperty>) 
 }
 
 #[test]
+fn influenced_alpha_fades_the_whole_subtree_and_parts() {
+    let mut c = UiCache::in_memory();
+    add(
+        &mut c,
+        layout(
+            "Leaf",
+            vec![picture("P_Leaf", 0, [0.0, 0.0], [4.0, 4.0], vec![])],
+        ),
+    );
+    let grandchild = picture("P_Grand", 0, [0.0, 0.0], [4.0, 4.0], vec![]);
+    let middle = Pane {
+        name: "N_Mid".into(),
+        flags: 1, // visible, not influenced
+        size: [4.0, 4.0],
+        children: vec![grandchild, part_pane("L_Leaf_00", "Leaf", vec![])],
+        ..Default::default()
+    };
+    let top = Pane {
+        name: "N_Top".into(),
+        flags: 3, // influenced alpha
+        alpha: 0,
+        size: [4.0, 4.0],
+        children: vec![middle],
+        ..Default::default()
+    };
+    add(&mut c, layout("Fade", vec![top]));
+    let q = LayoutPlayer::new(c.layout("Fade").unwrap()).draw_list();
+    assert_eq!(q.len(), 2);
+    assert!(
+        q.iter().all(|q| q.color[0][3] == 0),
+        "{:?}",
+        q.iter().map(|q| q.color[0]).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn caller_visibility_and_pane_info() {
     let mut c = UiCache::in_memory();
     add(
@@ -451,7 +501,13 @@ fn part_properties_override_basic_values_and_picture_material() {
                         size: [20.0, 6.0],
                         ..Default::default()
                     }),
-                    pane: Some(Box::new(picture("P_Num", 1, [0.0, 0.0], [1.0, 1.0], vec![]))),
+                    pane: Some(Box::new(picture(
+                        "P_Num",
+                        1,
+                        [0.0, 0.0],
+                        [1.0, 1.0],
+                        vec![],
+                    ))),
                     ..Default::default()
                 },
                 PartProperty {

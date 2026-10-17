@@ -301,3 +301,46 @@ doesn't need Nintendo's NEX protocol.
 
 ⏳ Open for the owner: whether they already have a specific open-source server in mind.
 
+## 2026-10-18 — SMM1 UI cache location
+The app looks for the SMM1 UI import (`mmk import-smm1`) in `MMK_UI_CACHE`, then
+`<Application Support>/MMK/assets/smm1-<build>/` (next to the SMM2 import), then the development
+cache `~/smm-work/cache/smm1-<build>/`; newest build name first (`AppPaths.findSMM1Cache`). No
+import → the SwiftUI stand-in 100 Mario screens. The in-app importer doesn't run the SMM1 import yet.
+
+## 2026-10-18 — 100 Mario screens: SMM1 layouts, inferred choreography
+The layouts and their animations are the game's; how the game strings them together is not in
+the data, so these are inferred and marked [inf] in `ChallengeScreens.swift`:
+- **Difficulty select = tabs over the world map.** `Nwk_ListTitle_00` and the map both have a
+  300-frame MapIn whose frame 0 shows the tab bar above an un-zoomed map with New Game / Continue
+  [obs]. Confirm plays MapIn (bar leaves, map zooms, curtains close) [obs keys]; left/right swap
+  maps with OutL/OutR + InR/InL.
+- **Locked tiers are shown greyed** (button "Invalid"), per the owner's brief. The game adds tabs as
+  they unlock (`OpenType` 0/1/2 = 2/3/4 tabs) [obs], so this is a deliberate departure.
+- **Selected tab = the button's Decide animation held at its end** (dark button, pointer below).
+- **New Game:** MapIn; at 200 the banner (Telop) while the Goombas carry Peach (MoveKuribo); then
+  Peach on the castle (AnimB); Mario jumps out of the start castle and walks to dot 1 (MoveMario);
+  Out; intro card. **Continue:** MapIn with Mario on his dot, Out, card. **After a clear:** In,
+  the cleared dot's Clear pop, Mario walks one dot, Out, card. **After a skip:** straight to the
+  card. Mario's stops are the MoveMario frames where his pane reaches each dot's position (the
+  animation authors one walk along all dots); the walk plays at the authored speed.
+- **Cleared dot = `Type` frame 1** (shows the clear disc).
+- **Intro card:** one small Mario per life; the formation is 100 and AnimB sends #99 forward, so the
+  hidden ones are #0…#(99 − lives). After AnimA + AnimB the card holds for the length of its Out
+  animation (150; Out and OutMiss only key the fade to 0, so they act as timers). After a death:
+  AnimB + OutMiss (60) over the paused game. Confirm skips (A skips since 1.20 [F]).
+- **Pause:** `Cmn_PauseMenu_00` Type 6 (Start Over + exit, no network buttons); the exit button
+  shows the table's "Save & Quit" text. Skip is not a pause item in the layout version: SMM1 skips
+  with the held button. The selection starts on the close (continue) button.
+- **Course clear:** `ModeType` 0 (Save & Quit + Next, no recommendations); on the run's last course
+  `ClearType` 1 (Next alone). Star, comments, recommendations, Miiverse, Mii and flags are hidden:
+  there is no data for them. "World Record" is the dataset's `world_record` when the index has it.
+- **Skip:** hold for 3 × 32 frames (each CountDown step), then Pass (32) and the course ends.
+  Default keys − (minus) and Tab, controller Options (−); bound like the other actions.
+- **Ending:** the rescue scene isn't a layout, so the ending text balloon plays over the finished
+  world map (Mario at the castle). Text: `T_ThankYou_10` (Easy), `_20` (Normal), `_30` (Expert,
+  Super Expert); credits `Nwk_StaffCredit_01` (8 entries, Easy), `_00` (16, Normal and Expert),
+  `_03` (6, Super Expert), chosen by their entry counts.
+- **Layout player:** a child without parent-anchor bits sits on its parent's origin point (fits
+  the castle flags and the balloon text; the earlier "parent centre" rule floated them), and an
+  "influenced alpha" pane fades all its descendants, parts included (Mario's fade-in on the map).
+
