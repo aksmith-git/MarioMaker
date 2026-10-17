@@ -155,6 +155,7 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   lets the player pass until met; HUD shows progress · holding / riding conditions ⬜ (no carry,
   Yoshi, shoe yet) — SMB1 sample 53 → 65 playable
 - ✅ Chain Chomp (chained + unchained)
+- ✅ Pink coins: counted once each across both areas; the last one gives the key
 - ✅ Goomba's Shoe / Stiletto: shoe Goomba hops (50-frame pause, 4.5 / 1.5), leaves the empty
   shoe; the player wears it (spikes and Munchers underfoot safe, shoe stomps, a hit knocks it
   off); "goal in a shoe" condition · shoe ground-pound, Yoshi (SMW/NSMBU) ⬜ — SMB1 sample 93/150

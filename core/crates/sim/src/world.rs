@@ -196,6 +196,9 @@ pub struct World {
     cannon_timers: Vec<i32>,
     /// Keys held.
     pub keys: u32,
+    /// Pink coins collected this attempt (area, tile) and the course's total.
+    pub pink: std::collections::BTreeSet<(usize, i32, i32)>,
+    pub pink_total: usize,
     /// Key-door pairs unlocked: (area, warp id >> 1).
     unlocked_doors: std::collections::BTreeSet<(usize, u8)>,
     /// Snake blocks in the current area.
@@ -268,6 +271,7 @@ impl World {
 
     pub fn with_areas(areas: Vec<Level>) -> Self {
         let level = areas[0].clone();
+        let pink_total = areas.iter().map(|l| l.pink_coins.len()).sum();
         let mut w = Self {
             tick: 0,
             initial: level.clone(),
@@ -322,6 +326,8 @@ impl World {
             liquid: None,
             cannon_timers: Vec::new(),
             keys: 0,
+            pink: Default::default(),
+            pink_total,
             unlocked_doors: Default::default(),
             snakes: Vec::new(),
             held_by: None,
@@ -358,6 +364,7 @@ impl World {
         self.cleared = false;
         self.on_off = true;
         self.keys = 0;
+        self.pink.clear();
         self.unlocked_doors.clear();
         self.p_timer = 0;
         self.p_bricks.clear();
@@ -1092,6 +1099,27 @@ impl World {
         });
         for _ in 0..got {
             self.add_coin();
+        }
+        // pink coins (92-pink-coin.md): each counts once; the last one gives the key
+        let mut newly = 0;
+        for c in &self.level.pink_coins {
+            let cb = (
+                c.x as f32 * TILE,
+                c.y as f32 * TILE,
+                (c.x + 1) as f32 * TILE,
+                (c.y + 1) as f32 * TILE,
+            );
+            if overlap(b, cb) && self.pink.insert((self.area, c.x, c.y)) {
+                newly += 1;
+            }
+        }
+        if newly > 0 {
+            self.events.push(Event::Coin);
+            if self.pink.len() >= self.pink_total {
+                // [inf] the key flies straight to the player (event kind 0)
+                self.keys += 1;
+                self.events.push(Event::OneUp);
+            }
         }
     }
 
@@ -2849,6 +2877,21 @@ impl World {
             let (px, py) = (c.x as f32 * TILE, c.y as f32 * TILE);
             if visible(px, py) {
                 out.push(tile(px, py, 7, 20));
+            }
+        }
+        for c in &self.level.pink_coins {
+            let (px, py) = (c.x as f32 * TILE, c.y as f32 * TILE);
+            if visible(px, py) && !self.pink.contains(&(self.area, c.x, c.y)) {
+                out.push(Self::model_sprite(
+                    "M1_Object_coinrotate_pink",
+                    ["wait.0", "wait.1", "wait.2", "wait.3"][(self.tick as usize / 8) % 4],
+                    px,
+                    py,
+                    16.0,
+                    16.0,
+                    false,
+                    20,
+                ));
             }
         }
         self.goal_sprites(&mut out);
@@ -4794,6 +4837,23 @@ mod tests {
         assert_eq!(w.player.shoe, None);
         assert_eq!(w.player.form, Form::Small);
         assert!(w.player.alive());
+    }
+
+    #[test]
+    fn collecting_every_pink_coin_gives_a_key() {
+        let mut lvl = Level::flat(40);
+        lvl.pink_coins.push(CoinTile { x: 6, y: 2 });
+        lvl.pink_coins.push(CoinTile { x: 9, y: 2 });
+        let mut w = World::with_level(lvl);
+        assert_eq!(w.pink_total, 2);
+        w.player.x = 6.0 * TILE + 8.0;
+        run(&mut w, 0, 1);
+        assert_eq!((w.pink.len(), w.keys), (1, 0));
+        w.player.x = 9.0 * TILE + 8.0;
+        run(&mut w, 0, 1);
+        assert_eq!((w.pink.len(), w.keys), (2, 1));
+        run(&mut w, 0, 1);
+        assert_eq!(w.keys, 1, "counted once");
     }
 
     #[test]

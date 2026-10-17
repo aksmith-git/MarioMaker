@@ -288,6 +288,8 @@ pub struct Level {
     cells: Vec<Cell>,
     pub tiles: Vec<TileDraw>,
     pub coins: Vec<CoinTile>,
+    /// Pink coins (92): all of them, in both areas, make a key.
+    pub pink_coins: Vec<CoinTile>,
     pub slopes: Vec<Slope>,
     pub blocks: Vec<BlockPlacement>,
     pub spawns: Vec<Spawn>,
@@ -373,7 +375,7 @@ pub fn switch_atlas(kind: BlockKind, on: bool) -> u32 {
 pub const SUPPORTED_PARTS: &[i16] = &[
     0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 43, 44, 45, 46, 47, 48, 52, 53, 54,
-    55, 56, 57, 58, 60, 61, 63, 64, 66, 67, 68, 70, 71, 76, 82, 83, 84, 87, 88, 90, 91, 95, 99,
+    55, 56, 57, 58, 60, 61, 63, 64, 66, 67, 68, 70, 71, 76, 82, 83, 84, 87, 88, 90, 91, 92, 95, 99,
     100, 102, 104, 105, 109,
 ];
 
@@ -476,6 +478,7 @@ impl Level {
             firebars: Vec::new(),
             cannons: Vec::new(),
             snakes: Vec::new(),
+            pink_coins: Vec::new(),
             vines: Vec::new(),
             tracks: Default::default(),
             liquid: None,
@@ -920,6 +923,7 @@ impl Level {
             }
             match o.id {
                 8 if !actorish => lvl.coins.push(CoinTile { x: tx, y: ty }),
+                92 => lvl.pink_coins.push(CoinTile { x: tx, y: ty }),
                 id if !actorish && block_kind(id).is_some() => {
                     let mut kind = block_kind(id).unwrap();
                     if id == 100 && o.flags & 0x4 != 0 {
@@ -1268,6 +1272,7 @@ impl Level {
             firebars: Vec::new(),
             cannons: Vec::new(),
             snakes: Vec::new(),
+            pink_coins: Vec::new(),
             vines: Vec::new(),
             tracks: Default::default(),
             liquid: None,
