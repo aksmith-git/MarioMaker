@@ -149,6 +149,11 @@ impl Editor {
         }
     }
 
+    /// Forget redo steps (after an undo that only reverted a no-op checkpoint).
+    pub fn redo_clear(&mut self) {
+        self.redo.clear();
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }

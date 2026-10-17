@@ -12,6 +12,9 @@ use crate::source::{self, AssetSource};
 
 pub struct Game {
     pub session: Session,
+    /// Course Maker mode (`--edit`): the editor, and whether it is showing (else test play).
+    pub maker: Option<crate::maker::Maker>,
+    pub editing: bool,
     /// Shared with the renderer's texture upload.
     pub cache: Arc<Cache>,
     /// No game art: sprites are drawn as placeholder boxes.
@@ -36,6 +39,8 @@ impl Game {
             None => None,
         };
         Ok(Self {
+            maker: None,
+            editing: false,
             session: Session::new(course),
             placeholder: assets.is_none(),
             cache: Arc::new(cache),
@@ -46,7 +51,47 @@ impl Game {
     }
 
     /// What to draw now.
+    /// Test-play the maker's course (Enter in the editor).
+    pub fn play_maker_course(&mut self) {
+        let Some(bytes) = self.maker.as_ref().and_then(|m| m.course_bytes()) else {
+            return;
+        };
+        if let Ok(c) = mmk_formats::smm2::Course::parse(&bytes) {
+            let audio = self.session.audio.clone();
+            self.session = Session::new(Some(c));
+            self.session.set_audio(audio);
+            self.editing = false;
+            self.resolver.reset();
+        }
+    }
+
+    /// Back from test play to the editor.
+    pub fn edit_again(&mut self) {
+        if self.maker.is_some() {
+            self.editing = true;
+            self.resolver.reset();
+        }
+    }
+
     pub fn scene(&mut self) -> Scene<'_> {
+        if self.editing
+            && let Some(m) = self.maker.as_mut()
+        {
+            let status = m.status();
+            let w = m.world();
+            self.resolver.resolve(w, &self.cache, &mut self.sprites);
+            self.hud = HudText {
+                strip: status,
+                banner: None,
+            };
+            return Scene {
+                sprites: &self.sprites,
+                camera: (w.camera_x, w.camera_y),
+                upside_down: false,
+                clear: mmk_host::clear_color(w, &self.cache),
+                hud: &self.hud,
+            };
+        }
         let w = &self.session.world;
         self.resolver.resolve(w, &self.cache, &mut self.sprites);
         self.hud = HudText::of(w, self.session.phase);

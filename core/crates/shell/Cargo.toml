@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 mmk-assets = { path = "../assets" }
 mmk-audio = { path = "../audio" }
+mmk-editor = { path = "../editor" }
 mmk-formats = { path = "../formats" }
 mmk-host = { path = "../host" }
 mmk-sim = { path = "../sim" }

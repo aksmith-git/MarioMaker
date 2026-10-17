@@ -71,6 +71,13 @@ mod native {
         /// Play the smoke-test script in the window instead of reading input.
         #[arg(long)]
         scripted: bool,
+        /// Course Maker: edit the course file (a new course if it doesn't exist yet); Enter
+        /// test-plays, E returns to editing, Ctrl+S saves back to the file.
+        #[arg(long)]
+        edit: bool,
+        /// Course Maker style for a new course (M1, M3, MW, WU, 3W).
+        #[arg(long, default_value = "M1")]
+        style: String,
         /// Debug: start the player at this x (px), and y (default 32).
         #[arg(long)]
         start_x: Option<f32>,
@@ -97,10 +104,29 @@ mod native {
         let source = assets_dir.as_ref().map(|d| DirSource::new(d.clone()));
         let source_ref = source.as_ref().map(|s| s as &dyn AssetSource);
         let course = match &args.course {
+            Some(p) if args.edit && !p.exists() => None,
             Some(p) => Some(std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?),
             None => None,
         };
-        let mut game = Game::load(source_ref, course.as_deref())?;
+        let mut game = Game::load(source_ref, if args.edit { None } else { course.as_deref() })?;
+        if args.edit {
+            let editor = match &course {
+                Some(bytes) => {
+                    let c = mmk_host::course::decode(bytes, || source::key_table(source_ref))?;
+                    mmk_editor::Editor::open(&c.to_bytes().map_err(|e| e.to_string())?)
+                        .map_err(|e| format!("{e:?}"))?
+                }
+                None => {
+                    let mut e = mmk_editor::Editor::new(&args.style);
+                    for x in 0..240 {
+                        let _ = e.paint_ground(x, 0);
+                    }
+                    e
+                }
+            };
+            game.maker = Some(mmk_shell::maker::Maker::new(editor, args.course.clone()));
+            game.editing = true;
+        }
         match &assets_dir {
             Some(d) => log(&format!(
                 "assets: {} ({} textures)",

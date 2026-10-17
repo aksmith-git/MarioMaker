@@ -262,7 +262,9 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
 - 🔄 Course Maker (editor): core crate `editor` ✅ (place / erase parts with default sizes, child items,
   flags, ground painting auto-tiled from a corpus-derived table, theme / night / timer / autoscroll /
   style / name / length, undo-redo, save; tests play the saved course in the sim) · maker UI, copy,
-  sub-area links, pipes/doors, paths, tracks, test play ⬜
+  sub-area links, pipes/doors, paths, tracks ⬜ · first maker UI ✅ in the portable shell
+  (`mmk-play --edit <file>`): engine-drawn course, ghost preview, 24-part palette, place/erase with
+  the mouse, scroll, undo/redo, save, Enter test-play / E back · SMM2 maker layouts ⬜
 - ⬜ Story Mode (Peach's castle jobs, built-in courses from the owner's dump), Coursebot, Lessons
 - ⬜ Endless Challenge (SMM2's successor to 100 Mario) alongside the SMM1-style 100 Mario Challenge
 - ⬜ Ninji speedruns / event courses (offline with local data), records and medals

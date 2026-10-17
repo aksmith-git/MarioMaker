@@ -106,6 +106,8 @@ pub fn screenshot(
     scripted: bool,
     allow_bc: bool,
 ) -> Result<String, String> {
+    // the maker view is drawn as it is (nothing ticks while editing)
+    let ticks = if game.editing { 0 } else { ticks };
     for _ in 0..ticks {
         let input = if scripted {
             scripted_run(game.session.world.tick)

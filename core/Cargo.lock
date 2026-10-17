@@ -1256,6 +1256,7 @@ dependencies = [
  "gilrs",
  "mmk-assets",
  "mmk-audio",
+ "mmk-editor",
  "mmk-formats",
  "mmk-host",
  "mmk-sim",

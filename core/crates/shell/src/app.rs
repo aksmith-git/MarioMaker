@@ -10,9 +10,9 @@ use std::time::Duration;
 
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, StartCause, WindowEvent};
+use winit::event::{ElementState, MouseButton, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
-use winit::keyboard::PhysicalKey;
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::game::Game;
@@ -166,6 +166,9 @@ pub struct App {
     frames: u64,
     /// The last frame couldn't present; redraw when the wait times out.
     idle: bool,
+    /// Mouse position (window px) and Ctrl held, for the maker.
+    mouse: (f64, f64),
+    ctrl: bool,
     /// Keeps sound playing (native builds).
     #[cfg(not(target_arch = "wasm32"))]
     pub audio: Option<crate::audio_out::AudioStream>,
@@ -194,6 +197,8 @@ impl App {
             first_frame: None,
             frames: 0,
             idle: false,
+            mouse: (0.0, 0.0),
+            ctrl: false,
             #[cfg(not(target_arch = "wasm32"))]
             audio: None,
         }
@@ -233,7 +238,22 @@ impl App {
         let pads = self.pads.poll();
         let input = combine(&self.keys, pads);
         let actions = self.keys.take_actions();
-        self.game.session.frame(dt, input, actions);
+        if self.game.editing {
+            // arrows / WASD scroll the maker view
+            if let Some(m) = self.game.maker.as_mut() {
+                let b = input.buttons;
+                let speed = 4.0;
+                let dx = (b & mmk_sim::input::RIGHT != 0) as i32
+                    - (b & mmk_sim::input::LEFT != 0) as i32;
+                let dy =
+                    (b & mmk_sim::input::UP != 0) as i32 - (b & mmk_sim::input::DOWN != 0) as i32;
+                if dx != 0 || dy != 0 {
+                    m.scroll(dx as f32 * speed, dy as f32 * speed);
+                }
+            }
+        } else {
+            self.game.session.frame(dt, input, actions);
+        }
         if let Some(gfx) = &mut self.gfx {
             if gfx.draw(&mut self.game) {
                 // presenting waits for the display, which paces the loop
@@ -245,6 +265,66 @@ impl App {
                 self.idle = true;
                 event_loop.set_control_flow(ControlFlow::wait_duration(Duration::from_millis(16)));
             }
+        }
+    }
+
+    /// Maker keys (editing: palette, undo/redo, save, play; playing: E edits again). True when
+    /// the key was used.
+    fn maker_key(&mut self, code: KeyCode) -> bool {
+        if self.game.maker.is_none() {
+            return false;
+        }
+        if !self.game.editing {
+            if code == KeyCode::KeyE {
+                self.game.edit_again();
+                return true;
+            }
+            return false;
+        }
+        let ctrl = self.ctrl;
+        let m = self.game.maker.as_mut().expect("checked");
+        let digit = [
+            KeyCode::Digit1,
+            KeyCode::Digit2,
+            KeyCode::Digit3,
+            KeyCode::Digit4,
+            KeyCode::Digit5,
+            KeyCode::Digit6,
+            KeyCode::Digit7,
+            KeyCode::Digit8,
+            KeyCode::Digit9,
+            KeyCode::Digit0,
+        ]
+        .iter()
+        .position(|&k| k == code);
+        match code {
+            _ if digit.is_some() => m.select(digit.unwrap_or(0)),
+            KeyCode::Tab => m.next_tool(),
+            KeyCode::KeyZ if ctrl => m.undo(),
+            KeyCode::KeyY if ctrl => m.redo(),
+            KeyCode::KeyS if ctrl => m.save(),
+            KeyCode::Enter => {
+                self.game.play_maker_course();
+                self.keys.clear();
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// The maker's cursor tile under the mouse.
+    fn maker_hover(&mut self) {
+        let (Some(g), true) = (&self.gfx, self.game.editing) else {
+            return;
+        };
+        let size = (g.config.width, g.config.height);
+        let (vx, vy, vw, vh, _) = crate::render::viewport(size.0, size.1, true);
+        let u = (self.mouse.0 as f32 - vx) / vw * mmk_sim::world::VIEW_W;
+        let v = (self.mouse.1 as f32 - vy) / vh * mmk_sim::world::VIEW_H;
+        let inside = (0.0..mmk_sim::world::VIEW_W).contains(&u)
+            && (0.0..mmk_sim::world::VIEW_H).contains(&v);
+        if let Some(m) = self.game.maker.as_mut() {
+            m.hover(inside.then(|| m.tile_at_view(u, v)));
         }
     }
 
@@ -335,7 +415,35 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::Focused(false) => self.keys.clear(),
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
-                    self.keys.key(code, event.state == ElementState::Pressed);
+                    let pressed = event.state == ElementState::Pressed;
+                    if matches!(
+                        code,
+                        KeyCode::ControlLeft
+                            | KeyCode::ControlRight
+                            | KeyCode::SuperLeft
+                            | KeyCode::SuperRight
+                    ) {
+                        self.ctrl = pressed;
+                    }
+                    if pressed && self.maker_key(code) {
+                        return;
+                    }
+                    self.keys.key(code, pressed);
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.mouse = (position.x, position.y);
+                self.maker_hover();
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button,
+                ..
+            } => {
+                if self.game.editing
+                    && let Some(m) = self.game.maker.as_mut()
+                {
+                    m.click(button == MouseButton::Right);
                 }
             }
             WindowEvent::RedrawRequested => self.frame(event_loop),

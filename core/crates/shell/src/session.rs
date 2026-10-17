@@ -58,7 +58,7 @@ pub struct Session {
     course: Option<Course>,
     pub phase: Phase,
     step: FixedStep,
-    audio: Option<Arc<AudioOut>>,
+    pub(crate) audio: Option<Arc<AudioOut>>,
     director: Option<Director>,
     /// The start button must be released before it pauses again.
     held_start: bool,
