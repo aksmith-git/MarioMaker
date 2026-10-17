@@ -106,6 +106,8 @@ pub enum Form {
     Propeller,
     /// 3D World Super Bell: climbs walls, scratches, dives.
     Cat,
+    /// 3D World Super Hammer (Builder Mario): swings a hammer.
+    Builder,
 }
 
 /// Invincibility after taking damage (§7).
@@ -873,7 +875,10 @@ impl Player {
         // [inf: 16 frames]
         if run
             && !self.prev_run
-            && matches!(self.form, Form::Raccoon | Form::Cape | Form::Cat)
+            && matches!(
+                self.form,
+                Form::Raccoon | Form::Cape | Form::Cat | Form::Builder
+            )
             && self.held.is_none()
             && !self.dive
             && self.cat_climb == 0
@@ -1052,6 +1057,11 @@ impl Player {
             self.flap = 0;
             self.slow_fall = 0;
         }
+        if self.form == Form::Builder && self.attack > 0 && !self.on_ground {
+            // HammerAttack in the air: falls no faster than 1.5, |speed| ≤ 1.125
+            self.vy = self.vy.max(-1.5);
+            self.vx = self.vx.clamp(-1.125, 1.125);
+        }
         if self.roll > 0 {
             self.roll -= 1;
             if !self.on_ground && self.cat_climb == 0 && !self.dive {
@@ -1106,6 +1116,7 @@ impl Player {
                 Form::Cape => 4,
                 Form::Propeller => 5,
                 Form::Cat => 6,
+                Form::Builder => 7,
             },
             shoe: self.shoe.is_some(),
             clown_car: self.clown.is_some(),

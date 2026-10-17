@@ -436,6 +436,7 @@ enum ClearConditionText {
         case 17: return "\(mark) goal on Yoshi"
         case 18: return "\(mark) goal as Cat Mario"
         case 19: return "\(mark) goal in a Koopa Troopa Car"
+        case 20: return "\(mark) goal as Builder Mario"
         default: return "⚑ condition not supported"
         }
     }

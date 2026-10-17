@@ -1219,7 +1219,12 @@ impl World {
                 self.actors[j].mode = Mode::Dead;
                 self.yoshi_mouth = Some(Kind::Hammer);
             }
-            Kind::Mushroom | Kind::FireFlower | Kind::Star | Kind::OneUp | Kind::StyleItem => {
+            Kind::Mushroom
+            | Kind::FireFlower
+            | Kind::Star
+            | Kind::OneUp
+            | Kind::StyleItem
+            | Kind::SuperHammer => {
                 self.actors[j].mode = Mode::Dead;
                 self.collect_item(kind, ax, ay);
             }
@@ -2708,6 +2713,11 @@ impl World {
                 self.events.push(Event::PowerUp);
                 self.add_score(ITEM_SCORE, x, y + 16.0);
             }
+            Kind::SuperHammer => {
+                self.player.power_up(Form::Builder);
+                self.events.push(Event::PowerUp);
+                self.add_score(ITEM_SCORE, x, y + 16.0);
+            }
             // the power-up sound plays for every pickup, also when the form does not change
             Kind::Mushroom => {
                 self.player.power_up(Form::Super);
@@ -3340,7 +3350,11 @@ impl World {
         let p = &self.player;
         // the cat's scratch hits from its first frame (it lunges into what it hits) [inf]
         let window = if p.form == Form::Cat { 2..=15 } else { 4..=12 };
-        if !window.contains(&p.attack) || !matches!(p.form, Form::Raccoon | Form::Cape | Form::Cat)
+        if !window.contains(&p.attack)
+            || !matches!(
+                p.form,
+                Form::Raccoon | Form::Cape | Form::Cat | Form::Builder
+            )
         {
             return;
         }
@@ -5215,6 +5229,7 @@ impl World {
                 )
             }
             Kind::Mushroom => ("M1_Item_kinoko", "wait.0", 16.0, 16.0, false),
+            Kind::SuperHammer => ("M1_Item_hammer", "wait.0", 16.0, 16.0, false),
             Kind::StyleItem => (
                 "M1_Item_special",
                 ["wait.0", "wait.1", "wait.2"][(self.tick as usize / 8) % 3],
@@ -5668,8 +5683,10 @@ impl World {
             Form::Super | Form::Cape | Form::Propeller => "M1_Player_SpMarioMdl",
             Form::Fire => "M1_Player_FireMarioMdl",
             Form::Raccoon => "M1_Player_TnkMarioMdl",
-            // 3D World only: the mesh path draws the cat suit (3W_Player_MarioClimb)
+            // 3D World only: the mesh path draws the cat suit (3W_Player_MarioClimb) and the
+            // builder outfit (3W_Player_MarioBuilder)
             Form::Cat => "M1_Player_NekoMarioMdl",
+            Form::Builder => "M1_Player_BuilderMarioMdl",
         };
         // the multiplayer characters are the model's variants: _2 Luigi, _3 Toad, _4 Toadette
         // (star power is a palette effect in the game; not drawn yet [⬜])
@@ -5734,6 +5751,8 @@ impl World {
             Form::Cat if p.dive => (model, "BodyAttackLoop.0"),
             Form::Cat if p.attack > 0 && p.on_ground => (model, "SlidingAttack.0"),
             Form::Cat if p.attack > 0 => (model, "AttackAir.0"),
+            Form::Builder if p.attack > 0 && p.on_ground => (model, "Hammer_Right.0"),
+            Form::Builder if p.attack > 0 => (model, "HammerAir_Right.0"),
             Form::Cape if !p.on_ground && p.flight > 0 => ("M1_Player_MantMario", "up1.0"),
             Form::Cape if !p.on_ground && p.vy <= -0.99 && p.vy >= -1.01 => {
                 ("M1_Player_MantMario", "down1.0")
@@ -7628,6 +7647,33 @@ mod tests {
         }
         assert_eq!(far, x0 + 64.0, "reached the end");
         assert!(w.actors[0].x < far, "and came back after the 60-frame stop");
+    }
+
+    #[test]
+    fn super_hammer_makes_builder_mario_who_swings() {
+        let mut lvl = Level::flat(60);
+        lvl.style = "3W".into();
+        lvl.spawns.push(spawn(Kind::SuperHammer, 120.0, 32.0));
+        lvl.spawns.push(spawn(Kind::Goomba, 400.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.style = crate::player::Style::W3;
+        w.player.x = 40.0;
+        run(&mut w, input::RIGHT | input::RUN, 90);
+        run(&mut w, 0, 60);
+        assert_eq!(w.player.form, Form::Builder);
+        let gi = w
+            .actors
+            .iter()
+            .position(|a| a.kind == Kind::Goomba)
+            .unwrap();
+        let (gx, gy) = (w.actors[gi].x, w.actors[gi].y);
+        w.player.x = gx - 22.0;
+        w.player.y = gy;
+        w.player.facing = 1;
+        run(&mut w, input::RUN, 8);
+        assert!(!w.actors[gi].alive(), "hammer hit");
+        assert_eq!(w.player.form, Form::Builder, "not hurt");
+        assert_eq!(w.player.at_goal().form, 7);
     }
 
     #[test]

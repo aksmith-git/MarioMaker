@@ -733,6 +733,7 @@ fn player_parts(style: &str, model: &str) -> Option<(Vec<PlayerPart>, u32)> {
     let small = model.starts_with("M1_Player_MarioMdl");
     let fire = model.starts_with("M1_Player_FireMarioMdl");
     let cat = model.starts_with("M1_Player_NekoMarioMdl");
+    let builder = model.starts_with("M1_Player_BuilderMarioMdl");
     let player = model.starts_with("M1_Player_") && model.contains("MarioMdl");
     if !player {
         return None;
@@ -775,6 +776,18 @@ fn player_parts(style: &str, model: &str) -> Option<(Vec<PlayerPart>, u32)> {
                 ("3W_Player_MarioClimbHandL", "", Some((0, "HandL"))),
                 ("3W_Player_MarioClimbHandR", "", Some((0, "HandR"))),
                 ("3W_Player_MarioClimbTail", "", Some((0, "Hip"))),
+            ],
+            variant,
+        ),
+        // Builder Mario: the outfit body on Mario's skeleton; the hammer rides the right hand
+        ("3W", false) if builder => (
+            vec![
+                ("3W_Player_MarioBuilder", "", None),
+                ("3W_Player_MarioFace", "", Some((0, "Head"))),
+                ("3W_Player_MarioEye", "", Some((0, "Head"))),
+                ("3W_Player_MarioHandL", "", Some((0, "HandL"))),
+                ("3W_Player_MarioHandR", "", Some((0, "HandR"))),
+                ("3W_Player_Hammer", "", Some((0, "HandR"))),
             ],
             variant,
         ),

@@ -186,6 +186,8 @@ pub enum Kind {
     /// 2 run, 3 turn (30 frames) — the world drives it while the player rides; `hops` = damage
     /// taken (the third hit breaks it) [inf].
     KoopaCar,
+    /// Super Hammer (116, 3D World): walks like a mushroom [inf]; makes Builder Mario.
+    SuperHammer,
     /// A coin that moves (wings or a track): collected on touch.
     FloatCoin,
     /// Yoshi's Egg (45 in SMW / NSMBU): hatches into Yoshi; `red` = Red Yoshi [inf: alt flag].
@@ -400,7 +402,12 @@ impl Kind {
     pub fn is_item(self) -> bool {
         matches!(
             self,
-            Kind::Mushroom | Kind::FireFlower | Kind::Star | Kind::OneUp | Kind::StyleItem
+            Kind::Mushroom
+                | Kind::FireFlower
+                | Kind::Star
+                | Kind::OneUp
+                | Kind::StyleItem
+                | Kind::SuperHammer
         )
     }
 }
@@ -1267,7 +1274,9 @@ impl Actor {
                     self.mode = Mode::Normal;
                     self.vy = 0.0;
                     self.vx = match self.kind {
-                        Kind::Mushroom | Kind::OneUp | Kind::Star => ITEM_SPEED * self.dir as f32,
+                        Kind::Mushroom | Kind::OneUp | Kind::Star | Kind::SuperHammer => {
+                            ITEM_SPEED * self.dir as f32
+                        }
                         _ => 0.0,
                     };
                     if self.kind == Kind::Star {
@@ -1290,7 +1299,9 @@ impl Actor {
                 if self.x == tx && self.y == ty {
                     self.mode = Mode::Normal;
                     self.vx = match self.kind {
-                        Kind::Mushroom | Kind::OneUp | Kind::Star => ITEM_SPEED * self.dir as f32,
+                        Kind::Mushroom | Kind::OneUp | Kind::Star | Kind::SuperHammer => {
+                            ITEM_SPEED * self.dir as f32
+                        }
                         _ => 0.0,
                     };
                     self.vy = if matches!(self.pipe, Some((PipeDir::Down, _, _))) {
@@ -1655,7 +1666,7 @@ impl Actor {
                     self.turn();
                 }
             }
-            Kind::Mushroom | Kind::OneUp => {
+            Kind::Mushroom | Kind::OneUp | Kind::SuperHammer => {
                 self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
                 if self.on_ground {
                     self.vx = ITEM_SPEED * self.dir as f32;

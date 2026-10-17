@@ -290,7 +290,7 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   - ⬜ boot scene, fades, FLCT per-character text, glyph borders; Course World (`Nwk_Title_00`),
     Story Mode map (`Qst_*`), pause, clear / death screens, HUD; title in `mmk-play`
 - 🔄 All five styles (SMB1, SMB3, SMW, NSMBU, 3D World) and all themes (day/night) — all five
-  playable — sample 3D World 99/100 (Super Hammer ⬜)
+  playable — sample 3D World 100/100
 - ✅ Warp Box (97-warp-box.md): pairs 2k ↔ 2k+1 in the same area, entered by touch (no button),
   player hidden at once, held items dropped, key boxes spend one key and stay open, a used pair
   vanishes (single player); blocked-exit cancel ⬜
@@ -311,6 +311,13 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
 - ✅ Track Block (85): 2×2 solid on its own path (2 tiles per node [inf]), sets off when ridden,
   0.5 px/f while ON, holds while OFF, 60-frame stop at the ends, then back (normal) or blink
   180 f, vanish and respawn at the start (alternate)
+- ✅ 3D World enemies (actors/w3.rs, world/w3.rs): Ant Trooper (wall/ceiling crawl, horned),
+  Stingby (patrol, alert, charge), Skipsqueak (+ Spiny; jumps with the player), Hop-Chops,
+  Porcupuffer (4 HP, homing, surface patrol), Bully (push-back, stun), Charvaargh (lava leap with
+  8 segments), Piranha Creeper (path creep, sleeping form) — guesses listed in DECISIONS.md
+- ✅ Super Hammer / Builder Mario (116): item walks like a mushroom [inf]; Run swings the hammer
+  (hits enemies and breaks blocks in front), air swing falls ≤ 1.5 and |vx| ≤ 1.125; "goal as
+  Builder" condition; drawn with the builder outfit + hammer meshes. Crate building ⬜
 - ✅ Super Bell / Cat Mario (3D World): the bell walks like a mushroom; wall climb (1.0, 1.5 with
   run, ≤ 120 f / 120 px, top-out vy 4.8, then WallClimbFall −0.085 to −2.0), dive (Down in the
   air: 4.0 forward, −3.0), slide scratch (2.5 for 12 f) and air scratch (vy 2.4, gravity −0.1, once

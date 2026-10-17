@@ -93,6 +93,7 @@ pub enum Goal {
     Cape,
     Propeller,
     Cat,
+    Builder,
     /// Reach the goal wearing a Goomba's Shoe / flying a Koopa Clown Car.
     Shoe,
     ClownCar,
@@ -153,6 +154,7 @@ impl ClearCondition {
                 48 => Goal::Cape,
                 49 => Goal::Propeller,
                 50 => Goal::Cat,
+                51 => Goal::Builder,
                 45 => Goal::Star,
                 58 => Goal::Shoe,
                 62 => Goal::ClownCar,
@@ -259,6 +261,7 @@ impl ClearCondition {
             Goal::Cape => form == 4,
             Goal::Propeller => form == 5,
             Goal::Cat => form == 6,
+            Goal::Builder => form == 7,
             Goal::Shoe => shoe,
             Goal::ClownCar => clown_car,
             Goal::KoopaCar => koopa_car,
