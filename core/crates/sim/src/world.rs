@@ -61,6 +61,9 @@ pub enum Event {
     Pipe,
     Checkpoint,
     Switch,
+    /// A clear-condition count went up / the condition is now met.
+    ConditionCount,
+    ConditionMet,
 }
 
 /// P-switch duration: [ext] about 10 s (not found in the binary).
@@ -141,6 +144,8 @@ pub struct World {
     pub bank_lives: bool,
     /// Time left in frames (−1: no timer).
     pub time: i32,
+    /// The course's clear condition and its progress this attempt.
+    pub clear: crate::clear::ClearCondition,
     pub goal_phase: GoalPhase,
     /// Goal flag height above Y0, tower flag offset, frames since StartPlayerRun.
     pub goal_flag: f32,
@@ -247,7 +252,14 @@ impl World {
     pub fn from_course(course: &Course) -> Self {
         let main = Level::from_course(course, 0);
         let sub = Level::from_course(course, 1);
-        Self::with_areas(vec![main, sub])
+        let mut w = Self::with_areas(vec![main, sub]);
+        let h = &course.header;
+        w.clear = crate::clear::ClearCondition::from_header(
+            h.clear_condition_category,
+            h.clear_condition,
+            h.clear_condition_magnitude.max(0) as u16,
+        );
+        w
     }
 
     pub fn with_level(level: Level) -> Self {
@@ -276,6 +288,7 @@ impl World {
             lives_gained: 0,
             bank_lives: false,
             time: -1,
+            clear: crate::clear::ClearCondition::none(),
             goal_phase: GoalPhase::None,
             goal_flag: 144.0,
             tower_flag: -24.0,
@@ -329,6 +342,7 @@ impl World {
         self.fade = 0.0;
         self.initial = self.area_initial[0].clone();
         self.load_area_fresh();
+        self.clear.reset();
         self.score = self.base_score;
         self.coins = self.base_coins;
         self.time = if self.level.timer > 0 {
@@ -523,7 +537,44 @@ impl World {
         self.events.push(Event::OneUp);
     }
 
+    /// A clear-condition count result: effects for counting up and for completing.
+    fn condition_counted(&mut self, done: Option<bool>) {
+        match done {
+            Some(true) => {
+                self.events.push(Event::ConditionCount);
+                self.events.push(Event::ConditionMet);
+            }
+            Some(false) => self.events.push(Event::ConditionCount),
+            None => {}
+        }
+    }
+
+    /// Defeated enemies count toward a "defeat N" condition once each (placed objects by their
+    /// spawn record; others every time).
+    fn tally_defeats(&mut self) {
+        let mut results = Vec::new();
+        for a in &mut self.actors {
+            if a.tallied {
+                continue;
+            }
+            let shelled = matches!(a.kind, Kind::Shell { .. });
+            if a.alive() && !shelled {
+                continue;
+            }
+            a.tallied = true;
+            if let Some(class) = a.kind.defeat_class(a.buzzy) {
+                let key = a.spawn.map(|s| (self.area as u32) << 16 | s as u32);
+                results.push(self.clear.defeated(class, key));
+            }
+        }
+        for r in results {
+            self.condition_counted(r);
+        }
+    }
+
     fn add_coin(&mut self) {
+        let r = self.clear.coin(1);
+        self.condition_counted(r);
         self.coins += 1;
         self.score += COIN_SCORE;
         self.events.push(Event::Coin);
@@ -688,7 +739,11 @@ impl World {
                 return;
             }
             for a in &mut self.actors {
-                if a.alive() && l.covers(a.y + 2.0) && !a.kind.is_platform() {
+                if a.alive()
+                    && l.covers(a.y + 2.0)
+                    && !a.kind.is_platform()
+                    && a.kind != Kind::LavaBubble
+                {
                     a.mode = Mode::Dead;
                 }
             }
@@ -710,6 +765,8 @@ impl World {
             }
             a.target = (px, py);
             a.target_facing = self.player.facing;
+            a.camera = (self.camera_x, self.camera_y);
+            a.floor_ref = self.liquid.map(|l| l.y).unwrap_or(self.level.bottom - 12.0);
             if a.kind == Kind::Lakitu {
                 a.speed = self.player.vx;
             }
@@ -739,8 +796,18 @@ impl World {
         self.actor_interactions();
         self.player_interactions(jump_held);
         self.step_effects();
+        self.tally_defeats();
         self.despawn();
         self.actors.retain(|a| a.mode != Mode::Dead);
+        // action conditions: damage taken this frame, landings
+        if self
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::PowerDown | Event::Death))
+        {
+            self.clear.damaged();
+        }
+        self.clear.ground(self.player.on_ground);
 
         // timer: one count per second of play
         if self.time > 0 {
@@ -1118,9 +1185,15 @@ impl World {
                     }
                     self.actors[i].mode = Mode::Dead;
                     let n = [10, 30, 50][value as usize];
+                    // counted once as a big coin (its value toward "N coins")
+                    let cond =
+                        std::mem::replace(&mut self.clear, crate::clear::ClearCondition::none());
                     for _ in 0..n {
                         self.add_coin();
                     }
+                    self.clear = cond;
+                    let r = self.clear.coin(n);
+                    self.condition_counted(r);
                     self.score += [1000, 3000, 5000][value as usize] - n * COIN_SCORE;
                     let _ = (ax, ay);
                 }
@@ -1264,6 +1337,26 @@ impl World {
                 });
                 return;
             }
+            if a.kind == (Kind::AngrySun { moon: true }) && overlap(contact, ab) {
+                // the Moon wipes out the enemies on screen and disappears [ext behaviour]
+                self.actors[i].mode = Mode::Dead;
+                let v = self.view_rect(0.0);
+                let px = self.player.x;
+                for e in &mut self.actors {
+                    if e.kind.is_enemy()
+                        && e.alive()
+                        && e.x >= v.0
+                        && e.x <= v.2
+                        && e.y >= v.1
+                        && e.y <= v.3
+                    {
+                        e.die_fall(px);
+                    }
+                }
+                self.events.push(Event::EnemyDown);
+                i += 1;
+                continue;
+            }
             let harmful = a.kind.is_enemy()
                 || matches!(
                     a.kind,
@@ -1287,6 +1380,12 @@ impl World {
             }
             // stomp: falling with the feet in the enemy's upper half [inf: window not traced]
             let stomp = p.vy < 0.0 && p.y >= ay + ah * 0.5 && !a.kind.unstompable();
+            if stomp && a.kind.stomp_bounces() {
+                self.player.bounce(jump_held);
+                self.events.push(Event::Bump);
+                i += 1;
+                continue;
+            }
             let still_shell = a.mode == Mode::ShellWait;
             if still_shell {
                 let dir = if ax >= p.x { 1 } else { -1 };
@@ -1345,6 +1444,10 @@ impl World {
                 self.events.push(Event::PowerUp);
             }
             Kind::OneUp => {
+                if self.clear.goal == crate::clear::Goal::OneUps {
+                    let r = self.clear.count(None, 1);
+                    self.condition_counted(Some(r));
+                }
                 self.add_score(ONE_UP, x, y + 16.0);
             }
             _ => {}
@@ -1414,6 +1517,27 @@ impl World {
                     a.home_x = s.x;
                     a.home_y = s.y + 64.0;
                 }
+                if let Kind::ChainChomp { chained: true } = s.kind {
+                    // the stake stays at the placement; the Chomp starts beside it
+                    a.home_x = s.x;
+                    a.home_y = s.y;
+                    let side = if self.player.x <= s.x { -20.0 } else { 20.0 };
+                    a.x = s.x + side * if s.big { 2.0 } else { 1.0 };
+                }
+                if let Some(start) = s.rail {
+                    // the reference point is the object's tile centre (feet + 8)
+                    if let Some(r) = crate::track::Rail::attach(
+                        &self.level.tracks,
+                        s.x,
+                        s.y + 8.0,
+                        start,
+                        s.wings,
+                    ) {
+                        let p = r.point(&self.level.tracks);
+                        a.rail_off = (s.x - p.0, s.y - p.1);
+                        a.rail = Some(r);
+                    }
+                }
                 // enemies face the player (left if player.x ≤ x); items face right; a Twister
                 // starts facing left
                 a.dir = if (s.kind.is_enemy() && self.player.x <= s.x) || s.kind == Kind::Twister {
@@ -1436,7 +1560,13 @@ impl World {
                 (_, true) => (48.0, 48.0),
                 _ => (32.0, 32.0),
             };
-            let (cx, cy) = (a.x, a.y + a.height() / 2.0);
+            // a Lava Bubble hiding under the lava is still at home
+            let cy = if a.kind == Kind::LavaBubble {
+                a.home_y
+            } else {
+                a.y
+            } + a.height() / 2.0;
+            let cx = a.x;
             let outside = cx + hx < v.0 || cx - hx > v.2 || cy + hy < v.1 || cy - hy > v.3;
             if outside && a.mode != Mode::Dead {
                 a.mode = Mode::Dead;
@@ -1857,6 +1987,10 @@ impl World {
             }
         }
         self.events.push(Event::Break);
+        if self.clear.goal == crate::clear::Goal::Pow {
+            let r = self.clear.count(None, 1);
+            self.condition_counted(Some(r));
+        }
     }
 
     /// Cannons (47-cannon.md): first shot 60 frames after spawn, then every 190, while the
@@ -2065,6 +2199,10 @@ impl World {
     /// P switch pressed: bricks and coins swap for P_FRAMES (18-p-switch.md).
     fn press_p_switch(&mut self) {
         self.events.push(Event::Switch);
+        if self.clear.goal == crate::clear::Goal::PSwitch {
+            let r = self.clear.count(None, 1);
+            self.condition_counted(Some(r));
+        }
         if self.p_timer > 0 {
             self.p_timer = P_FRAMES;
             return;
@@ -2303,6 +2441,15 @@ impl World {
         // [inf: box A of a small player on the base block only touches Y0+14]
         let hb = p.contact_box();
         if !overlap(hb, (x0 - 4.0, y0 + 14.0, x0 + 5.0, y0 + 166.0)) {
+            return;
+        }
+        // a clear condition not met: the goal lets the player pass
+        let form = match p.form {
+            Form::Small => 0,
+            Form::Super => 1,
+            Form::Fire => 2,
+        };
+        if !self.clear.met(p.star > 0, form) {
             return;
         }
         // grab: snap to the pole, score by height
@@ -2580,6 +2727,40 @@ impl World {
             layer,
         };
         self.background_sprites(&mut out);
+        // tracks: drawn from the white line texels of the field atlas (tile 0x80) [placeholder
+        // for the game's per-cell track tiles], with a dot at every free end
+        let line = |px: f32, py: f32, size: f32| Sprite {
+            image: SpriteImage {
+                model: field,
+                texture: field,
+                rect: Some((12.0, 136.0, 1.0, 1.0)),
+            },
+            x: px - size / 2.0,
+            y: py - size / 2.0,
+            w: size,
+            h: size,
+            flip_x: false,
+            flip_y: false,
+            layer: 9,
+        };
+        for poly in self.level.tracks.polylines() {
+            for w in poly.windows(2) {
+                let (a, b) = (w[0], w[1]);
+                let n = ((b.0 - a.0).abs().max((b.1 - a.1).abs())).ceil().max(1.0) as usize;
+                for k in 0..n {
+                    let t = k as f32 / n as f32;
+                    let (px, py) = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+                    if visible(px, py) {
+                        out.push(line(px, py, 1.5));
+                    }
+                }
+            }
+        }
+        for (px, py) in self.level.tracks.ends() {
+            if visible(px, py) {
+                out.push(line(px, py, 5.0));
+            }
+        }
         for t in &self.level.tiles {
             let (px, py) = (t.x as f32 * TILE, t.y as f32 * TILE);
             if visible(px, py) {
@@ -2677,6 +2858,45 @@ impl World {
                     y -= TILE;
                 }
                 x += TILE;
+            }
+        }
+        // Chain Chomp stakes and chains (the chain is cosmetic: 4 links, stake to Chomp)
+        for a in &self.actors {
+            if a.kind != (Kind::ChainChomp { chained: true }) || !visible(a.home_x, a.home_y) {
+                continue;
+            }
+            let s = if a.big { 2.0 } else { 1.0 };
+            out.push(Self::model_sprite(
+                "M1_Enemy_wanwan",
+                "kui.0",
+                a.home_x - 8.0 * s,
+                a.home_y,
+                16.0 * s,
+                16.0 * s,
+                false,
+                30,
+            ));
+            let (sx, sy) = (a.home_x, a.home_y + 12.0 * s);
+            let (cx, cy) = (a.x, a.y + 8.0 * s);
+            for k in 1..5 {
+                let f = k as f32 / 5.0;
+                let sag = (f * (1.0 - f))
+                    * 12.0
+                    * if a.phase == 2 || a.phase == 3 {
+                        0.0
+                    } else {
+                        1.0
+                    };
+                out.push(Self::model_sprite(
+                    "M1_Enemy_wanwan",
+                    "chain.0",
+                    sx + (cx - sx) * f - 4.0 * s,
+                    sy + (cy - sy) * f - 4.0 * s - sag,
+                    8.0 * s,
+                    8.0 * s,
+                    false,
+                    30,
+                ));
             }
         }
         for a in &self.actors {
@@ -3399,6 +3619,42 @@ impl World {
                 false,
             ),
             Kind::Wiggler => ("M1_Enemy_hanachan", "head.0", 16.0, 32.0, a.dir > 0),
+            Kind::LavaBubble => ("M1_Enemy_bubble", "wait.0", 16.0, 16.0, false),
+            Kind::MontyMole => (
+                "M1_Enemy_choropoo",
+                match a.phase {
+                    0 => return None,
+                    1 => "appear.0",
+                    _ => walk_frame(&["walk.0", "walk.1"], a.age, 6),
+                },
+                16.0,
+                16.0,
+                a.dir > 0,
+            ),
+            Kind::AngrySun { moon } => (
+                "M1_Object_sun",
+                if moon || a.phase == 0 {
+                    "wait.0"
+                } else if (self.tick / 6).is_multiple_of(2) {
+                    "attack.0"
+                } else {
+                    "attack.1"
+                },
+                32.0,
+                32.0,
+                false,
+            ),
+            Kind::ChainChomp { .. } => (
+                "M1_Enemy_wanwan",
+                if a.phase == 2 || a.phase == 3 || (self.tick / 8).is_multiple_of(2) {
+                    "wait.1"
+                } else {
+                    "wait.0"
+                },
+                16.0,
+                16.0,
+                a.dir > 0,
+            ),
             Kind::LavaLift { .. } => return None,
             Kind::Skewer { .. } => return None,
             Kind::CheepCheep { red } => (
@@ -3691,6 +3947,7 @@ mod tests {
             wings: false,
             pipe: None,
             parachute: false,
+            rail: None,
         });
         let mut w = World::with_level(lvl);
         assert_eq!(w.actors.len(), 1);
@@ -3724,6 +3981,7 @@ mod tests {
             wings: false,
             pipe: None,
             parachute: false,
+            rail: None,
         });
         let mut w = World::with_level(lvl);
         let lives = w.lives;
@@ -3780,6 +4038,43 @@ mod tests {
         assert!(w.player.alive());
         run(&mut w, 0, 1);
         assert!(!w.player.alive());
+    }
+
+    #[test]
+    fn unmet_clear_condition_locks_the_goal() {
+        let mut lvl = Level::flat(60);
+        lvl.set(20, 2, Cell::Solid);
+        lvl.goal = Some((20.0 * TILE + 8.0, 3.0 * TILE));
+        let mut w = World::with_level(lvl);
+        // "reach the goal as Fire Mario", played as small Mario
+        w.clear = crate::clear::ClearCondition::from_header(2, 0x2a8e77bb, 0);
+        let mut grabbed = false;
+        for i in 0..400 {
+            let jump = if i % 30 < 20 { input::JUMP } else { 0 };
+            w.step(Input {
+                buttons: input::RIGHT | input::RUN | jump,
+            });
+            grabbed |= w.events.contains(&Event::Goal);
+        }
+        assert!(!grabbed, "passes the pole");
+        assert!(w.player.x > 21.0 * TILE);
+    }
+
+    #[test]
+    fn defeating_enemies_counts_toward_the_condition() {
+        let mut lvl = Level::flat(40);
+        lvl.spawns.push(spawn(Kind::Goomba, 200.0, 32.0));
+        lvl.spawns.push(spawn(Kind::Goomba, 240.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.clear = crate::clear::ClearCondition::from_header(1, 0x7f07acbf, 2);
+        w.player.x = 40.0;
+        run(&mut w, 0, 1);
+        for a in &mut w.actors {
+            a.stomp();
+        }
+        run(&mut w, 0, 1);
+        assert_eq!(w.clear.count, 2);
+        assert!(w.clear.met(false, 0));
     }
 
     #[test]
@@ -3866,6 +4161,7 @@ mod tests {
             wings: false,
             pipe: Some((PipeDir::Up, 336.0, 64.0)),
             parachute: false,
+            rail: None,
         });
         let mut w = World::with_level(lvl);
         w.player.x = 200.0;
@@ -3951,6 +4247,7 @@ mod tests {
             wings: false,
             pipe: None,
             parachute: false,
+            rail: None,
         }
     }
 
@@ -4209,6 +4506,101 @@ mod tests {
         let x2 = w.actors[0].x;
         run(&mut w, 0, 30);
         assert!((w.actors[0].x - x2).abs() < 0.5);
+    }
+
+    #[test]
+    fn chain_chomp_stays_on_its_chain_and_lunges() {
+        let mut lvl = Level::flat(40);
+        lvl.spawns
+            .push(spawn(Kind::ChainChomp { chained: true }, 200.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 280.0;
+        let mut lunged = false;
+        let mut far: f32 = 0.0;
+        for _ in 0..400 {
+            run(&mut w, 0, 1);
+            let a = &w.actors[0];
+            lunged |= a.phase == 2;
+            let d = ((a.x - a.home_x).powi(2) + (a.y + 8.0 - (a.home_y + 8.0)).powi(2)).sqrt();
+            far = far.max(d);
+        }
+        assert!(lunged, "lunges within 120–179 frames + 61 crouch");
+        assert!(far <= 51.2 + 4.0 + 6.0, "reach {far}"); // the return curve may bow out a little
+        // stomping bounces off and leaves it unharmed
+        let a = &w.actors[0];
+        let (ax, ay) = (a.x, a.y);
+        w.player.x = ax;
+        w.player.y = ay + 14.0;
+        w.player.vy = -2.0;
+        w.player_interactions(false);
+        assert!(w.player.vy > 0.0);
+        assert!(w.actors[0].alive());
+    }
+
+    #[test]
+    fn lava_bubble_hides_then_leaps_to_its_height() {
+        let mut lvl = Level::flat(40);
+        lvl.bottom = 0.0;
+        // placed 5 tiles above the reference level (bottom − 12)
+        let home = -12.0 + 5.0 * TILE;
+        lvl.spawns.push(spawn(Kind::LavaBubble, 200.0, home));
+        let mut w = World::with_level(lvl);
+        w.player.x = 40.0;
+        run(&mut w, 0, 60);
+        assert!(!w.actors[0].solid_contact(), "hidden");
+        let mut top = f32::MIN;
+        let mut first_vy = 0.0;
+        for _ in 0..200 {
+            run(&mut w, 0, 1);
+            let a = &w.actors[0];
+            if a.phase == 1 && first_vy == 0.0 {
+                first_vy = a.vy;
+            }
+            top = top.max(a.y);
+        }
+        // H = 6 tiles: A = 6·4/7 + 1 = 4.43
+        assert!((first_vy - 4.43).abs() < 0.05, "{first_vy}");
+        assert!(
+            top <= home + 4.0 && top > home - 24.0,
+            "top {top} home {home}"
+        );
+    }
+
+    #[test]
+    fn monty_mole_wakes_near_the_player_and_chases() {
+        let mut lvl = Level::flat(60);
+        // buried in a 2-tile-high mound of ground
+        for x in 20..23 {
+            lvl.set(x, 2, Cell::Solid);
+        }
+        lvl.spawns
+            .push(spawn(Kind::MontyMole, 21.0 * TILE + 8.0, 2.0 * TILE));
+        let mut w = World::with_level(lvl);
+        w.player.x = 21.0 * TILE - 120.0;
+        run(&mut w, 0, 30);
+        assert_eq!(w.actors[0].phase, 0, "too far to wake");
+        w.player.x = 21.0 * TILE - 60.0;
+        run(&mut w, 0, 1);
+        assert_eq!(w.actors[0].phase, 1);
+        run(&mut w, 0, 200);
+        let a = &w.actors[0];
+        assert_eq!(a.phase, 3);
+        assert!(a.vx < 0.0, "runs toward the player");
+    }
+
+    #[test]
+    fn angry_sun_waits_in_a_corner_then_swoops_across() {
+        let mut lvl = Level::flat(60);
+        lvl.spawns
+            .push(spawn(Kind::AngrySun { moon: false }, 200.0, 150.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 100.0;
+        run(&mut w, 0, 2);
+        let x0 = w.actors[0].x - w.camera_x;
+        assert!((x0 - (VIEW_W - 48.0)).abs() < 1.0, "right corner: {x0}");
+        run(&mut w, 0, 120 + 36 + 130);
+        let x1 = w.actors[0].x - w.camera_x;
+        assert!((x1 - 48.0).abs() < 2.0, "left corner: {x1}");
     }
 
     #[test]
@@ -4662,6 +5054,7 @@ mod tests {
                     wings: i == 4,
                     pipe: None,
                     parachute: false,
+                    rail: None,
                 });
             }
             World::with_level(lvl)

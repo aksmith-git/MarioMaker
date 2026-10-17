@@ -150,8 +150,52 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
 - ⬜ App screens drawn with the SMM1 layouts (world map walk, intro card, clear, game over, ending)
 
 ### Phase 7 — Expansion ⬜
+- ✅ Clear conditions: header hash → condition; defeat / collect / coins / POW / P Switch counts
+  (each placed object once), goal as Super / Fire / invincible, no damage / no landing; the goal
+  lets the player pass until met; HUD shows progress · holding / riding conditions ⬜ (no carry,
+  Yoshi, shoe yet) — SMB1 sample 53 → 65 playable
+- ✅ Chain Chomp (chained + unchained)
+- ✅ Lava Bubble (hide / cosine rise / fall), Monty Mole (buried, mound, leap, chase), Angry Sun
+  (corner wait, spin, half-ellipse swoop) and Moon (wipes on-screen enemies)
+- ✅ Tracks: graph from track records (lines + quarter arcs), rail follower (0.75 / 1.5 px/f),
+  any actor rides (lifts, seesaws, grinders, claws, items, enemies); drawn as lines · junctions,
+  open ends, blocks/coins on tracks, exact track tiles ⬜ — SMB1 sample 49 → 52 playable
 - ⬜ Measure object/style/theme frequency in real courses
 - ⬜ Add styles, themes, objects in that order (2.0/3.0 items need the update dump)
+
+### Phase 8 — Every platform: macOS, iOS, Windows, Linux, web ⬜ (owner request 2026-10-18)
+Approach (DECISIONS.md 2026-10-18, "Cross-platform shell"): the Rust core stays platform-neutral;
+a portable Rust shell runs the game everywhere, the Swift app stays as the Apple-native shell.
+- ⬜ `shell` crate: winit window + wgpu renderer (sprites, layouts) + gilrs gamepads + cpal audio,
+  feature parity with the Swift renderer (same FFI-free core calls)
+- ⬜ Windows and Linux builds of the shell; CI matrix (macOS, Windows, Ubuntu)
+- ⬜ Web: wasm32 build of core + shell (WebGPU, WebGL2 fallback), WebAudio, Gamepad API; asset import
+  from the owner's files through the browser's file picker into OPFS/IndexedDB (nothing uploaded)
+- ⬜ iOS/iPadOS: the Swift app on UIKit/SwiftUI + Metal (shared renderer code), touch controls,
+  Files-app import of the owner's dump; installs over Tailscale with the existing tool
+- ⬜ Engine-drawn menus everywhere (layout player), so every platform shows the same screens
+
+### Phase 9 — SMM2 single-player like-for-like ⬜ (owner request 2026-10-18)
+- ⬜ SMM2 layouts: Switch BFLYT/BFLAN + BNTX textures through the same layout player; title
+  screen, main menu, Course World, Story Mode map, pause, clear/death screens, HUD
+- ⬜ All five styles (SMB1, SMB3, SMW, NSMBU, 3D World) and all themes (day/night) — physics
+  feature switches per style already specced
+- ⬜ Every part (0–132, incl. 2.0/3.0 items from the update dump), Yoshi, shoes, clown cars,
+  power-ups per style, Koopalings, Master Sword, etc.
+- ⬜ Course Maker (editor): placement, erase, copy, sub-areas, pipes/doors links, paths, tracks,
+  settings, test play, save/load to the library
+- ⬜ Story Mode (Peach's castle jobs, built-in courses from the owner's dump), Coursebot, Lessons
+- ⬜ Endless Challenge (SMM2's successor to 100 Mario) alongside the SMM1-style 100 Mario Challenge
+- ⬜ Ninji speedruns / event courses (offline with local data), records and medals
+
+### Phase 10 — Online with an open-source server ⬜ (owner request 2026-10-18)
+Not Nintendo's network: the engine talks to an open-source server the owner can run or join.
+- ⬜ Pick / write the server (proposal: our own MIT/Apache Rust server — course upload/download,
+  search, likes, makers, Endless pools, rankings; optional SMMDB import) ⏳ owner choice
+- ⬜ Course World client: browse, play, like/boo, comment, upload from the editor
+- ⬜ Real-time multiplayer (co-op / versus, up to 4): rollback netcode on the deterministic sim
+  over WebRTC (open-source `matchbox` signalling) so native and web players can meet
+- ⬜ Accounts without Nintendo services; moderation tools for self-hosters
 
 ---
 

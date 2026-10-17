@@ -252,6 +252,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         let time = hud.time < 0 ? "---" : String(format: "%03d", hud.time)
         var text = String(format: "LIVES ×%02d    ⦿×%02d    %09d    TIME %@", hud.lives, hud.coins, hud.score, time)
         if hud.flags & 1 != 0 { text += "    COURSE CLEAR!" }
+        var cond = MmkCondition()
+        if mmk_engine_clear_condition(engine, &cond) { text += "    " + ClearConditionText.describe(cond) }
         let stripH = 18.0
         let tw = Int(vw), th = Int(stripH * scale)
         if text != hudText || hudSize != (tw, th) {
@@ -372,5 +374,35 @@ final class Renderer: NSObject, MTKViewDelegate {
                                   space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: info.rawValue)
         else { return nil }
         return ctx.makeImage()
+    }
+}
+
+/// Short HUD text for a course's clear condition (our own wording).
+enum ClearConditionText {
+    static let enemies: [UInt32: String] = [
+        1: "Goombas", 3: "Koopas", 4: "Buzzy Beetles", 5: "Spinies", 6: "Piranha Plants",
+        7: "Fire Piranhas", 8: "Munchers", 10: "Dry Bones", 12: "Rocky Wrenches", 13: "Monty Moles",
+        14: "Hammer Bros", 16: "Lakitus", 17: "Bloopers", 18: "Cheep Cheeps", 19: "Spike Tops",
+        21: "Lava Bubbles", 22: "Chain Chomps", 23: "Wigglers", 24: "Bob-ombs", 25: "Thwomps",
+        26: "Boos", 28: "Banzai Bills", 29: "Magikoopas", 30: "Angry Suns", 37: "Bowsers",
+        38: "Bowser Jrs", 39: "Boom Booms", 40: "Pom Poms", 41: "Bullet Bills",
+    ]
+
+    static func describe(_ c: MmkCondition) -> String {
+        let mark = c.met != 0 ? "✓" : "⚑"
+        let progress = " \(min(c.count, c.needed))/\(c.needed)"
+        switch c.kind {
+        case 1: return "\(mark) \(enemies[c.target] ?? "enemies")" + progress
+        case 2: return "\(mark) 1-Ups" + progress
+        case 3: return "\(mark) " + (c.target == 0 ? "coins" : "\(c.target)-coins") + progress
+        case 4: return "\(mark) POW" + progress
+        case 5: return "\(mark) P Switch" + progress
+        case 6: return "\(mark) goal invincible"
+        case 7: return "\(mark) goal as Super"
+        case 8: return "\(mark) goal as Fire"
+        case 9: return "\(mark) no damage"
+        case 10: return "\(mark) no landing"
+        default: return "⚑ condition not supported"
+        }
     }
 }

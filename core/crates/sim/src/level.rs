@@ -152,6 +152,8 @@ pub struct Spawn {
     pub pipe: Option<(PipeDir, f32, f32)>,
     /// Drifts down under a parachute (flag 0x8000).
     pub parachute: bool,
+    /// On a track (flag 0x400): the start-direction field ((flags >> 20) & 3).
+    pub rail: Option<u8>,
 }
 
 /// An airship cannon (47): block origin, barrel angle (degrees), next shot timer kept by the
@@ -302,6 +304,8 @@ pub struct Level {
     pub cannons: Vec<Cannon>,
     /// Snake blocks: leftmost tile, row, length, fast, head on the left, path node codes.
     pub snakes: Vec<(i32, i32, usize, bool, bool, Vec<u16>)>,
+    /// Track graph (59-track.md).
+    pub tracks: crate::track::Tracks,
     pub liquid: Option<LiquidSpec>,
     /// One-way walls (drawing): centre x, bottom y, orientation.
     pub oneway: Vec<(f32, f32, u8)>,
@@ -367,7 +371,14 @@ pub fn switch_atlas(kind: BlockKind, on: bool) -> u32 {
 pub const SUPPORTED_PARTS: &[i16] = &[
     0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 43, 44, 46, 47, 48, 52, 53, 54, 55,
-    56, 57, 58, 63, 66, 67, 68, 70, 71, 76, 82, 83, 84, 87, 88, 90, 91, 95, 99, 100, 105, 109,
+    56, 57, 58, 60, 61, 63, 66, 67, 68, 70, 71, 76, 82, 83, 84, 87, 88, 90, 91, 95, 99, 100, 102,
+    104, 105, 109,
+];
+
+/// Parts that become actors and so can ride a track (59-track.md).
+const RIDES_TRACKS: &[i16] = &[
+    0, 1, 2, 3, 10, 11, 12, 15, 18, 19, 20, 25, 28, 30, 31, 32, 33, 34, 35, 36, 39, 40, 41, 44, 46,
+    48, 52, 56, 57, 58, 60, 61, 68, 70, 76, 82, 83, 91, 95, 102, 105,
 ];
 
 /// Why a course is not fully playable yet: one entry per missing feature (empty = playable).
@@ -386,16 +397,22 @@ pub fn unsupported_features(course: &Course) -> Vec<String> {
         for o in area.objects.iter() {
             if !SUPPORTED_PARTS.contains(&o.id) {
                 out.insert(format!("part {}", o.id));
-            } else if o.flags & 0x400 != 0 {
-                out.insert("objects on tracks".to_string());
+            } else if o.flags & 0x400 != 0 && !RIDES_TRACKS.contains(&o.id) {
+                // blocks, coins and fixed objects on tracks need moving versions: not yet
+                out.insert(format!("part {} on a track", o.id));
             } else if o.flags & 0x2 != 0 && matches!(o.id, 4 | 5 | 6 | 11 | 12 | 13 | 29) {
                 // winged blocks, lifts, Thwomps and Bill Blasters fly as actors: not yet
                 out.insert(format!("wings on part {}", o.id));
             }
         }
     }
-    if course.header.clear_condition != 0 {
-        out.insert("clear condition".to_string());
+    let cond = crate::clear::ClearCondition::from_header(
+        course.header.clear_condition_category,
+        course.header.clear_condition,
+        course.header.clear_condition_magnitude.max(0) as u16,
+    );
+    if let crate::clear::Goal::Unsupported(i) = cond.goal {
+        out.insert(format!("clear condition {i}"));
     }
     out.into_iter().collect()
 }
@@ -457,6 +474,7 @@ impl Level {
             firebars: Vec::new(),
             cannons: Vec::new(),
             snakes: Vec::new(),
+            tracks: Default::default(),
             liquid: None,
             oneway: Vec::new(),
             doors: Vec::new(),
@@ -541,6 +559,13 @@ impl Level {
             ));
         }
 
+        lvl.tracks = crate::track::Tracks::new(
+            area.tracks
+                .iter()
+                .filter(|t| t.x != 0 || t.y != 0 || t.r#type != 0 || t.k0 != 0)
+                .map(|t| (t.x, t.y, t.r#type)),
+        );
+
         // tile-like objects: (x, y) is the centre of the bottom-left tile [toost LevelDrawer
         // semisolid/pipe placement; course-loading.md: tile parts always sit on tile centres]
         // pipe entry points (for objects placed inside pipes): (x, y, dir, colour)
@@ -592,6 +617,14 @@ impl Level {
                 39 => Some(Kind::Magikoopa),
                 58 => Some(Kind::RockyWrench),
                 52 => Some(Kind::Wiggler),
+                60 => Some(Kind::LavaBubble),
+                102 => Some(Kind::MontyMole),
+                104 => Some(Kind::AngrySun {
+                    moon: o.flags & 0x4 != 0,
+                }),
+                61 => Some(Kind::ChainChomp {
+                    chained: o.flags & 0x4 == 0,
+                }),
                 36 => Some(Kind::LavaLift {
                     fast: o.flags & 0x4 != 0,
                 }),
@@ -631,6 +664,10 @@ impl Level {
                 }),
                 _ => None,
             };
+            if o.id == 61 && o.flags & 0x4 == 0 && o.flags & 0x400 == 0 {
+                // the Chain Chomp's stake is solid (WanwanPile has a collision body)
+                lvl.set(tx, ty, Cell::Solid);
+            }
             if let Some(kind) = actor {
                 // inside a pipe (flag bit 0): the object sits on the pipe's entry point
                 let (ox, oy) = (o.x as f32 / 10.0, o.y as f32 / 10.0);
@@ -664,6 +701,7 @@ impl Level {
                             wings,
                             pipe: Some((dir, ex, ey)),
                             parachute: false,
+                            rail: None,
                         });
                     } else {
                         lvl.generators.push(PipeGenerator {
@@ -687,6 +725,7 @@ impl Level {
                     wings,
                     pipe: None,
                     parachute: o.flags & 0x8000 != 0,
+                    rail: (o.flags & 0x400 != 0).then_some(((o.flags >> 20) & 3) as u8),
                 });
                 continue;
             }
@@ -1153,6 +1192,7 @@ impl Level {
             wings: false,
             pipe: None,
             parachute: false,
+            rail: None,
         });
         lvl.spawns.push(Spawn {
             kind: Kind::Koopa { red: false },
@@ -1162,6 +1202,7 @@ impl Level {
             wings: false,
             pipe: None,
             parachute: false,
+            rail: None,
         });
         // pipe
         lvl.add_pipe(46, 2, 2, PipeDir::Up);
@@ -1194,6 +1235,7 @@ impl Level {
             firebars: Vec::new(),
             cannons: Vec::new(),
             snakes: Vec::new(),
+            tracks: Default::default(),
             liquid: None,
             oneway: Vec::new(),
             doors: Vec::new(),

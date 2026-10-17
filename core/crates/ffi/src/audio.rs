@@ -227,6 +227,9 @@ impl Director {
                 Event::Bump | Event::Switch => self.sfx(self.ids.bump),
                 Event::Pipe => self.sfx(self.ids.power_down),
                 Event::Checkpoint => {}
+                // the game's count-up / condition-met sounds are not mapped yet [inf stand-ins]
+                Event::ConditionCount => self.sfx(self.ids.coin),
+                Event::ConditionMet => self.sfx(self.ids.power_up),
                 Event::Break => self.sfx(self.ids.brick_break),
                 Event::ItemAppear => self.sfx(self.ids.item_appear),
                 Event::PowerUp => self.sfx(self.ids.power_up),

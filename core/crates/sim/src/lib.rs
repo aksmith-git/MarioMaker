@@ -9,12 +9,14 @@
 pub mod actors;
 pub mod blocks;
 pub mod camera;
+pub mod clear;
 pub mod input;
 pub mod level;
 pub mod liquid;
 pub mod player;
 pub mod render;
 pub mod snake;
+pub mod track;
 pub mod warp;
 pub mod world;
 
