@@ -16,6 +16,10 @@ use crate::snake::Snake;
 
 /// Moving-solid owner ids for snake segments: base + snake × 32 + segment.
 const SNAKE_OWNER: u32 = 0x8000_0000;
+/// Solid owner ids of ! blocks: base + block × 64 + piece.
+const EXCL_OWNER: u32 = 0x9000_0000;
+/// Solid owner ids of tree canopies: base + tree.
+const TREE_OWNER: u32 = 0x9800_0000;
 use crate::player::{Control, Form, Player, Pose, STAR_FRAMES};
 use crate::render::{Sprite, SpriteImage};
 use crate::warp::{self, SideHold, Transit};
@@ -231,8 +235,12 @@ pub struct World {
     /// after its warp): (area, warp id >> 1).
     unlocked_boxes: std::collections::BTreeSet<(usize, u8)>,
     gone_boxes: std::collections::BTreeSet<(usize, u8)>,
+    /// Trees whose canopy item came out: (area, tree index).
+    trees_shaken: std::collections::BTreeSet<(usize, usize)>,
     /// Snake blocks in the current area.
     pub snakes: Vec<Snake>,
+    /// ! blocks in the current area.
+    pub exclamations: Vec<crate::exclamation::ExclamationBlock>,
     /// Swinging claw holding the player (actor id).
     held_by: Option<u32>,
     /// Desert-night wind: level, frame counter.
@@ -421,7 +429,9 @@ impl World {
             unlocked_doors: Default::default(),
             unlocked_boxes: Default::default(),
             gone_boxes: Default::default(),
+            trees_shaken: Default::default(),
             snakes: Vec::new(),
+            exclamations: Vec::new(),
             held_by: None,
             prev_jump_claw: false,
             wind: 0.0,
@@ -462,6 +472,7 @@ impl World {
         self.unlocked_doors.clear();
         self.unlocked_boxes.clear();
         self.gone_boxes.clear();
+        self.trees_shaken.clear();
         self.p_timer = 0;
         self.p_bricks.clear();
         self.p_coins.clear();
@@ -541,6 +552,12 @@ impl World {
             .iter()
             .map(|(l, y, n, fast, rev, codes)| Snake::new(*l, *y, *n, *fast, *rev, codes))
             .collect();
+        self.exclamations = self
+            .level
+            .exclamations
+            .iter()
+            .map(|(t, codes)| crate::exclamation::ExclamationBlock::new(*t, codes))
+            .collect();
     }
 
     fn add_actor(&mut self, mut a: Actor) {
@@ -589,6 +606,12 @@ impl World {
                     .snakes
                     .iter()
                     .map(|(l, y, n, fast, rev, codes)| Snake::new(*l, *y, *n, *fast, *rev, codes))
+                    .collect();
+                self.exclamations = self
+                    .level
+                    .exclamations
+                    .iter()
+                    .map(|(t, codes)| crate::exclamation::ExclamationBlock::new(*t, codes))
                     .collect();
             }
             None => self.load_area_fresh(),
@@ -1260,6 +1283,7 @@ impl World {
 
         // player
         let prev_head = self.player.y + self.player.sensors().head_y;
+        let prev_vy = self.player.vy;
         let was_ground = self.player.on_ground;
         let jump_held = input.held(input::JUMP);
         self.run_held = input.held(input::RUN);
@@ -1380,6 +1404,10 @@ impl World {
             self.events.push(Event::Jump);
         }
         self.check_hidden_blocks(prev_head);
+        if prev_vy > 0.0 && self.player.vy <= 0.0 {
+            self.hit_exclamation_blocks();
+        }
+        self.shake_trees();
         if let Some((tx, ty)) = self.player.head_hit {
             self.head_hit(tx, ty);
         }
@@ -1633,6 +1661,87 @@ impl World {
             HitPower::Bump
         };
         self.hit_block(tx, ty, true, power);
+    }
+
+    /// A player reaching a tree's canopy (106-tree.md climb zone: trunk ± 18 px, +8 px margin,
+    /// the canopy band, +16 px) knocks its item out: up at vy 4.5 from 40 px above the origin
+    /// [obs; the trigger itself is inferred].
+    fn shake_trees(&mut self) {
+        let (px, py) = (self.player.x, self.player.y);
+        let mut out = Vec::new();
+        for (ti, t) in self.level.trees.iter().enumerate() {
+            let (bottom, top) = t.canopy();
+            if let Some(c) = t.contents
+                && (px - t.x).abs() <= 26.0
+                && py + 16.0 >= bottom + 8.0
+                && py <= top
+                && self.trees_shaken.insert((self.area, ti))
+            {
+                out.push((t.x, (bottom + 8.0).max(t.y + 40.0), c));
+            }
+        }
+        for (x, y, c) in out {
+            let kind = match c {
+                Contents::Coin => {
+                    self.effects.push(Effect::coin_pop(x, y, false));
+                    self.events.push(Event::Coin);
+                    continue;
+                }
+                Contents::Special if !self.player.big() => Kind::Mushroom,
+                Contents::FireFlower if !self.player.big() => Kind::Mushroom,
+                Contents::Mushroom => Kind::Mushroom,
+                Contents::Special => self.style_item(),
+                Contents::FireFlower => Kind::FireFlower,
+                Contents::Star => Kind::Star,
+                Contents::OneUp => Kind::OneUp,
+                Contents::Goomba => Kind::Goomba,
+                Contents::Koopa { red } => Kind::Koopa { red },
+                Contents::YoshiEgg => Kind::YoshiEgg { red: false },
+            };
+            let mut a = Actor::new(kind, x, y);
+            a.dir = 1;
+            a.vy = 4.5;
+            a.vx = 0.0;
+            self.add_actor(a);
+            self.events.push(Event::ItemAppear);
+        }
+    }
+
+    /// The player's head bumped into a ! block (or its chain) from below: the whole chain
+    /// bounces and enemies standing on it are knocked out.
+    fn hit_exclamation_blocks(&mut self) {
+        let p = &self.player;
+        let head = p.y + p.sensors().head_y;
+        let (px0, _, px1, _) = p.hurt_box();
+        let mut hit = None;
+        for (bi, b) in self.exclamations.iter().enumerate() {
+            if b.boxes().iter().any(|&(x0, y0, x1, _)| {
+                px1 > x0 && px0 < x1 && head >= y0 - 2.0 && head <= y0 + 2.0
+            }) {
+                hit = Some(bi);
+                break;
+            }
+        }
+        let Some(bi) = hit else { return };
+        self.exclamations[bi].hit();
+        self.events.push(Event::Bump);
+        let boxes = self.exclamations[bi].boxes();
+        let mut downs = 0;
+        for a in &mut self.actors {
+            if a.kind.is_enemy()
+                && a.alive()
+                && a.on_ground
+                && boxes
+                    .iter()
+                    .any(|&(x0, _, x1, y1)| a.x > x0 && a.x < x1 && (a.y - y1).abs() < 2.0)
+            {
+                a.die_fall(a.x);
+                downs += 1;
+            }
+        }
+        for _ in 0..downs {
+            self.events.push(Event::EnemyDown);
+        }
     }
 
     /// A hit on a block from below or above by the player or a shell.
@@ -3316,6 +3425,41 @@ impl World {
                     })
             })
             .collect();
+        // tree canopies: platforms you can jump up through [inf: top-only]
+        for (ti, t) in self.level.trees.iter().enumerate() {
+            let (_, top) = t.canopy();
+            self.level.solids.push(crate::level::Solid {
+                x0: t.x - 32.0,
+                y0: top - 8.0,
+                x1: t.x + 32.0,
+                y1: top,
+                dx: 0.0,
+                dy: 0.0,
+                top_only: true,
+                owner: TREE_OWNER + ti as u32,
+                slope: 0.0,
+            });
+        }
+        // ! blocks: the block and its chain are solids (the bounce is drawn only)
+        for (bi, b) in self.exclamations.iter_mut().enumerate() {
+            let level = &self.level;
+            b.step(|(tx, ty)| {
+                (0..2).all(|dx| (0..2).all(|dy| !level.cell(tx + dx, ty + dy).is_solid()))
+            });
+            for (k, (x0, y0, x1, y1)) in b.boxes().into_iter().enumerate() {
+                self.level.solids.push(crate::level::Solid {
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    dx: 0.0,
+                    dy: 0.0,
+                    top_only: false,
+                    owner: EXCL_OWNER + bi as u32 * 64 + k as u32,
+                    slope: 0.0,
+                });
+            }
+        }
         // snake blocks
         for (si, sn) in self.snakes.iter_mut().enumerate() {
             let base = SNAKE_OWNER + si as u32 * 32;
@@ -4374,6 +4518,41 @@ impl World {
                 }
             }
         }
+        for t in &self.level.trees {
+            if visible(t.x, t.y + 32.0) {
+                out.push(Self::model_sprite(
+                    "M1_Object_treebell",
+                    "wait.0",
+                    t.x - 8.0,
+                    t.y - 8.0,
+                    16.0,
+                    16.0,
+                    false,
+                    4,
+                ));
+            }
+        }
+        for b in &self.exclamations {
+            let lift = b.lift();
+            for (k, (x0, y0, _, _)) in b.boxes().into_iter().enumerate() {
+                if visible(x0 + 16.0, y0 + 16.0) {
+                    out.push(Self::model_sprite(
+                        "M1_Object_block_bikkuri",
+                        if k == 0 && b.emptied() {
+                            "block_bikkurikara.0"
+                        } else {
+                            "block_bikkuri.0"
+                        },
+                        x0 + 8.0,
+                        y0 + lift,
+                        16.0,
+                        16.0,
+                        false,
+                        12,
+                    ));
+                }
+            }
+        }
         for sn in &self.snakes {
             let model = if sn.fast {
                 "M1_Object_block_snake2"
@@ -5053,6 +5232,7 @@ impl World {
                 32.0,
                 a.dir > 0,
             ),
+            // 3D World only: the mesh is drawn at its own size (16 = no scaling)
             Kind::KoopaCar => (
                 "M1_Enemy_koopacar",
                 match (a.phase, a.hops) {
@@ -5064,8 +5244,8 @@ impl World {
                     (_, 1) => "rundamaged1.0",
                     _ => "rundamaged2.0",
                 },
-                32.0,
-                24.0,
+                16.0,
+                16.0,
                 a.dir > 0,
             ),
             Kind::ShoeGoomba { heels } => (
@@ -7054,6 +7234,53 @@ mod tests {
         // Spin gets out
         run(&mut w, input::SPIN, 1);
         assert!(w.player.car.is_none());
+    }
+
+    #[test]
+    fn exclamation_block_hit_from_below_grows_its_chain() {
+        let mut lvl = Level::flat(60);
+        lvl.exclamations.push(((3, 4), vec![2, 2, 15]));
+        let mut w = World::with_level(lvl);
+        w.player.x = 4.0 * TILE;
+        run(&mut w, 0, 2);
+        run(&mut w, input::JUMP, 30);
+        let b = &w.exclamations[0];
+        assert!(b.emptied(), "hit from below");
+        run(&mut w, 0, 30);
+        assert_eq!(w.exclamations[0].boxes().len(), 3, "chain out to the right");
+        // the chain is solid: stand on its far end
+        w.player.x = 8.0 * TILE;
+        w.player.y = 6.0 * TILE + 4.0;
+        run(&mut w, 0, 10);
+        assert!(w.player.on_ground && (w.player.y - 6.0 * TILE).abs() < 0.5);
+    }
+
+    #[test]
+    fn tree_trunk_climbs_to_the_canopy_which_drops_its_item() {
+        let mut lvl = Level::flat(60);
+        let t = crate::level::Tree {
+            x: 200.0,
+            y: 40.0,
+            h: 6,
+            contents: Some(Contents::Mushroom),
+        };
+        lvl.vines.push((t.x, t.y - 8.0, t.canopy().1));
+        lvl.trees.push(t);
+        let mut w = World::with_level(lvl);
+        w.player.x = 200.0;
+        run(&mut w, 0, 2);
+        run(&mut w, input::UP, 120);
+        assert!(
+            w.player.big() || w.actors.iter().any(|a| a.kind == Kind::Mushroom),
+            "the canopy dropped its item"
+        );
+        // the canopy is a platform
+        w.player.climbing = None;
+        w.player.x = 220.0;
+        w.player.y = t.canopy().1 + 10.0;
+        w.player.vy = 0.0;
+        run(&mut w, 0, 30);
+        assert!(w.player.on_ground && (w.player.y - t.canopy().1).abs() < 0.5);
     }
 
     #[test]

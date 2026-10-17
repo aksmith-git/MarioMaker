@@ -160,6 +160,24 @@ pub struct Spawn {
     pub clown: bool,
 }
 
+/// A tree (106-tree.md): `x` trunk centre, `y` origin (centre of the bottom row), `h` height in
+/// tiles, and what its canopy holds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tree {
+    pub x: f32,
+    pub y: f32,
+    pub h: i32,
+    pub contents: Option<crate::blocks::Contents>,
+}
+
+impl Tree {
+    /// Canopy bottom and top (px): (H − 3)·16 − 20 above the origin, 45 tall [obs].
+    pub fn canopy(&self) -> (f32, f32) {
+        let bottom = self.y + (self.h - 3) as f32 * TILE - 20.0;
+        (bottom, bottom + 45.0)
+    }
+}
+
 /// An airship cannon (47): block origin, barrel angle (degrees), next shot timer kept by the
 /// world.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -314,6 +332,10 @@ pub struct Level {
     pub cannons: Vec<Cannon>,
     /// Snake blocks: leftmost tile, row, length, fast, head on the left, path node codes.
     pub snakes: Vec<(i32, i32, usize, bool, bool, Vec<u16>)>,
+    /// ! blocks (119): bottom-left tile of the 2×2 block and its path's node codes.
+    pub exclamations: Vec<((i32, i32), Vec<u16>)>,
+    /// Trees (106, 3D World): climbable trunk (a vine) and a canopy platform.
+    pub trees: Vec<Tree>,
     /// Track graph (59-track.md).
     pub tracks: crate::track::Tracks,
     /// Custom autoscroll path (89 nodes): (node number, x, y, speed setting 0–2), in px.
@@ -391,7 +413,7 @@ pub const SUPPORTED_PARTS: &[i16] = &[
     0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 52, 53,
     54, 55, 56, 57, 58, 60, 61, 62, 63, 64, 66, 67, 68, 70, 71, 76, 77, 82, 83, 84, 87, 88, 89, 90,
-    72, 91, 92, 94, 95, 97, 98, 99, 100, 102, 103, 104, 105, 108, 109, 110,
+    72, 91, 92, 94, 95, 97, 98, 99, 100, 102, 103, 104, 105, 106, 108, 109, 110, 119,
 ];
 
 /// Game styles the engine plays.
@@ -506,6 +528,8 @@ impl Level {
             firebars: Vec::new(),
             cannons: Vec::new(),
             snakes: Vec::new(),
+            exclamations: Vec::new(),
+            trees: Vec::new(),
             blink_blocks: Vec::new(),
             spike_blocks: Vec::new(),
             scroll_nodes: Vec::new(),
@@ -921,6 +945,37 @@ impl Level {
                     }
                 }
                 lvl.oneway.push((cx, by, ((o.flags >> 22) & 3) as u8));
+                continue;
+            }
+            if o.id == 106 {
+                // tree: 4 wide, x = trunk centre, y = centre of the bottom row
+                let t = Tree {
+                    x: o.x as f32 / 10.0,
+                    y: o.y as f32 / 10.0,
+                    h: hgt,
+                    contents: Contents::from_part(o.child_id, o.child_flags),
+                };
+                // the trunk climbs like a vine, up into the canopy [inf]
+                lvl.vines.push((t.x, t.y - 8.0, t.canopy().1));
+                lvl.trees.push(t);
+                continue;
+            }
+            if o.id == 119 {
+                // ! block: 2×2, x = its horizontal centre, y = the centre of its bottom row; path
+                // number = extended data − 1 (course-loading.md §1.6)
+                let tile = (
+                    ((o.x as f32 / 10.0 - TILE) / TILE).round() as i32,
+                    ((o.y as f32 / 10.0 - 8.0) / TILE).round() as i32,
+                );
+                let idx = o.extended_data.wrapping_sub(1) as u8;
+                let codes: Vec<u16> = area
+                    .exclamation_blocks
+                    .slots
+                    .values()
+                    .find(|p| p.head.index == idx)
+                    .map(|p| p.nodes.iter().map(|n| n.direction as u16).collect())
+                    .unwrap_or_default();
+                lvl.exclamations.push((tile, codes));
                 continue;
             }
             if o.id == 84 {
@@ -1425,6 +1480,8 @@ impl Level {
             firebars: Vec::new(),
             cannons: Vec::new(),
             snakes: Vec::new(),
+            exclamations: Vec::new(),
+            trees: Vec::new(),
             blink_blocks: Vec::new(),
             spike_blocks: Vec::new(),
             scroll_nodes: Vec::new(),

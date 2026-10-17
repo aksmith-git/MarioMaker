@@ -10,6 +10,7 @@ pub mod actors;
 pub mod blocks;
 pub mod camera;
 pub mod clear;
+pub mod exclamation;
 pub mod input;
 pub mod level;
 pub mod liquid;
