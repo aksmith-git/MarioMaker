@@ -586,6 +586,7 @@ impl World {
         }
         self.step_generators();
         self.step_blasters();
+        self.fire_hazards();
         self.check_checkpoints();
         self.shell_walls();
         self.actor_interactions();
@@ -1172,6 +1173,12 @@ impl World {
                 a.spawn = Some(idx);
                 a.home_y = s.y;
                 a.pipe = s.pipe;
+                if s.parachute {
+                    a.mode = Mode::Parachute {
+                        x0: s.x,
+                        phase: 0.0,
+                    };
+                }
                 a.rng ^= (idx as u32 + 1).wrapping_mul(0x85eb_ca6b);
                 // enemies face the player (left if player.x ≤ x); items face right
                 a.dir = if s.kind.is_enemy() && self.player.x <= s.x {
@@ -1352,6 +1359,67 @@ impl World {
                 });
             }
             self.events.push(Event::Break);
+        }
+    }
+
+    // ---------------------------------------------------------------- burners, fire bars
+
+    /// Burner flame state from the shared 372-frame counter (54-burner.md): returns the flame
+    /// length in px (0 when off). Fire 18–136 (full), FireStart 0–17 (growing), FireFinish
+    /// 137–155 (shrinking); the alternate form runs half a cycle later.
+    pub fn burner_flame(&self, alt: bool) -> f32 {
+        let t = ((self.tick as i64 + if alt { 186 } else { 0 }) % 372) as f32;
+        if t < 18.0 {
+            48.0 * (t + 1.0) / 18.0
+        } else if t <= 136.0 {
+            48.0
+        } else if t <= 155.0 {
+            48.0 * (155.0 - t) / 19.0
+        } else {
+            0.0
+        }
+    }
+
+    /// Fire Bar angle (degrees). The shared area counter's per-frame step was not located
+    /// [?]; 2.8125°/frame (one turn per 128 frames) is used [inf].
+    pub fn firebar_angle(&self, fb: &crate::level::FireBar) -> f32 {
+        fb.start + fb.dir * 2.8125 * self.tick as f32
+    }
+
+    /// Hurt the player on Burner flames and Fire Bar fireballs.
+    fn fire_hazards(&mut self) {
+        let hb = self.player.hurt_box();
+        let mut hit = false;
+        for b in &self.level.burners {
+            let len = self.burner_flame(b.alt);
+            if len <= 0.0 {
+                continue;
+            }
+            // flame column 12 px wide starting at the block face [inf width]
+            let r = match b.dir {
+                3 => (b.x - 6.0, b.y + 16.0, b.x + 6.0, b.y + 16.0 + len),
+                2 => (b.x - 6.0, b.y - len, b.x + 6.0, b.y),
+                1 => (b.x + 8.0, b.y + 2.0, b.x + 8.0 + len, b.y + 14.0),
+                _ => (b.x - 8.0 - len, b.y + 2.0, b.x - 8.0, b.y + 14.0),
+            };
+            hit |= overlap(hb, r);
+        }
+        for fb in &self.level.firebars {
+            let a = self.firebar_angle(fb).to_radians();
+            for i in 1..fb.n {
+                let (fx, fy) = (
+                    fb.x + i as f32 * 8.0 * a.cos(),
+                    fb.y + i as f32 * 8.0 * a.sin(),
+                );
+                hit |= overlap(hb, (fx - 4.0, fy - 4.0, fx + 4.0, fy + 4.0));
+            }
+        }
+        if hit && self.player.star == 0 && self.player.hurt() {
+            self.events.push(if self.player.alive() {
+                Event::PowerDown
+            } else {
+                Event::Death
+            });
         }
     }
 
@@ -2004,6 +2072,72 @@ impl World {
                 8,
             ));
         }
+        for b in &self.level.burners {
+            if !visible(b.x, b.y) {
+                continue;
+            }
+            out.push(Self::model_sprite(
+                "M1_Object_burner",
+                "standB",
+                b.x - 8.0,
+                b.y,
+                16.0,
+                16.0,
+                false,
+                11,
+            ));
+            let len = self.burner_flame(b.alt);
+            if len > 0.0 && matches!(b.dir, 2 | 3) {
+                let mut s = Self::model_sprite(
+                    "M1_Object_burner",
+                    if (self.tick / 4).is_multiple_of(2) {
+                        "wait.0"
+                    } else {
+                        "wait.1"
+                    },
+                    b.x - 8.0,
+                    if b.dir == 3 { b.y + 16.0 } else { b.y - 48.0 },
+                    16.0,
+                    48.0,
+                    false,
+                    45,
+                );
+                s.flip_y = b.dir == 2;
+                out.push(s);
+            }
+        }
+        for fb in &self.level.firebars {
+            if !visible(fb.x, fb.y) {
+                continue;
+            }
+            out.push(Self::model_sprite(
+                "M1_Object_firebar",
+                "block",
+                fb.x - 8.0,
+                fb.y,
+                16.0,
+                16.0,
+                false,
+                11,
+            ));
+            let a = self.firebar_angle(fb).to_radians();
+            for i in 0..fb.n {
+                let (fx, fy) = (
+                    fb.x + i as f32 * 8.0 * a.cos(),
+                    fb.y + i as f32 * 8.0 * a.sin(),
+                );
+                out.push(Self::model_sprite(
+                    "M1_Object_firebar",
+                    "fire.0",
+                    fx - 8.0,
+                    fy,
+                    16.0,
+                    8.0,
+                    (self.tick / 5) % 2 == 1,
+                    46,
+                ));
+            }
+        }
         for b in &self.level.blasters {
             if !visible(b.x, b.y) && !visible(b.x, b.y + b.h as f32 * TILE) {
                 continue;
@@ -2033,6 +2167,18 @@ impl World {
             }
         }
         for a in &self.actors {
+            if matches!(a.mode, Mode::Parachute { .. }) && visible(a.x, a.y) {
+                out.push(Self::model_sprite(
+                    "M1_Enemy_parachutecommon",
+                    "parachute",
+                    a.x - 8.0,
+                    a.y + a.height(),
+                    16.0,
+                    16.0,
+                    false,
+                    42,
+                ));
+            }
             if let Kind::Lift { width, falling } = a.kind {
                 let x0 = a.x - width as f32 * 8.0;
                 for i in 0..width {
@@ -2349,6 +2495,7 @@ impl World {
                 32.0,
                 a.dir > 0,
             ),
+            Kind::BanzaiBill { dir } => ("M1_Enemy_killermagnum", "wait.0", 64.0, 64.0, dir == 0),
             Kind::Boo => (
                 "M1_Enemy_teresa",
                 if (a.target.0 < a.x) == (a.target_facing > 0) {
@@ -2391,6 +2538,9 @@ impl World {
         if a.mode == Mode::DieFall {
             s.flip_y = true;
             s.layer = 70;
+        }
+        if matches!(a.mode, Mode::Parachute { .. }) {
+            s.layer = 41;
         }
         Some(s)
     }
@@ -2579,6 +2729,7 @@ mod tests {
             big: false,
             wings: false,
             pipe: None,
+            parachute: false,
         });
         let mut w = World::with_level(lvl);
         assert_eq!(w.actors.len(), 1);
@@ -2611,6 +2762,7 @@ mod tests {
             big: false,
             wings: false,
             pipe: None,
+            parachute: false,
         });
         let mut w = World::with_level(lvl);
         let lives = w.lives;
@@ -2752,6 +2904,7 @@ mod tests {
             big: false,
             wings: false,
             pipe: Some((PipeDir::Up, 336.0, 64.0)),
+            parachute: false,
         });
         let mut w = World::with_level(lvl);
         w.player.x = 200.0;
@@ -2836,6 +2989,7 @@ mod tests {
             big: false,
             wings: false,
             pipe: None,
+            parachute: false,
         }
     }
 
@@ -3110,6 +3264,78 @@ mod tests {
     }
 
     #[test]
+    fn one_way_wall_passes_right_blocks_left() {
+        let mut lvl = Level::flat(40);
+        lvl.set(10, 2, Cell::PassRight);
+        lvl.set(10, 3, Cell::PassRight);
+        let mut w = World::with_level(lvl);
+        run(&mut w, input::RIGHT, 200);
+        assert!(
+            w.player.x > 11.0 * TILE,
+            "passes rightward, x {}",
+            w.player.x
+        );
+        run(&mut w, input::LEFT, 200);
+        assert!(
+            w.player.x >= 11.0 * TILE,
+            "blocked leftward, x {}",
+            w.player.x
+        );
+    }
+
+    #[test]
+    fn parachute_drifts_down_slowly() {
+        let mut lvl = Level::flat(40);
+        let mut s = spawn(Kind::Goomba, 200.0, 200.0);
+        s.parachute = true;
+        lvl.spawns.push(s);
+        let mut w = World::with_level(lvl);
+        w.player.x = 40.0;
+        run(&mut w, 0, 60);
+        let a = &w.actors[0];
+        assert!(matches!(a.mode, Mode::Parachute { .. }));
+        assert!(a.vy >= -0.4 && a.y > 170.0, "y {} vy {}", a.y, a.vy);
+        run(&mut w, 0, 600);
+        assert_eq!(w.actors[0].mode, Mode::Normal);
+        assert!(w.actors[0].on_ground);
+    }
+
+    #[test]
+    fn burner_cycle_and_fire_bar_hurt() {
+        let mut lvl = Level::flat(40);
+        lvl.burners.push(crate::level::Burner {
+            x: 72.0,
+            y: 32.0,
+            dir: 3,
+            alt: false,
+        });
+        let w = World::with_level(lvl.clone());
+        assert!(w.burner_flame(false) > 0.0);
+        // off between 156 and 371
+        let mut w2 = World::with_level(lvl);
+        w2.player.x = 300.0;
+        run(&mut w2, 0, 200);
+        assert_eq!(w2.burner_flame(false), 0.0);
+        assert!(w2.burner_flame(true) > 0.0);
+        let mut lvl = Level::flat(40);
+        lvl.firebars.push(crate::level::FireBar {
+            x: 120.0,
+            y: 40.0,
+            n: 6,
+            start: 180.0,
+            dir: 1.0,
+        });
+        let mut w3 = World::with_level(lvl);
+        w3.player.x = 100.0;
+        let mut hurt = false;
+        for _ in 0..200 {
+            w3.step(Input::default());
+            hurt |= !w3.player.alive();
+        }
+        assert!(hurt);
+    }
+
+    #[test]
     fn deterministic_with_objects() {
         let make = || {
             let mut lvl = Level::flat(150);
@@ -3125,6 +3351,7 @@ mod tests {
                     big: false,
                     wings: i == 4,
                     pipe: None,
+                    parachute: false,
                 });
             }
             World::with_level(lvl)

@@ -86,6 +86,10 @@ pub enum Kind {
     DryBones,
     /// Boo: chases when not looked at.
     Boo,
+    /// Banzai Bill: 64×64, flies 1 px/frame (dir 0 right, 1 down, 2 left, 3 up).
+    BanzaiBill {
+        dir: u8,
+    },
 }
 
 impl Kind {
@@ -97,6 +101,7 @@ impl Kind {
                 | Kind::Shell { .. }
                 | Kind::Piranha { .. }
                 | Kind::BulletBill
+                | Kind::BanzaiBill { .. }
                 | Kind::Spiny
                 | Kind::Buzzy
                 | Kind::SpikeTop
@@ -168,6 +173,12 @@ pub enum Mode {
     DokanOut {
         tx: f32,
         ty: f32,
+    },
+    /// Drifting down under a parachute (shared enemy draft §5.2): gravity −0.01875, max fall
+    /// −0.4, swinging ±24 px around x0 (2.5°/frame); landing drops the parachute.
+    Parachute {
+        x0: f32,
+        phase: f32,
     },
     Normal,
     /// Flattened Goomba (DieStamp), deleted when the timer runs out.
@@ -404,6 +415,7 @@ impl Actor {
         match self.kind {
             Kind::Fireball | Kind::EnemyFire => 4.0,
             Kind::BigCoin { .. } => 15.0,
+            Kind::BanzaiBill { .. } => 32.0,
             Kind::Thwomp { .. } => {
                 if self.big {
                     32.0
@@ -421,6 +433,7 @@ impl Actor {
         match self.kind {
             Kind::Fireball | Kind::EnemyFire => 8.0,
             Kind::BigCoin { .. } => 30.0,
+            Kind::BanzaiBill { .. } => 64.0,
             Kind::Thwomp { .. } => {
                 if self.big {
                     64.0
@@ -523,7 +536,7 @@ impl Actor {
                 self.die_fall(self.x - self.dir as f32);
                 true
             }
-            Kind::BulletBill => {
+            Kind::BulletBill | Kind::BanzaiBill { .. } => {
                 // DieStamp for a Bullet Bill: it drops away
                 self.mode = Mode::DieFall;
                 self.vx = 0.0;
@@ -646,6 +659,19 @@ impl Actor {
                     };
                     self.pipe = None;
                 }
+            }
+            Mode::Parachute { x0, phase } => {
+                self.vy = (self.vy - 0.01875).max(-0.4);
+                let phase = phase + 2.5;
+                let nx = x0 + 24.0 * phase.to_radians().sin();
+                self.vx = nx - self.x;
+                self.collide(level);
+                self.mode = if self.on_ground {
+                    self.vx = 0.0;
+                    Mode::Normal
+                } else {
+                    Mode::Parachute { x0, phase }
+                };
             }
             Mode::PopOut => {
                 self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
@@ -1025,6 +1051,11 @@ impl Actor {
                 self.vx = self.dir as f32;
                 self.x += self.vx;
             }
+            Kind::BanzaiBill { dir } => {
+                let (dx, dy) = [(1.0, 0.0), (0.0, -1.0), (-1.0, 0.0), (0.0, 1.0)][dir as usize & 3];
+                self.x += dx;
+                self.y += dy;
+            }
             Kind::Donut => {
                 self.vy = (self.vy - 0.1875).max(-2.0);
                 self.y += self.vy;
@@ -1286,7 +1317,15 @@ impl Actor {
             let side = self.vx.signum();
             let wx = self.x + side * hw;
             let ys = [self.y + 2.0, self.y + (h - 2.0).max(2.0)];
-            if ys.iter().any(|&wy| solid(wx, wy)) && level.slope_at(wx).is_none() {
+            // one-way walls block only motion into them from their blocking side
+            let prev_wx = wx - self.vx;
+            let oneway = ys.iter().any(|&wy| {
+                let c = level.cell_at(wx, wy);
+                let cell_x = (wx / TILE).floor() * TILE;
+                (side < 0.0 && c == Cell::PassRight && prev_wx >= cell_x + TILE - 0.01)
+                    || (side > 0.0 && c == Cell::PassLeft && prev_wx <= cell_x + 0.01)
+            });
+            if (ys.iter().any(|&wy| solid(wx, wy)) || oneway) && level.slope_at(wx).is_none() {
                 let edge = if side > 0.0 {
                     (wx / TILE).floor() * TILE
                 } else {

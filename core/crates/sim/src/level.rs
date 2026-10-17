@@ -23,6 +23,12 @@ pub enum Cell {
     SemiTop,
     /// Spike trap: solid on every side, hurts the player on contact (43-spike-trap.md).
     Spike,
+    /// One-way wall (67) edges: PassRight blocks leftward entry at the cell's right edge,
+    /// PassLeft blocks rightward entry at its left edge, PassDown blocks upward entry at its
+    /// bottom edge (the floor orientation uses SemiTop).
+    PassRight,
+    PassLeft,
+    PassDown,
 }
 
 impl Cell {
@@ -134,6 +140,28 @@ pub struct Spawn {
     pub wings: bool,
     /// Lives in a pipe (Piranha Plant): direction and mouth (entry point).
     pub pipe: Option<(PipeDir, f32, f32)>,
+    /// Drifts down under a parachute (flag 0x8000).
+    pub parachute: bool,
+}
+
+/// A Burner (54): block origin, flame direction (0 left, 1 right, 2 down, 3 up), alternate phase.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Burner {
+    pub x: f32,
+    pub y: f32,
+    pub dir: u8,
+    pub alt: bool,
+}
+
+/// A Fire Bar (24): pivot (block centre), fireball count incl. the pivot, start angle (degrees),
+/// direction (+1 counter-clockwise).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FireBar {
+    pub x: f32,
+    pub y: f32,
+    pub n: u32,
+    pub start: f32,
+    pub dir: f32,
 }
 
 /// Something placed inside a pipe (object flag bit 0): the pipe keeps producing it
@@ -237,6 +265,10 @@ pub struct Level {
     pub blasters: Vec<Blaster>,
     /// Conveyor belts: left tile, right tile (inclusive), row, speed (px/frame, + = right).
     pub conveyors: Vec<(i32, i32, i32, f32)>,
+    pub burners: Vec<Burner>,
+    pub firebars: Vec<FireBar>,
+    /// One-way walls (drawing): centre x, bottom y, orientation.
+    pub oneway: Vec<(f32, f32, u8)>,
     /// Doors to draw: origin (bottom centre) and type.
     pub doors: Vec<(f32, f32, u8)>,
     /// Goal pole position (X0, Y0): pole x and the top of its base block (main area only).
@@ -295,9 +327,9 @@ pub fn switch_atlas(kind: BlockKind, on: bool) -> u32 {
 /// 37/38 (start/goal ground, goal, start sign) come from the header; 66 (arrow sign) and 109
 /// (sound effect) are decoration only.
 pub const SUPPORTED_PARTS: &[i16] = &[
-    0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 25, 26, 27, 28,
-    29, 33, 34, 35, 37, 38, 40, 41, 43, 44, 46, 53, 55, 57, 63, 66, 70, 71, 87, 88, 90, 99, 100,
-    109,
+    0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27,
+    28, 29, 32, 33, 34, 35, 37, 38, 40, 41, 43, 44, 46, 53, 54, 55, 57, 63, 66, 67, 70, 71, 87, 88,
+    90, 99, 100, 109,
 ];
 
 /// Why a course is not fully playable yet: one entry per missing feature (empty = playable).
@@ -317,16 +349,12 @@ pub fn unsupported_features(course: &Course) -> Vec<String> {
         if h.liquid_mode != 0 || h.liquid_start_height != 0 {
             out.insert("rising/still liquid (lava, poison, water)".to_string());
         }
-        if h.orientation != 0 {
-            out.insert("vertical area".to_string());
-        }
+
         for o in area.objects.iter() {
             if !SUPPORTED_PARTS.contains(&o.id) {
                 out.insert(format!("part {}", o.id));
             } else if o.flags & 0x400 != 0 {
                 out.insert("objects on tracks".to_string());
-            } else if o.flags & 0x8000 != 0 {
-                out.insert("parachutes".to_string());
             } else if o.flags & 0x2 != 0 && !matches!(o.id, 0 | 1 | 8) {
                 out.insert(format!("wings on part {}", o.id));
             }
@@ -391,6 +419,9 @@ impl Level {
             checkpoints: Vec::new(),
             blasters: Vec::new(),
             conveyors: Vec::new(),
+            burners: Vec::new(),
+            firebars: Vec::new(),
+            oneway: Vec::new(),
             doors: Vec::new(),
             goal: None,
             style: course.header.game_style.as_str_lossy(),
@@ -485,6 +516,9 @@ impl Level {
                 2 => Some(Kind::Piranha {
                     fire: o.flags & 0x4 != 0,
                 }),
+                32 => Some(Kind::BanzaiBill {
+                    dir: ((o.flags >> 22) & 3) as u8,
+                }),
                 70 => Some(Kind::BigCoin {
                     value: ((o.flags >> 18) & 3).min(2) as u8,
                 }),
@@ -539,6 +573,7 @@ impl Level {
                             big,
                             wings,
                             pipe: Some((dir, ex, ey)),
+                            parachute: false,
                         });
                     } else {
                         lvl.generators.push(PipeGenerator {
@@ -561,6 +596,7 @@ impl Level {
                     big,
                     wings,
                     pipe: None,
+                    parachute: o.flags & 0x8000 != 0,
                 });
                 continue;
             }
@@ -600,6 +636,66 @@ impl Level {
                     });
                 }
                 lvl.conveyors.push((tx, tx + w - 1, ty, speed));
+                continue;
+            }
+            if o.id == 67 {
+                // one-way wall: 2×2, x on the tile edge (centre), y the centre of the bottom row;
+                // orientation (flags >> 22) & 3: 0 pass right, 1 pass down, 2 pass left, 3 floor
+                let cx = o.x as f32 / 10.0;
+                let by = o.y as f32 / 10.0 - 8.0;
+                let (l, b) = (
+                    ((cx - 16.0) / TILE).round() as i32,
+                    (by / TILE).round() as i32,
+                );
+                match (o.flags >> 22) & 3 {
+                    0 => {
+                        lvl.set(l + 1, b, Cell::PassRight);
+                        lvl.set(l + 1, b + 1, Cell::PassRight);
+                    }
+                    1 => {
+                        lvl.set(l, b, Cell::PassDown);
+                        lvl.set(l + 1, b, Cell::PassDown);
+                    }
+                    2 => {
+                        lvl.set(l, b, Cell::PassLeft);
+                        lvl.set(l, b + 1, Cell::PassLeft);
+                    }
+                    _ => {
+                        lvl.set(l, b + 1, Cell::SemiTop);
+                        lvl.set(l + 1, b + 1, Cell::SemiTop);
+                    }
+                }
+                lvl.oneway.push((cx, by, ((o.flags >> 22) & 3) as u8));
+                continue;
+            }
+            if o.id == 54 {
+                lvl.set(tx, ty, Cell::Solid);
+                let (bx, by) = (tx as f32 * TILE + 8.0, ty as f32 * TILE);
+                let dir = match (o.flags >> 25) & 3 {
+                    0 => 0,
+                    1 => 1,
+                    2 => 2,
+                    _ => 3,
+                };
+                lvl.burners.push(Burner {
+                    x: bx,
+                    y: by,
+                    dir,
+                    alt: o.flags & 0x4 != 0,
+                });
+                continue;
+            }
+            if o.id == 24 {
+                // pivot block: solid; length bits 22–24, direction bit 3, start angle in the
+                // extended data (5° units) [ext docs/formats/smm2-course.md]
+                lvl.set(tx, ty, Cell::Solid);
+                lvl.firebars.push(FireBar {
+                    x: tx as f32 * TILE + 8.0,
+                    y: ty as f32 * TILE + 8.0,
+                    n: 4 + 2 * ((o.flags >> 22) & 7),
+                    start: (o.extended_data & 0xFF) as f32 * 5.0,
+                    dir: if (o.flags >> 3) & 1 == 1 { 1.0 } else { -1.0 },
+                });
                 continue;
             }
             if o.id == 43 {
@@ -924,6 +1020,7 @@ impl Level {
             big: false,
             wings: false,
             pipe: None,
+            parachute: false,
         });
         lvl.spawns.push(Spawn {
             kind: Kind::Koopa { red: false },
@@ -932,6 +1029,7 @@ impl Level {
             big: false,
             wings: false,
             pipe: None,
+            parachute: false,
         });
         // pipe
         lvl.add_pipe(46, 2, 2, PipeDir::Up);
@@ -960,6 +1058,9 @@ impl Level {
             checkpoints: Vec::new(),
             blasters: Vec::new(),
             conveyors: Vec::new(),
+            burners: Vec::new(),
+            firebars: Vec::new(),
+            oneway: Vec::new(),
             doors: Vec::new(),
             goal: None,
             style: "M1".into(),

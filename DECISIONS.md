@@ -112,6 +112,8 @@ them:
 - Simplified for now: Spike Top walks floors only (turns at ledges) instead of crawling around
   blocks; Hammer Bro alternates a 5.5 jump with a 2.5 hop (no drop-through); Bob-omb blast radius
   1 tile (plus) for terrain and 32 px for actors/player [inf].
+- Fire Bar rotation 2.8125°/frame (the shared counter's step was not located); Burner flame
+  12 px wide × 48 px (texture length); one-way walls are drawn nowhere yet (no M1 texture found).
 - Sprite art offsets inside textures are measured from the textures (e.g. the Goomba sits in the
   top half of its 16×32 image) until BFRES quad placement is imported. (Superseded: BFRES quads,
   see the Phase 5 step 3 entry.)

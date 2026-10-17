@@ -710,9 +710,15 @@ impl Player {
         self.x += self.vx * cos;
         for dir in [-1.0f32, 1.0] {
             let wx = self.x + dir * s.wall_x;
-            let hit = [s.wall_y0, s.wall_y1]
-                .iter()
-                .any(|&wy| Self::solid(level, wx, self.y + wy));
+            let prev_wx = wx - self.vx * cos;
+            let cell_x = (wx / TILE).floor() * TILE;
+            let hit = [s.wall_y0, s.wall_y1].iter().any(|&wy| {
+                let c = level.cell_at(wx, self.y + wy);
+                c.is_solid()
+                    // one-way walls block only motion into them from their blocking side
+                    || (dir < 0.0 && c == Cell::PassRight && prev_wx >= cell_x + TILE - 0.01)
+                    || (dir > 0.0 && c == Cell::PassLeft && prev_wx <= cell_x + 0.01)
+            });
             // spikes hurt only when moving into them along that axis
             if self.vx * dir > 0.0
                 && [s.wall_y0, s.wall_y1]
@@ -775,9 +781,14 @@ impl Player {
                 }
             }
             let hy = self.y + s.head_y;
+            let prev_head = prev_y + s.head_y;
             let hits: Vec<f32> = [-s.head_x, s.head_x]
                 .into_iter()
-                .filter(|&hx| Self::solid(level, self.x + hx, hy))
+                .filter(|&hx| {
+                    let c = level.cell_at(self.x + hx, hy);
+                    c.is_solid()
+                        || (c == Cell::PassDown && prev_head <= (hy / TILE).floor() * TILE + 0.01)
+                })
                 .collect();
             if !hits.is_empty() {
                 // the block that gets hit: the one under the head centre if both probes hit

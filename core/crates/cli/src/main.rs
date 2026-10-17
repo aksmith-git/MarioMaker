@@ -360,7 +360,7 @@ fn main() -> ExitCode {
                 println!("  {s}: {k}/{n}");
             }
             let mut v: Vec<_> = blockers.into_iter().collect();
-            v.sort_by(|a, b| b.1.cmp(&a.1));
+            v.sort_by_key(|b| std::cmp::Reverse(b.1));
             println!("most common blockers (courses affected):");
             for (m, n) in v.iter().take(40) {
                 println!("  {n:5}  {m}");
