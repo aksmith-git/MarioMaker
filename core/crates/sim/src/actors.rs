@@ -171,6 +171,37 @@ impl Kind {
                 | Kind::ChainChomp { .. }
         )
     }
+    /// Clear-condition enemy class (clear.rs) of a defeated actor of this kind.
+    pub fn defeat_class(self, buzzy: bool) -> Option<u8> {
+        use crate::clear::enemy as e;
+        Some(match self {
+            Kind::Goomba => e::GOOMBA,
+            Kind::Koopa { .. } => e::KOOPA,
+            Kind::Shell { .. } if buzzy => e::BUZZY,
+            Kind::Shell { .. } => e::KOOPA,
+            Kind::Buzzy => e::BUZZY,
+            Kind::Spiny | Kind::SpinyEgg => e::SPINY,
+            Kind::Piranha { fire: false } => e::PIRANHA,
+            Kind::Piranha { fire: true } => e::FIRE_PIRANHA,
+            Kind::Muncher => e::MUNCHER,
+            Kind::DryBones => e::DRY_BONES,
+            Kind::RockyWrench => e::ROCKY_WRENCH,
+            Kind::HammerBro => e::HAMMER_BRO,
+            Kind::Lakitu => e::LAKITU,
+            Kind::Blooper => e::BLOOPER,
+            Kind::CheepCheep { .. } => e::CHEEP_CHEEP,
+            Kind::SpikeTop => e::SPIKE_TOP,
+            Kind::ChainChomp { .. } => e::CHAIN_CHOMP,
+            Kind::Wiggler => e::WIGGLER,
+            Kind::BobOmb => e::BOB_OMB,
+            Kind::Thwomp { .. } => e::THWOMP,
+            Kind::Boo => e::BOO,
+            Kind::BanzaiBill { .. } => e::BANZAI_BILL,
+            Kind::Magikoopa => e::MAGIKOOPA,
+            Kind::BulletBill => e::BULLET_BILL,
+            _ => return None,
+        })
+    }
     /// Stomps bounce off without harming it or the player (EnemyDB "Invalid").
     pub fn stomp_bounces(self) -> bool {
         matches!(self, Kind::ChainChomp { .. })
@@ -320,6 +351,8 @@ pub struct Actor {
     /// Riding a track, and the offset from the track point to (x, y).
     pub rail: Option<crate::track::Rail>,
     pub rail_off: (f32, f32),
+    /// Counted toward a "defeat N" clear condition.
+    pub tallied: bool,
 }
 
 impl Actor {
@@ -361,6 +394,7 @@ impl Actor {
             target_facing: 1,
             rail: None,
             rail_off: (0.0, 0.0),
+            tallied: false,
         }
     }
 

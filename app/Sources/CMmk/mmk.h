@@ -86,6 +86,16 @@ bool mmk_engine_load_course(MmkEngine *engine, const uint8_t *data, size_t len);
 void mmk_engine_step(MmkEngine *engine, const MmkInput *input);
 void mmk_engine_snapshot(MmkEngine *engine, MmkSnapshot *out);
 void mmk_engine_hud(const MmkEngine *engine, MmkHud *out);
+
+typedef struct {
+    uint32_t kind;              // 0 none, 1 defeat N (target = enemy class), 2 N 1-Ups, 3 N coins
+                                // (target = coin value, 0 any), 4 N POWs, 5 N P Switches, 6 goal
+                                // invincible, 7 as Super, 8 as Fire, 9 no damage, 10 no landing,
+                                // 255 not supported
+    uint32_t target, count, needed;
+    uint8_t met, violated, _pad[2];
+} MmkCondition;                                                        // 20 bytes
+bool mmk_engine_clear_condition(const MmkEngine *engine, MmkCondition *out);   // false: none
 // Background clear colour 0xRRGGBBAA (theme sky; black when the theme has no background art)
 uint32_t mmk_engine_clear_color(const MmkEngine *engine);
 // View flags: bit 0 = draw upside down (underground night)

@@ -13,6 +13,7 @@ use mmk_assets::{Cache, Quad};
 use mmk_sim::{Input, Sprite, World};
 
 pub mod challenge;
+pub mod condition;
 pub mod course_info;
 pub mod import;
 pub mod ui;

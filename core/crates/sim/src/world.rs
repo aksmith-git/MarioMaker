@@ -61,6 +61,9 @@ pub enum Event {
     Pipe,
     Checkpoint,
     Switch,
+    /// A clear-condition count went up / the condition is now met.
+    ConditionCount,
+    ConditionMet,
 }
 
 /// P-switch duration: [ext] about 10 s (not found in the binary).
@@ -141,6 +144,8 @@ pub struct World {
     pub bank_lives: bool,
     /// Time left in frames (−1: no timer).
     pub time: i32,
+    /// The course's clear condition and its progress this attempt.
+    pub clear: crate::clear::ClearCondition,
     pub goal_phase: GoalPhase,
     /// Goal flag height above Y0, tower flag offset, frames since StartPlayerRun.
     pub goal_flag: f32,
@@ -247,7 +252,14 @@ impl World {
     pub fn from_course(course: &Course) -> Self {
         let main = Level::from_course(course, 0);
         let sub = Level::from_course(course, 1);
-        Self::with_areas(vec![main, sub])
+        let mut w = Self::with_areas(vec![main, sub]);
+        let h = &course.header;
+        w.clear = crate::clear::ClearCondition::from_header(
+            h.clear_condition_category,
+            h.clear_condition,
+            h.clear_condition_magnitude.max(0) as u16,
+        );
+        w
     }
 
     pub fn with_level(level: Level) -> Self {
@@ -276,6 +288,7 @@ impl World {
             lives_gained: 0,
             bank_lives: false,
             time: -1,
+            clear: crate::clear::ClearCondition::none(),
             goal_phase: GoalPhase::None,
             goal_flag: 144.0,
             tower_flag: -24.0,
@@ -329,6 +342,7 @@ impl World {
         self.fade = 0.0;
         self.initial = self.area_initial[0].clone();
         self.load_area_fresh();
+        self.clear.reset();
         self.score = self.base_score;
         self.coins = self.base_coins;
         self.time = if self.level.timer > 0 {
@@ -523,7 +537,44 @@ impl World {
         self.events.push(Event::OneUp);
     }
 
+    /// A clear-condition count result: effects for counting up and for completing.
+    fn condition_counted(&mut self, done: Option<bool>) {
+        match done {
+            Some(true) => {
+                self.events.push(Event::ConditionCount);
+                self.events.push(Event::ConditionMet);
+            }
+            Some(false) => self.events.push(Event::ConditionCount),
+            None => {}
+        }
+    }
+
+    /// Defeated enemies count toward a "defeat N" condition once each (placed objects by their
+    /// spawn record; others every time).
+    fn tally_defeats(&mut self) {
+        let mut results = Vec::new();
+        for a in &mut self.actors {
+            if a.tallied {
+                continue;
+            }
+            let shelled = matches!(a.kind, Kind::Shell { .. });
+            if a.alive() && !shelled {
+                continue;
+            }
+            a.tallied = true;
+            if let Some(class) = a.kind.defeat_class(a.buzzy) {
+                let key = a.spawn.map(|s| (self.area as u32) << 16 | s as u32);
+                results.push(self.clear.defeated(class, key));
+            }
+        }
+        for r in results {
+            self.condition_counted(r);
+        }
+    }
+
     fn add_coin(&mut self) {
+        let r = self.clear.coin(1);
+        self.condition_counted(r);
         self.coins += 1;
         self.score += COIN_SCORE;
         self.events.push(Event::Coin);
@@ -739,8 +790,18 @@ impl World {
         self.actor_interactions();
         self.player_interactions(jump_held);
         self.step_effects();
+        self.tally_defeats();
         self.despawn();
         self.actors.retain(|a| a.mode != Mode::Dead);
+        // action conditions: damage taken this frame, landings
+        if self
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::PowerDown | Event::Death))
+        {
+            self.clear.damaged();
+        }
+        self.clear.ground(self.player.on_ground);
 
         // timer: one count per second of play
         if self.time > 0 {
@@ -1118,9 +1179,15 @@ impl World {
                     }
                     self.actors[i].mode = Mode::Dead;
                     let n = [10, 30, 50][value as usize];
+                    // counted once as a big coin (its value toward "N coins")
+                    let cond =
+                        std::mem::replace(&mut self.clear, crate::clear::ClearCondition::none());
                     for _ in 0..n {
                         self.add_coin();
                     }
+                    self.clear = cond;
+                    let r = self.clear.coin(n);
+                    self.condition_counted(r);
                     self.score += [1000, 3000, 5000][value as usize] - n * COIN_SCORE;
                     let _ = (ax, ay);
                 }
@@ -1351,6 +1418,10 @@ impl World {
                 self.events.push(Event::PowerUp);
             }
             Kind::OneUp => {
+                if self.clear.goal == crate::clear::Goal::OneUps {
+                    let r = self.clear.count(None, 1);
+                    self.condition_counted(Some(r));
+                }
                 self.add_score(ONE_UP, x, y + 16.0);
             }
             _ => {}
@@ -1884,6 +1955,10 @@ impl World {
             }
         }
         self.events.push(Event::Break);
+        if self.clear.goal == crate::clear::Goal::Pow {
+            let r = self.clear.count(None, 1);
+            self.condition_counted(Some(r));
+        }
     }
 
     /// Cannons (47-cannon.md): first shot 60 frames after spawn, then every 190, while the
@@ -2092,6 +2167,10 @@ impl World {
     /// P switch pressed: bricks and coins swap for P_FRAMES (18-p-switch.md).
     fn press_p_switch(&mut self) {
         self.events.push(Event::Switch);
+        if self.clear.goal == crate::clear::Goal::PSwitch {
+            let r = self.clear.count(None, 1);
+            self.condition_counted(Some(r));
+        }
         if self.p_timer > 0 {
             self.p_timer = P_FRAMES;
             return;
@@ -2330,6 +2409,15 @@ impl World {
         // [inf: box A of a small player on the base block only touches Y0+14]
         let hb = p.contact_box();
         if !overlap(hb, (x0 - 4.0, y0 + 14.0, x0 + 5.0, y0 + 166.0)) {
+            return;
+        }
+        // a clear condition not met: the goal lets the player pass
+        let form = match p.form {
+            Form::Small => 0,
+            Form::Super => 1,
+            Form::Fire => 2,
+        };
+        if !self.clear.met(p.star > 0, form) {
             return;
         }
         // grab: snap to the pole, score by height
@@ -3893,6 +3981,43 @@ mod tests {
         assert!(w.player.alive());
         run(&mut w, 0, 1);
         assert!(!w.player.alive());
+    }
+
+    #[test]
+    fn unmet_clear_condition_locks_the_goal() {
+        let mut lvl = Level::flat(60);
+        lvl.set(20, 2, Cell::Solid);
+        lvl.goal = Some((20.0 * TILE + 8.0, 3.0 * TILE));
+        let mut w = World::with_level(lvl);
+        // "reach the goal as Fire Mario", played as small Mario
+        w.clear = crate::clear::ClearCondition::from_header(2, 0x2a8e77bb, 0);
+        let mut grabbed = false;
+        for i in 0..400 {
+            let jump = if i % 30 < 20 { input::JUMP } else { 0 };
+            w.step(Input {
+                buttons: input::RIGHT | input::RUN | jump,
+            });
+            grabbed |= w.events.contains(&Event::Goal);
+        }
+        assert!(!grabbed, "passes the pole");
+        assert!(w.player.x > 21.0 * TILE);
+    }
+
+    #[test]
+    fn defeating_enemies_counts_toward_the_condition() {
+        let mut lvl = Level::flat(40);
+        lvl.spawns.push(spawn(Kind::Goomba, 200.0, 32.0));
+        lvl.spawns.push(spawn(Kind::Goomba, 240.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.clear = crate::clear::ClearCondition::from_header(1, 0x7f07acbf, 2);
+        w.player.x = 40.0;
+        run(&mut w, 0, 1);
+        for a in &mut w.actors {
+            a.stomp();
+        }
+        run(&mut w, 0, 1);
+        assert_eq!(w.clear.count, 2);
+        assert!(w.clear.met(false, 0));
     }
 
     #[test]

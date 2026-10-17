@@ -150,6 +150,11 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
 - ⬜ App screens drawn with the SMM1 layouts (world map walk, intro card, clear, game over, ending)
 
 ### Phase 7 — Expansion ⬜
+- ✅ Clear conditions: header hash → condition; defeat / collect / coins / POW / P Switch counts
+  (each placed object once), goal as Super / Fire / invincible, no damage / no landing; the goal
+  lets the player pass until met; HUD shows progress · holding / riding conditions ⬜ (no carry,
+  Yoshi, shoe yet) — SMB1 sample 53 → 65 playable
+- ✅ Chain Chomp (chained + unchained)
 - ✅ Tracks: graph from track records (lines + quarter arcs), rail follower (0.75 / 1.5 px/f),
   any actor rides (lifts, seesaws, grinders, claws, items, enemies); drawn as lines · junctions,
   open ends, blocks/coins on tracks, exact track tiles ⬜ — SMB1 sample 49 → 52 playable

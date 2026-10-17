@@ -405,8 +405,13 @@ pub fn unsupported_features(course: &Course) -> Vec<String> {
             }
         }
     }
-    if course.header.clear_condition != 0 {
-        out.insert("clear condition".to_string());
+    let cond = crate::clear::ClearCondition::from_header(
+        course.header.clear_condition_category,
+        course.header.clear_condition,
+        course.header.clear_condition_magnitude.max(0) as u16,
+    );
+    if let crate::clear::Goal::Unsupported(i) = cond.goal {
+        out.insert(format!("clear condition {i}"));
     }
     out.into_iter().collect()
 }
