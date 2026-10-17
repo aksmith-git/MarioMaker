@@ -157,6 +157,8 @@ pub enum Kind {
     ClownCar {
         fire: bool,
     },
+    /// A coin that moves (wings or a track): collected on touch.
+    FloatCoin,
     /// Fish Bone (103): patrols in water, aims and charges; shatters on anything it hits.
     FishBone,
     /// Lava Bubble (60): leaps from the lava (or the area floor) to its placed height.
@@ -1491,6 +1493,11 @@ impl Actor {
             Kind::ChainChomp { chained } => self.step_chomp(level, chained),
             Kind::LavaBubble => self.step_lava_bubble(),
             Kind::FishBone => self.step_fish_bone(level),
+            Kind::FloatCoin => {
+                if self.wings {
+                    self.wing_bob(16.0);
+                }
+            }
             Kind::ClownCar { .. } => self.step_clown_car(level),
             Kind::ShoeGoomba { .. } => self.step_shoe_goomba(level),
             Kind::Shoe { .. } => {

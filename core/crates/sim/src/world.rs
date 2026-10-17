@@ -1534,6 +1534,14 @@ impl World {
                 });
                 return;
             }
+            if a.kind == Kind::FloatCoin {
+                if overlap(contact, ab) {
+                    self.actors[i].mode = Mode::Dead;
+                    self.add_coin();
+                }
+                i += 1;
+                continue;
+            }
             if let Kind::ClownCar { .. } = a.kind {
                 // climb in by dropping into an empty car
                 if a.phase == 0
@@ -4041,6 +4049,13 @@ impl World {
             | Kind::Shuriken
             | Kind::BowserJr { .. } => a.boss_look()?,
             Kind::LavaBubble => ("M1_Enemy_bubble", "wait.0", 16.0, 16.0, false),
+            Kind::FloatCoin => {
+                let field = self.field_model;
+                let mut sp =
+                    Self::model_sprite(field, field, a.x - 8.0, a.y, TILE, TILE, false, 25);
+                sp.image.rect = Some((7.0 * TILE, 0.0, TILE, TILE));
+                return Some(sp);
+            }
             Kind::FishBone => (
                 "M1_Enemy_fishbone",
                 if a.phase == 2 {

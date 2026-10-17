@@ -382,14 +382,14 @@ pub const SUPPORTED_PARTS: &[i16] = &[
     0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 52, 53,
     54, 55, 56, 57, 58, 60, 61, 62, 63, 64, 66, 67, 68, 70, 71, 76, 77, 82, 83, 84, 87, 88, 89, 90,
-    91, 92, 95, 98, 99, 100, 102, 103, 104, 105, 109,
+    91, 92, 94, 95, 98, 99, 100, 102, 103, 104, 105, 109,
 ];
 
 /// Parts that become actors and so can ride a track (59-track.md).
 const RIDES_TRACKS: &[i16] = &[
-    0, 1, 2, 3, 4, 5, 6, 10, 11, 12, 15, 18, 19, 20, 22, 25, 28, 30, 31, 32, 33, 34, 35, 36, 39,
-    40, 41, 42, 44, 45, 46, 48, 52, 56, 57, 58, 60, 61, 62, 63, 68, 70, 76, 77, 82, 83, 91, 95, 98,
-    102, 103, 105,
+    0, 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 15, 18, 19, 20, 22, 23, 25, 28, 30, 31, 32, 33, 34, 35, 36,
+    39, 40, 41, 42, 44, 45, 46, 48, 52, 56, 57, 58, 60, 61, 62, 63, 68, 70, 76, 77, 82, 83, 91, 95,
+    98, 102, 103, 105,
 ];
 
 /// Why a course is not fully playable yet: one entry per missing feature (empty = playable).
@@ -963,7 +963,22 @@ impl Level {
                 });
                 continue;
             }
-            if actorish && matches!(o.id, 4 | 5 | 6 | 22 | 63) {
+            if actorish && o.id == 8 {
+                lvl.spawns.push(Spawn {
+                    kind: Kind::FloatCoin,
+                    x: tx as f32 * TILE + 8.0,
+                    y: ty as f32 * TILE,
+                    big: false,
+                    wings: o.flags & 0x2 != 0,
+                    pipe: None,
+                    parachute: false,
+                    rail: (o.flags & 0x400 != 0).then_some(((o.flags >> 20) & 3) as u8),
+                    link: -1,
+                    clown: false,
+                });
+                continue;
+            }
+            if actorish && matches!(o.id, 4 | 5 | 6 | 22 | 23 | 63) {
                 // a winged or tracked block becomes a moving solid actor (4-brick.md B12)
                 let block = block_kind(o.id).unwrap();
                 lvl.spawns.push(Spawn {
@@ -1082,10 +1097,22 @@ impl Level {
                         });
                     }
                 }
-                87 | 88 => {
-                    // slopes: bit 20 = 0 rises to the right ("/"), 1 falls to the right ("\")
+                87 | 88 | 94 => {
+                    // slopes: bit 20 = 0 rises to the right ("/"), 1 falls to the right ("\");
+                    // a conveyor slope (94) is a steep slope that carries like a belt
+                    // (53-conveyor-belt.md: vector (±1, ±1), fast (±2, ±2))
                     let rising = (o.flags >> 20) & 1 == 0;
-                    let steep = o.id == 88;
+                    let steep = o.id != 87;
+                    if o.id == 94 {
+                        let right = (o.flags >> 3) & 3 == 1;
+                        let fast = (o.flags >> 18) & 3 == 1;
+                        let speed = if fast { 2.0 } else { 1.0 } * if right { 1.0 } else { -1.0 };
+                        for dx in 0..w {
+                            for dy in 0..hgt {
+                                lvl.conveyors.push((tx + dx, tx + dx, ty + dy, speed));
+                            }
+                        }
+                    }
                     let slope = Slope {
                         left: tx,
                         bottom: ty,

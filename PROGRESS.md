@@ -163,6 +163,8 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
 - ✅ Fish Bone: patrol, 40-frame aim, charge (2 / 6 px/f), shatters on contact; fire-proof
 - ✅ Custom autoscroll: camera centre follows the area's part-89 nodes (speed per segment,
   0.03 easing, pauses during warps/death/goal; the player is pushed at the edges)
+- ✅ Conveyor slopes (steep slope + belt carry); winged/tracked coins and note blocks —
+  SMB1 sample 148/150 playable (left: a Bill Blaster and a Burner on tracks)
 - ✅ Pink coins: counted once each across both areas; the last one gives the key
 - ✅ Goomba's Shoe / Stiletto: shoe Goomba hops (50-frame pause, 4.5 / 1.5), leaves the empty
   shoe; the player wears it (spikes and Munchers underfoot safe, shoe stomps, a hit knocks it
