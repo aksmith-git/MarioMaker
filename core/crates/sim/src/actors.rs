@@ -113,6 +113,8 @@ pub enum Kind {
     Key,
     /// Twister: walks 0.5 px/frame; its wind column (grows 0.7/frame to 128 px) lifts riders.
     Twister,
+    /// Swinging claw (105): a claw on a rope swinging from a pivot; grabs the player.
+    Claw,
 }
 
 impl Kind {
@@ -455,6 +457,12 @@ impl Actor {
             }
         }
         None
+    }
+
+    /// Swinging claw tip (where a held player hangs): pivot (home) + rope of 40 px.
+    pub fn claw_tip(&self) -> (f32, f32) {
+        let a = self.heading.to_radians();
+        (self.home_x + 40.0 * a.sin(), self.home_y - 40.0 * a.cos())
     }
 
     /// Spring compression c (0…4 px), kept in `pause`.
@@ -1240,6 +1248,14 @@ impl Actor {
                 }
             }
             Kind::Pow | Kind::Key => {}
+            Kind::Claw => {
+                // pendulum: angle = A·sin(2π t / T); A 60°, T 160 frames [inf: the rope helper
+                // simulation is outside the decompiled range]
+                self.heading = 60.0 * (self.age as f32 * std::f32::consts::TAU / 160.0).sin();
+                if self.timer > 0 {
+                    self.timer -= 1; // re-grab cooldown
+                }
+            }
             Kind::Twister => {
                 if self.on_ground {
                     self.vx = 0.5 * self.dir as f32;

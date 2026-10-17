@@ -118,6 +118,8 @@ them:
   facings (odd values of (flags >> 24) & 7) mapped as 1 down-left, 3 down-right, 5 up-left,
   7 up-right [inf]. Sprites don't rotate yet: seesaw drawn as stepped tiles, cannon barrels not
   drawn.
+- Swinging claw pendulum: amplitude 60°, period 160 frames, rope 40 px (the rope simulation is
+  outside the decompiled range) [inf]; Twister lift: vy toward 4.5 at +0.6/frame [inf].
 - Sprite art offsets inside textures are measured from the textures (e.g. the Goomba sits in the
   top half of its 16×32 image) until BFRES quad placement is imported. (Superseded: BFRES quads,
   see the Phase 5 step 3 entry.)

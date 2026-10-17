@@ -185,6 +185,9 @@ pub struct World {
     unlocked_doors: std::collections::BTreeSet<(usize, u8)>,
     /// Snake blocks in the current area.
     pub snakes: Vec<Snake>,
+    /// Swinging claw holding the player (actor id).
+    held_by: Option<u32>,
+    prev_jump_claw: bool,
 }
 
 impl Default for World {
@@ -285,6 +288,8 @@ impl World {
             keys: 0,
             unlocked_doors: Default::default(),
             snakes: Vec::new(),
+            held_by: None,
+            prev_jump_claw: false,
         };
         w.field_model = Box::leak(field_model(&w.level.style, w.level.theme).into_boxed_str());
         w.reset_course();
@@ -663,6 +668,7 @@ impl World {
         self.fire_hazards();
         self.step_cannons();
         self.twister_lift();
+        self.claws(input);
         self.pow_quake();
         self.check_checkpoints();
         self.shell_walls();
@@ -1294,6 +1300,11 @@ impl World {
                     };
                 }
                 a.rng ^= (idx as u32 + 1).wrapping_mul(0x85eb_ca6b);
+                if s.kind == Kind::Claw {
+                    // pivot at the top centre of the 3×4 object
+                    a.home_x = s.x;
+                    a.home_y = s.y + 64.0;
+                }
                 // enemies face the player (left if player.x ≤ x); items face right; a Twister
                 // starts facing left
                 a.dir = if (s.kind.is_enemy() && self.player.x <= s.x) || s.kind == Kind::Twister {
@@ -1548,6 +1559,51 @@ impl World {
     /// [?]; 2.8125°/frame (one turn per 128 frames) is used [inf].
     pub fn firebar_angle(&self, fb: &crate::level::FireBar) -> f32 {
         fb.start + fb.dir * 2.8125 * self.tick as f32
+    }
+
+    /// Swinging claws (105-swinging-claw.md): grab the player when the claw tip is within 46 px
+    /// and the vertical offset is in (−8, 10); the player hangs from the tip until jump is
+    /// pressed, then leaves with the tip's velocity; 30-frame re-grab cooldown.
+    fn claws(&mut self, input: Input) {
+        if let Some(id) = self.held_by {
+            let Some(c) = self.actors.iter().find(|a| a.id == id) else {
+                self.held_by = None;
+                self.player.control = Control::Normal;
+                return;
+            };
+            let (tx, ty) = c.claw_tip();
+            let (vx, vy) = (tx - self.player.x, ty - 24.0 - self.player.y);
+            self.player.x = tx;
+            self.player.y = ty - 24.0;
+            if input.held(input::JUMP) && !self.prev_jump_claw {
+                self.player.control = Control::Normal;
+                self.player.vx = vx.clamp(-3.0, 3.0);
+                self.player.vy = vy.max(0.0) + 3.0;
+                self.player.on_ground = false;
+                if let Some(c) = self.actors.iter_mut().find(|a| a.id == id) {
+                    c.timer = 30;
+                }
+                self.held_by = None;
+            }
+        } else if self.player.control == Control::Normal {
+            let p = &self.player;
+            let grab = self.actors.iter().find(|a| {
+                if a.kind != Kind::Claw || a.timer > 0 {
+                    return false;
+                }
+                let (tx, ty) = a.claw_tip();
+                let dy = p.y + 16.0 - (ty - 8.0);
+                (p.x - tx).abs() < 23.0 && dy > -8.0 && dy < 10.0
+            });
+            if let Some(c) = grab {
+                self.held_by = Some(c.id);
+                self.player.control = Control::Demo;
+                self.player.vx = 0.0;
+                self.player.vy = 0.0;
+                self.player.pose = Pose::Jump;
+            }
+        }
+        self.prev_jump_claw = input.held(input::JUMP);
     }
 
     /// Twister wind column: x within ±16 of the twister, from its feet to the column top. The
@@ -2365,6 +2421,53 @@ impl World {
                 x += TILE;
             }
         }
+        for a in &self.actors {
+            if a.kind != Kind::Claw || !visible(a.home_x, a.home_y) {
+                continue;
+            }
+            out.push(Self::model_sprite(
+                "M1_Object_swingcrane",
+                "neji",
+                a.home_x - 8.0,
+                a.home_y - 8.0,
+                16.0,
+                16.0,
+                false,
+                30,
+            ));
+            let (tx, ty) = a.claw_tip();
+            for k in 1..4 {
+                let f = k as f32 / 4.0;
+                let (cx, cy) = (
+                    a.home_x + (tx - a.home_x) * f,
+                    a.home_y + (ty - a.home_y) * f,
+                );
+                out.push(Self::model_sprite(
+                    "M1_Object_swingcrane",
+                    "chain",
+                    cx - 8.0,
+                    cy,
+                    16.0,
+                    16.0,
+                    false,
+                    30,
+                ));
+            }
+            out.push(Self::model_sprite(
+                "M1_Object_swingcrane",
+                if self.held_by == Some(a.id) {
+                    "arm.2"
+                } else {
+                    "arm.0"
+                },
+                tx - 24.0,
+                ty,
+                48.0,
+                32.0,
+                false,
+                31,
+            ));
+        }
         for sn in &self.snakes {
             let model = if sn.fast {
                 "M1_Object_block_snake2"
@@ -2881,6 +2984,7 @@ impl World {
                 false,
             ),
             Kind::Seesaw { .. } => return None,
+            Kind::Claw => return None,
             Kind::Twister => (
                 "M1_Object_tornado",
                 if (self.tick / 4).is_multiple_of(2) {
@@ -3954,6 +4058,27 @@ mod tests {
             top = top.max(w.player.y);
         }
         assert!(top > 80.0, "lifted to {top}");
+    }
+
+    #[test]
+    fn claw_grabs_and_releases() {
+        let mut lvl = Level::flat(60);
+        lvl.spawns.push(spawn(Kind::Claw, 120.0, 72.0));
+        let mut w = World::with_level(lvl);
+        run(&mut w, 0, 1);
+        // put the player right at the claw tip
+        let (tx, ty) = w.actors[0].claw_tip();
+        w.player.x = tx;
+        w.player.y = ty - 20.0;
+        w.player.on_ground = false;
+        run(&mut w, 0, 2);
+        assert!(w.held_by.is_some());
+        run(&mut w, 0, 30);
+        assert_eq!(w.player.control, Control::Demo);
+        run(&mut w, input::JUMP, 1);
+        assert!(w.held_by.is_none());
+        assert_eq!(w.player.control, Control::Normal);
+        assert!(w.player.vy > 0.0);
     }
 
     #[test]
