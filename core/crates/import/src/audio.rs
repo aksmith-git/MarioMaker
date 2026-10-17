@@ -153,10 +153,12 @@ pub fn import_audio(
         }
     }
     progress("audio", sources.len(), sources.len());
+    // ids with a style prefix ("M3.coin") are optional variants: absent ones are skipped
+    let optional = |d: &SoundDef| d.id.contains('.');
     let missing: Vec<&str> = defs
         .iter()
         .zip(&found)
-        .filter(|(_, f)| f.is_none())
+        .filter(|(d, f)| f.is_none() && !optional(d))
         .map(|(d, _)| d.game)
         .collect();
     if !missing.is_empty() {
@@ -167,7 +169,7 @@ pub fn import_audio(
     }
     let mut index = Map::new();
     for (d, f) in defs.iter().zip(found) {
-        let (source, bytes) = f.expect("checked above");
+        let Some((source, bytes)) = f else { continue };
         let w = Bwav::parse(&bytes).map_err(fmt_err(Path::new(&source)))?;
         let file = format!("{}.bwav", d.id);
         write(&out.join("audio").join(&file), &bytes)?;
@@ -193,6 +195,27 @@ pub fn import_audio(
             .as_bytes(),
     )?;
     Ok(n)
+}
+
+/// [`M1_SOUNDS`] plus each other style's variant of every sound effect and fanfare
+/// (`<style>.<id>`, the game's `M1_` name with the style's prefix). Music is per course (see
+/// [`export_music`]); variants a style doesn't have are skipped.
+pub fn all_style_sounds(styles: &[&str]) -> Vec<SoundDef> {
+    let mut v = M1_SOUNDS.to_vec();
+    for s in styles.iter().filter(|s| **s != "M1") {
+        for d in M1_SOUNDS.iter().filter(|d| !d.id.starts_with("bgm_")) {
+            let Some(rest) = d.game.strip_prefix("M1_") else {
+                continue;
+            };
+            v.push(SoundDef {
+                id: Box::leak(format!("{s}.{}", d.id).into_boxed_str()),
+                game: Box::leak(format!("{s}_{rest}").into_boxed_str()),
+                gain: d.gain,
+                group: d.group,
+            });
+        }
+    }
+    v
 }
 
 /// Theme music names in the game's stream files, by course theme id (0 ground … 9 forest).

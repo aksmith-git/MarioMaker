@@ -199,7 +199,7 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   SMB1 sample 148/150 playable (left: a Bill Blaster and a Burner on tracks)
 - ✅ Theme music per style: the importer copies every style's theme / hurry / star tracks (105
   streams); the player decodes only the course's tracks into per-course mixer slots · per-style
-  sound effects, sub-area music ⬜
+  sound effects ✅ (style variants of SFX and fanfares, SMB1 fallback), sub-area music ⬜
 - ✅ Pink coins: counted once each across both areas; the last one gives the key
 - ✅ Goomba's Shoe / Stiletto: shoe Goomba hops (50-frame pause, 4.5 / 1.5), leaves the empty
   shoe; the player wears it (spikes and Munchers underfoot safe, shoe stomps, a hit knocks it

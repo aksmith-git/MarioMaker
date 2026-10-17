@@ -345,8 +345,13 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
     let (texture_count, sprite_count) = import_models(cfg, &out, progress)?;
 
     // 5. sounds of the imported styles
-    let sound_count =
-        audio::import_audio(&cfg.romfs, &out, SOUND_STYLES, audio::M1_SOUNDS, progress)?;
+    let sound_count = audio::import_audio(
+        &cfg.romfs,
+        &out,
+        STYLES,
+        &audio::all_style_sounds(STYLES),
+        progress,
+    )?;
     // each style's theme music, decoded per course by the player
     audio::export_music(&cfg.romfs, &out, STYLES)?;
 

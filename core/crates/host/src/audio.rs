@@ -137,7 +137,12 @@ struct Ids {
 
 impl Ids {
     fn resolve(bank: &Bank) -> Self {
-        let id = |n: &str| bank.id(n);
+        Self::resolve_style(bank, "M1")
+    }
+
+    /// Prefer the style's variant of each sound (`M3.coin`), else the SMB1 one.
+    fn resolve_style(bank: &Bank, style: &str) -> Self {
+        let id = |n: &str| bank.id(&format!("{style}.{n}")).or_else(|| bank.id(n));
         Self {
             jump_small: id("jump_small"),
             jump_big: id("jump_big"),
@@ -198,6 +203,7 @@ impl Director {
     /// music, decoded from the cache's `audio/music/` into the mixer's slots. Missing tracks fall
     /// back to the style's ground track, then SMB1's, then the bank's SMB1 ground music.
     pub fn load_music(&mut self, out: &AudioOut, style: &str, theme: u8) {
+        self.ids = Ids::resolve_style(&out.bank, style);
         let Some(read) = &out.music else { return };
         let load = |names: &[String]| {
             names.iter().find_map(|n| {
