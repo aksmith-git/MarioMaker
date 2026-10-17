@@ -15,6 +15,7 @@ use mmk_sim::{Input, Sprite, World};
 pub mod challenge;
 pub mod course_info;
 pub mod import;
+pub mod ui;
 
 pub use course_info::{MmkCourseInfo, mmk_course_info};
 pub use import::{MmkImportProgress, mmk_import_run};

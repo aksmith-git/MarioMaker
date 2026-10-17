@@ -1,0 +1,13 @@
+[package]
+name = "mmk-ui"
+description = "Layout player: imported SMM1 layouts + animations → flat draw lists (quads, glyphs)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+mmk-formats = { path = "../formats" }
+mmk-assets = { path = "../assets" }
+serde_json.workspace = true
+thiserror.workspace = true

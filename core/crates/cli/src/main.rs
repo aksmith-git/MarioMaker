@@ -64,6 +64,37 @@ enum Cmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Import the SMM1 UI (layouts, animations, textures, fonts, English text) from the user's
+    /// own Wii U `content/` folders into a layout-player cache folder.
+    ImportSmm1 {
+        /// Base game content folder.
+        base: PathBuf,
+        /// Update content folder (overlaid on the base); pass "-" for none.
+        update: PathBuf,
+        /// Output folder, e.g. ~/smm-work/cache/smm1-v208
+        out: PathBuf,
+        /// Message language suffix.
+        #[arg(long, default_value = "USen")]
+        language: String,
+    },
+    /// Decode a BFLYT / BFLAN / BFFNT / MSBT file (Yaz0 removed) and print it as JSON.
+    Lyt { file: PathBuf },
+    /// Write a texture as PNG for inspection: an engine `.mtex` file, a Wii U `.bflim`, or one
+    /// glyph sheet of a `.bffnt` (`--sheet`, optional GX2 `--swizzle` 0-7 to experiment).
+    TexPng {
+        file: PathBuf,
+        out: PathBuf,
+        #[arg(long, default_value_t = 0)]
+        sheet: usize,
+        #[arg(long)]
+        swizzle: Option<u32>,
+        /// GX2 tile mode for font sheets (default 4).
+        #[arg(long, default_value_t = 4)]
+        tile: u32,
+        /// Flip the output vertically.
+        #[arg(long)]
+        flip_y: bool,
+    },
 }
 
 fn crc32(data: &[u8]) -> u32 {
@@ -223,6 +254,111 @@ fn audio_cmd(
         return Err("sound not found".into());
     }
     Ok(())
+}
+
+fn tex_png(
+    file: &PathBuf,
+    out: &std::path::Path,
+    sheet: usize,
+    swizzle: Option<u32>,
+    tile: u32,
+    flip_y: bool,
+) -> Result<(), String> {
+    use mmk_formats::bflim::{Flim, FlimFormat, Image, PixelKind, decode_surface};
+    let e = |x: mmk_formats::Error| x.to_string();
+    let data = std::fs::read(file).map_err(|e| e.to_string())?;
+    let data = mmk_formats::archive::unwrap(data).map_err(e)?;
+    let img: Image = if data.starts_with(b"MTEX") {
+        let m = mmk_assets::Mtex::parse(&data).map_err(|e| e.to_string())?;
+        let kind = match m.format.name() {
+            "rgba8" => PixelKind::Rgba8,
+            "bc1" => PixelKind::Bc1,
+            "bc2" => PixelKind::Bc2,
+            "bc3" => PixelKind::Bc3,
+            "bc4" => PixelKind::Bc4,
+            "bc5" => PixelKind::Bc5,
+            other => return Err(format!("{other} not supported")),
+        };
+        Image {
+            width: m.width,
+            height: m.height,
+            kind,
+            srgb: false,
+            channel_select: m.channel_select,
+            data: m.data,
+        }
+    } else if data.starts_with(b"FFNT") {
+        let f = mmk_formats::bffnt::Font::parse(&data).map_err(e)?;
+        match swizzle {
+            Some(s) => {
+                let fmt = f.sheet_flim_format().unwrap_or(FlimFormat::Bc4A);
+                let raw = f.sheets.get(sheet).ok_or("no such sheet")?;
+                let (w, h) = (f.sheet_width as u32, f.sheet_height as u32);
+                decode_surface(raw, w, h, fmt, tile, s << 8).map_err(e)?
+            }
+            None => f.decode_sheet(sheet).map_err(e)?,
+        }
+    } else {
+        Flim::parse(&data).and_then(|f| f.decode()).map_err(e)?
+    };
+    let mut rgba = match img.kind {
+        PixelKind::Rgba8 => img.data.clone(),
+        k => {
+            let code = match k {
+                PixelKind::Bc1 => 1,
+                PixelKind::Bc2 => 2,
+                PixelKind::Bc3 => 3,
+                PixelKind::Bc4 => 4,
+                _ => 5,
+            };
+            mmk_formats::bcn::decode(code, &img.data, img.width, img.height)
+        }
+    };
+    // apply the channel mapping and composite over a grey checkerboard
+    let w = img.width as usize;
+    for (i, px) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let src = *px;
+        let pick = |c: u8| match c {
+            0 => 0,
+            1 => 255,
+            2 => src[0],
+            3 => src[1],
+            4 => src[2],
+            _ => src[3],
+        };
+        let m = img.channel_select.map(pick);
+        let a = m[3] as u32;
+        let bg = if ((i % w) / 8 + (i / w) / 8).is_multiple_of(2) {
+            40
+        } else {
+            80
+        };
+        for k in 0..3 {
+            px[k] = ((m[k] as u32 * a + bg * (255 - a)) / 255) as u8;
+        }
+        px[3] = 255;
+    }
+    if flip_y {
+        let rows: Vec<&[u8]> = rgba.chunks_exact(w * 4).rev().collect();
+        rgba = rows.concat();
+    }
+    write_png(out, w, img.height as usize, &rgba).map_err(|e| e.to_string())
+}
+
+fn dump_lyt(file: &PathBuf) -> Result<Value, String> {
+    use mmk_formats::lyt;
+    let data = std::fs::read(file).map_err(|e| e.to_string())?;
+    let data = mmk_formats::archive::unwrap(data).map_err(|e| e.to_string())?;
+    let e = |x: mmk_formats::Error| x.to_string();
+    Ok(match data.get(..4) {
+        Some(b"FLYT") => lyt::json::layout_to_json(&lyt::Layout::parse(&data).map_err(e)?),
+        Some(b"FLAN") => lyt::json::animation_to_json(&lyt::Animation::parse(&data).map_err(e)?),
+        Some(b"FFNT") => {
+            mmk_import::smm1::font_to_json(&mmk_formats::bffnt::Font::parse(&data).map_err(e)?, 0)
+        }
+        Some(b"MsgS") => mmk_formats::msbt::Msbt::parse(&data).map_err(e)?.to_json(),
+        _ => return Err("not a BFLYT, BFLAN, BFFNT or MSBT file".into()),
+    })
 }
 
 fn load(path: &PathBuf) -> std::io::Result<Vec<u8>> {
@@ -413,6 +549,74 @@ fn main() -> ExitCode {
         },
         Cmd::Audio { file, name, wav } => match audio_cmd(&file, name.as_deref(), wav.as_deref()) {
             Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("{}: {e}", file.display());
+                ExitCode::FAILURE
+            }
+        },
+        Cmd::ImportSmm1 {
+            base,
+            update,
+            out,
+            language,
+        } => {
+            let cfg = mmk_import::Smm1Config {
+                base,
+                update: (update.as_os_str() != "-").then_some(update),
+                out,
+                language,
+            };
+            let mut last = String::new();
+            let mut progress = |stage: &str, done: usize, total: usize| {
+                if stage != last || done == total {
+                    eprintln!("{stage}: {done}/{total}");
+                    last = stage.to_string();
+                }
+            };
+            match mmk_import::run_smm1(&cfg, &mut progress) {
+                Ok(r) => {
+                    for s in &r.skipped {
+                        eprintln!("skipped: {s}");
+                    }
+                    println!(
+                        "imported SMM1 {} UI: {} layouts, {} animations, {} textures, {} fonts, {} message files ({} skipped) into {}",
+                        r.build,
+                        r.layouts,
+                        r.animations,
+                        r.textures,
+                        r.fonts,
+                        r.messages,
+                        r.skipped.len(),
+                        r.out_dir.display()
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("import failed: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Cmd::TexPng {
+            file,
+            out,
+            sheet,
+            swizzle,
+            tile,
+            flip_y,
+        } => match tex_png(&file, &out, sheet, swizzle, tile, flip_y) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("{}: {e}", file.display());
+                ExitCode::FAILURE
+            }
+        },
+
+        Cmd::Lyt { file } => match dump_lyt(&file) {
+            Ok(v) => {
+                println!("{}", serde_json::to_string_pretty(&v).unwrap());
+                ExitCode::SUCCESS
+            }
             Err(e) => {
                 eprintln!("{}: {e}", file.display());
                 ExitCode::FAILURE

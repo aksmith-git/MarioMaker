@@ -290,6 +290,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "flate2",
+ "mmk-assets",
  "mmk-formats",
  "mmk-import",
  "mmk-sim",
@@ -307,6 +308,7 @@ dependencies = [
  "mmk-import",
  "mmk-modes",
  "mmk-sim",
+ "mmk-ui",
 ]
 
 [[package]]
@@ -344,6 +346,16 @@ name = "mmk-sim"
 version = "0.1.0"
 dependencies = [
  "mmk-formats",
+]
+
+[[package]]
+name = "mmk-ui"
+version = "0.1.0"
+dependencies = [
+ "mmk-assets",
+ "mmk-formats",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

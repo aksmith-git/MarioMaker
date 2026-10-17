@@ -17,4 +17,5 @@ mmk-sim = { path = "../sim" }
 mmk-audio = { path = "../audio" }
 mmk-formats = { path = "../formats" }
 mmk-modes = { path = "../modes" }
+mmk-ui = { path = "../ui" }
 flate2.workspace = true

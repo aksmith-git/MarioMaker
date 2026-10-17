@@ -2,6 +2,41 @@
 
 Newest first. Each entry: what was decided, why, and what would change it.
 
+## 2026-10-18 — SMM1 UI: JSON + `.mtex` cache, layout player in its own crate
+- **Cache form:** `mmk import-smm1` writes each layout as JSON (parsed BFLYT + its BFLAN
+  animations + texture list), textures as untiled `.mtex` (same format as the SMM2 cache, so the
+  Metal upload code is shared), fonts as JSON metrics + sheet `.mtex`, messages as JSON. JSON
+  keeps the cache endian-neutral and inspectable, and the engine never needs the original files;
+  `formats::lyt::json` round-trips every parsed field (tested). Written by hand on
+  `serde_json::Value` — no serde-derive dependency added.
+- **Location:** `<assets root>/smm1-v<update title_version>/` (development copy
+  `~/smm-work/cache/smm1-v208/`), separate from the SMM2 cache because it is loaded lazily per
+  layout (the SMM2 `Cache` loads every texture at open).
+- **Everything, not a subset:** all 337 layout archives are imported (67 MB): the app menus will
+  reuse them and the cost is small.
+- **Fonts the game does not ship:** layouts that name the Wii U system fonts (`CafeStd_25/50`)
+  get MessageFont; every font falls back per character to SpecialFont (7380 glyphs, kana/kanji),
+  so user course names in Japanese render.
+- **Crate split:** parsers in `formats`, import in `import`, evaluation in a new `ui` crate (no
+  file I/O in the player itself; tests build layouts in memory), C ABI in `ffi/src/ui.rs`, Swift
+  in `UILayer.swift` / `UIPreview.swift` — kept out of the files other work is changing.
+
+## 2026-10-18 — Layout player semantics where the format leaves room (verify against the game)
+Chosen from how the SMM1 data is authored and checked visually on the owner's dump:
+- Pane-based texture projection maps the pane's origin point to the texture centre
+  (uv = 0.5 + (x/w, −y/h)); the texture SRT translation is added. The world-map Goombas are only
+  right this way.
+- Parent anchor offset = (anchor factor − parent origin factor) × parent size (13 panes in the
+  whole game use a non-centre anchor).
+- Two-texture materials: TEV mode 0 takes tex1, 1 multiplies, 2 adds, 5 subtracts; no stage =
+  multiply. Third textures are ignored.
+- Colours: material and vertex colours are treated as authored sRGB values (linearised in the
+  shader, sRGB target); BC4/BC5 masks are linear factors.
+- Text ids resolve in the layout's own MSBT; part-property text ids resolve in the outermost
+  (screen) layout's MSBT first — the difficulty buttons only get their labels this way.
+- Window flag bit 4 = content not drawn (cursor frames are hollow).
+Would change with a frame-by-frame comparison in an emulator.
+
 ## 2026-10-18 — App shell: working name "MMK", storage locations, shell-owned pause
 - **Name:** the app is called "MMK" (bundle id `dev.mmk.engine`) until the owner picks a name. No
   Nintendo names or marks in the app name, icon or bundle id. Name, bundle id and version live

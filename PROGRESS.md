@@ -113,15 +113,23 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
 - ✅ "Playable" / "Not yet supported" marking (style M1 for now; `unsupported` object count hook)
 - ⬜ Built-in courses from the dump in the library (needs the importer to export them)
 - ⬜ Cancel button for a running import; incremental re-import
+- 🔄 SMM1 importer + layout player started: `mmk import-smm1` converts the owner's Wii U UI
+  (337 layouts, 1698 animations, 2576 textures, 9 fonts, English text) into a cache; the `ui`
+  crate plays layouts + animations into quads; the app draws them (`UILayer`, debug view
+  `MMK_UI_LAYOUT`) — world map, course intro, course clear, game over, title menus verified
 - ⬜ Shared menu look with the SMM1 layout player (Phase 6)
 
-### Phase 6 — 100 Mario Challenge ⬜ (owner: SMM1 presentation like-for-like)
-- ⬜ Research: SMM1 100 Mario screen sequence from Block.rpx v208 + layout data — title/mode select,
-  difficulty select, world map + Mario walking between courses, course intro card, lives / extra-life
-  counting, course clear, skip, game over, final rescue scene, costume reward, Save & Quit
-- ⬜ SMM1 asset import (owner's disc dump): BFLYT/BFLAN layouts, GX2 textures, BFFNT fonts,
-  BFSTM/BARS audio, MSBT text (English first)
-- ⬜ Layout player (panes, text, keyframed animations) — shared with the app menus
+### Phase 6 — 100 Mario Challenge 🔄 (owner: SMM1 presentation like-for-like)
+- 🔄 Research: SMM1 100 Mario screen sequence from Block.rpx v208 + layout data — scene → layout
+  map done (private `research/specs/smm1-layouts.md`: title, main menu, Course World, difficulty
+  select, world maps + Mario/course/castle parts, course intro, skip, clear, pause, game over,
+  ending text, credits, costume reward); still open: the rescue scene itself (not a layout), the
+  run-flow timing between screens
+- 🔄 SMM1 asset import (owner's disc dump): BFLYT/BFLAN layouts ✅, GX2 textures (BFLIM, AddrLib
+  1D/2D untiling) ✅, BFFNT fonts ✅, MSBT text (English) ✅, BFSTM/BARS audio ⬜
+- 🔄 Layout player (panes, text, keyframed animations) — pane tree, parts, pictures, windows,
+  text with font fallback, SRT/visibility/alpha/colour/texture-pattern/texture-SRT curves ✅;
+  per-character transforms, alpha compare, indirect textures, non-text part overrides ⬜
 - ✅ Mode logic (`core/crates/modes`): run lengths 8/16/16/6 (10 Mario 8), 100 lives = cap, ≤3
   banked extra lives paid on clear (+1 refund in 100 Mario), death retries from the course-start
   state, free skip (100 Mario only), Save & Quit, game over, completion; course pools by
@@ -139,6 +147,7 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   intro card, run banner, pause menu Skip / Start over (−1 life) / Save & Quit, game over, run
   cleared + unlock + course credits; `hundred.json` save · SMM1 layouts ⬜ (layout player)
 - ⬜ SMM1 → SMM2 course import design + documented losses
+- ⬜ App screens drawn with the SMM1 layouts (world map walk, intro card, clear, game over, ending)
 
 ### Phase 7 — Expansion ⬜
 - ⬜ Measure object/style/theme frequency in real courses
