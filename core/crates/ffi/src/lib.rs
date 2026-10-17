@@ -1,4 +1,4 @@
-//! C ABI for the Swift app. The header is `app/Sources/CMmk/include/mmk.h` — keep both in sync
+//! C ABI for the Swift app. The header is `app/Sources/CMmk/mmk.h` — keep both in sync
 //! (struct layouts are checked by `layout_matches_header` below).
 //!
 //! Rules: opaque handles; POD structs only; every entry point catches panics; errors are reported
@@ -11,6 +11,12 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use mmk_assets::Cache;
 use mmk_sim::{Input, World};
+
+pub mod course_info;
+pub mod import;
+
+pub use course_info::{MmkCourseInfo, mmk_course_info};
+pub use import::{MmkImportProgress, mmk_import_run};
 
 thread_local! {
     static LAST_ERROR: RefCell<CString> = RefCell::new(CString::default());
@@ -100,8 +106,19 @@ pub unsafe extern "C" fn mmk_assets_open(path: *const c_char) -> *mut MmkAssets 
     })
 }
 
+/// An empty asset set (no textures, no key table) for running without a game dump. Sprites then
+/// come out of `mmk_engine_snapshot` with `texture = MMK_TEXTURE_NONE` and the app draws its own
+/// placeholder shapes. Never NULL.
+#[unsafe(no_mangle)]
+pub extern "C" fn mmk_assets_placeholder() -> *mut MmkAssets {
+    Box::into_raw(Box::new(MmkAssets {
+        cache: Cache::default(),
+        names: Vec::new(),
+    }))
+}
+
 /// # Safety
-/// `assets` must come from `mmk_assets_open` and not be used afterwards.
+/// `assets` must come from `mmk_assets_open` / `mmk_assets_placeholder` and not be used afterwards.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mmk_assets_free(assets: *mut MmkAssets) {
     if !assets.is_null() {
@@ -157,6 +174,8 @@ pub unsafe extern "C" fn mmk_assets_texture(
 
 pub struct MmkEngine {
     world: World,
+    /// The loaded course, kept for `mmk_engine_restart` (None = built-in demo strip).
+    course: Option<mmk_formats::smm2::Course>,
     sprites: Vec<MmkSprite>,
     /// (model, texture) → texture index, resolved once per name.
     lookup: std::collections::HashMap<(&'static str, &'static str), Option<u32>>,
@@ -170,10 +189,13 @@ pub struct MmkInput {
     pub buttons: u32,
 }
 
+/// `MmkSprite::texture` value for a sprite whose art is not in the asset cache.
+pub const MMK_TEXTURE_NONE: u32 = u32::MAX;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MmkSprite {
-    /// Texture index (see mmk_assets_texture).
+    /// Texture index (see mmk_assets_texture), or `MMK_TEXTURE_NONE`.
     pub texture: u32,
     /// Bottom-left corner in world pixels (y up) and size in pixels.
     pub x: f32,
@@ -215,6 +237,7 @@ pub unsafe extern "C" fn mmk_engine_new(assets: *const MmkAssets) -> *mut MmkEng
         }
         Box::into_raw(Box::new(MmkEngine {
             world: World::new(),
+            course: None,
             sprites: Vec::new(),
             lookup: Default::default(),
             assets,
@@ -255,6 +278,7 @@ pub unsafe extern "C" fn mmk_engine_load_course(
         match decode_course(bytes, unsafe { &*e.assets }) {
             Ok(course) => {
                 e.world = World::from_course(&course);
+                e.course = Some(course);
                 e.lookup.clear();
                 true
             }
@@ -266,8 +290,10 @@ pub unsafe extern "C" fn mmk_engine_load_course(
     })
 }
 
-fn decode_course(bytes: &[u8], assets: &MmkAssets) -> Result<mmk_formats::smm2::Course, String> {
-    use mmk_formats::smm2::{BCD_SIZE, Course, crypto};
+/// Course bytes in any accepted form → decrypted course data (0x5BFC0 bytes).
+/// Returns the data and whether it came from an encrypted `.bcd`.
+fn decode_course_data(bytes: &[u8], assets: Option<&MmkAssets>) -> Result<(Vec<u8>, bool), String> {
+    use mmk_formats::smm2::{BCD_SIZE, crypto};
     use std::io::Read;
     let mut data = bytes.to_vec();
     if data.len() > 2 && data[0] == 0x78 {
@@ -277,15 +303,45 @@ fn decode_course(bytes: &[u8], assets: &MmkAssets) -> Result<mmk_formats::smm2::
             .map_err(|e| format!("zlib: {e}"))?;
         data = out;
     }
+    let mut encrypted = false;
     if data.len() == BCD_SIZE {
+        let assets = assets.ok_or("encrypted course: needs imported game data (key table)")?;
         let path = assets.cache.root.join("keys/course_table.bin");
-        let raw = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let raw = std::fs::read(&path).map_err(|e| {
+            format!(
+                "encrypted course: needs imported game data ({}: {e})",
+                path.display()
+            )
+        })?;
         let table = crypto::table_from_bytes(&raw).map_err(|e| e.to_string())?;
         data = crypto::decrypt_bcd(&data, &table, true)
             .map_err(|e| e.to_string())?
             .body;
+        encrypted = true;
     }
-    Course::parse(&data).map_err(|e| e.to_string())
+    Ok((data, encrypted))
+}
+
+fn decode_course(bytes: &[u8], assets: &MmkAssets) -> Result<mmk_formats::smm2::Course, String> {
+    let (data, _) = decode_course_data(bytes, Some(assets))?;
+    mmk_formats::smm2::Course::parse(&data).map_err(|e| e.to_string())
+}
+
+/// Restart the loaded course from the beginning (fresh lives, score, timer). With no course
+/// loaded, restarts the demo strip.
+///
+/// # Safety
+/// `engine` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_engine_restart(engine: *mut MmkEngine) {
+    guard((), || {
+        if let Some(e) = unsafe { engine.as_mut() } {
+            e.world = match &e.course {
+                Some(c) => World::from_course(c),
+                None => World::new(),
+            };
+        }
+    })
 }
 
 /// Advance the simulation by exactly one 60 Hz tick.
@@ -323,12 +379,19 @@ pub unsafe extern "C" fn mmk_engine_snapshot(engine: *mut MmkEngine, out: *mut M
                 .lookup
                 .entry(key)
                 .or_insert_with(|| assets.cache.texture_index(key.0, key.1).map(|i| i as u32));
-            let Some(texture) = idx else { continue };
-            let t = &assets.cache.textures[texture as usize].texture;
-            let (tw, th) = (t.width as f32, t.height as f32);
-            let (u0, mut v0, u1, mut v1) = match s.image.rect {
-                Some((x, y, w, h)) => (x / tw, y / th, (x + w) / tw, (y + h) / th),
-                None => (0.0, 0.0, 1.0, 1.0),
+            // missing art (placeholder mode, or not imported yet): report the sprite with
+            // MMK_TEXTURE_NONE so the app can draw a stand-in shape
+            let (texture, (u0, mut v0, u1, mut v1)) = match idx {
+                Some(texture) => {
+                    let t = &assets.cache.textures[texture as usize].texture;
+                    let (tw, th) = (t.width as f32, t.height as f32);
+                    let uv = match s.image.rect {
+                        Some((x, y, w, h)) => (x / tw, y / th, (x + w) / tw, (y + h) / th),
+                        None => (0.0, 0.0, 1.0, 1.0),
+                    };
+                    (texture, uv)
+                }
+                None => (MMK_TEXTURE_NONE, (0.0, 0.0, 1.0, 1.0)),
             };
             if s.flip_y {
                 std::mem::swap(&mut v0, &mut v1);
@@ -425,5 +488,36 @@ mod tests {
         assert_eq!(size_of::<MmkSnapshot>(), 40);
         assert_eq!(size_of::<MmkTextureInfo>(), 48);
         assert_eq!(size_of::<MmkHud>(), 24);
+        assert_eq!(size_of::<MmkCourseInfo>(), 480);
+        assert_eq!(std::mem::offset_of!(MmkCourseInfo, theme), 452);
+        assert_eq!(std::mem::offset_of!(MmkCourseInfo, timer), 456);
+        assert_eq!(std::mem::offset_of!(MmkCourseInfo, clear_condition), 460);
+        assert_eq!(std::mem::offset_of!(MmkCourseInfo, content_hash), 472);
+    }
+
+    #[test]
+    fn placeholder_engine_reports_missing_art_and_restarts() {
+        unsafe {
+            let a = mmk_assets_placeholder();
+            assert_eq!(mmk_assets_texture_count(a), 0);
+            let e = mmk_engine_new(a);
+            let course = mmk_formats::smm2::Course::blank("M1").to_bytes().unwrap();
+            assert!(mmk_engine_load_course(e, course.as_ptr(), course.len()));
+            let input = MmkInput { buttons: 2 };
+            for _ in 0..30 {
+                mmk_engine_step(e, &input);
+            }
+            let mut snap = std::mem::zeroed::<MmkSnapshot>();
+            mmk_engine_snapshot(e, &mut snap);
+            assert!(snap.sprite_count > 0);
+            let sprites = std::slice::from_raw_parts(snap.sprites, snap.sprite_count);
+            assert!(sprites.iter().all(|s| s.texture == MMK_TEXTURE_NONE));
+            assert_eq!(snap.tick, 30);
+            mmk_engine_restart(e);
+            mmk_engine_snapshot(e, &mut snap);
+            assert_eq!(snap.tick, 0);
+            mmk_engine_free(e);
+            mmk_assets_free(a);
+        }
     }
 }

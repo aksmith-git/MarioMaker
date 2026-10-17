@@ -6,29 +6,40 @@ import MetalKit
 import QuartzCore
 import SwiftUI
 
-/// Hosts an MTKView inside SwiftUI.
+/// Hosts an MTKView inside SwiftUI, drawing one game session.
 struct MetalView: NSViewRepresentable {
-    @Binding var error: String?
+    let session: GameSession
 
-    func makeCoordinator() -> Renderer { Renderer() }
+    func makeCoordinator() -> Renderer { Renderer(session: session) }
 
     func makeNSView(context: Context) -> MTKView {
-        let view = MTKView()
+        let view = GameMTKView()
         view.device = context.coordinator.device
         view.colorPixelFormat = .bgra8Unorm_srgb
         view.preferredFramesPerSecond = 120
         view.delegate = context.coordinator
-        view.framebufferOnly = context.coordinator.screenshot == nil
-        if let e = context.coordinator.startupError {
-            DispatchQueue.main.async { error = e }
-        }
+        view.framebufferOnly = context.coordinator.screenshot == nil && !DebugCapture.requested
+        view.onWindow = { [weak session] w in session?.input.window = w }
+        if DebugCapture.requested { DebugCapture.gameView = view }
         return view
     }
 
     func updateNSView(_ nsView: MTKView, context: Context) {}
 }
 
-/// Steps the Rust engine at a fixed 60 Hz and draws its sprite snapshot.
+/// Tells the session's input which window is the game's.
+final class GameMTKView: MTKView {
+    var onWindow: ((NSWindow?) -> Void)?
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onWindow?(window)
+        window?.makeFirstResponder(self)
+    }
+    override var acceptsFirstResponder: Bool { true }
+}
+
+/// Draws a game session's sprite snapshot (the session steps the engine, see GameSession.frame).
+@MainActor
 final class Renderer: NSObject, MTKViewDelegate {
     let device = MTLCreateSystemDefaultDevice()!
     private lazy var queue = device.makeCommandQueue()!
@@ -42,13 +53,12 @@ final class Renderer: NSObject, MTKViewDelegate {
         t?.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &px, bytesPerRow: 4)
         return t
     }()
-    private var assets: OpaquePointer?
-    private var engine: OpaquePointer?
-    private let input = InputState()
-    private var lastTime = CACurrentMediaTime()
-    private var accumulator = 0.0
-    private var lastSnapshotTick: UInt64 = 0
-    private(set) var startupError: String?
+    private let session: GameSession
+    private var engine: OpaquePointer { session.engine }
+    /// Sprites without art (MMK_TEXTURE_NONE) are drawn as coloured boxes in placeholder mode
+    /// (or with MMK_DEBUG_MISSING_ART=1); otherwise skipped as before.
+    private let drawMissing: Bool
+    private var fallbackTextures: [UInt32: MTLTexture] = [:]
     // placeholder HUD (text rendered with CoreText until the game's own HUD layout is imported)
     private var hudText = ""
     private var hudTexture: MTLTexture?
@@ -59,60 +69,28 @@ final class Renderer: NSObject, MTKViewDelegate {
     let screenshot = ProcessInfo.processInfo.environment["MMK_SCREENSHOT"]
     private let screenshotTicks = UInt64(ProcessInfo.processInfo.environment["MMK_SCREENSHOT_TICKS"] ?? "") ?? 150
 
-    private static let tick = 1.0 / 60.0
-
-    override init() {
+    init(session: GameSession) {
+        self.session = session
+        drawMissing = session.assets.isPlaceholder || ProcessInfo.processInfo.environment["MMK_DEBUG_MISSING_ART"] == "1"
         super.init()
         do {
             try buildPipeline()
-            try openEngine()
         } catch {
-            startupError = "\(error)"
+            fatalError("Metal pipeline: \(error)")
         }
-    }
-
-    deinit {
-        if let engine { mmk_engine_free(engine) }
-        if let assets { mmk_assets_free(assets) }
+        if session.assets.gpuTextures == nil {
+            let a = session.assets.handle
+            session.assets.gpuTextures = (0..<mmk_assets_texture_count(a)).map { i in
+                var info = MmkTextureInfo()
+                guard mmk_assets_texture(a, i, &info) else { return nil }
+                return makeTexture(info)
+            }
+        }
+        textures = session.assets.gpuTextures ?? []
+        if screenshot != nil { session.scriptedInput = Self.scriptedInput }
     }
 
     // MARK: setup
-
-    private static func assetCandidates() -> [String] {
-        var list: [String] = []
-        if let env = ProcessInfo.processInfo.environment["MMK_ASSETS"] { list.append(env) }
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        list.append("\(home)/Library/Application Support/mmk/assets/smm2-3.0.3")
-        list.append("\(home)/smm-work/cache/smm2-3.0.3")
-        return list
-    }
-
-    private func openEngine() throws {
-        guard let path = Self.assetCandidates().first(where: { FileManager.default.fileExists(atPath: $0 + "/manifest.json") }) else {
-            throw EngineError("No asset cache found. Run `mmk import` first (or set MMK_ASSETS).\nLooked in:\n" + Self.assetCandidates().joined(separator: "\n"))
-        }
-        guard let a = mmk_assets_open(path) else { throw EngineError(String(cString: mmk_last_error())) }
-        assets = a
-        let count = mmk_assets_texture_count(a)
-        textures = (0..<count).map { i in
-            var info = MmkTextureInfo()
-            guard mmk_assets_texture(a, i, &info) else { return nil }
-            return makeTexture(info)
-        }
-        guard let e = mmk_engine_new(a) else { throw EngineError(String(cString: mmk_last_error())) }
-        engine = e
-        // MMK_COURSE=<file>: a course to play (dataset .course.zlib, raw course data or .bcd)
-        if let coursePath = ProcessInfo.processInfo.environment["MMK_COURSE"] {
-            let data = try Data(contentsOf: URL(fileURLWithPath: coursePath))
-            let ok = data.withUnsafeBytes { mmk_engine_load_course(e, $0.bindMemory(to: UInt8.self).baseAddress, data.count) }
-            if !ok { throw EngineError("\(coursePath): \(String(cString: mmk_last_error()))") }
-        }
-        // MMK_START_X=<px> [MMK_START_Y=<px>]: debug, start somewhere else (smoke tests)
-        let env = ProcessInfo.processInfo.environment
-        if let x = env["MMK_START_X"].flatMap(Float.init) {
-            mmk_engine_debug_teleport(e, x, env["MMK_START_Y"].flatMap(Float.init) ?? 32)
-        }
-    }
 
     private func makeTexture(_ t: MmkTextureInfo) -> MTLTexture? {
         let srgb = t.variant == 2
@@ -183,18 +161,10 @@ final class Renderer: NSObject, MTKViewDelegate {
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
-        guard let engine, let pipeline, let pass = view.currentRenderPassDescriptor, let drawable = view.currentDrawable else { return }
+        guard let pipeline, let pass = view.currentRenderPassDescriptor, let drawable = view.currentDrawable else { return }
 
-        // fixed 60 Hz simulation, independent of the display rate
-        let now = CACurrentMediaTime()
-        accumulator = min(accumulator + (now - lastTime), 0.25)
-        lastTime = now
-        while accumulator >= Self.tick {
-            var inp = screenshot == nil ? input.current : scriptedInput(tick: lastSnapshotTick)
-            mmk_engine_step(engine, &inp)
-            lastSnapshotTick += 1
-            accumulator -= Self.tick
-        }
+        // fixed 60 Hz simulation (or the pause menu), independent of the display rate
+        session.frame(now: CACurrentMediaTime())
 
         var snap = MmkSnapshot()
         mmk_engine_snapshot(engine, &snap)
@@ -207,7 +177,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         // letterbox the 16:9 view into the drawable, at an integer scale when it fits
         let dw = Double(view.drawableSize.width), dh = Double(view.drawableSize.height)
         let fit = min(dw / Double(snap.view_w), dh / Double(snap.view_h))
-        let scale = fit >= 1 ? floor(fit) : fit
+        let integer = UserDefaults.standard.bool(forKey: SettingsKey.integerScale)
+        let scale = fit >= 1 && integer ? floor(fit) : fit
         let vw = Double(snap.view_w) * scale, vh = Double(snap.view_h) * scale
         enc.setViewport(MTLViewport(originX: (dw - vw) / 2, originY: (dh - vh) / 2, width: vw, height: vh, znear: 0, zfar: 1))
 
@@ -237,7 +208,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         func flush() {
             let n = verts.count - batchStart
-            guard n > 0, Int(batchTexture) < textures.count, let tex = textures[Int(batchTexture)] else { batchStart = verts.count; return }
+            guard n > 0, let tex = texture(forBatch: batchTexture) else { batchStart = verts.count; return }
             enc.setFragmentTexture(tex, index: 0)
             verts.withUnsafeBytes { raw in
                 let slice = UnsafeRawBufferPointer(rebasing: raw[(batchStart * 16)...])
@@ -252,7 +223,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
 
         for s in sprites {
-            if s.texture != batchTexture { flush(); batchTexture = s.texture }
+            let key = s.texture == MMK_TEXTURE_NONE ? (drawMissing ? Self.fallbackKey | min(s.layer, 0xFFFF) : MMK_TEXTURE_NONE) : s.texture
+            if key != batchTexture { flush(); batchTexture = key }
             var (u0, u1) = (s.u0, s.u1)
             if s.flags & 1 != 0 { swap(&u0, &u1) }
             let x0 = s.x.rounded(), y0 = s.y.rounded(), x1 = x0 + s.w, y1 = y0 + s.h
@@ -266,7 +238,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         var hud = MmkHud()
         mmk_engine_hud(engine, &hud)
         let time = hud.time < 0 ? "---" : String(format: "%03d", hud.time)
-        var text = String(format: "MARIO ×%02d    ⦿×%02d    %09d    TIME %@", hud.lives, hud.coins, hud.score, time)
+        var text = String(format: "LIVES ×%02d    ⦿×%02d    %09d    TIME %@", hud.lives, hud.coins, hud.score, time)
         if hud.flags & 1 != 0 { text += "    COURSE CLEAR!" }
         let stripH = 18.0
         let tw = Int(vw), th = Int(stripH * scale)
@@ -295,6 +267,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         cmd.present(drawable)
         cmd.commit()
+        if DebugCapture.requested && snap.tick % 10 == 0 {
+            // keep a copy of the frame: window snapshots can't see Metal layers
+            cmd.waitUntilCompleted()
+            DebugCapture.lastFrame = image(of: drawable.texture)
+        }
     }
 
     private func makeTextTexture(_ text: String, width: Int, height: Int) -> MTLTexture? {
@@ -319,28 +296,69 @@ final class Renderer: NSObject, MTKViewDelegate {
         return tex
     }
 
-    private func scriptedInput(tick: UInt64) -> MmkInput {
+    // MARK: missing art
+
+    /// Batch keys at or above this are placeholder boxes for layer (key & 0xFFFF).
+    private static let fallbackKey: UInt32 = 0xF000_0000
+
+    private func texture(forBatch key: UInt32) -> MTLTexture? {
+        if key < Self.fallbackKey { return Int(key) < textures.count ? textures[Int(key)] : nil }
+        if key == MMK_TEXTURE_NONE { return nil }
+        if let t = fallbackTextures[key] { return t }
+        let t = makeFallbackTexture(layer: key & 0xFFFF)
+        fallbackTextures[key] = t
+        return t
+    }
+
+    /// An 8x8 box with a darker 1-px border, coloured by draw layer (terrain, blocks, coins,
+    /// actors, player, effects), so a course is readable and playable without any game art.
+    private func makeFallbackTexture(layer: UInt32) -> MTLTexture? {
+        let rgb: (UInt8, UInt8, UInt8) = switch layer {
+        case ..<11: (0xB0, 0x6A, 0x3A)    // terrain
+        case ..<20: (0xE0, 0xA8, 0x30)    // blocks
+        case ..<30: (0xF8, 0xD8, 0x40)    // coins
+        case ..<50: (0x50, 0xA0, 0x50)    // actors
+        case ..<60: (0xE0, 0x40, 0x40)    // player
+        default: (0xF0, 0xF0, 0xF0)       // effects
+        }
+        var px = [UInt8]()
+        for y in 0..<8 {
+            for x in 0..<8 {
+                let edge = x == 0 || y == 0 || x == 7 || y == 7
+                let k: Double = edge ? 0.55 : 1
+                px += [UInt8(Double(rgb.0) * k), UInt8(Double(rgb.1) * k), UInt8(Double(rgb.2) * k), 0xFF]
+            }
+        }
+        let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm_srgb, width: 8, height: 8, mipmapped: false)
+        let t = device.makeTexture(descriptor: d)
+        t?.replace(region: MTLRegionMake2D(0, 0, 8, 8), mipmapLevel: 0, withBytes: px, bytesPerRow: 32)
+        return t
+    }
+
+    // MARK: smoke test
+
+    static func scriptedInput(tick: UInt64) -> MmkInput {
         var b = UInt32(MMK_BTN_RIGHT | MMK_BTN_RUN)
         if tick % 90 >= 60 && tick % 90 < 80 { b |= UInt32(MMK_BTN_JUMP) }
         return MmkInput(buttons: b)
     }
 
     private func saveTexture(_ tex: MTLTexture, to path: String) {
-        let w = tex.width, h = tex.height
-        var bytes = [UInt8](repeating: 0, count: w * h * 4)
-        tex.getBytes(&bytes, bytesPerRow: w * 4, from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0)
-        let info = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
-        guard let ctx = CGContext(data: &bytes, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
-                                  space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: info.rawValue),
-              let img = ctx.makeImage(),
+        guard let img = image(of: tex),
               let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL, "public.png" as CFString, 1, nil)
         else { return }
         CGImageDestinationAddImage(dest, img, nil)
         CGImageDestinationFinalize(dest)
     }
-}
 
-struct EngineError: Error, CustomStringConvertible {
-    let description: String
-    init(_ d: String) { description = d }
+    private func image(of tex: MTLTexture) -> CGImage? {
+        let w = tex.width, h = tex.height
+        var bytes = [UInt8](repeating: 0, count: w * h * 4)
+        tex.getBytes(&bytes, bytesPerRow: w * 4, from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0)
+        let info = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+        guard let ctx = CGContext(data: &bytes, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: info.rawValue)
+        else { return nil }
+        return ctx.makeImage()
+    }
 }

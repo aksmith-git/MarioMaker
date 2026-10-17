@@ -39,3 +39,6 @@ __pycache__/
 
 # agent worktrees (local only)
 /.claude/worktrees/
+
+# App bundle output (scripts/make-app.sh)
+/build/
