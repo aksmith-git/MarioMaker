@@ -27,6 +27,9 @@ them:
   [inf]; the normal Thwomp uses the spec's |dx| < W + 32 zone.
 - P-switch duration 600 frames ([ext] ~10 s; not found in the binary). Dotted-line block colour
   from the alternate flag [?]. Conveyor art uses a placeholder tile until the belt model is found.
+- Simplified for now: Spike Top walks floors only (turns at ledges) instead of crawling around
+  blocks; Hammer Bro alternates a 5.5 jump with a 2.5 hop (no drop-through); Bob-omb blast radius
+  1 tile (plus) for terrain and 32 px for actors/player [inf].
 - Sprite art offsets inside textures are measured from the textures (e.g. the Goomba sits in the
   top half of its 16×32 image) until BFRES quad placement is imported.
 

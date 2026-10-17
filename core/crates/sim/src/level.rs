@@ -432,6 +432,13 @@ impl Level {
                 }),
                 10 => Some(Kind::Spring),
                 18 => Some(Kind::PSwitch),
+                25 => Some(Kind::Spiny),
+                28 => Some(Kind::Buzzy),
+                40 => Some(Kind::SpikeTop),
+                3 => Some(Kind::HammerBro),
+                15 => Some(Kind::BobOmb),
+                46 => Some(Kind::DryBones),
+                41 => Some(Kind::Boo),
                 57 => Some(Kind::Muncher),
                 12 => Some(Kind::Thwomp {
                     side: o.flags & 0x4 != 0,

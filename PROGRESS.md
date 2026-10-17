@@ -66,7 +66,8 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   (respawn, big coins kept), Thwomp (+ side), lifts (static / falling), springs (normal / held high
   bounce), Bill Blasters + Bullet Bills, spike traps; moving-solid layer with rider carry; P switch
   (brick ↔ coin swap, P doors), ON/OFF switch + dotted-line blocks, falling donuts, Munchers,
-  conveyor belts
+  conveyor belts; Spiny, Buzzy Beetle (+ fire-proof shell), Spike Top (floor only), Hammer Bro +
+  hammers, Bob-omb (fuse, kick, explosion), Dry Bones (collapse/reassemble), Boo
 - ⬜ 7. Play real courses start to goal; tune against Ryujinx (needs a Ryujinx build with a GDB stub)
 
 ### Phase 5b — Native app (must be done before Phase 6) ⬜

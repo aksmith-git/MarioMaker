@@ -567,10 +567,12 @@ impl World {
                 continue; // already moved before the player
             }
             a.target = (px, py);
+            a.target_facing = self.player.facing;
             if let Some(n) = a.step_spawning(&self.level) {
                 born.push(n);
             }
         }
+        self.explosions();
         for n in born {
             self.add_actor(n);
         }
@@ -888,8 +890,10 @@ impl World {
                     if f.kind == Kind::Fireball && e.kind.is_enemy() && f.mode != Mode::Dead {
                         let fx = f.x;
                         f.mode = Mode::Dead;
-                        e.die_fall(fx);
-                        scores.push((SCORE_TABLE[0], e.x, e.y + 24.0));
+                        if !e.fire_proof() {
+                            e.die_fall(fx);
+                            scores.push((SCORE_TABLE[0], e.x, e.y + 24.0));
+                        }
                     }
                 }
                 if !(ae && be) || !a.solid_contact() || !b.solid_contact() {
@@ -1021,7 +1025,26 @@ impl World {
                 i += 1;
                 continue;
             }
-            let harmful = a.kind.is_enemy() || a.kind == Kind::EnemyFire;
+            // collapsed Dry Bones is harmless; a lit Bob-omb is kicked
+            if a.kind == Kind::DryBones && a.phase == 1 {
+                i += 1;
+                continue;
+            }
+            if a.kind == Kind::BobOmb && (a.phase == 1 || a.phase == 2) {
+                if overlap(hurt, ab) && a.kick_lock == 0 {
+                    let dir = if a.x >= self.player.x { 1 } else { -1 };
+                    let pvx = self.player.vx;
+                    let from_top = self.player.vy < 0.0 && self.player.y >= a.y + 8.0;
+                    self.actors[i].kick_bobomb(dir, pvx);
+                    if from_top {
+                        self.player.bounce(jump_held);
+                    }
+                    self.events.push(Event::Kick);
+                }
+                i += 1;
+                continue;
+            }
+            let harmful = a.kind.is_enemy() || a.kind == Kind::EnemyFire || a.kind == Kind::Hammer;
             if !harmful || !overlap(hurt, ab) {
                 i += 1;
                 continue;
@@ -1269,6 +1292,59 @@ impl World {
             };
             a.mode = Mode::DokanOut { tx, ty };
             self.add_actor(a);
+        }
+    }
+
+    // ---------------------------------------------------------------- explosions
+
+    /// Bob-omb explosions (15-bob-omb.md): break breakable blocks in a plus shape around the
+    /// bomb, knock out enemies and hurt the player nearby. Radius [inf]: 1 tile (plus) for
+    /// terrain, 32 px for actors and the player.
+    fn explosions(&mut self) {
+        let bombs: Vec<(f32, f32)> = self
+            .actors
+            .iter()
+            .filter(|a| a.kind == Kind::BobOmb && a.phase == 9 && a.mode != Mode::Dead)
+            .map(|a| (a.x, a.y + 8.0))
+            .collect();
+        for &(bx, by) in &bombs {
+            for a in &mut self.actors {
+                if a.kind == Kind::BobOmb && a.phase == 9 {
+                    a.mode = Mode::Dead;
+                    continue;
+                }
+                let (cx, cy) = (a.x, a.y + a.height() / 2.0);
+                if a.kind.is_enemy()
+                    && a.alive()
+                    && (cx - bx).abs() < 32.0
+                    && (cy - by).abs() < 32.0
+                {
+                    a.die_fall(bx);
+                }
+            }
+            let (tx, ty) = ((bx / TILE).floor() as i32, (by / TILE).floor() as i32);
+            for (dx, dy) in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let (x, y) = (tx + dx, ty + dy);
+                if self
+                    .blocks
+                    .get(x, y)
+                    .is_some_and(|b| matches!(b.kind, BlockKind::Brick | BlockKind::Hard))
+                {
+                    self.blocks.map.remove(&(x, y));
+                    self.level.set(x, y, Cell::Empty);
+                    let (ox, oy) = blocks::origin(x, y);
+                    self.effects.extend(Effect::debris(ox, oy, 0.25, 0.1));
+                }
+            }
+            let p = &self.player;
+            if (p.x - bx).abs() < 32.0 && (p.y + 8.0 - by).abs() < 32.0 && self.player.hurt() {
+                self.events.push(if self.player.alive() {
+                    Event::PowerDown
+                } else {
+                    Event::Death
+                });
+            }
+            self.events.push(Event::Break);
         }
     }
 
@@ -2190,6 +2266,52 @@ impl World {
                 false,
             ),
             Kind::Donut => ("M1_Object_block_chikuwa", "fall.0", 16.0, 16.0, false),
+            Kind::Spiny => ("M1_Enemy_togezo", walk2(8), 16.0, 16.0, a.dir > 0),
+            Kind::Buzzy => ("M1_Enemy_met", walk2(8), 16.0, 16.0, a.dir > 0),
+            Kind::SpikeTop => ("M1_Enemy_togemetA", walk2(8), 16.0, 16.0, a.dir > 0),
+            Kind::HammerBro => (
+                "M1_Enemy_bros",
+                if a.timer < 12 { "throw.0" } else { walk2(8) },
+                16.0,
+                24.0,
+                a.dir > 0,
+            ),
+            Kind::Hammer => (
+                "M1_Enemy_bros",
+                "hammer.0",
+                16.0,
+                16.0,
+                (a.age / 4) % 2 == 1,
+            ),
+            Kind::BobOmb => (
+                "M1_Enemy_bombhei",
+                if a.phase > 0 { "damage.0" } else { walk2(8) },
+                16.0,
+                16.0,
+                a.dir > 0,
+            ),
+            Kind::DryBones => (
+                "M1_Enemy_karon",
+                if a.phase == 1 {
+                    if a.timer < 61 { "shake.0" } else { "damage.1" }
+                } else {
+                    walk2(8)
+                },
+                24.0,
+                32.0,
+                a.dir > 0,
+            ),
+            Kind::Boo => (
+                "M1_Enemy_teresa",
+                if (a.target.0 < a.x) == (a.target_facing > 0) {
+                    "wait.0"
+                } else {
+                    "walk.0"
+                },
+                16.0,
+                16.0,
+                a.dir > 0,
+            ),
             Kind::BigCoin { value } => (
                 ["M1_Object_coin10", "M1_Object_coin30", "M1_Object_coin50"][value as usize],
                 ["wait.0", "wait.1", "wait.2", "wait.3"][(self.tick as usize / 8) % 4],
@@ -2853,6 +2975,95 @@ mod tests {
         // ramps 0.2/frame to 2.0 (10 frames), then 2 px/frame
         let moved = w.player.x - x0;
         assert!((moved - (2.0 * 60.0 - 9.0)).abs() < 1.0, "moved {moved}");
+    }
+
+    #[test]
+    fn spiny_hurts_when_stomped() {
+        let mut lvl = Level::flat(40);
+        lvl.spawns.push(spawn(Kind::Spiny, 160.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.player.form = Form::Super;
+        w.player.x = 160.0;
+        w.player.y = 80.0;
+        run(&mut w, 0, 30);
+        assert_eq!(w.player.form, Form::Small);
+    }
+
+    #[test]
+    fn buzzy_is_fire_proof_and_shells() {
+        let mut lvl = Level::flat(40);
+        lvl.spawns.push(spawn(Kind::Buzzy, 200.0, 32.0));
+        let mut w = World::with_level(lvl);
+        let mut f = Actor::new(Kind::Fireball, 180.0, 36.0);
+        f.vx = 3.0;
+        f.timer = 600;
+        w.add_actor(f);
+        run(&mut w, 0, 20);
+        assert!(w.actors.iter().any(|a| a.kind == Kind::Buzzy && a.alive()));
+        assert!(w.actors[0].stomp());
+        assert!(matches!(w.actors[0].kind, Kind::Shell { .. }) && w.actors[0].buzzy);
+    }
+
+    #[test]
+    fn bob_omb_fuse_and_explosion() {
+        let mut lvl = Level::flat(40);
+        place(&mut lvl, 13, 2, BlockKind::Brick, Cell::Solid);
+        lvl.spawns
+            .push(spawn(Kind::BobOmb, 12.0 * TILE + 8.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 40.0;
+        assert!(w.actors[0].stomp());
+        assert_eq!(w.actors[0].phase, 1);
+        run(&mut w, 0, 241);
+        assert!(w.actors.iter().all(|a| a.kind != Kind::BobOmb));
+        assert!(
+            w.blocks.get(13, 2).is_none(),
+            "brick next to the bomb breaks"
+        );
+    }
+
+    #[test]
+    fn hammer_bro_throws() {
+        let mut lvl = Level::flat(40);
+        lvl.spawns.push(spawn(Kind::HammerBro, 250.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 40.0;
+        let mut hammers = 0;
+        for _ in 0..300 {
+            w.step(Input::default());
+            hammers = hammers.max(w.actors.iter().filter(|a| a.kind == Kind::Hammer).count());
+        }
+        assert!(hammers >= 1);
+    }
+
+    #[test]
+    fn boo_freezes_when_watched() {
+        let mut lvl = Level::flat(40);
+        lvl.spawns.push(spawn(Kind::Boo, 200.0, 64.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 100.0;
+        w.player.facing = -1; // looking away: the Boo approaches
+        run(&mut w, 0, 120);
+        let x1 = w.actors[0].x;
+        assert!(x1 < 200.0);
+        w.player.facing = 1; // looking at it: it slows to a stop
+        run(&mut w, 0, 60);
+        let x2 = w.actors[0].x;
+        run(&mut w, 0, 30);
+        assert!((w.actors[0].x - x2).abs() < 0.5);
+    }
+
+    #[test]
+    fn dry_bones_reassembles() {
+        let mut lvl = Level::flat(40);
+        lvl.spawns.push(spawn(Kind::DryBones, 300.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 40.0;
+        assert!(w.actors[0].stomp());
+        run(&mut w, 0, 223);
+        assert_eq!(w.actors[0].phase, 1);
+        run(&mut w, 0, 2);
+        assert_eq!(w.actors[0].phase, 0);
     }
 
     #[test]

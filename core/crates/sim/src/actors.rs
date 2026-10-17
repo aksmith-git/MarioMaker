@@ -70,6 +70,22 @@ pub enum Kind {
     Muncher,
     /// A Donut block that has dropped (falls g −0.1875, cap −2, carries riders).
     Donut,
+    /// Spiny: walker that can't be stomped.
+    Spiny,
+    /// Buzzy Beetle: walker, shell when stomped, immune to fire.
+    Buzzy,
+    /// Spike Top: [inf simplified] walks the floor turning at ledges; can't be stomped; fire-proof.
+    SpikeTop,
+    /// Hammer Bro (paces, jumps, throws hammers).
+    HammerBro,
+    /// Hammer: arcs (vx 1.5, vy 3.0, g −0.125, cap −6), through terrain.
+    Hammer,
+    /// Bob-omb: lit by a stomp (fuse 240), can be kicked, explodes.
+    BobOmb,
+    /// Dry Bones: walker that turns at ledges; collapses for 224 frames when stomped.
+    DryBones,
+    /// Boo: chases when not looked at.
+    Boo,
 }
 
 impl Kind {
@@ -81,15 +97,47 @@ impl Kind {
                 | Kind::Shell { .. }
                 | Kind::Piranha { .. }
                 | Kind::BulletBill
+                | Kind::Spiny
+                | Kind::Buzzy
+                | Kind::SpikeTop
+                | Kind::HammerBro
+                | Kind::BobOmb
+                | Kind::DryBones
+                | Kind::Boo
         )
     }
     /// Walks along the ground (turns at walls and other walkers).
     pub fn is_walker(self) -> bool {
-        matches!(self, Kind::Goomba | Kind::Koopa { .. } | Kind::Shell { .. })
+        matches!(
+            self,
+            Kind::Goomba
+                | Kind::Koopa { .. }
+                | Kind::Shell { .. }
+                | Kind::Spiny
+                | Kind::Buzzy
+                | Kind::SpikeTop
+                | Kind::BobOmb
+                | Kind::DryBones
+        )
     }
     /// Hurts the player on touch but cannot be stomped.
     pub fn unstompable(self) -> bool {
-        matches!(self, Kind::Piranha { .. } | Kind::EnemyFire)
+        matches!(
+            self,
+            Kind::Piranha { .. }
+                | Kind::EnemyFire
+                | Kind::Spiny
+                | Kind::SpikeTop
+                | Kind::Boo
+                | Kind::Hammer
+        )
+    }
+    /// Walkers that turn back at ledges.
+    pub fn ledge_turner(self) -> bool {
+        matches!(
+            self,
+            Kind::Koopa { red: true } | Kind::SpikeTop | Kind::DryBones
+        )
     }
     /// Moves before the player and offers a solid surface (riders are carried).
     pub fn is_platform(self) -> bool {
@@ -177,6 +225,13 @@ pub struct Actor {
     pub ridden: bool,
     /// Position change this frame (for carrying riders).
     pub moved: (f32, f32),
+    /// This shell belongs to a Buzzy Beetle (fire-proof; wakes as a Buzzy).
+    pub buzzy: bool,
+    /// Floating movers (Boo): speed along `heading` (degrees).
+    pub speed: f32,
+    pub heading: f32,
+    /// The player's facing (+1 right), set by the world.
+    pub target_facing: i32,
 }
 
 impl Actor {
@@ -211,7 +266,19 @@ impl Actor {
             id: 0,
             ridden: false,
             moved: (0.0, 0.0),
+            buzzy: false,
+            speed: 0.0,
+            heading: 0.0,
+            target_facing: 1,
         }
+    }
+
+    /// Fireballs bounce off / are snuffed without killing.
+    pub fn fire_proof(&self) -> bool {
+        matches!(
+            self.kind,
+            Kind::Buzzy | Kind::SpikeTop | Kind::DryBones | Kind::Boo | Kind::Thwomp { .. }
+        ) || (matches!(self.kind, Kind::Shell { .. }) && self.buzzy)
     }
 
     /// The solid surface this actor offers (for platforms): (x0, y0, x1, y1, top_only).
@@ -432,6 +499,30 @@ impl Actor {
             return true;
         }
         match self.kind {
+            Kind::Buzzy => {
+                self.kind = Kind::Shell { red: false };
+                self.buzzy = true;
+                self.enter_shell_wait();
+                true
+            }
+            Kind::DryBones if self.phase == 0 => {
+                // collapse into a pile of bones for 224 frames
+                self.phase = 1;
+                self.timer = 224;
+                self.vx = 0.0;
+                true
+            }
+            Kind::BobOmb if self.phase == 0 => {
+                // fuse lit: it stops (the fuse runs 240 frames)
+                self.phase = 1;
+                self.timer = 240;
+                self.vx = 0.0;
+                true
+            }
+            Kind::HammerBro => {
+                self.die_fall(self.x - self.dir as f32);
+                true
+            }
             Kind::BulletBill => {
                 // DieStamp for a Bullet Bill: it drops away
                 self.mode = Mode::DieFall;
@@ -578,7 +669,7 @@ impl Actor {
                     self.mode = Mode::Dead;
                 }
             }
-            Mode::Normal => self.step_normal(level, player_x),
+            Mode::Normal => spawned = self.step_normal(level, player_x),
             Mode::ShellWait => {
                 if self.on_ground && self.vy <= 0.0 {
                     self.vx = 0.0;
@@ -589,8 +680,13 @@ impl Actor {
                 if self.timer <= 0
                     && let Kind::Shell { red } = self.kind
                 {
-                    // the Koopa walks out, facing the player
-                    self.kind = Kind::Koopa { red };
+                    // the Koopa (or Buzzy) walks out, facing the player
+                    self.kind = if self.buzzy {
+                        Kind::Buzzy
+                    } else {
+                        Kind::Koopa { red }
+                    };
+                    self.buzzy = false;
                     self.mode = Mode::Normal;
                     self.dir = if player_x <= self.x { -1 } else { 1 };
                 }
@@ -774,12 +870,36 @@ impl Actor {
         }
     }
 
-    fn step_normal(&mut self, level: &Level, player_x: f32) {
+    fn step_normal(&mut self, level: &Level, player_x: f32) -> Option<Actor> {
         match self.kind {
-            Kind::Goomba | Kind::Koopa { .. } => {
-                if self.wings {
+            Kind::DryBones if self.phase == 1 => {
+                // collapsed: reassembles after 224 frames
+                self.timer -= 1;
+                self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+                self.collide(level);
+                if self.timer <= 0 {
+                    self.phase = 0;
+                    self.dir = if player_x <= self.x { -1 } else { 1 };
+                }
+            }
+            Kind::BobOmb if self.phase > 0 => self.step_lit_bobomb(level),
+            Kind::HammerBro => return self.step_hammer_bro(level),
+            Kind::Hammer => {
+                self.vy = (self.vy - 0.125).max(-6.0);
+                self.x += self.vx;
+                self.y += self.vy;
+            }
+            Kind::Boo => self.step_boo(),
+            Kind::Goomba
+            | Kind::Koopa { .. }
+            | Kind::Spiny
+            | Kind::Buzzy
+            | Kind::SpikeTop
+            | Kind::BobOmb
+            | Kind::DryBones => {
+                if self.wings && matches!(self.kind, Kind::Goomba | Kind::Koopa { .. }) {
                     self.step_wings(level, player_x);
-                    return;
+                    return None;
                 }
                 if self.on_ground {
                     self.vx = WALK_SPEED * self.dir as f32;
@@ -787,10 +907,7 @@ impl Actor {
                     self.vx = self.vx.clamp(-WALK_SPEED, WALK_SPEED);
                 }
                 // red Koopa turns at ledges: probe |half width| + 0.1 ahead for floor
-                if let Kind::Koopa { red: true } = self.kind
-                    && self.on_ground
-                    && self.turn_lock == 0
-                {
+                if self.kind.ledge_turner() && self.on_ground && self.turn_lock == 0 {
                     let px = self.x + self.dir as f32 * (self.half_w() + 0.1);
                     let below = level.cell_at(px, self.y - 1.0);
                     let slope = level.slope_at(px).is_some_and(|(s, _)| s >= self.y - 8.0);
@@ -928,6 +1045,161 @@ impl Actor {
             Kind::Muncher => {}
             Kind::BigCoin { .. } | Kind::Shell { .. } => {}
         }
+        None
+    }
+
+    /// Lit Bob-omb (15-bob-omb.md): fuse 240 frames; stopped (phase 1) or kicked (phase 2,
+    /// sliding with friction 0.03125, bouncing). At 0 it explodes (`phase` = 9, world handles).
+    fn step_lit_bobomb(&mut self, level: &Level) {
+        self.timer -= 1;
+        if self.phase == 2 {
+            let f = 0.03125;
+            self.vx = if self.vx > 0.0 {
+                (self.vx - f).max(0.0)
+            } else {
+                (self.vx + f).min(0.0)
+            };
+        } else if self.on_ground {
+            self.vx = 0.0;
+        }
+        self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+        let impact = self.vy;
+        self.collide(level);
+        if self.on_ground && impact < -0.1875 && self.hops < 2 {
+            self.vy = 0.5 * impact.abs();
+            self.on_ground = false;
+            self.hops += 1;
+        }
+        if self.wall {
+            self.vx = -self.vx;
+            self.dir = -self.dir;
+        }
+        if self.timer <= 0 {
+            self.phase = 9;
+        }
+    }
+
+    /// Kick a lit Bob-omb: 2.5, or min(2.5 + 0.35·|v|, 4.0) moving that way; vy 2.0.
+    pub fn kick_bobomb(&mut self, dir: i32, kicker_vx: f32) {
+        let mut speed = 2.5;
+        if kicker_vx != 0.0 && kicker_vx.signum() as i32 == dir {
+            speed = (2.5 + 0.35 * kicker_vx.abs()).min(4.0);
+        }
+        self.phase = 2;
+        self.dir = dir;
+        self.vx = speed * dir as f32;
+        self.vy = 2.0;
+        self.on_ground = false;
+        self.hops = 0;
+        self.kick_lock = 16;
+    }
+
+    /// Hammer Bro (3-hammer-bro.md, SMB1 "Bros1st"): paces ±16 px around home at 0.3, jumps
+    /// every 300–449 frames (5.5 up, [inf] alternating with a 2.5 hop), throws hammers every
+    /// 75–104 frames (70 % chance of a double, 10 frames apart), always facing the player.
+    fn step_hammer_bro(&mut self, level: &Level) -> Option<Actor> {
+        let (px, _) = self.target;
+        self.dir = if px < self.x { -1 } else { 1 };
+        if self.on_ground {
+            let d = self.home_x - self.x;
+            let pace = if self.phase == 0 { 1.0 } else { -1.0 };
+            if (pace > 0.0 && d < -16.0) || (pace < 0.0 && d > 16.0) {
+                self.phase ^= 1;
+            }
+            let target = 0.3 * if self.phase == 0 { 1.0 } else { -1.0 };
+            self.vx = if self.vx < target {
+                (self.vx + 0.1).min(target)
+            } else {
+                (self.vx - 0.1).max(target)
+            };
+        }
+        // jump timer in `pause`
+        if self.pause <= 0 {
+            self.pause = 300 + self.rand(150) as i32;
+        }
+        self.pause -= 1;
+        if self.pause == 0 && self.on_ground {
+            self.hops ^= 1;
+            self.vy = if self.hops == 1 { 5.5 } else { 2.5 };
+            self.on_ground = false;
+            self.home_x = self.x;
+        }
+        self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+        self.collide(level);
+        if self.wall {
+            self.phase ^= 1;
+        }
+        // throw timer in `timer`; second hammer pending in `chain`
+        if self.timer <= 0 {
+            self.timer = 75 + self.rand(30) as i32;
+            if self.rand(100) < 70 {
+                self.chain = 10;
+            }
+            return Some(self.make_hammer());
+        }
+        self.timer -= 1;
+        if self.chain > 0 {
+            self.chain -= 1;
+            if self.chain == 0 {
+                return Some(self.make_hammer());
+            }
+        }
+        None
+    }
+
+    fn make_hammer(&self) -> Actor {
+        let d = self.dir as f32;
+        let mut h = Actor::new(Kind::Hammer, self.x - d * 3.0, self.y + 18.0);
+        h.vx = 1.5 * d;
+        h.vy = 3.0;
+        h.dir = self.dir;
+        h
+    }
+
+    /// Boo (41-boo.md): stops while the player faces it (speed decays by max(0.12·|v|, 0.002));
+    /// otherwise turns toward the player at ≤ 1°/frame (±45° from horizontal) and speeds up by
+    /// 0.005 to 0.4, with a wobble growing 0.0015/frame to 0.2 (2°/frame phase).
+    fn step_boo(&mut self) {
+        let (px, py) = self.target;
+        if self.age == 1 {
+            // spawned facing the player
+            self.heading = if self.dir < 0 { 180.0 } else { 0.0 };
+        }
+        let looking = (px < self.x) == (self.target_facing > 0);
+        if looking {
+            self.speed = (self.speed - (0.12 * self.speed).max(0.002)).max(0.0);
+        } else {
+            let want = (py + 8.0 - self.y).atan2(px - self.x).to_degrees();
+            let want = if want.abs() > 90.0 {
+                let w = if want < 0.0 { want + 360.0 } else { want };
+                w.clamp(135.0, 225.0)
+            } else {
+                want.clamp(-45.0, 45.0)
+            };
+            let mut diff = want - self.heading;
+            while diff > 180.0 {
+                diff -= 360.0;
+            }
+            while diff < -180.0 {
+                diff += 360.0;
+            }
+            self.heading += diff.clamp(-1.0, 1.0);
+            self.speed = (self.speed + 0.005).min(0.4);
+            self.dir = if px < self.x { -1 } else { 1 };
+        }
+        // wobble only while chasing (its amplitude grows from the start of the chase)
+        if looking {
+            self.timer = 0;
+        } else {
+            self.timer += 1;
+        }
+        let amp = (self.timer as f32 * 0.0015).min(0.2);
+        let w = amp * (self.timer as f32 * 2.0).to_radians().sin();
+        let (s, c) = self.heading.to_radians().sin_cos();
+        self.vx = self.speed * c - w * s;
+        self.vy = self.speed * s + w * c;
+        self.x += self.vx;
+        self.y += self.vy;
     }
 
     /// Paragoomba hops (small, small, big; 80-frame pause after the big hop); green Paratroopa
