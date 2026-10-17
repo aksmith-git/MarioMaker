@@ -12,6 +12,10 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use mmk_assets::Cache;
 use mmk_sim::{Input, World};
 
+pub mod audio;
+use audio::Director;
+pub use audio::MmkAudio;
+
 thread_local! {
     static LAST_ERROR: RefCell<CString> = RefCell::new(CString::default());
 }
@@ -161,6 +165,8 @@ pub struct MmkEngine {
     /// (model, texture) → texture index, resolved once per name.
     lookup: std::collections::HashMap<(&'static str, &'static str), Option<u32>>,
     assets: *const MmkAssets,
+    /// Sends sound commands to an attached `MmkAudio` (see `mmk_engine_set_audio`).
+    director: Option<Director>,
 }
 
 #[repr(C)]
@@ -218,6 +224,7 @@ pub unsafe extern "C" fn mmk_engine_new(assets: *const MmkAssets) -> *mut MmkEng
             sprites: Vec::new(),
             lookup: Default::default(),
             assets,
+            director: None,
         }))
     })
 }
@@ -256,6 +263,9 @@ pub unsafe extern "C" fn mmk_engine_load_course(
             Ok(course) => {
                 e.world = World::from_course(&course);
                 e.lookup.clear();
+                if let Some(d) = &mut e.director {
+                    d.start_course(&e.world);
+                }
                 true
             }
             Err(msg) => {
@@ -300,6 +310,9 @@ pub unsafe extern "C" fn mmk_engine_step(engine: *mut MmkEngine, input: *const M
         };
         let buttons = unsafe { input.as_ref() }.map(|i| i.buttons).unwrap_or(0);
         e.world.step(Input { buttons });
+        if let Some(d) = &mut e.director {
+            d.after_step(&e.world);
+        }
     })
 }
 
@@ -413,6 +426,110 @@ pub unsafe extern "C" fn mmk_engine_hud(engine: *const MmkEngine, out: *mut MmkH
     })
 }
 
+// --- audio -----------------------------------------------------------------------------------
+
+/// Output sample rate of `mmk_audio_render` (Hz).
+pub const MMK_AUDIO_RATE: u32 = mmk_audio::OUTPUT_RATE;
+
+/// Load the sounds of an asset cache (`<path>/audio/`) and create a mixer. NULL on error (e.g. a
+/// cache imported without audio); the engine then runs silently.
+///
+/// # Safety
+/// `path` must be a valid NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_audio_open(path: *const c_char) -> *mut MmkAudio {
+    guard(std::ptr::null_mut(), || {
+        if path.is_null() {
+            set_error("path is NULL");
+            return std::ptr::null_mut();
+        }
+        let path = unsafe { CStr::from_ptr(path) }
+            .to_string_lossy()
+            .into_owned();
+        match mmk_audio::Bank::load_cache(&path) {
+            Ok(bank) => Box::into_raw(Box::new(MmkAudio::new(bank))),
+            Err(e) => {
+                set_error(e.to_string());
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+
+/// Free an audio handle. Stop the host's audio thread first (no `mmk_audio_render` may be running
+/// or start afterwards). Engines attached to it keep working, silently.
+///
+/// # Safety
+/// `audio` must come from `mmk_audio_open` and not be used afterwards.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_audio_free(audio: *mut MmkAudio) {
+    if !audio.is_null() {
+        drop(unsafe { Box::from_raw(audio) });
+    }
+}
+
+/// Output sample rate in Hz (48000).
+#[unsafe(no_mangle)]
+pub extern "C" fn mmk_audio_sample_rate() -> u32 {
+    MMK_AUDIO_RATE
+}
+
+/// Render `frames` frames of interleaved stereo f32 (L, R) into `out` (2 × frames floats). Call
+/// from the audio thread; does not allocate. Writes silence if `audio` is NULL.
+///
+/// # Safety
+/// `audio` must be a live handle or NULL; `out` must point to `2 * frames` writable floats.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_audio_render(audio: *const MmkAudio, out: *mut f32, frames: usize) {
+    guard((), || {
+        if out.is_null() {
+            return;
+        }
+        let buf = unsafe { std::slice::from_raw_parts_mut(out, frames * 2) };
+        match unsafe { audio.as_ref() } {
+            Some(a) => a.render(buf),
+            None => buf.fill(0.0),
+        }
+    })
+}
+
+/// Set master, music and sound-effect volumes (0…1).
+///
+/// # Safety
+/// `audio` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_audio_set_volumes(
+    audio: *const MmkAudio,
+    master: f32,
+    music: f32,
+    sfx: f32,
+) {
+    guard((), || {
+        if let Some(a) = unsafe { audio.as_ref() } {
+            a.send(mmk_audio::Command::SetVolumes { master, music, sfx });
+        }
+    })
+}
+
+/// Attach an audio handle to an engine (NULL detaches): from now on each step sends its sound
+/// effects and music changes to it, and the current course's music starts.
+///
+/// # Safety
+/// `engine` must be a live handle; `audio` a live handle or NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_engine_set_audio(engine: *mut MmkEngine, audio: *const MmkAudio) {
+    guard((), || {
+        let Some(e) = (unsafe { engine.as_mut() }) else {
+            return;
+        };
+        e.director = unsafe { audio.as_ref() }.map(|a| {
+            let mut d = Director::new(a.tx.clone(), &a.bank);
+            d.start_course(&e.world);
+            d
+        });
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,5 +542,51 @@ mod tests {
         assert_eq!(size_of::<MmkSnapshot>(), 40);
         assert_eq!(size_of::<MmkTextureInfo>(), 48);
         assert_eq!(size_of::<MmkHud>(), 24);
+    }
+
+    /// The header declares every exported function (catches a stale mmk.h).
+    #[test]
+    fn header_declares_exports() {
+        let header = include_str!("../../../../app/Sources/CMmk/mmk.h");
+        let src = include_str!("lib.rs");
+        for line in src.lines() {
+            let Some(rest) = line
+                .strip_prefix("pub unsafe extern \"C\" fn ")
+                .or_else(|| line.strip_prefix("pub extern \"C\" fn "))
+            else {
+                continue;
+            };
+            let name = rest.split('(').next().unwrap();
+            assert!(
+                header.contains(&format!(" {name}(")) || header.contains(&format!("*{name}(")),
+                "{name} missing from mmk.h"
+            );
+        }
+    }
+
+    #[test]
+    fn audio_attach_step_and_render() {
+        let bank = mmk_audio::Bank::new(vec![
+            mmk_audio::Sound::from_pcm("bgm_plain", 48000, 2, vec![1000; 2000]).with_loop(0, 1000),
+        ]);
+        let audio = Box::into_raw(Box::new(MmkAudio::new(bank)));
+        let mut engine = MmkEngine {
+            world: World::new(),
+            sprites: Vec::new(),
+            lookup: Default::default(),
+            assets: std::ptr::null(),
+            director: None,
+        };
+        unsafe {
+            mmk_engine_set_audio(&mut engine, audio);
+            mmk_engine_step(&mut engine, std::ptr::null());
+            let mut out = vec![0.0f32; 512];
+            mmk_audio_render(audio, out.as_mut_ptr(), 256);
+            assert!(out.iter().any(|&s| s > 0.0), "course music is playing");
+            mmk_engine_set_audio(&mut engine, std::ptr::null());
+            mmk_audio_render(std::ptr::null(), out.as_mut_ptr(), 256);
+            assert!(out.iter().all(|&s| s == 0.0));
+            mmk_audio_free(audio);
+        }
     }
 }

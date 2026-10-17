@@ -755,16 +755,15 @@ impl World {
 
     fn collect_item(&mut self, kind: Kind, x: f32, y: f32) {
         match kind {
+            // the power-up sound plays for every pickup, also when the form does not change
             Kind::Mushroom => {
-                if self.player.power_up(Form::Super) {
-                    self.events.push(Event::PowerUp);
-                }
+                self.player.power_up(Form::Super);
+                self.events.push(Event::PowerUp);
                 self.add_score(ITEM_SCORE, x, y + 16.0);
             }
             Kind::FireFlower => {
-                if self.player.power_up(Form::Fire) {
-                    self.events.push(Event::PowerUp);
-                }
+                self.player.power_up(Form::Fire);
+                self.events.push(Event::PowerUp);
                 self.add_score(ITEM_SCORE, x, y + 16.0);
             }
             Kind::Star => {

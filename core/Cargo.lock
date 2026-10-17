@@ -276,6 +276,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mmk-audio"
+version = "0.1.0"
+dependencies = [
+ "mmk-formats",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "mmk-cli"
 version = "0.1.0"
 dependencies = [
@@ -292,6 +301,7 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "mmk-assets",
+ "mmk-audio",
  "mmk-formats",
  "mmk-sim",
 ]

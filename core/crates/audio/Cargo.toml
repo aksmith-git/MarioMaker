@@ -1,0 +1,12 @@
+[package]
+name = "mmk-audio"
+description = "Mixer: one-shot and looping voices, music chaining, fades, resampling to the output rate"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+mmk-formats = { path = "../formats" }
+serde_json.workspace = true
+thiserror.workspace = true

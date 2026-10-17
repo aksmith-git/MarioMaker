@@ -44,6 +44,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     }()
     private var assets: OpaquePointer?
     private var engine: OpaquePointer?
+    private var audio: AudioOutput?
     private let input = InputState()
     private var lastTime = CACurrentMediaTime()
     private var accumulator = 0.0
@@ -73,6 +74,7 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     deinit {
         if let engine { mmk_engine_free(engine) }
+        audio = nil
         if let assets { mmk_assets_free(assets) }
     }
 
@@ -107,6 +109,9 @@ final class Renderer: NSObject, MTKViewDelegate {
             let ok = data.withUnsafeBytes { mmk_engine_load_course(e, $0.bindMemory(to: UInt8.self).baseAddress, data.count) }
             if !ok { throw EngineError("\(coursePath): \(String(cString: mmk_last_error()))") }
         }
+        // sound: the mixer pulls from the engine's events; silent if the cache has no audio
+        audio = AudioOutput(cachePath: path)
+        if let h = audio?.handle { mmk_engine_set_audio(e, h) }
         // MMK_START_X=<px> [MMK_START_Y=<px>]: debug, start somewhere else (smoke tests)
         let env = ProcessInfo.processInfo.environment
         if let x = env["MMK_START_X"].flatMap(Float.init) {

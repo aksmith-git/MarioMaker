@@ -7,6 +7,7 @@
 
 typedef struct MmkAssets MmkAssets;
 typedef struct MmkEngine MmkEngine;
+typedef struct MmkAudio MmkAudio;
 
 enum {
     MMK_BTN_LEFT = 1, MMK_BTN_RIGHT = 2, MMK_BTN_UP = 4, MMK_BTN_DOWN = 8,
@@ -62,3 +63,13 @@ void mmk_engine_step(MmkEngine *engine, const MmkInput *input);
 void mmk_engine_snapshot(MmkEngine *engine, MmkSnapshot *out);
 void mmk_engine_hud(const MmkEngine *engine, MmkHud *out);
 void mmk_engine_debug_teleport(MmkEngine *engine, float x, float y);
+
+// Audio: a mixer fed by an attached engine, rendered on the host's audio thread.
+enum { MMK_AUDIO_RATE = 48000 };
+MmkAudio *mmk_audio_open(const char *path);        // asset cache root; NULL if it has no audio
+void mmk_audio_free(MmkAudio *audio);              // stop the audio thread first
+uint32_t mmk_audio_sample_rate(void);
+// interleaved stereo float (L, R), 2 * frames values; audio thread, no allocation
+void mmk_audio_render(const MmkAudio *audio, float *out, size_t frames);
+void mmk_audio_set_volumes(const MmkAudio *audio, float master, float music, float sfx);
+void mmk_engine_set_audio(MmkEngine *engine, const MmkAudio *audio);   // NULL detaches

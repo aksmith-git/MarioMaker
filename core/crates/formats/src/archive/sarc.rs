@@ -98,3 +98,78 @@ impl Sarc {
             .map(|e| (e.name.as_str(), &self.data[e.start..e.end]))
     }
 }
+
+/// Write a little-endian SARC (named entries, sorted by name hash, data 0x40-aligned). For
+/// synthetic test fixtures.
+pub fn build(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let hash = |name: &str| {
+        name.bytes()
+            .fold(0u32, |h, c| h.wrapping_mul(0x65).wrapping_add(c as u32))
+    };
+    let mut files: Vec<(u32, &str, &[u8])> = files.iter().map(|&(n, d)| (hash(n), n, d)).collect();
+    files.sort_by_key(|f| f.0);
+    let mut names = Vec::new();
+    let mut name_offsets = Vec::new();
+    for (_, n, _) in &files {
+        name_offsets.push(names.len() / 4);
+        names.extend_from_slice(n.as_bytes());
+        names.push(0);
+        while !names.len().is_multiple_of(4) {
+            names.push(0);
+        }
+    }
+    let header = 0x14;
+    let sfat = header;
+    let sfnt = sfat + 0x0C + 16 * files.len();
+    let data_offset = (sfnt + 8 + names.len()).next_multiple_of(0x40);
+    let mut body = Vec::new();
+    let mut ranges = Vec::new();
+    for (_, _, d) in &files {
+        while !body.len().is_multiple_of(0x40) {
+            body.push(0);
+        }
+        ranges.push((body.len(), body.len() + d.len()));
+        body.extend_from_slice(d);
+    }
+    let mut out = Vec::with_capacity(data_offset + body.len());
+    out.extend_from_slice(b"SARC");
+    out.extend_from_slice(&(header as u16).to_le_bytes());
+    out.extend_from_slice(&0xFEFFu16.to_le_bytes());
+    out.extend_from_slice(&((data_offset + body.len()) as u32).to_le_bytes());
+    out.extend_from_slice(&(data_offset as u32).to_le_bytes());
+    out.extend_from_slice(&0x0100u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(b"SFAT");
+    out.extend_from_slice(&0x0Cu16.to_le_bytes());
+    out.extend_from_slice(&(files.len() as u16).to_le_bytes());
+    out.extend_from_slice(&0x65u32.to_le_bytes());
+    for (i, (h, _, _)) in files.iter().enumerate() {
+        out.extend_from_slice(&h.to_le_bytes());
+        out.extend_from_slice(&(0x0100_0000 | name_offsets[i] as u32).to_le_bytes());
+        out.extend_from_slice(&(ranges[i].0 as u32).to_le_bytes());
+        out.extend_from_slice(&(ranges[i].1 as u32).to_le_bytes());
+    }
+    out.extend_from_slice(b"SFNT");
+    out.extend_from_slice(&8u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&names);
+    out.resize(data_offset, 0);
+    out.extend_from_slice(&body);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_round_trip() {
+        let a = b"first file".to_vec();
+        let b = vec![7u8; 100];
+        let s = Sarc::parse(build(&[("dir/a.bin", &a), ("b.bin", &b)])).unwrap();
+        assert_eq!(s.entries.len(), 2);
+        assert_eq!(s.get("dir/a.bin"), Some(&a[..]));
+        assert_eq!(s.get("b.bin"), Some(&b[..]));
+        assert!(s.entries.iter().all(|e| e.start % 0x40 == 0));
+    }
+}
