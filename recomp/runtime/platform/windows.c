@@ -10,6 +10,7 @@
 #include <io.h>
 
 #include "../platform.h"
+#include "x86_cpu.h"
 
 // ---- guest address space
 // The window is reserved up front and committed per region (plat_commit from the loader / kernel). Anything
@@ -142,8 +143,7 @@ static void log_to_file_without_console(void) {
 // The recompiled game code is built for x86-64-v3 (Makefile GENARCH: AVX2, FMA, BMI2): say so instead of crashing
 // with an illegal instruction on an older CPU.
 static void require_cpu(void) {
-    __builtin_cpu_init();
-    if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("bmi2")) return;
+    if (x86_cpu_has_v3()) return;
     MessageBoxA(NULL, GAME_TITLE " needs a CPU with AVX2 (Intel Haswell / 2013 or newer, AMD Excavator / Zen or newer).",
                 GAME_TITLE, MB_ICONERROR | MB_OK);
     ExitProcess(1);

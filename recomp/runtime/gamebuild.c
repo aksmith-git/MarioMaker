@@ -21,6 +21,9 @@
 #ifndef GAMELIB_SHARED
 #define GAMELIB_SHARED "-shared"
 #endif
+#ifndef GAMEBUILD_HLE
+#define GAMEBUILD_HLE "runtime/hle/hle_symbols.txt"  // (the game's HLE list in a source checkout: Makefile GAME_HLE)
+#endif
 
 #ifdef _WIN32
 #define SEP "\\"
@@ -123,8 +126,9 @@ static bool find_tools(Tools *t) {
     const char *e = getenv("LARECOMP_GEN");
     if (e && *e) snprintf(t->gen, sizeof t->gen, "%s", e);
     else if (!rt_resource("lasgen" SEP "lasgen" PLAT_EXE_SUFFIX, NULL, t->gen, sizeof t->gen) &&
-             !(rt_resource(NULL, "tools/" PLAT_VENV_PYTHON, t->gen, sizeof t->gen) &&
-               rt_resource(NULL, "tools/gen.py", t->gen_script, sizeof t->gen_script)))
+             !(rt_resource("tools" SEP PLAT_VENV_PYTHON, "tools/" PLAT_VENV_PYTHON, t->gen, sizeof t->gen) &&
+               rt_resource("tools" SEP "gen.py", "tools/gen.py", t->gen_script, sizeof t->gen_script)))
+        // (packages: tools/ next to the program, its venv made by the player - docs/windows.md, recomp/README.md)
         return false;
     e = getenv("LARECOMP_CC");
     if (e && *e) snprintf(t->cc, sizeof t->cc, "%s", e);
@@ -135,7 +139,7 @@ static bool find_tools(Tools *t) {
     else return false;
     if (!rt_resource("gamelib-src" SEP "cpu.h", "runtime/cpu.h", t->inc, sizeof t->inc) ||
         !rt_resource("gamelib-src" SEP "gamelib_entry.c", "tools/gamelib_entry.c", t->entry, sizeof t->entry) ||
-        !rt_resource("gamelib-src" SEP "hle_symbols.txt", "runtime/hle/hle_symbols.txt", t->hle, sizeof t->hle))
+        !rt_resource("gamelib-src" SEP "hle_symbols.txt", GAMEBUILD_HLE, t->hle, sizeof t->hle))
         return false;
     char *s = strrchr(t->inc, '/'), *b = strrchr(t->inc, '\\');
     if (b > s) s = b;

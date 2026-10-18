@@ -78,6 +78,7 @@ typedef struct {
     bool glsl;               // emit Vulkan GLSL: dialect-specific constructs here, the rest via glsl_rewrite()
     bool uses_gmem_store;    // STG present: the gmem buffer is not readonly
     uint32_t cbuf_need[18];  // highest constant vec4 index + 1 per cbuf (array size of the GLSL block)
+    uint32_t gs_max_out, gs_topo;  // geometry (SPH): maximum output vertices, output topology (1 points, 6 lines, 7 triangles)
 } Ctx;
 
 static uint64_t bits(uint64_t w, int lo, int n) { return (w >> lo) & ((n == 64) ? ~0ull : ((1ull << n) - 1)); }
@@ -126,7 +127,7 @@ static const char *cbuf_ref(Ctx *c, int idx, int64_t off, const char *dyn, char 
     if (off + 16 > (int64_t)c->info->cbuf_size[idx]) c->info->cbuf_size[idx] = (uint32_t)((off + 16 + 255) & ~255);
     if (dyn) c->info->cbuf_dynamic |= 1u << idx;
     if (!dyn && idx < 18 && off >= 0 && (uint32_t)(off >> 4) + 1 > c->cbuf_need[idx]) c->cbuf_need[idx] = (uint32_t)(off >> 4) + 1;
-    const char *pre = c->stage == STAGE_GEOMETRY ? "gcb" : "cb";
+    const char *pre = c->stage == STAGE_GEOMETRY && !c->glsl ? "gcb" : "cb";  // (GLSL: a module of its own)
     if (dyn) sprintf(buf, "cbr(%s%d, (%s) + %uu)", pre, idx, dyn, (uint32_t)off);  // (a negative offset wraps, as on the GPU)
     else sprintf(buf, "%s%d[%lld][%lld]", pre, idx, (long long)(off >> 4), (long long)((off >> 2) & 3));
     return buf;
@@ -288,7 +289,7 @@ static void attr_load(Ctx *c, int dst, uint32_t addr, const char *idx) {
 static void attr_store(Ctx *c, int src, uint32_t addr) {
     char b[16];
     const char *v = reg(c, src, b);
-    if (c->glsl && c->stage != STAGE_VERTEX) {  // no vertex outputs in this stage (MSL: undeclared `out`)
+    if (c->glsl && c->stage != STAGE_VERTEX && c->stage != STAGE_GEOMETRY) {  // no vertex outputs in this stage (MSL: undeclared `out`)
         if (addr >= 0x80 && addr < 0x280) c->out_attr_mask |= 1u << ((addr - 0x80) >> 4);
         if (addr == 0x6C) c->info->writes_point_size = true;
         sp(&c->body, "    /* store attr %#x */\n", addr);
@@ -847,10 +848,32 @@ static void emit_tld4(Ctx *c, uint64_t w) {
     if (d == RZ) return;
     if (target == 0 || target == 2) { fail(c, "tld4 on a 1d / 3d texture"); return; }
     if (toff == 2) { fail(c, "tld4 ptp offsets"); return; }
-    if (c->glsl) { fail(c, "tld4 (glsl)"); return; }
     int type = target == 1 ? (array ? TEXTYPE_2D_ARRAY : TEXTYPE_2D) : (array ? TEXTYPE_CUBE_ARRAY : TEXTYPE_CUBE);
     int ncoord = target == 1 ? 2 : 3;
     int slot = tex_slot(c, index, type, dc, array);
+    if (c->glsl) {  // textureGather; an offset moves the coordinates by offset / size (as glsl_sample: no constant)
+        char co[3][48], xs[400], P[600], lay[128] = "", call[900];
+        int ar = a, pr = b;
+        if (array) { sprintf(lay, "float(%s)", ALAYER(R(a), slot)); c->reg_used[a] = 1; ar = a + 1; }
+        for (int i = 0; i < ncoord; i++) { sprintf(co[i], "as_type<float>(r%d)", ar + i); c->reg_used[ar + i] = 1; }
+        if (toff == 1) {
+            if (target != 1) { fail(c, "tld4 offset on a cube"); return; }
+            c->reg_used[pr] = 1;
+            snprintf(xs, sizeof xs, "(vec2(%s, %s) + vec2(ivec2(int(r%d << 26) >> 26, int(r%d << 18) >> 26)) / vec2(tsize%d(0).xy))",
+                     co[0], co[1], pr, pr, slot);
+            pr++;
+        } else if (ncoord == 2) {
+            snprintf(xs, sizeof xs, "vec2(%s, %s)", co[0], co[1]);
+        } else {
+            snprintf(xs, sizeof xs, "vec3(%s, %s, %s)", co[0], co[1], co[2]);
+        }
+        if (array) snprintf(P, sizeof P, "vec%d(%s, %s)", ncoord + 1, xs, lay);
+        else snprintf(P, sizeof P, "%s", xs);
+        if (dc) { c->reg_used[pr] = 1; snprintf(call, sizeof call, "textureGather(t%d, %s, as_type<float>(r%d))", slot, P, pr); }
+        else snprintf(call, sizeof call, "textureGather(t%d, %s, %d)", slot, P, comp);
+        write_tex_result(c, slot, call, mask, d, RZ, false, false);
+        return;
+    }
     char coords[256] = "", layer[64] = "", tmp[64], off[128] = "", dref[64] = "";
     int ar = a;
     if (array) { sprintf(layer, "min(uint(r%d), t%d.get_array_size() - 1u)", a, slot); c->reg_used[a] = 1; ar = a + 1; }
@@ -889,7 +912,6 @@ static void emit_tmml(Ctx *c, uint64_t w) {
     int dim = (int)bits(w, 28, 3);  // 0 1d, 1 1d array, 2 2d, 3 2d array, 4 3d, 5 3d array, 6 cube, 7 cube array
     uint32_t mask = (uint32_t)bits(w, 31, 4);
     if (d == RZ) return;
-    if (c->glsl) { fail(c, "tmml (glsl)"); return; }
     bool array = dim & 1;
     int type, ncoord;
     switch (dim >> 1) {
@@ -913,6 +935,8 @@ static void emit_tmml(Ctx *c, uint64_t w) {
         if (!(mask & (1u << k))) continue;
         c->reg_used[r] = 1;
         if (k >= 2 || !frag) sp(&c->body, "    r%d = 0u;\n", r);
+        else if (c->glsl)  // (textureQueryLod: y the computed level, x the level accessed - clamped)
+            sp(&c->body, "    r%d = uint(int(textureQueryLod(t%d, %s(%s)).%s * 256.0f));\n", r, slot, vec, coords, k == 0 ? "y" : "x");
         else sp(&c->body, "    r%d = uint(int(t%d.calculate_%sclamped_lod(s%d, %s(%s)) * 256.0f));\n", r, slot, k == 0 ? "un" : "",
                 slot, vec, coords);
         r++;
@@ -1022,10 +1046,12 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         emit_texs(c, w, true);
     } else if (c->stage == STAGE_GEOMETRY && (OPM(0xfbe0000000000000ull, 0xfff8000000000000ull) ||
                                               OPM(0xf6e0000000000000ull, 0xfef8000000000000ull))) {  // OUT
-        if (bits(w, 39, 1)) {  // emit (cut: one strip per invocation, nothing to do)
-            sp(&c->body, "    if (emitc == want) out = gout;\n    emitc++;\n");
+        if (bits(w, 39, 1)) {  // emit (MSL - cut: one strip per invocation, nothing to do)
+            if (c->glsl) sp(&c->body, "    gs_emit();\n");
+            else sp(&c->body, "    if (emitc == want) out = gout;\n    emitc++;\n");
             c->info->gs_emits++;
         }
+        if (bits(w, 40, 1) && c->glsl) sp(&c->body, "    EndPrimitive();\n");  // cut
         if (d != RZ) set_reg(c, d, "0u");
     } else if (c->stage == STAGE_GEOMETRY && OPM(0xefd0000000000000ull, 0xfff8000000000000ull)) {  // ISBERD
         set_reg(c, d, R(a));  // (the input vertex offset; attribute loads ignore it)
@@ -1913,8 +1939,9 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
     if (info->cbuf_mask >> 18) fail(c, "cbuf index out of range");
     for (int i = 0; i < info->ntex; i++)
         if (info->tex[i].shadow && info->tex[i].type == TEXTYPE_3D) fail(c, "3d shadow texture");
+    if (stage == STAGE_GEOMETRY && !info->gs_emits) fail(c, "geometry stage emits nothing");
     if (c->fail) { free(body.buf); free(c->body.buf); free(c); return info; }
-    int set = stage == STAGE_FRAGMENT ? 1 : 0;
+    int set = stage == STAGE_FRAGMENT ? 1 : stage == STAGE_GEOMETRY ? 2 : 0;
     Str s = {0};
     sp(&s, "%s", glsl_prelude);
     for (int i = 0; i < 18; i++) {
@@ -1969,6 +1996,30 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         sp(&s, "invariant gl_Position;\nprecise gl_Position;\n");
         for (int i = 0; i < 32; i++)
             if (c->out_attr_mask & (1u << i)) sp(&s, "layout(location = %d) out vec4 v%d;\n", i, i);
+    } else if (stage == STAGE_GEOMETRY) {
+        // Geometry (Vulkan has the stage; MSL emulates it, see shader.h). Point input. Attribute loads read `vso`, the
+        // input vertex; stores write `gout`, which starts as a copy of it; gs_emit() sends gout as the next vertex.
+        // key->vs_out_mask: what the vertex shader writes (other inputs read (0, 0, 0, 1)).
+        uint32_t used = c->in_attr_mask | c->out_attr_mask;
+        uint32_t maxv = c->gs_max_out >= 1 && c->gs_max_out <= 256 ? c->gs_max_out : (uint32_t)info->gs_emits;
+        if (maxv < (uint32_t)info->gs_emits && info->gs_emits <= 256) maxv = (uint32_t)info->gs_emits;
+        const char *topo = c->gs_topo == 1 ? "points" : c->gs_topo == 6 ? "line_strip" : "triangle_strip";
+        sp(&s, "layout(points) in;\nlayout(%s, max_vertices = %u) out;\n", topo, maxv ? maxv : 1);
+        uint32_t vs_has = key ? key->vs_out_mask : 0;
+        for (int i = 0; i < 32; i++)
+            if ((used & vs_has) & (1u << i)) sp(&s, "layout(location = %d) in vec4 gi%d[];\n", i, i);
+        for (int i = 0; i < 32; i++)
+            if (c->out_attr_mask & (1u << i)) sp(&s, "layout(location = %d) out vec4 v%d;\n", i, i);
+        sp(&s, "struct GV { vec4 pos;");
+        for (int i = 0; i < 32; i++)
+            if (used & (1u << i)) sp(&s, " vec4 v%d;", i);
+        sp(&s, " };\nGV vso, gout;\nvoid gs_emit() {\n  gl_Position = gout.pos;\n");
+        if (key && key->flip_y) sp(&s, "  gl_Position.y = -gl_Position.y;\n");
+        if (key && key->flip_x) sp(&s, "  gl_Position.x = -gl_Position.x;\n");
+        if (key && key->depth_minus_one) sp(&s, "  gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5f;\n");
+        for (int i = 0; i < 32; i++)
+            if (c->out_attr_mask & (1u << i)) sp(&s, "  v%d = gout.v%d;\n", i, i);
+        sp(&s, "  EmitVertex();\n}\n");
     } else if (stage == STAGE_FRAGMENT) {
         for (int i = 0; i < 32; i++) {
             if (!(c->in_attr_mask & (1u << i))) continue;
@@ -1985,6 +2036,13 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         sp(&s, "layout(local_size_x_id = 0, local_size_y_id = 1, local_size_z_id = 2) in;\n");
     }
     sp(&s, "void main() {\n");
+    if (stage == STAGE_GEOMETRY) {
+        uint32_t used = c->in_attr_mask | c->out_attr_mask, vs_has = key ? key->vs_out_mask : 0;
+        sp(&s, "  vso.pos = gl_in[0].gl_Position;\n");
+        for (int i = 0; i < 32; i++)
+            if (used & (1u << i)) sp(&s, (vs_has & (1u << i)) ? "  vso.v%d = gi%d[0];\n" : "  vso.v%d = vec4(0, 0, 0, 1);\n", i, i);
+        sp(&s, "  gout = vso;\n");
+    }
     if (stage == STAGE_VERTEX) {
         sp(&s, "  gl_Position = vec4(0, 0, 0, 1);\n");
         for (int i = 0; i < 32; i++)
@@ -2008,7 +2066,9 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         sp(&s, "  do {\n%s  } while (false);\n", body.buf ? body.buf : "");
     }
     free(body.buf);
-    if (stage == STAGE_VERTEX) {
+    if (stage == STAGE_VERTEX && key && key->vs_fn) {
+        // (a geometry stage follows: it applies the clip-space epilogue to what it emits)
+    } else if (stage == STAGE_VERTEX) {
         if (key && key->flip_y) sp(&s, "  gl_Position.y = -gl_Position.y;\n");
         if (key && key->flip_x) sp(&s, "  gl_Position.x = -gl_Position.x;\n");
         if (key && key->depth_minus_one) sp(&s, "  gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5f;\n");
@@ -2066,6 +2126,10 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     if (stage == STAGE_FRAGMENT) {
         c->omap_target = *(const uint32_t *)(sph + 0x48);
         c->omap_depth = (*(const uint32_t *)(sph + 0x4C) >> 1) & 1;
+    }
+    if (stage == STAGE_GEOMETRY) {  // SPH common words 3 (output topology, bits 24-27) and 4 (max output vertices, 0-11)
+        c->gs_topo = (*(const uint32_t *)(sph + 12) >> 24) & 0xF;
+        c->gs_max_out = *(const uint32_t *)(sph + 16) & 0xFFF;
     }
     // find the end: the last EXIT followed by self-branch padding, or max_size
     size_t n = (max_size - (code - blob)) / 8;

@@ -51,6 +51,19 @@ def copy_exefs(src, dst):
     print(f'setup: exefs ok ({", ".join(EXEFS_FILES)})')
 
 
+def place(target, link):
+    """A symlink; where the OS won't make one (Windows without Developer Mode), a hard link (same drive), else a copy."""
+    try:
+        os.symlink(target, link)
+        return
+    except OSError:
+        pass
+    try:
+        os.link(target, link)
+    except OSError:
+        shutil.copy2(target, link)
+
+
 def link_tree(src, dst, counts):
     """Symlink every file of src into dst (dst's existing links are replaced: later trees win)."""
     for root, dirs, files in os.walk(src, followlinks=True):
@@ -69,9 +82,13 @@ def link_tree(src, dst, counts):
                     continue
                 os.remove(link)
                 counts['replaced'] += 1
-            elif os.path.exists(link):
-                sys.exit(f'setup: {link} exists and is not a link (refusing to touch it)')
-            os.symlink(target, link)
+            elif os.path.exists(link):  # (a hard link or copy from place(): replaced the same way)
+                if os.path.samefile(link, target):
+                    counts['same'] += 1
+                    continue
+                os.remove(link)
+                counts['replaced'] += 1
+            place(target, link)
             counts['linked'] += 1
 
 

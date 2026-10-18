@@ -158,11 +158,11 @@ MMK_IOS_SIGN_IDENTITY="Apple Development: …" MMK_IOS_PROFILE=SMCraft.mobilepro
 
 ## Windows
 
-SMCraft runs on Windows 10/11 x64 as `mmk-play.exe`, with `mmk.exe` to import your dump.
-[docs/windows.md](docs/windows.md) has the requirements, the native build (`cargo build --release
--p mmk-shell -p mmk-cli`), the cross-build from macOS/Linux (`scripts/build-windows.sh`), the
-first-launch import into `%LOCALAPPDATA%\SMCraft`, and how to play. The SMM2 Recomp (`recomp/`)
-adds its Windows instructions there once its macOS bring-up is done.
+The SMM2 Recomp builds for Windows 10/11 x64 on Vulkan: `smm2recomp.exe`, cross-compiled from macOS with zig, and a
+player package (`make -C recomp TARGET=windows-x86_64 GAME=smm2 DEPS=<deps> all package` ->
+`dist/SMM2Recomp-windows-x86_64.zip`, nothing from the game in it). On first launch it recompiles the game code from
+your own dump on your PC. **It has not been run on Windows yet.** [docs/windows.md](docs/windows.md) has the
+requirements, the build, the first-launch dump setup and recompile, how to play, and troubleshooting.
 
 ## Portable shell (`mmk-play`: Windows, Linux, web, macOS)
 

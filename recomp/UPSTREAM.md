@@ -49,6 +49,9 @@ the SDL3 / Metal / Vulkan backends) and `third_party/smaa` (MIT-style, `third_pa
   index (tables in memory, file data read from the host files), so a 2.7 GB image needn't be built and an update's
   files can be links over the base game's.
 - The game library's entry is `recomp_game_tables`.
+- Cross builds with zig (`make TARGET=...`) and player packages (`tools/package.sh`, written here: runtime + zig +
+  generator, no game files). With no start screen, the runtime runs LAS's `gamebuild.c` itself on first launch when the
+  game code library is missing (`runtime/main.c`).
 
 Environment variables keep LAS's `LARECOMP_*` names for now (they're documented in LAS's sources); new ones are
 `RECOMP_*`.

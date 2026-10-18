@@ -128,6 +128,48 @@ Earlier (R1, first round):
 - Boot sequence: the yellow "SUPER MARIO MAKER" / "2" logo screen with the running SMB1 Mario, then the title, as on
   Ryujinx.
 
+## Windows and Linux: the Vulkan backend (2026-10-19)
+
+The ports are built on macOS with zig 0.17 (`make TARGET=windows-x86_64 | linux-x86_64 | linux-aarch64`). The
+generated C needs no changes: arm64 shares `generated/smm2` with macOS, and x86-64 uses the portable-C lowering
+(`generated/smm2-c`).
+
+**Build fixes:**
+- SDL 3.2 has no `SDL_LoadPNG` or `SDL_SavePNG`. A minimal PNG writer takes over when SDL is older than 3.4.
+- `__builtin_cpu_supports` needs libgcc's `__cpu_model`. The AVX2 check now reads CPUID directly
+  (`platform/x86_cpu.h`).
+- zig's lld-link has no `--export-all-symbols`. Linker directives (`platform/windows_exports.c`) export the seven
+  runtime symbols the game code calls, and `zig dlltool` makes the exe's import library from `windows_exports.def`.
+- zig wants `X.lib` import-library names, not MinGW's `libX.dll.a`.
+- SMM2 has no movie library, so FFmpeg is not linked (`GAME_MOVIES := 0`).
+
+**What the Metal side had, ported to Vulkan (`runtime/nvn/vulkan`) and to the GLSL output of the translator:**
+- Conditional rendering (`SetRenderEnableConditional`), `ReportValue` and `ClearBuffer`.
+- Polygons culled on both faces are skipped.
+- 3D colour targets: a depth slice is drawn through a 2D view of a `2D_ARRAY_COMPATIBLE` image.
+- First-render uploads.
+- Storage aliases: texture objects over the same memory share one image.
+- Cube-array views of 2D arrays.
+- In-order `UpdateUniformBuffer`: a flush when guest memory under recorded draws would change.
+- A flush after storing compute dispatches.
+- Blocking shader and pipeline builds.
+- TLD4 (`textureGather`) and TMML (`textureQueryLod`).
+- Geometry shaders as real Vulkan geometry stages, in descriptor set 2. They have point input, and the output topology
+  and vertex count come from the shader header.
+
+**Linux arm64 in a VM (Mesa lavapipe):**
+- The build boots to the title screen.
+- Its frames match Metal's except for one thing: the Mario model is missing in the 3D World title course.
+  - His draws are issued, with the same programs, vertex counts and textures as on Metal.
+  - His texture is uploaded and the material alpha uniform is 1.
+  - The cause is open. Candidates: the fragment shader's alpha-test discard on the BC1 albedo, or the skinned vertex
+    path with 4 bone indices.
+- Comparing captures needs care with colour:
+  - Vulkan read-backs are raw sRGB; the Ryujinx references are window-server grabs.
+  - Raw against grab is about 23 % of pixels apart on colour alone, for Metal too.
+  - Compare raw with raw, or map the raw capture through the colour transform measured from a Metal raw / grab pair
+    of the same frame.
+
 ## Open issues
 
 - A title course swapped into another slot (all-ten-slots mod, or two slots swapped) crashes the recomp while the
