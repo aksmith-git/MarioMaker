@@ -15,8 +15,11 @@ pub const PIPE_SPEED: f32 = 0.75;
 pub const HOLD_FRAMES: i32 = 30;
 pub const DOOR_IN_FRAMES: i32 = 50;
 pub const DOOR_OUT_FRAMES: i32 = 20;
-/// Warp box exit: frames hidden in the exit box before popping out [inf].
-pub const BOX_OUT_FRAMES: i32 = 30;
+/// Warp box exit: frames hidden in the exit box before popping out — its PrePlayerOutDemo
+/// plays `OutSign` (28 frames, 3W_Object_warpbox) and the player is released as `Out` starts
+/// the frame after (box states 0x71008c5800…; the online timeline puts OutSign at 68 and Out
+/// at 97) [obs].
+pub const BOX_OUT_FRAMES: i32 = 29;
 const MOUTH_HALF_W: f32 = 7.85;
 const SIDE_PROBE_Y: f32 = 11.9;
 const SIDE_HOLD: u32 = 10;
@@ -289,7 +292,7 @@ pub fn step(t: &mut Transit, p: &mut Player) -> bool {
             if n <= 1 {
                 t.phase = match t.to.kind {
                     WarpKind::Door(_) => Phase::DoorOut(DOOR_OUT_FRAMES),
-                    // the exit box's OutSign / Out before the player pops out [inf: length]
+                    // the exit box's OutSign before the player pops out [obs]
                     WarpKind::Box { .. } => Phase::DoorOut(BOX_OUT_FRAMES),
                     _ => Phase::Out,
                 };

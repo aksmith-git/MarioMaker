@@ -183,7 +183,8 @@ pub enum Kind {
         fire: bool,
     },
     /// Mushroom Trampoline (113-mushroom-trampoline.md): a bouncy top-only platform `width`
-    /// tiles wide. `moving`: a lift that sways ±`range` tiles at 0.5 px/f [inf: horizontal].
+    /// tiles wide. `moving`: a lift that sways sideways ±`range` tiles at up to 0.5 px/f, easing
+    /// at the ends [obs 0x7100897c20].
     Trampoline {
         width: u8,
         moving: bool,
@@ -226,8 +227,8 @@ pub enum Kind {
         what: u8,
     },
     /// Koopa Troopa Car (72, 3D World): phases 0 empty (brakes 0.05/frame), 1 start spin,
-    /// 2 run, 3 turn (30 frames) — the world drives it while the player rides; `hops` = damage
-    /// taken (the third hit breaks it) [inf].
+    /// 2 run, 3 turn — the world drives it while the player rides; `hops` = damage taken
+    /// (Damage state 0x71006cec20 counts it to 3; the third hit breaks it) [obs].
     KoopaCar,
     /// Super Hammer (116, 3D World): walks like a mushroom [inf]; makes Builder Mario.
     SuperHammer,
@@ -1945,16 +1946,23 @@ impl Actor {
             }
             Kind::Trampoline { moving, range, .. } => {
                 if moving {
-                    // a lift swaying around its start [inf]
+                    // the lift base's Move (0x7100897c20) [obs]: sideways between ±range tiles
+                    // of the start (Trampoline init 0x71008c3200: ±3, or ±2 in mode 1), at
+                    // min(0.5, 0.125 + 1/16 of the distance to the nearer end), turning at the
+                    // ends
                     if self.age <= 1 {
                         self.home_x = self.x;
                     }
                     let r = range as f32 * TILE;
-                    let nx = self.x + 0.5 * self.dir as f32;
-                    if (nx - self.home_x).abs() >= r {
+                    let off = self.x - self.home_x;
+                    let d = (off + r).min(r - off).max(0.0);
+                    let speed = (d * 0.0625 + 0.125).min(0.5);
+                    let mut next = off + speed * self.dir as f32;
+                    if next.abs() >= r {
+                        next = r * self.dir as f32;
                         self.dir = -self.dir;
                     }
-                    self.x += 0.5 * self.dir as f32;
+                    self.x = self.home_x + next;
                 }
             }
             Kind::TrackBlock { path, alt } => self.step_track_block(level, path, alt),
