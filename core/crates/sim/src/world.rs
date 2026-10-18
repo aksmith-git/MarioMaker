@@ -6865,13 +6865,16 @@ impl World {
             model
         };
         // (Mega Mario's art is 16×16 drawn through a 32×32 quad)
-        let h = if small
-            || p.pose == Pose::Dead
-            || matches!(form, Form::Mega | Form::Link | Form::Balloon)
-        {
+        let h = if small || p.pose == Pose::Dead || form == Form::Mega {
             16.0
         } else {
             32.0
+        };
+        // the update forms' art is 32 × 32 (world/powerups.rs)
+        let (w, h) = if p.pose == Pose::Dead {
+            (16.0, h)
+        } else {
+            powerups::sprite_size(form).unwrap_or((16.0, h))
         };
         Some(Sprite {
             image: SpriteImage {
@@ -6879,9 +6882,9 @@ impl World {
                 texture: frame,
                 rect: None,
             },
-            x: p.x - 8.0,
+            x: p.x - w / 2.0,
             y: p.y,
-            w: 16.0,
+            w,
             h,
             flip_x: p.facing < 0,
             flip_y: false,

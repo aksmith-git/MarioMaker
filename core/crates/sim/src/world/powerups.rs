@@ -39,6 +39,12 @@ pub(super) fn mask_target(a: &mut Actor, masked: bool) {
     }
 }
 
+/// The player sprite's size for the update forms: their textures are 32 × 32 (the 3D forms
+/// draw meshes, sized by Super Mario's art).
+pub(super) fn sprite_size(form: Form) -> Option<(f32, f32)> {
+    matches!(form, Form::Link | Form::Frog | Form::Balloon | Form::Smb2).then_some((32.0, 32.0))
+}
+
 impl World {
     fn style_ix(&self) -> u8 {
         match self.style {
@@ -1036,6 +1042,8 @@ impl World {
                     Link::Thrust { .. } => "attack_under.0",
                     // a fall plays "jump2"; walking off a ledge "jump" / "jump2" [obs]
                     Link::None if !p.on_ground && p.vy < 0.0 && frame == "jump.0" => "jump2.0",
+                    // (Link's swim stroke has 5 frames)
+                    Link::None if frame == "swim.5" => "swim.4",
                     Link::None => frame,
                 };
                 (m, f)
@@ -1059,6 +1067,14 @@ impl World {
                     } else {
                         "stoop.1"
                     }
+                } else if frame.starts_with("swim.") {
+                    // the SMB2 Mushroom's swim art is "swim_up" / "swim_down"
+                    let k = (p.walk_phase / 5.0) as usize % 3;
+                    if p.vy > 0.0 {
+                        ["swim_up.0", "swim_up.1", "swim_up.2"][k]
+                    } else {
+                        ["swim_down.0", "swim_down.1", "swim_down.2"][k]
+                    }
                 } else {
                     frame
                 };
@@ -1072,7 +1088,7 @@ impl World {
                     "M3_Player_FrogMarioMdl_4",
                 ]);
                 let swim = |v: [&'static str; 3]| v[(p.walk_phase / 5.0) as usize % 3];
-                let f = if p.in_water && !p.on_ground {
+                let f = if p.in_water {
                     let up = p.vy > 0.3;
                     let down = p.vy < -0.3;
                     if p.vx.abs() > 0.2 {
@@ -1089,6 +1105,8 @@ impl World {
                     if p.vy >= 0.0 { "jump.0" } else { "jump2.0" }
                 } else if p.pu.hop {
                     ["walk.0", "walk.1", "walk.2", "walk.3"][(p.walk_phase / 5.0) as usize % 4]
+                } else if frame == "turn.0" {
+                    "walk.0"
                 } else {
                     frame
                 };
