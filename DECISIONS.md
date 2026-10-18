@@ -536,7 +536,8 @@ them:
   from the alternate flag [?]. Conveyor art uses a placeholder tile until the belt model is found.
 - Spike Top crawls round blocks (pass 3): placed side from the facing field, 30-frame corner
   turns; an outside corner swings on a quarter circle round the block corner (grid stand-in).
-- Simplified for now: Hammer Bro alternates a 5.5 jump with a 2.5 hop (no drop-through); Bob-omb blast radius
+- Hammer / Sledge Bros jump up or down through terrain (pass 3, 0x71006205d0 / 0x71007a4b20).
+- Simplified for now: Bob-omb blast radius
   1 tile (plus) for terrain and 32 px for actors/player [inf].
 - Fire Bar rotation 2.8125°/frame (the shared counter's step was not located); Burner flame
   12 px wide × 48 px (texture length); one-way walls are drawn nowhere yet (no M1 texture found).

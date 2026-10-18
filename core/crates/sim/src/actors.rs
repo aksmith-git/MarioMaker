@@ -2716,16 +2716,20 @@ impl Actor {
         self.kick_lock = 16;
     }
 
-    /// Hammer Bro (3-hammer-bro.md, SMB1 "Bros1st"): paces ±16 px around home at 0.3, jumps
-    /// every 300–449 frames (5.5 up, [inf] alternating with a 2.5 hop), throws hammers every
-    /// 75–104 frames (70 % chance of a double, 10 frames apart), always facing the player.
+    /// Hammer Bro (3-hammer-bro.md, SMB1 "Bros1st"): paces ±16 px around home at 0.3; every
+    /// 300–449 frames, standing on flat ground, it jumps (decision 0x71006205d0): up or down at
+    /// random, down forced within 8 px of the view top, down only when a floor to land on is
+    /// found below (else up; a forced one waits). Up launches 5.5 (winged 6.5), down 2.5, with
+    /// no sideways speed, passing through terrain until it can land (`bro_ghost_move`). Throws
+    /// hammers every 75–104 frames (70 % chance of a double, 10 frames apart), always facing the
+    /// player. Jump state in `hops` (0 none, 2 up, 3 down), start height in `speed`.
     fn step_hammer_bro(&mut self, level: &Level) -> Option<Actor> {
         if self.alt {
             return self.step_sledge_bro(level);
         }
         let (px, _) = self.target;
         self.dir = if px < self.x { -1 } else { 1 };
-        if self.on_ground {
+        if self.on_ground && self.hops == 0 {
             let d = self.home_x - self.x;
             let pace = if self.phase == 0 { 1.0 } else { -1.0 };
             if (pace > 0.0 && d < -16.0) || (pace < 0.0 && d > 16.0) {
@@ -2743,14 +2747,36 @@ impl Actor {
             self.pause = 300 + self.rand(150) as i32;
         }
         self.pause -= 1;
-        if self.pause == 0 && self.on_ground {
-            self.hops ^= 1;
-            self.vy = if self.hops == 1 { 5.5 } else { 2.5 };
-            self.on_ground = false;
-            self.home_x = self.x;
+        let flat = level
+            .slope_at(self.x)
+            .is_none_or(|(top, _)| top < self.y - 8.0);
+        if self.pause == 0 && self.on_ground && self.hops == 0 && flat {
+            match self.bro_jump_kind(level) {
+                Some(down) => {
+                    self.hops = if down { 3 } else { 2 };
+                    self.vy = if down {
+                        2.5
+                    } else if self.wings {
+                        6.5
+                    } else {
+                        5.5
+                    };
+                    self.vx = 0.0;
+                    self.speed = self.y;
+                    self.on_ground = false;
+                }
+                None => self.pause = 1, // forced down with nowhere to land: try again
+            }
         }
         self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
-        self.collide(level);
+        if self.hops != 0 {
+            if self.bro_ghost_move(level, ENEMY_GRAVITY) {
+                // landed: Walk again, pacing round here (home re-latched on landing)
+                self.home_x = self.x;
+            }
+        } else {
+            self.collide(level);
+        }
         if self.wall {
             self.phase ^= 1;
         }
@@ -2770,6 +2796,98 @@ impl Actor {
             }
         }
         None
+    }
+
+    /// The Bros' jump decision (0x71006205d0): Some(true) to jump down, Some(false) up, None to
+    /// wait. Up or down at random; within 8 px of the view top it must go down, and down needs
+    /// a landing spot below (0x71007a3a60: rows 16 px apart, down to 16 px above the view
+    /// bottom, where a floor lies under x ± 4 and the 24 px above it is clear at x ± 4..20);
+    /// a random down without one becomes up.
+    fn bro_jump_kind(&mut self, level: &Level) -> Option<bool> {
+        use crate::world::VIEW_H;
+        let forced = self.y >= self.camera.1 + VIEW_H - 8.0;
+        let down = forced || self.rand(2) == 1;
+        if !down {
+            return Some(false);
+        }
+        if self.bro_landing_below(level) {
+            Some(true)
+        } else if forced {
+            None
+        } else {
+            Some(false)
+        }
+    }
+
+    fn bro_landing_below(&self, level: &Level) -> bool {
+        let floor = |x: f32, y: f32| {
+            let c = level.cell_at(x, y);
+            c.is_solid() || c == Cell::SemiTop
+        };
+        let solid = |x: f32, y: f32| level.cell_at(x, y).is_solid();
+        let lowest = (self.camera.1 + 16.0).max(level.bottom);
+        let mut top = (self.y / TILE).round() * TILE - TILE;
+        while top >= lowest {
+            let clear = [-20.0, -12.0, -4.0, 4.0, 12.0, 20.0]
+                .iter()
+                .all(|&dx| !solid(self.x + dx, top + 4.0) && !solid(self.x + dx, top + 20.0));
+            if clear && (floor(self.x - 4.0, top - 8.0) || floor(self.x + 4.0, top - 8.0)) {
+                return true;
+            }
+            top -= TILE;
+        }
+        false
+    }
+
+    /// Airborne through terrain after a Bros jump (the launch 0x7100621040 sets the
+    /// no-terrain flag; 0x71007a4b20 clears it). It may land again — a down jump once 16 px
+    /// below its start, an up jump once falling (and, near the view top, no more than 8 px above
+    /// its start) — when its body is clear (columns x ± 4 from 1 px over its feet to about 21 px,
+    /// plus x ± 12 / ± 20 except near its starting height) and a floor lies within this frame's
+    /// fall (|vy| + max(|g| + 0.5, 0.5)) under x ± 4; it snaps onto it. `vy` is this frame's
+    /// speed. Returns true on landing.
+    fn bro_ghost_move(&mut self, level: &Level, g: f32) -> bool {
+        use crate::world::VIEW_H;
+        let up = self.hops == 2;
+        let start = self.speed;
+        let near_top = self.y + self.vy >= self.camera.1 + VIEW_H - 8.0;
+        let allowed = if up {
+            self.vy <= 0.0 && (!near_top || self.y + self.vy <= start + 8.0)
+        } else {
+            self.y <= start - 16.0
+        };
+        if allowed {
+            let solid = |x: f32, y: f32| level.cell_at(x, y).is_solid();
+            let floor = |x: f32, y: f32| {
+                let c = level.cell_at(x, y);
+                c.is_solid() || c == Cell::SemiTop
+            };
+            let near_start = self.y + 1.0 >= start && self.y + 1.0 <= start + 24.0;
+            let reach_up = if near_start { 4.8 } else { 20.8 };
+            let column_clear = |dx: f32| {
+                !solid(self.x + dx, self.y + 1.0) && !solid(self.x + dx, self.y + reach_up)
+            };
+            let mut clear = column_clear(-4.0) && column_clear(4.0);
+            if !near_start {
+                clear &= [-20.0, -12.0, 12.0, 20.0]
+                    .iter()
+                    .all(|&dx| column_clear(dx));
+            }
+            let reach = self.vy.abs() + (g.abs() + 0.5).max(0.5);
+            let top = (self.y / TILE).floor() * TILE;
+            let under = |dx: f32| floor(self.x + dx, top - 0.5);
+            if clear && top >= self.y - reach && (under(-4.0) || under(4.0)) {
+                self.y = top;
+                self.vy = 0.0;
+                self.hops = 0;
+                self.on_ground = true;
+                return true;
+            }
+        }
+        self.x += self.vx;
+        self.y += self.vy;
+        self.on_ground = false;
+        false
     }
 
     /// Sledge Bro (the Hammer Bro's 0x4 form, MegaBros; 3-hammer-bro.md): paces like a Hammer
@@ -2797,28 +2915,41 @@ impl Actor {
         }
         self.pause -= 1;
         if self.pause == 0 && self.on_ground && self.heading == 0.0 {
+            // JumpUp (0x7100704bc0): straight up through terrain like a Hammer Bro's up jump,
+            // landing again during the hip-drop (0x71007050e0 → 0x71007a4b20)
             self.vy = if self.wings { 6.5 } else { 5.1 };
+            self.vx = 0.0;
+            self.hops = 2;
+            self.speed = self.y;
             self.on_ground = false;
             self.home_x = self.x;
         }
-        if self.heading > 0.0 {
+        let g = if self.heading > 0.0 {
             self.heading -= 1.0;
             self.vy = 0.0;
             self.vx = 0.0;
             if self.heading <= 0.0 {
                 self.heading = -1.0;
             }
+            0.0
         } else if self.heading < 0.0 {
             self.vy = (self.vy - 0.75).max(-8.0);
+            -0.75
         } else {
             let before = self.vy;
             self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
             if before > 0.0 && self.vy <= 0.0 && !self.on_ground {
                 self.heading = 10.0; // the hover at the top
             }
-        }
+            ENEMY_GRAVITY
+        };
         // (`kick_lock` counts down in `step`)
-        self.collide(level);
+        if self.hops == 0 {
+            self.collide(level);
+        } else if self.heading <= 0.0 {
+            // (hovering it holds still; it can land only once it drops)
+            self.bro_ghost_move(level, g);
+        }
         if self.heading < 0.0 && self.on_ground {
             self.heading = 0.0;
             self.kick_lock = 50; // landing quake
@@ -4086,6 +4217,49 @@ mod tests {
         }
         assert_eq!(t.phase, 0);
         assert_eq!(t.x, x0);
+    }
+
+    fn bro_on_platform_level() -> Level {
+        // ground (top y 32) with a one-tile solid platform at tile row 5 (top y 96, 4 tiles up)
+        let mut level = Level::flat(60);
+        for x in 14..27 {
+            level.set_solid(x, 5);
+        }
+        level
+    }
+
+    #[test]
+    fn hammer_bro_jumps_up_through_a_platform_and_lands_on_it() {
+        let level = bro_on_platform_level();
+        let mut b = Actor::new(Kind::HammerBro, 20.0 * TILE + 8.0, 32.0);
+        b.on_ground = true;
+        b.pause = 1; // jump now; the ground is too thick to drop through, so up
+        b.timer = 10_000;
+        let mut through = false;
+        for _ in 0..200 {
+            b.step_spawning(&level);
+            through |= b.y > 80.0 && b.y < 96.0;
+        }
+        assert!(through, "passes through the platform");
+        assert_eq!(b.y, 96.0);
+        assert!(b.on_ground);
+        assert_eq!(b.hops, 0);
+    }
+
+    #[test]
+    fn hammer_bro_near_the_view_top_drops_through_the_floor() {
+        let level = bro_on_platform_level();
+        let mut b = Actor::new(Kind::HammerBro, 20.0 * TILE + 8.0, 96.0);
+        b.on_ground = true;
+        b.pause = 1;
+        b.timer = 10_000;
+        // the view top is 4 px above its feet: the jump must go down
+        b.camera = (0.0, 100.0 - crate::world::VIEW_H);
+        for _ in 0..300 {
+            b.step_spawning(&level);
+        }
+        assert_eq!(b.y, 32.0);
+        assert!(b.on_ground);
     }
 
     #[test]
