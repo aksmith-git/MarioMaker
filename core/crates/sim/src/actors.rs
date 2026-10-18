@@ -33,6 +33,37 @@ pub const FIREBALL_BOUNCE: f32 = 4.0;
 pub const FIREBALL_LIFE: i32 = 600;
 /// Piranha Plant height (EnemyDB tall_max 24; texture 16×24).
 pub const PIRANHA_H: f32 = 24.0;
+/// How many of a Lakitu's Spinies may be alive at once: EnemyDB Togezo spout_jugem_count,
+/// the limit its spawn limiter checks (0x7100364d80) [obs].
+const LAKITU_CHILDREN: u32 = 10;
+/// Spike Top crawl speed (px/frame; ×1.5 for the alternate form) [obs 0x7100778710 tail].
+const SPIKE_TOP_WALK: f32 = 0.5;
+/// Spike Top corner turn rate, 3°/frame (binary angle 0x2222222) [obs 0x7100779d40].
+const SPIKE_TOP_TURN: f32 = 3.0;
+/// Spike Top righting rate in the air and on landing, 15°/frame (0xaaaaaaa), and onto a
+/// ceiling, 80°/frame (0x38e38e38) [obs 0x71007781d0, 0x71007784c0].
+const SPIKE_TOP_STICK: f32 = 15.0;
+const SPIKE_TOP_STICK_CEILING: f32 = 80.0;
+
+/// Unit tangent (cos θ, sin θ) and foot direction (sin θ, −cos θ) of a body angle θ that is
+/// a multiple of 90° (the Spike Top crawler).
+fn crawl_axes(theta: i32) -> ((f32, f32), (f32, f32)) {
+    let c = [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)]
+        [(theta.rem_euclid(360) / 90) as usize & 3];
+    (c, (c.1, -c.0))
+}
+
+/// Turn the angle `cur` (degrees) toward `target` the short way by at most `rate`, landing
+/// exactly on it.
+fn turn_toward(cur: f32, target: f32, rate: f32) -> f32 {
+    let d = (target - cur + 540.0).rem_euclid(360.0) - 180.0;
+    if d.abs() <= rate {
+        target
+    } else {
+        (cur + rate * d.signum()).rem_euclid(360.0)
+    }
+}
+
 // DieFall default launch (shared enemy draft §6.2)
 const DIE_SPEED: f32 = 1.5;
 const DIE_VY: f32 = 3.9;
@@ -67,9 +98,11 @@ pub enum Kind {
     },
     /// Fire Piranha Plant's fireball: straight line at 1 px/frame.
     EnemyFire,
-    /// Thwomp (side = Side Thwomp, alternate form). A solid that slams down.
+    /// Thwomp: a solid that slams down. `side` = Side Thwomp (SideDossun: flag bits 0x18 not
+    /// both set), which charges sideways, toward the right when `right` [obs 0x710076ab10].
     Thwomp {
         side: bool,
+        right: bool,
     },
     /// One-way lift, `width` tiles; falling = drops once stood on.
     Lift {
@@ -93,8 +126,14 @@ pub enum Kind {
     Spiny,
     /// Buzzy Beetle: walker, shell when stomped, immune to fire.
     Buzzy,
-    /// Spike Top: [inf simplified] walks the floor turning at ledges; can't be stomped; fire-proof.
-    SpikeTop,
+    /// Spike Top (40-spike-top.md): crawls round blocks — floors, walls and ceilings, turning
+    /// inside and outside corners; can't be stomped; fire-proof. `surface` = the placed side
+    /// (facing field (flags >> 25) & 3: 0 wall on its right, 1 wall on its left, 2 ceiling,
+    /// 3 floor) [obs 0x7100777b10; the sides checked against the terrain round 150 placed Spike
+    /// Tops in the sample courses].
+    SpikeTop {
+        surface: u8,
+    },
     /// Hammer Bro (paces, jumps, throws hammers).
     HammerBro,
     /// Hammer: arcs (vx 1.5, vy 3.0, g −0.125, cap −6), through terrain.
@@ -235,7 +274,8 @@ pub enum Kind {
     /// 2 run, 3 turn — the world drives it while the player rides; `hops` = damage taken
     /// (Damage state 0x71006cec20 counts it to 3; the third hit breaks it) [obs].
     KoopaCar,
-    /// Super Hammer (116, 3D World): walks like a mushroom [inf]; makes Builder Mario.
+    /// Super Hammer (116, 3D World): makes Builder Mario. An ItemDefault item that, like the Fire
+    /// Flower, waits where it lands (landing choice vfunc +0x4d8 = 0x7100837860 → Wait) [obs].
     SuperHammer,
     /// Superball Flower (SMB1; 34-fire-flower.md) and the ball Superball Mario throws: 3 px/f
     /// on both axes, reflecting off surfaces, 270 frames (34-fire-flower.md) [ext: the bounce].
@@ -377,7 +417,7 @@ impl Kind {
                 | Kind::Wiggler
                 | Kind::Spiny
                 | Kind::Buzzy
-                | Kind::SpikeTop
+                | Kind::SpikeTop { .. }
                 | Kind::HammerBro
                 | Kind::BobOmb
                 | Kind::DryBones
@@ -415,7 +455,7 @@ impl Kind {
             Kind::Lakitu => e::LAKITU,
             Kind::Blooper => e::BLOOPER,
             Kind::CheepCheep { .. } => e::CHEEP_CHEEP,
-            Kind::SpikeTop => e::SPIKE_TOP,
+            Kind::SpikeTop { .. } => e::SPIKE_TOP,
             Kind::ChainChomp { .. } => e::CHAIN_CHOMP,
             Kind::LavaBubble => e::LAVA_BUBBLE,
             Kind::FishBone => e::FISH_BONE,
@@ -446,7 +486,7 @@ impl Kind {
                 | Kind::Shell { .. }
                 | Kind::Spiny
                 | Kind::Buzzy
-                | Kind::SpikeTop
+                | Kind::SpikeTop { .. }
                 | Kind::BobOmb
                 | Kind::DryBones
         )
@@ -461,7 +501,7 @@ impl Kind {
                 | Kind::Shuriken
                 | Kind::EnemyFire
                 | Kind::Spiny
-                | Kind::SpikeTop
+                | Kind::SpikeTop { .. }
                 | Kind::Boo
                 | Kind::RingBoo { .. }
                 | Kind::Hammer
@@ -473,7 +513,7 @@ impl Kind {
     pub fn ledge_turner(self) -> bool {
         matches!(
             self,
-            Kind::Koopa { red: true } | Kind::SpikeTop | Kind::DryBones | Kind::Goombrat
+            Kind::Koopa { red: true } | Kind::DryBones | Kind::Goombrat
         )
     }
     /// Moves before the player and offers a solid surface (riders are carried).
@@ -630,6 +670,10 @@ pub struct Actor {
     pub smm1_item: u8,
     /// State of the 2.0 / 3.0 parts (actors/v3.rs, actors/koopalings.rs).
     pub v3: V3State,
+    /// The id of the actor that threw this one (a Lakitu's Spiny egg), and, for a thrower, how
+    /// many of its children are alive (set by the world before it steps).
+    pub parent: Option<u32>,
+    pub children: u32,
 }
 
 impl Actor {
@@ -682,6 +726,8 @@ impl Actor {
             assist: None,
             smm1_item: 0,
             v3: V3State::default(),
+            parent: None,
+            children: 0,
         }
     }
 
@@ -690,7 +736,7 @@ impl Actor {
         matches!(
             self.kind,
             Kind::Buzzy
-                | Kind::SpikeTop
+                | Kind::SpikeTop { .. }
                 | Kind::DryBones
                 | Kind::Boo
                 | Kind::RingBoo { .. }
@@ -834,15 +880,14 @@ impl Actor {
 
     /// Lakitu: anchor x (home_x) follows the player by at most max(|player vx|, 0.05) — the
     /// player's x-speed comes in `speed`; drift toward ±1.5 (accel 0.05), turning 48 px either
-    /// side of the anchor; throw every 60–119 frames (release 30 frames into the throw); after
-    /// 10 throws leave upward at 3.0 [inf budget].
-    fn step_lakitu(&mut self) -> Option<Actor> {
+    /// side of the anchor; throw every 60–119 frames, the countdown running only inside that
+    /// band, with fewer than 10 of its eggs / Spinies alive (the spawn limiter 0x7100364d80:
+    /// Togezo's spout_jugem_count) and the box x ± 40, y + 18…28 clear of terrain; release 30
+    /// frames into the throw (re-checking the limiter) [obs 0x7100684a10]. The limiter has no
+    /// lifetime budget for Spinies — a Lakitu throws for ever (the budget flag is set only for
+    /// a child matching a "defeat N" clear condition, 0x7100364500; not modelled).
+    fn step_lakitu(&mut self, level: &Level) -> Option<Actor> {
         let (px, _) = self.target;
-        if self.chain >= 10 {
-            self.vy = (self.vy + 0.1).min(3.0);
-            self.y += self.vy;
-            return None;
-        }
         let follow = self.speed.abs().max(0.05);
         self.home_x += (px - self.home_x).clamp(-follow, follow);
         if self.x > self.home_x + 48.0 {
@@ -853,21 +898,35 @@ impl Actor {
         let t = 1.5 * self.dir as f32;
         self.vx += (t - self.vx).clamp(-0.05, 0.05);
         self.x += self.vx;
-        if self.timer <= 0 {
+        if self.age <= 1 {
             self.timer = 60 + self.rand(60) as i32;
-            self.pause = 30;
         }
-        self.timer -= 1;
+        let room = self.children < LAKITU_CHILDREN;
         if self.pause > 0 {
+            // the throw animation, `pause` frames to the release
             self.pause -= 1;
             if self.pause == 0 {
-                self.chain += 1;
-                let face = if px < self.x { -1.0 } else { 1.0 };
-                let mut egg = Actor::new(Kind::SpinyEgg, self.x, self.y + 16.8);
-                egg.vx = (self.vx.abs() * 0.9).max(0.5) * face;
-                egg.vy = 2.0;
-                egg.dir = face as i32;
-                return Some(egg);
+                self.timer = 60 + self.rand(60) as i32;
+                if room {
+                    let face = if px < self.x { -1.0 } else { 1.0 };
+                    let mut egg = Actor::new(Kind::SpinyEgg, self.x, self.y + 16.8);
+                    egg.vx = (self.vx.abs() * 0.9).max(0.5) * face;
+                    egg.vy = 2.0;
+                    egg.dir = face as i32;
+                    egg.parent = Some(self.id);
+                    return Some(egg);
+                }
+            }
+        } else if room && (self.x - self.home_x).abs() < 48.0 {
+            if self.timer > 0 {
+                self.timer -= 1;
+            }
+            let blocked = [-40.0, -24.0, -8.0, 8.0, 24.0, 40.0].iter().any(|&dx| {
+                level.cell_at(self.x + dx, self.y + 18.0).is_solid()
+                    || level.cell_at(self.x + dx, self.y + 28.0).is_solid()
+            });
+            if self.timer == 0 && !blocked {
+                self.pause = 30;
             }
         }
         None
@@ -1038,7 +1097,12 @@ impl Actor {
 
     /// Thwomp (12-thwomp.md): Wait (notices a player below within |dx| < W + 32) → Fall
     /// (g −0.25, cap −5) → FallWait 64 → Return (≤ 0.875, +0.2/frame) to the home height.
-    /// Side Thwomp [inf]: charges toward a player level with it (0.075/frame² to 3.0), waits, returns.
+    /// Side Thwomp (SideDossun): looks one way only; a player in the attack box on that side —
+    /// 136 px long from 6·S px behind its centre (8·S in 3D World), centred 16·S above its feet
+    /// with half-height 16·S + 16 (S = 1, big 2) — sets it charging that way (0.075/frame² to
+    /// 3.0, no gravity) until it hits a wall; FallWait 64, then back to its start at up to
+    /// 0.875 px/f (±0.2/frame) [obs Wait 0x7100768800, box 0x710076ab10, Fall 0x7100769210,
+    /// Return 0x710076a140].
     /// Winged blocks and lifts (4-brick.md B12 "Wing"): a vertical sine bob around home at
     /// 2.8125°/frame [inf: amplitude 16 px, 48 for the helper's special mode (hard, ice, donut,
     /// cloud)]. Angle in `heading`.
@@ -1047,13 +1111,37 @@ impl Actor {
         self.y = self.home_y + amp * self.heading.to_radians().dsin();
     }
 
-    fn step_thwomp(&mut self, level: &Level, side: bool) {
+    /// A player in the Side Thwomp's attack box (see `step_thwomp`); the player's box is taken
+    /// as 16 px tall from its feet [inf].
+    fn side_thwomp_sees(&self, level: &Level, right: bool) -> bool {
+        let (px, py) = self.target;
+        let s = if self.big { 2.0 } else { 1.0 };
+        let back = if level.style == "3W" { 8.0 } else { 6.0 } * s;
+        let (x0, x1) = if right {
+            (self.x - back, self.x + 136.0)
+        } else {
+            (self.x - 136.0, self.x + back)
+        };
+        let (cy, hh) = (self.y + 16.0 * s, 16.0 * s + 16.0);
+        px >= x0 && px <= x1 && py < cy + hh && py + 16.0 > cy - hh
+    }
+
+    fn step_thwomp(&mut self, level: &Level, side: bool, right: bool) {
         let (px, py) = self.target;
         let w = if self.big { 32.0 } else { 16.0 };
+        let below = (px - self.x).abs() < w + 32.0 && py > self.y + w - 260.0 && py < self.y + w;
+        let triggered = |a: &Actor| {
+            if side {
+                a.side_thwomp_sees(level, right)
+            } else {
+                below
+            }
+        };
         match self.phase {
             0 if self.wings => {
                 // winged: patrol at 0.3 px/f (0.003/frame²), turning at walls, bobbing with
-                // vy = 0.15·sin(2°·t) while waiting (12-thwomp.md)
+                // vy = 0.15·sin(2°·t) while waiting (12-thwomp.md; the Side Thwomp the same
+                // in 0x7100768800, its attack box still on its own side)
                 let target = 0.3 * self.dir as f32;
                 self.vx += (target - self.vx).clamp(-0.003, 0.003);
                 self.vy = 0.15 * (2.0 * self.age as f32).to_radians().dsin();
@@ -1061,7 +1149,7 @@ impl Actor {
                 if self.wall {
                     self.turn();
                 }
-                if (px - self.x).abs() < w + 32.0 && py < self.y + w && py > self.y + w - 260.0 {
+                if triggered(self) {
                     self.phase = 1;
                     self.vx = 0.0;
                     self.vy = 0.0;
@@ -1070,20 +1158,17 @@ impl Actor {
             0 => {
                 self.vx = 0.0;
                 self.vy = 0.0;
-                let triggered = if side {
-                    (py - self.y).abs() < 2.0 * w && (px - self.x).abs() < 256.0
-                } else {
-                    (px - self.x).abs() < w + 32.0 && py > self.y + w - 260.0 && py < self.y + w
-                };
-                if triggered {
+                if triggered(self) {
                     self.phase = 1;
-                    if side {
-                        self.dir = if px < self.x { -1 } else { 1 };
-                    }
                 }
             }
             1 => {
                 if side {
+                    if self.vx == 0.0 {
+                        // the charge starts: it returns to here afterwards
+                        self.dir = if right { 1 } else { -1 };
+                        self.home_x = self.x;
+                    }
                     let t = 3.0 * self.dir as f32;
                     self.vx = if self.vx < t {
                         (self.vx + 0.075).min(t)
@@ -1112,11 +1197,16 @@ impl Actor {
             }
             _ => {
                 if side {
+                    // back toward the start, easing to 0.875 px/f by 0.2, snapping onto it
                     let d = self.home_x - self.x;
-                    let step = d.abs().min(0.875);
-                    self.x += step * d.signum();
-                    if d.abs() < 0.01 {
+                    let target = 0.875 * d.signum();
+                    self.vx += (target - self.vx).clamp(-0.2, 0.2);
+                    if d.abs() <= self.vx.abs() || d.abs() < 0.01 {
+                        self.x = self.home_x;
+                        self.vx = 0.0;
                         self.phase = 0;
+                    } else {
+                        self.x += self.vx;
                     }
                 } else {
                     self.vy = (self.vy + 0.2).min(0.875);
@@ -1459,6 +1549,11 @@ impl Actor {
         }
         match self.mode {
             Mode::Dead => {}
+            Mode::Emerge { .. }
+                if self.kind == Kind::StyleItem && !matches!(level.style.as_str(), "M1" | "3W") =>
+            {
+                self.leaf_pop(self.vy < 0.0);
+            }
             Mode::Emerge { until } => {
                 self.y += self.vy;
                 if (self.vy > 0.0 && self.y >= until) || (self.vy < 0.0 && self.y <= until) {
@@ -1466,9 +1561,7 @@ impl Actor {
                     self.mode = Mode::Normal;
                     self.vy = 0.0;
                     self.vx = match self.kind {
-                        Kind::Mushroom | Kind::OneUp | Kind::Star | Kind::SuperHammer => {
-                            ITEM_SPEED * self.dir as f32
-                        }
+                        Kind::Mushroom | Kind::OneUp | Kind::Star => ITEM_SPEED * self.dir as f32,
                         _ => 0.0,
                     };
                     if self.kind == Kind::Star {
@@ -1491,9 +1584,7 @@ impl Actor {
                 if self.x == tx && self.y == ty {
                     self.mode = Mode::Normal;
                     self.vx = match self.kind {
-                        Kind::Mushroom | Kind::OneUp | Kind::Star | Kind::SuperHammer => {
-                            ITEM_SPEED * self.dir as f32
-                        }
+                        Kind::Mushroom | Kind::OneUp | Kind::Star => ITEM_SPEED * self.dir as f32,
                         _ => 0.0,
                     };
                     self.vy = if matches!(self.pipe, Some((PipeDir::Down, _, _))) {
@@ -1853,12 +1944,12 @@ impl Actor {
             }
             Kind::MontyMole => self.step_monty(level),
             Kind::AngrySun { moon } => self.step_sun(moon),
+            Kind::SpikeTop { surface } => self.step_spike_top(level, surface),
             Kind::Goomba
             | Kind::Goombrat
             | Kind::Koopa { .. }
             | Kind::Spiny
             | Kind::Buzzy
-            | Kind::SpikeTop
             | Kind::BobOmb
             | Kind::DryBones => {
                 if self.wings
@@ -1870,12 +1961,7 @@ impl Actor {
                     self.step_wings(level, player_x);
                     return None;
                 }
-                // the alternate Spike Top crawls 1.5× as fast (40-spike-top.md)
-                let speed = if self.alt && self.kind == Kind::SpikeTop {
-                    0.75
-                } else {
-                    WALK_SPEED
-                };
+                let speed = WALK_SPEED;
                 if self.alt && self.kind == Kind::BobOmb && self.age <= 1 {
                     // the alternate Bob-omb starts lit and keeps walking (15-bob-omb.md)
                     self.phase = 3;
@@ -1901,7 +1987,7 @@ impl Actor {
                     self.turn();
                 }
             }
-            Kind::Mushroom | Kind::OneUp | Kind::SuperHammer => {
+            Kind::Mushroom | Kind::OneUp => {
                 self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
                 if self.on_ground {
                     self.vx = ITEM_SPEED * self.dir as f32;
@@ -1912,7 +1998,7 @@ impl Actor {
                     self.vx = ITEM_SPEED * self.dir as f32;
                 }
             }
-            Kind::FireFlower | Kind::SuperballFlower => {
+            Kind::FireFlower | Kind::SuperballFlower | Kind::SuperHammer => {
                 self.vx = 0.0;
                 self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
                 self.collide(level);
@@ -1979,7 +2065,7 @@ impl Actor {
                     self.collide(level);
                 }
             }
-            Kind::Thwomp { side } => self.step_thwomp(level, side),
+            Kind::Thwomp { side, right } => self.step_thwomp(level, side, right),
             Kind::MovingBlock { block, .. } => {
                 if self.wings {
                     use crate::blocks::BlockKind as B;
@@ -2170,7 +2256,7 @@ impl Actor {
                 self.y += self.vy;
             }
             Kind::Seesaw { width } => self.step_seesaw(width),
-            Kind::Lakitu => return self.step_lakitu(),
+            Kind::Lakitu => return self.step_lakitu(level),
             Kind::SpinyEgg => {
                 self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
                 self.collide(level);
@@ -2376,6 +2462,237 @@ impl Actor {
         None
     }
 
+    // ------------------------------------------------------------ Spike Top
+
+    /// Spike Top crawler (40-spike-top.md, Basic action 0x7102187530). The body is a square
+    /// (half-size h = 8, big 16) centred at (x, y + h); `heading` is the body angle θ (degrees:
+    /// 0 upright on a floor, 90 on a wall to its right, 180 on a ceiling, 270 on a wall to its
+    /// left). It crawls along σ·(cos θ, sin θ), σ = `dir`, feet toward (sin θ, −cos θ), at 0.5
+    /// px/f (alternate 0.75) [obs 0x7100778710 tail, 0x710077a6d0]. Phases: 0 floor or air,
+    /// 1 wall or ceiling, 2 inside corner (RotationWall: turns in place), 3 outside corner
+    /// (RotationCliff: swings round the block corner), 4 Stick (rights itself in place). A turn
+    /// keeps its target angle in `pause`, its start angle in `speed`, σ in `hops` (0 = +1), its
+    /// frames in `timer` and the corner it swings round in (`home_x`, `home_y`).
+    fn step_spike_top(&mut self, level: &Level, surface: u8) {
+        let h = if self.big { 16.0 } else { 8.0 };
+        if self.age <= 1 {
+            // spawn orientation and crawl sense per placed side (Start 0x7100777b10): on a
+            // wall it climbs, on a ceiling it keeps its on-screen direction
+            let (theta, sigma) = match surface {
+                0 => (90, 1),
+                1 => (270, -1),
+                2 => (180, -self.dir),
+                _ => (0, self.dir),
+            };
+            self.heading = theta as f32;
+            self.pause = theta;
+            self.dir = sigma;
+            self.phase = if theta == 0 { 0 } else { 1 };
+        }
+        match self.phase {
+            1 => self.spike_top_crawl(level, h),
+            2 => self.spike_top_turn(h, false),
+            3 => self.spike_top_turn(h, true),
+            4 => self.spike_top_stick(),
+            _ => self.spike_top_floor(level, h),
+        }
+    }
+
+    fn spike_top_speed(&self) -> f32 {
+        if self.alt {
+            SPIKE_TOP_WALK * 1.5
+        } else {
+            SPIKE_TOP_WALK
+        }
+    }
+
+    /// On the floor (Walk) or in the air (InAir 0x71007781d0: gravity −0.1875, cap −4, the
+    /// body righting itself at 15°/frame). Where the floor under its centre ends it wraps the
+    /// block's corner if solid terrain is 3.5 px behind the centre and 4 px under the feet,
+    /// else it reverses (8-frame lock) — so it turns back at the end of a semisolid; a block in
+    /// the way is climbed, anything else (the area edge) turns it [obs 0x7100778710].
+    fn spike_top_floor(&mut self, level: &Level, h: f32) {
+        let speed = self.spike_top_speed();
+        let s = self.dir as f32;
+        if self.on_ground {
+            let under = level.cell_at(self.x, self.y - 0.5);
+            let slope = level
+                .slope_at(self.x)
+                .is_some_and(|(top, _)| top >= self.y - 8.0);
+            if under == Cell::Empty && !slope && self.turn_lock == 0 {
+                if level.cell_at(self.x - 3.5 * s, self.y - 4.0).is_solid() {
+                    let corner = ((self.x / TILE).round() * TILE, self.y);
+                    self.spike_top_begin(true, corner);
+                    return;
+                }
+                self.turn();
+            }
+            self.vx = speed * self.dir as f32;
+        } else {
+            self.vx = self.vx.clamp(-speed, speed);
+            self.heading = turn_toward(self.heading, 0.0, SPIKE_TOP_STICK);
+        }
+        let rising = self.vy > 0.0;
+        let was_ground = self.on_ground;
+        self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+        self.collide(level);
+        if rising && self.vy == 0.0 && !self.on_ground {
+            // bumped a ceiling: it sticks there, flipping σ to keep its screen direction
+            // (InAir → Stick 0x7100778400)
+            self.pause = 180;
+            self.dir = -self.dir;
+            self.phase = 4;
+            return;
+        }
+        if self.on_ground && !was_ground && self.heading != 0.0 {
+            self.pause = 0;
+            self.phase = 4;
+            return;
+        }
+        if self.wall && self.on_ground && self.turn_lock == 0 {
+            let s = self.dir as f32;
+            if level.cell_at(self.x + s * (h + 1.0), self.y + h).is_solid() {
+                self.spike_top_begin(false, (0.0, 0.0));
+            } else {
+                self.turn();
+            }
+        }
+    }
+
+    /// On a wall or the ceiling: a block across the leading face is an inside corner; where
+    /// the surface ends under the centre it wraps the corner (solid 3.5 px behind the centre,
+    /// 4 px beyond the feet); with nothing to cling to it falls (InAir) [obs 0x7100778710].
+    fn spike_top_crawl(&mut self, level: &Level, h: f32) {
+        let solid = |x: f32, y: f32| level.cell_at(x, y).is_solid();
+        let (u, f) = crawl_axes(self.pause);
+        let s = self.dir as f32;
+        let t = (u.0 * s, u.1 * s);
+        let speed = self.spike_top_speed();
+        let mut cx = self.x + speed * t.0;
+        let mut cy = self.y + h + speed * t.1;
+        let (lx, ly) = (cx + (h + 0.01) * t.0, cy + (h + 0.01) * t.1);
+        let blocked = [-(h - 1.0), 0.0, h - 1.0]
+            .iter()
+            .any(|&k| solid(lx + k * f.0, ly + k * f.1));
+        if blocked {
+            // flush against the block, then turn in place
+            let face = |v: f32, d: f32| {
+                if d > 0.0 {
+                    (v / TILE).floor() * TILE
+                } else {
+                    ((v / TILE).floor() + 1.0) * TILE
+                }
+            };
+            if t.0 != 0.0 {
+                cx = face(lx, t.0) - h * t.0;
+            } else {
+                cy = face(ly, t.1) - h * t.1;
+            }
+            self.x = cx;
+            self.y = cy - h;
+            self.spike_top_begin(false, (0.0, 0.0));
+            return;
+        }
+        self.x = cx;
+        self.y = cy - h;
+        if solid(cx + (h + 0.5) * f.0, cy + (h + 0.5) * f.1) {
+            return;
+        }
+        let (bx, by) = (
+            cx - 3.5 * t.0 + (h + 4.0) * f.0,
+            cy - 3.5 * t.1 + (h + 4.0) * f.1,
+        );
+        if solid(bx, by) {
+            let round = |v: f32| (v / TILE).round() * TILE;
+            let (sx, sy) = (cx + h * f.0, cy + h * f.1);
+            let corner = (
+                if t.0 != 0.0 { round(cx) } else { round(sx) },
+                if t.1 != 0.0 { round(cy) } else { round(sy) },
+            );
+            self.spike_top_begin(true, corner);
+            return;
+        }
+        // nothing to cling to: it falls as a floor walker (InAir 0x7100778140 resets the
+        // surface to the floor)
+        self.pause = 0;
+        self.phase = 0;
+        self.on_ground = false;
+        self.vx = 0.0;
+        self.vy = 0.0;
+    }
+
+    /// Start a corner turn: inside corners turn the body +90°·σ, outside corners −90°·σ.
+    fn spike_top_begin(&mut self, cliff: bool, corner: (f32, f32)) {
+        let s = self.dir;
+        let quarter = if cliff { -90 * s } else { 90 * s };
+        self.speed = self.pause as f32;
+        self.pause = (self.pause + quarter).rem_euclid(360);
+        self.hops = u8::from(s < 0);
+        self.timer = 0;
+        self.phase = if cliff { 3 } else { 2 };
+        (self.home_x, self.home_y) = corner;
+        self.vx = 0.0;
+        self.vy = 0.0;
+        self.on_ground = false;
+    }
+
+    /// RotationWall / RotationCliff: the body turns 3°/frame, a quarter turn in 30 frames
+    /// [obs 0x7100779d40, 0x710077a120]. Round an outside corner the centre swings on a
+    /// quarter circle of radius h round the corner, from over the old surface to beside the
+    /// new one [inf: the binary moves 0.34 px/f (big 0.72) along θ ± 5° with its contact
+    /// probes holding it to the corner; the circle is the grid equivalent].
+    fn spike_top_turn(&mut self, h: f32, cliff: bool) {
+        let s = if self.hops == 0 { 1 } else { -1 };
+        self.timer += 1;
+        let a = (self.timer as f32 * SPIKE_TOP_TURN).min(90.0);
+        let sign = if cliff { -s } else { s } as f32;
+        self.heading = (self.speed + sign * a).rem_euclid(360.0);
+        self.vx = 0.0;
+        self.vy = 0.0;
+        if cliff {
+            let (u, f) = crawl_axes(self.speed as i32);
+            let t = (u.0 * s as f32, u.1 * s as f32);
+            let (sn, cs) = if a >= 90.0 {
+                (1.0, 0.0)
+            } else {
+                a.to_radians().dsin_cos()
+            };
+            self.x = self.home_x + h * (t.0 * sn - f.0 * cs);
+            self.y = self.home_y + h * (t.1 * sn - f.1 * cs) - h;
+        }
+        if a >= 90.0 {
+            self.dir = s;
+            self.spike_top_settle();
+        }
+    }
+
+    /// Stick (0x71007784c0): still, it rights itself toward `pause` at 15°/frame (80°/frame
+    /// onto a ceiling), then walks on.
+    fn spike_top_stick(&mut self) {
+        self.vx = 0.0;
+        self.vy = 0.0;
+        let rate = if self.pause == 180 {
+            SPIKE_TOP_STICK_CEILING
+        } else {
+            SPIKE_TOP_STICK
+        };
+        self.heading = turn_toward(self.heading, self.pause as f32, rate);
+        if self.heading == self.pause as f32 {
+            self.spike_top_settle();
+        }
+    }
+
+    fn spike_top_settle(&mut self) {
+        self.heading = self.pause as f32;
+        if self.pause == 0 {
+            self.phase = 0;
+            self.on_ground = true;
+        } else {
+            self.phase = 1;
+            self.on_ground = false;
+        }
+    }
+
     /// Lit Bob-omb (15-bob-omb.md): fuse 240 frames; stopped (phase 1), kicked (phase 2,
     /// sliding with friction 0.03125, bouncing) or placed lit and walking (phase 3). At 0 it
     /// explodes (`phase` = 9, world handles).
@@ -2428,16 +2745,20 @@ impl Actor {
         self.kick_lock = 16;
     }
 
-    /// Hammer Bro (3-hammer-bro.md, SMB1 "Bros1st"): paces ±16 px around home at 0.3, jumps
-    /// every 300–449 frames (5.5 up, [inf] alternating with a 2.5 hop), throws hammers every
-    /// 75–104 frames (70 % chance of a double, 10 frames apart), always facing the player.
+    /// Hammer Bro (3-hammer-bro.md, SMB1 "Bros1st"): paces ±16 px around home at 0.3; every
+    /// 300–449 frames, standing on flat ground, it jumps (decision 0x71006205d0): up or down at
+    /// random, down forced within 8 px of the view top, down only when a floor to land on is
+    /// found below (else up; a forced one waits). Up launches 5.5 (winged 6.5), down 2.5, with
+    /// no sideways speed, passing through terrain until it can land (`bro_ghost_move`). Throws
+    /// hammers every 75–104 frames (70 % chance of a double, 10 frames apart), always facing the
+    /// player. Jump state in `hops` (0 none, 2 up, 3 down), start height in `speed`.
     fn step_hammer_bro(&mut self, level: &Level) -> Option<Actor> {
         if self.alt {
             return self.step_sledge_bro(level);
         }
         let (px, _) = self.target;
         self.dir = if px < self.x { -1 } else { 1 };
-        if self.on_ground {
+        if self.on_ground && self.hops == 0 {
             let d = self.home_x - self.x;
             let pace = if self.phase == 0 { 1.0 } else { -1.0 };
             if (pace > 0.0 && d < -16.0) || (pace < 0.0 && d > 16.0) {
@@ -2455,14 +2776,36 @@ impl Actor {
             self.pause = 300 + self.rand(150) as i32;
         }
         self.pause -= 1;
-        if self.pause == 0 && self.on_ground {
-            self.hops ^= 1;
-            self.vy = if self.hops == 1 { 5.5 } else { 2.5 };
-            self.on_ground = false;
-            self.home_x = self.x;
+        let flat = level
+            .slope_at(self.x)
+            .is_none_or(|(top, _)| top < self.y - 8.0);
+        if self.pause == 0 && self.on_ground && self.hops == 0 && flat {
+            match self.bro_jump_kind(level) {
+                Some(down) => {
+                    self.hops = if down { 3 } else { 2 };
+                    self.vy = if down {
+                        2.5
+                    } else if self.wings {
+                        6.5
+                    } else {
+                        5.5
+                    };
+                    self.vx = 0.0;
+                    self.speed = self.y;
+                    self.on_ground = false;
+                }
+                None => self.pause = 1, // forced down with nowhere to land: try again
+            }
         }
         self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
-        self.collide(level);
+        if self.hops != 0 {
+            if self.bro_ghost_move(level, ENEMY_GRAVITY) {
+                // landed: Walk again, pacing round here (home re-latched on landing)
+                self.home_x = self.x;
+            }
+        } else {
+            self.collide(level);
+        }
         if self.wall {
             self.phase ^= 1;
         }
@@ -2482,6 +2825,98 @@ impl Actor {
             }
         }
         None
+    }
+
+    /// The Bros' jump decision (0x71006205d0): Some(true) to jump down, Some(false) up, None to
+    /// wait. Up or down at random; within 8 px of the view top it must go down, and down needs
+    /// a landing spot below (0x71007a3a60: rows 16 px apart, down to 16 px above the view
+    /// bottom, where a floor lies under x ± 4 and the 24 px above it is clear at x ± 4..20);
+    /// a random down without one becomes up.
+    fn bro_jump_kind(&mut self, level: &Level) -> Option<bool> {
+        use crate::world::VIEW_H;
+        let forced = self.y >= self.camera.1 + VIEW_H - 8.0;
+        let down = forced || self.rand(2) == 1;
+        if !down {
+            return Some(false);
+        }
+        if self.bro_landing_below(level) {
+            Some(true)
+        } else if forced {
+            None
+        } else {
+            Some(false)
+        }
+    }
+
+    fn bro_landing_below(&self, level: &Level) -> bool {
+        let floor = |x: f32, y: f32| {
+            let c = level.cell_at(x, y);
+            c.is_solid() || c == Cell::SemiTop
+        };
+        let solid = |x: f32, y: f32| level.cell_at(x, y).is_solid();
+        let lowest = (self.camera.1 + 16.0).max(level.bottom);
+        let mut top = (self.y / TILE).round() * TILE - TILE;
+        while top >= lowest {
+            let clear = [-20.0, -12.0, -4.0, 4.0, 12.0, 20.0]
+                .iter()
+                .all(|&dx| !solid(self.x + dx, top + 4.0) && !solid(self.x + dx, top + 20.0));
+            if clear && (floor(self.x - 4.0, top - 8.0) || floor(self.x + 4.0, top - 8.0)) {
+                return true;
+            }
+            top -= TILE;
+        }
+        false
+    }
+
+    /// Airborne through terrain after a Bros jump (the launch 0x7100621040 sets the
+    /// no-terrain flag; 0x71007a4b20 clears it). It may land again — a down jump once 16 px
+    /// below its start, an up jump once falling (and, near the view top, no more than 8 px above
+    /// its start) — when its body is clear (columns x ± 4 from 1 px over its feet to about 21 px,
+    /// plus x ± 12 / ± 20 except near its starting height) and a floor lies within this frame's
+    /// fall (|vy| + max(|g| + 0.5, 0.5)) under x ± 4; it snaps onto it. `vy` is this frame's
+    /// speed. Returns true on landing.
+    fn bro_ghost_move(&mut self, level: &Level, g: f32) -> bool {
+        use crate::world::VIEW_H;
+        let up = self.hops == 2;
+        let start = self.speed;
+        let near_top = self.y + self.vy >= self.camera.1 + VIEW_H - 8.0;
+        let allowed = if up {
+            self.vy <= 0.0 && (!near_top || self.y + self.vy <= start + 8.0)
+        } else {
+            self.y <= start - 16.0
+        };
+        if allowed {
+            let solid = |x: f32, y: f32| level.cell_at(x, y).is_solid();
+            let floor = |x: f32, y: f32| {
+                let c = level.cell_at(x, y);
+                c.is_solid() || c == Cell::SemiTop
+            };
+            let near_start = self.y + 1.0 >= start && self.y + 1.0 <= start + 24.0;
+            let reach_up = if near_start { 4.8 } else { 20.8 };
+            let column_clear = |dx: f32| {
+                !solid(self.x + dx, self.y + 1.0) && !solid(self.x + dx, self.y + reach_up)
+            };
+            let mut clear = column_clear(-4.0) && column_clear(4.0);
+            if !near_start {
+                clear &= [-20.0, -12.0, 12.0, 20.0]
+                    .iter()
+                    .all(|&dx| column_clear(dx));
+            }
+            let reach = self.vy.abs() + (g.abs() + 0.5).max(0.5);
+            let top = (self.y / TILE).floor() * TILE;
+            let under = |dx: f32| floor(self.x + dx, top - 0.5);
+            if clear && top >= self.y - reach && (under(-4.0) || under(4.0)) {
+                self.y = top;
+                self.vy = 0.0;
+                self.hops = 0;
+                self.on_ground = true;
+                return true;
+            }
+        }
+        self.x += self.vx;
+        self.y += self.vy;
+        self.on_ground = false;
+        false
     }
 
     /// Sledge Bro (the Hammer Bro's 0x4 form, MegaBros; 3-hammer-bro.md): paces like a Hammer
@@ -2509,28 +2944,41 @@ impl Actor {
         }
         self.pause -= 1;
         if self.pause == 0 && self.on_ground && self.heading == 0.0 {
+            // JumpUp (0x7100704bc0): straight up through terrain like a Hammer Bro's up jump,
+            // landing again during the hip-drop (0x71007050e0 → 0x71007a4b20)
             self.vy = if self.wings { 6.5 } else { 5.1 };
+            self.vx = 0.0;
+            self.hops = 2;
+            self.speed = self.y;
             self.on_ground = false;
             self.home_x = self.x;
         }
-        if self.heading > 0.0 {
+        let g = if self.heading > 0.0 {
             self.heading -= 1.0;
             self.vy = 0.0;
             self.vx = 0.0;
             if self.heading <= 0.0 {
                 self.heading = -1.0;
             }
+            0.0
         } else if self.heading < 0.0 {
             self.vy = (self.vy - 0.75).max(-8.0);
+            -0.75
         } else {
             let before = self.vy;
             self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
             if before > 0.0 && self.vy <= 0.0 && !self.on_ground {
                 self.heading = 10.0; // the hover at the top
             }
-        }
+            ENEMY_GRAVITY
+        };
         // (`kick_lock` counts down in `step`)
-        self.collide(level);
+        if self.hops == 0 {
+            self.collide(level);
+        } else if self.heading <= 0.0 {
+            // (hovering it holds still; it can land only once it drops)
+            self.bro_ghost_move(level, g);
+        }
         if self.heading < 0.0 && self.on_ground {
             self.heading = 0.0;
             self.kick_lock = 50; // landing quake
@@ -2666,13 +3114,23 @@ impl Actor {
         }
     }
 
-    /// Super Leaf / Cape Feather [inf: SMB3 / SMW behaviour, not traced]: out of a block it
-    /// flies up (vy 2.5, slowing 0.1/frame), then sways down at 0.5 px/f swinging ±20 px; a
-    /// placed one hovers where it is. Phases: 0 new, 1 rising, 2 swaying, 3 hovering.
+    /// The style power-up. SMB1's Big Mushroom and 3D World's Super Bell are ItemDefault items
+    /// (20-super-mushroom.md): the Big Mushroom walks like the Super Mushroom, the Bell waits
+    /// where it lands like the Fire Flower (landing choice vfunc +0x4d8: 0x71008357f0 → Move
+    /// for BigKinoko, 0x7100837860 → Wait for SuperBell) [obs]. The Super Leaf (SMB3) and Cape
+    /// Feather (SMW) share the ItemLeaf preset (vtable 0x71021967b8): out of an upward block
+    /// they shoot up through the terrain at 4.0 (gravity −0.25) until they stop rising (down:
+    /// −0.24, gravity −0.0625, for 9 frames) (Block Out 0x710082ecb0 / 0x710082ec80), then sway
+    /// down (Move 0x710082dd70): the sideways speed swings between ±2 at 0.125/frame (the push
+    /// flips once |vx| ≥ 2, 0x710082e720), falling 1.225 px/f while gathering speed to the
+    /// right, 1.1 to the left, and rising 0.025 while braking (0x710082e110, table
+    /// 0x7101d03c18) — ±16 px swings, a 64-frame period, about 0.57 px/f down. A placed one
+    /// sways down from where it is. Phases: 0 new, 1 shooting up, 2 swaying, 3 landed (it stops
+    /// [inf]); push direction in `hops` bit 0; frames left of a downward pop in `timer`.
+    /// NSMBU's Propeller Mushroom uses its own ItemPropeller Move (0x7100832250 /
+    /// 0x7100831bf0), not modelled: it sways here like the leaf [inf].
     fn step_style_item(&mut self, level: &Level) {
-        if level.style == "3W" || level.style == "M1" {
-            // Super Bell: the ItemDefault preset, i.e. it walks like a mushroom
-            // (44-style-powerup.md) [?: bounce height]
+        if level.style == "M1" {
             self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
             if self.on_ground {
                 self.vx = ITEM_SPEED * self.dir as f32;
@@ -2684,35 +3142,79 @@ impl Actor {
             }
             return;
         }
+        if level.style == "3W" {
+            self.vx = 0.0;
+            self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+            self.collide(level);
+            return;
+        }
         match self.phase {
             0 => {
-                if self.spawn.is_some() {
-                    self.phase = 3;
-                } else {
-                    self.phase = 1;
-                    self.vy = 2.5;
-                }
+                // placed: sway from here
+                self.phase = 2;
+                self.vx = 0.0;
+                self.hops = 0;
+                self.leaf_sway(level);
             }
             1 => {
-                self.vy -= 0.1;
+                // shooting out of the block, through the terrain
+                if self.timer > 0 {
+                    self.vy = (self.vy - 0.0625).max(MAX_FALL);
+                    self.timer -= 1;
+                } else {
+                    self.vy -= 0.25;
+                }
                 self.y += self.vy;
-                if self.vy <= 0.0 {
+                let done = if self.timer > 0 {
+                    false
+                } else {
+                    self.vy <= 0.0
+                };
+                if done {
                     self.phase = 2;
-                    self.home_x = self.x;
-                    self.heading = 0.0;
+                    self.vx = 0.0;
+                    self.hops = 0;
                 }
             }
-            2 => {
-                self.heading += 3.0;
-                self.x = self.home_x + 20.0 * self.heading.to_radians().dsin();
+            2 => self.leaf_sway(level),
+            _ => {
                 self.vx = 0.0;
-                self.vy = -0.5;
+                self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
                 self.collide(level);
-                if self.on_ground {
-                    self.phase = 3;
-                }
             }
-            _ => {}
+        }
+    }
+
+    /// One frame of the ItemLeaf sway (Move 0x710082dd70 with the ItemLeaf slots).
+    fn leaf_sway(&mut self, level: &Level) {
+        let right = self.hops & 1 == 0;
+        self.vx += if right { 0.125 } else { -0.125 };
+        self.vy = match (u8::from(self.vx < 0.0)) + (self.hops & 1) {
+            0 => -1.225,
+            1 => 0.025,
+            _ => -1.1,
+        };
+        if self.vx.abs() >= 2.0 {
+            self.hops ^= 1;
+        }
+        self.collide(level);
+        if self.on_ground {
+            self.phase = 3;
+        }
+    }
+
+    /// The Super Leaf / Cape Feather comes out of a block (instead of the Super Mushroom's slow
+    /// rise): up at 4.0, or down at −0.24 for 9 frames.
+    fn leaf_pop(&mut self, down: bool) {
+        self.mode = Mode::Normal;
+        self.phase = 1;
+        self.vx = 0.0;
+        if down {
+            self.vy = -0.24;
+            self.timer = 9;
+        } else {
+            self.vy = 4.0;
+            self.timer = 0;
         }
     }
 
@@ -3671,6 +4173,240 @@ mod tests {
         let f = first_full.unwrap();
         assert!((180..=210).contains(&f), "extended at frame {f}");
         assert!(s.heading <= 144.0);
+    }
+
+    #[test]
+    fn spike_top_circles_a_floating_block() {
+        // one block at tile (20, 6): px 320..336 × 96..112
+        let mut level = Level::flat(60);
+        level.set_solid(20, 6);
+        let mut a = Actor::new(Kind::SpikeTop { surface: 3 }, 326.0, 112.0);
+        a.on_ground = true;
+        a.dir = 1;
+        let mut seen = [false; 4];
+        let mut corner_frames = 0;
+        for _ in 0..1200 {
+            a.step(&level, 0.0);
+            assert_eq!(a.mode, Mode::Normal);
+            // the body stays wrapped round the block
+            let (cx, cy) = (a.x, a.y + 8.0);
+            assert!(
+                (300.0..=356.0).contains(&cx) && (76.0..=132.0).contains(&cy),
+                "{cx} {cy}"
+            );
+            if matches!(a.phase, 2 | 3) {
+                corner_frames += 1;
+            }
+            if a.phase <= 1 {
+                seen[(a.heading as i32 / 90) as usize & 3] = true;
+            }
+        }
+        assert_eq!(seen, [true; 4]);
+        assert!(corner_frames > 0);
+    }
+
+    #[test]
+    fn spike_top_corner_takes_30_frames_and_climbs_walls() {
+        let mut level = Level::flat(60);
+        for y in 2..8 {
+            level.set_solid(30, y);
+        }
+        let mut a = Actor::new(Kind::SpikeTop { surface: 3 }, 28.0 * TILE, 32.0);
+        a.on_ground = true;
+        a.dir = 1;
+        let mut turning = 0;
+        let mut climbed = false;
+        for _ in 0..400 {
+            a.step(&level, 0.0);
+            if a.phase == 2 {
+                turning += 1;
+            }
+            if a.phase == 1 && a.heading == 90.0 && a.y > 48.0 {
+                climbed = true;
+                break;
+            }
+        }
+        assert_eq!(turning, 30); // the corner frame, then 29 turning; the 30th settles
+        assert!(climbed);
+        assert!(a.x + 8.0 <= 30.0 * TILE + 0.01);
+    }
+
+    #[test]
+    fn spike_top_placed_on_a_ceiling_crawls_along_it() {
+        let mut level = Level::flat(60);
+        for x in 10..40 {
+            level.set_solid(x, 10);
+        }
+        // under the ceiling: body in tile row 9 (px 144..160)
+        let mut a = Actor::new(Kind::SpikeTop { surface: 2 }, 20.0 * TILE + 8.0, 144.0);
+        a.dir = 1;
+        for _ in 0..100 {
+            a.step(&level, 0.0);
+        }
+        assert_eq!(a.phase, 1);
+        assert_eq!(a.heading, 180.0);
+        assert!((a.y - 144.0).abs() < 0.01);
+        assert!(
+            a.x > 20.0 * TILE + 8.0 + 40.0,
+            "moves on in its screen direction: {}",
+            a.x
+        );
+    }
+
+    #[test]
+    fn side_thwomp_charges_only_the_way_it_looks() {
+        let mut level = Level::flat(60);
+        for y in 2..12 {
+            level.set_solid(10, y);
+        }
+        let mut t = Actor::new(
+            Kind::Thwomp {
+                side: true,
+                right: false,
+            },
+            30.0 * TILE,
+            64.0,
+        );
+        // a player level with it but behind it: nothing
+        t.target = (t.x + 60.0, 64.0);
+        for _ in 0..30 {
+            t.step_spawning(&level);
+        }
+        assert_eq!(t.phase, 0);
+        // in front, 130 px away: it charges left at up to 3.0 and stops at the wall
+        t.target = (t.x - 130.0, 70.0);
+        t.step_spawning(&level);
+        assert_eq!(t.phase, 1);
+        let x0 = t.x;
+        let mut top: f32 = 0.0;
+        for _ in 0..200 {
+            t.step_spawning(&level);
+            top = top.max(t.vx.abs());
+            if t.phase == 2 {
+                break;
+            }
+        }
+        assert_eq!(t.phase, 2);
+        assert!((top - 3.0).abs() < 1e-4);
+        assert!(
+            (t.x - 16.0 - 11.0 * TILE).abs() < 0.01,
+            "against the wall: {}",
+            t.x
+        );
+        // 64 frames, then back to where it started
+        t.target = (x0 + 60.0, 64.0);
+        for _ in 0..64 + 400 {
+            t.step_spawning(&level);
+        }
+        assert_eq!(t.phase, 0);
+        assert_eq!(t.x, x0);
+    }
+
+    #[test]
+    fn lakitu_throws_for_ever_but_holds_at_ten_live_spinies() {
+        let level = Level::flat(60);
+        let mut l = Actor::new(Kind::Lakitu, 200.0, 160.0);
+        l.id = 7;
+        l.target = (200.0, 32.0);
+        let mut thrown = 0;
+        for _ in 0..3000 {
+            if let Some(egg) = l.step_spawning(&level) {
+                assert_eq!(egg.parent, Some(7));
+                thrown += 1;
+            }
+        }
+        assert!(thrown > 10, "no lifetime budget: {thrown}");
+        l.children = 10;
+        for _ in 0..600 {
+            assert!(l.step_spawning(&level).is_none());
+        }
+        l.children = 9;
+        assert!((0..300).any(|_| l.step_spawning(&level).is_some()));
+    }
+
+    #[test]
+    fn super_leaf_shoots_out_then_sways_down() {
+        let mut level = Level::flat(60);
+        level.style = "M3".into();
+        // out of a block at tile (20, 6) (left out: the leaf would land back on it)
+        let mut a = Actor::new(Kind::StyleItem, 20.0 * TILE + 8.0, 96.0);
+        a.vy = 0.5;
+        a.mode = Mode::Emerge { until: 112.0 };
+        let mut top: f32 = 0.0;
+        let (mut xmin, mut xmax) = (f32::MAX, f32::MIN);
+        let mut frames = 0;
+        while a.phase != 3 && frames < 2000 {
+            a.step(&level, 0.0);
+            top = top.max(a.y);
+            if a.phase == 2 {
+                xmin = xmin.min(a.x);
+                xmax = xmax.max(a.x);
+                assert!(a.vx.abs() <= 2.0 + 1e-4);
+            }
+            frames += 1;
+        }
+        // 4.0 under −0.25: 30 px up (16 frames), then ±16 px swings down to the floor
+        assert!((top - 126.0).abs() < 0.01, "peak {top}");
+        assert!((xmax - xmin - 32.0).abs() < 1.0, "swing {}", xmax - xmin);
+        assert_eq!(a.y, 32.0);
+        // (126 − 32) px at ~0.57 px/f
+        assert!((150..=190).contains(&frames), "{frames} frames");
+    }
+
+    #[test]
+    fn super_bell_and_hammer_wait_where_they_land() {
+        let mut level = Level::flat(60);
+        level.style = "3W".into();
+        for kind in [Kind::StyleItem, Kind::SuperHammer] {
+            let mut a = Actor::new(kind, 200.0, 64.0);
+            for _ in 0..120 {
+                a.step(&level, 0.0);
+            }
+            assert_eq!((a.x, a.y), (200.0, 32.0), "{kind:?}");
+        }
+    }
+
+    fn bro_on_platform_level() -> Level {
+        // ground (top y 32) with a one-tile solid platform at tile row 5 (top y 96, 4 tiles up)
+        let mut level = Level::flat(60);
+        for x in 14..27 {
+            level.set_solid(x, 5);
+        }
+        level
+    }
+
+    #[test]
+    fn hammer_bro_jumps_up_through_a_platform_and_lands_on_it() {
+        let level = bro_on_platform_level();
+        let mut b = Actor::new(Kind::HammerBro, 20.0 * TILE + 8.0, 32.0);
+        b.on_ground = true;
+        b.pause = 1; // jump now; the ground is too thick to drop through, so up
+        b.timer = 10_000;
+        let mut through = false;
+        for _ in 0..200 {
+            b.step_spawning(&level);
+            through |= b.y > 80.0 && b.y < 96.0;
+        }
+        assert!(through, "passes through the platform");
+        assert_eq!(b.y, 96.0);
+        assert!(b.on_ground);
+        assert_eq!(b.hops, 0);
+    }
+
+    #[test]
+    fn hammer_bro_near_the_view_top_drops_through_the_floor() {
+        let level = bro_on_platform_level();
+        let mut b = Actor::new(Kind::HammerBro, 20.0 * TILE + 8.0, 96.0);
+        b.on_ground = true;
+        b.pause = 1;
+        b.timer = 10_000;
+        // the view top is 4 px above its feet: the jump must go down
+        b.camera = (0.0, 100.0 - crate::world::VIEW_H);
+        for _ in 0..300 {
+            b.step_spawning(&level);
+        }
+        assert_eq!(b.y, 32.0);
+        assert!(b.on_ground);
     }
 
     #[test]

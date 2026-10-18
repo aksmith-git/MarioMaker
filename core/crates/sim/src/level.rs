@@ -891,14 +891,19 @@ impl Level {
                 46 if o.flags & 0x4 != 0 => Some(Kind::EmptyShell { what: 3 }),
                 25 => Some(Kind::Spiny),
                 28 => Some(Kind::Buzzy),
-                40 => Some(Kind::SpikeTop),
+                40 => Some(Kind::SpikeTop {
+                    surface: ((o.flags >> 25) & 3) as u8,
+                }),
                 3 => Some(Kind::HammerBro),
                 15 => Some(Kind::BobOmb),
                 46 => Some(Kind::DryBones),
                 41 => Some(Kind::Boo),
                 57 => Some(Kind::Muncher),
+                // bits 0x18 both set → Dossun, otherwise SideDossun, which looks right when
+                // (flags >> 3) & 3 == 2, else left (0x710076ab10) [obs]
                 12 => Some(Kind::Thwomp {
-                    side: o.flags & 0x4 != 0,
+                    side: o.flags & 0x18 != 0x18,
+                    right: (o.flags >> 3) & 3 == 2,
                 }),
                 11 => Some(Kind::Lift {
                     width: o.width.max(1),

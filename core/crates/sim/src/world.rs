@@ -1359,7 +1359,7 @@ impl World {
             | Kind::BulletBill
             | Kind::MontyMole
             | Kind::BobOmb
-            | Kind::SpikeTop
+            | Kind::SpikeTop { .. }
             | Kind::Lakitu
             | Kind::Magikoopa
             | Kind::Blooper
@@ -1811,12 +1811,22 @@ impl World {
         };
         // SMM1 shell physics: shells kicked by the mid-air wall assist
         self.step_shell_assist();
+        // the throwers' live children (a Lakitu's spawn limiter, actors.rs `step_lakitu`)
+        let parents: Vec<u32> = self
+            .actors
+            .iter()
+            .filter(|a| a.alive())
+            .filter_map(|a| a.parent)
+            .collect();
         for a in &mut self.actors {
             if a.held {
                 continue;
             }
             if a.kind.is_platform() {
                 continue; // already moved before the player
+            }
+            if a.kind == Kind::Lakitu {
+                a.children = parents.iter().filter(|&&p| p == a.id).count() as u32;
             }
             a.target = if a.kind == Kind::EscortToad {
                 escort_target
@@ -6382,7 +6392,7 @@ impl World {
             Kind::Donut => ("M1_Object_block_chikuwa", "fall.0", 16.0, 16.0, false),
             Kind::Spiny => ("M1_Enemy_togezo", walk2(8), 16.0, 16.0, a.dir > 0),
             Kind::Buzzy => ("M1_Enemy_met", walk2(8), 16.0, 16.0, a.dir > 0),
-            Kind::SpikeTop => ("M1_Enemy_togemetA", walk2(8), 16.0, 16.0, a.dir > 0),
+            Kind::SpikeTop { .. } => ("M1_Enemy_togemetA", walk2(8), 16.0, 16.0, a.dir > 0),
             Kind::HammerBro if a.alt => (
                 "M1_Enemy_bros_mega",
                 if a.timer < 12 { "throw.0" } else { walk2(8) },
@@ -7409,8 +7419,14 @@ mod tests {
     #[test]
     fn thwomp_slams_and_returns() {
         let mut lvl = Level::flat(40);
-        lvl.spawns
-            .push(spawn(Kind::Thwomp { side: false }, 200.0, 120.0));
+        lvl.spawns.push(spawn(
+            Kind::Thwomp {
+                side: false,
+                right: false,
+            },
+            200.0,
+            120.0,
+        ));
         let mut w = World::with_level(lvl);
         w.player.x = 60.0;
         run(&mut w, 0, 10);
@@ -8137,7 +8153,10 @@ mod tests {
             .unwrap();
         let x0 = w.actors[bell].x;
         run(&mut w, 0, 10);
-        assert!(w.actors[bell].x != x0, "the bell walks like a mushroom");
+        assert!(
+            w.actors[bell].x == x0,
+            "the bell waits where it lands (0x7100837860)"
+        );
         run(&mut w, input::RIGHT | input::RUN, 90);
         run(&mut w, 0, 60);
         assert_eq!(w.player.form, Form::Cat, "picked up the bell");

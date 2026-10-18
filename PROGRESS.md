@@ -81,7 +81,7 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   (respawn, big coins kept), Thwomp (+ side), lifts (static / falling), springs (normal / held high
   bounce), Bill Blasters + Bullet Bills, spike traps; moving-solid layer with rider carry; P switch
   (brick ↔ coin swap, P doors), ON/OFF switch + dotted-line blocks, falling donuts, Munchers,
-  conveyor belts; Spiny, Buzzy Beetle (+ fire-proof shell), Spike Top (floor only), Hammer Bro +
+  conveyor belts; Spiny, Buzzy Beetle (+ fire-proof shell), Spike Top (crawls floors, walls, ceilings), Hammer Bro +
   hammers, Bob-omb (fuse, kick, explosion), Dry Bones (collapse/reassemble), Boo; parachutes,
   one-way walls, Burners, Fire Bars, Banzai Bills; vertical areas; liquids (static / one-way /
   oscillating water, lava, poison; deadly kinds kill) and swimming (strokes, sink, swim table,
