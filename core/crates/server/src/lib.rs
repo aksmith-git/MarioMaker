@@ -16,6 +16,8 @@
 //! | GET | `/api/makers/<maker id>` | a maker's profile and courses |
 //! | POST | `/api/courses/<code>/like`, `/boo` | one vote per account (replaces its earlier vote) |
 //! | POST | `/api/courses/<code>/clear` (body `{"time_ms"}`, optional) | clear; first clear / record |
+//! | POST | `/api/courses/<code>/replay` (body: replay, `mmk_modes::replay`) | clear proven by a replay: re-simulated, its time can set a verified record |
+//! | GET | `/api/courses/<code>/replay` | the verified record's replay (for ghosts) |
 //! | GET, POST | `/api/courses/<code>/comments` (POST body `{"text"}`) | comments |
 //! | DELETE | `/api/courses/<code>` | remove (the uploader, or the admin) |
 //! | POST | `/api/admin/ban/<account id>`, `/api/admin/unban/<id>` | moderation (admin token) |
@@ -72,6 +74,8 @@ pub struct Meta {
     /// Best clear time (ms, 0 none) and its holder's maker ID; the first clearer's.
     pub record_ms: u64,
     pub record_holder: String,
+    /// The record was set by a replay the server re-simulated (its run is at `…/replay`).
+    pub record_verified: bool,
     pub first_clear: String,
 }
 
@@ -91,6 +95,7 @@ impl Meta {
             "attempts": self.attempts, "likes": self.likes, "difficulty": self.difficulty(),
             "boos": self.boos, "maker_id": self.maker_id, "record_ms": self.record_ms,
             "record_holder": self.record_holder, "first_clear": self.first_clear,
+            "record_verified": self.record_verified,
         })
     }
 
@@ -115,6 +120,7 @@ impl Meta {
             maker_id: s("maker_id"),
             record_ms: n("record_ms"),
             record_holder: s("record_holder"),
+            record_verified: v["record_verified"].as_bool().unwrap_or(false),
             first_clear: s("first_clear"),
         })
     }
@@ -126,6 +132,8 @@ pub struct Store {
     inner: Mutex<Inner>,
     /// Moderation token (None: no admin).
     admin: Option<String>,
+    /// Records only from verified replays (typed-in times count as clears only).
+    verified_records: bool,
 }
 
 struct Inner {
@@ -293,10 +301,17 @@ impl Store {
                 endless,
             }),
             admin: None,
+            verified_records: false,
         })
     }
 
     /// Enable moderation with this admin token.
+    /// Accept record times only from replays the server re-simulates.
+    pub fn with_verified_records(mut self, on: bool) -> Self {
+        self.verified_records = on;
+        self
+    }
+
     pub fn with_admin(mut self, token: Option<String>) -> Self {
         self.admin = token.filter(|t| !t.is_empty());
         self
@@ -388,8 +403,46 @@ impl Store {
         Ok(out)
     }
 
-    /// A clear by `who` (maker ID, if signed in) in `time_ms` (0 unknown).
+    /// A clear by `who` (maker ID, if signed in) in `time_ms` (0 unknown). The time can set the
+    /// record unless the server takes records only from replays.
     pub fn clear(&self, code: &str, who: Option<&str>, time_ms: u64) -> Result<Meta, StoreError> {
+        let time = if self.verified_records { 0 } else { time_ms };
+        self.clear_inner(code, who, time, None)
+    }
+
+    /// A clear by `who` proven by a replay (`mmk_modes::replay`): the server plays it on the
+    /// course and the clear time is the replay's own. Errors when it doesn't clear.
+    pub fn clear_replay(&self, code: &str, who: &str, replay: &[u8]) -> Result<Meta, StoreError> {
+        use mmk_modes::replay::{Replay, SIM_VERSION};
+        let r = Replay::decode(replay).ok_or_else(|| StoreError::Bad("not a replay".into()))?;
+        if r.sim_version != SIM_VERSION {
+            return Err(StoreError::Bad(format!(
+                "replay from engine version {} (this server plays {SIM_VERSION})",
+                r.sim_version
+            )));
+        }
+        let course = mmk_formats::smm2::Course::parse(&self.data(code)?)
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        let time = r
+            .run(&course)
+            .time_ms()
+            .ok_or_else(|| StoreError::Bad("the replay doesn't clear the course".into()))?;
+        self.clear_inner(code, Some(who), time, Some(replay))
+    }
+
+    /// The record holder's replay, when the record was verified.
+    pub fn record_replay(&self, code: &str) -> Option<Vec<u8>> {
+        self.get(code).filter(|m| m.record_verified)?;
+        fs::read(self.dir.join(format!("replays/{code}.mmkr"))).ok()
+    }
+
+    fn clear_inner(
+        &self,
+        code: &str,
+        who: Option<&str>,
+        time_ms: u64,
+        replay: Option<&[u8]>,
+    ) -> Result<Meta, StoreError> {
         let mut g = self.inner.lock().unwrap();
         let i = *g.by_code.get(code).ok_or(StoreError::NotFound)?;
         let m = &mut g.courses[i];
@@ -406,6 +459,16 @@ impl Store {
             if time_ms > 0 && (m.record_ms == 0 || time_ms < m.record_ms) {
                 m.record_ms = time_ms;
                 m.record_holder = who.to_string();
+                m.record_verified = replay.is_some();
+                let path = self.dir.join(format!("replays/{code}.mmkr"));
+                match replay {
+                    Some(r) => fs::create_dir_all(self.dir.join("replays"))
+                        .and_then(|_| fs::write(&path, r))
+                        .map_err(|e| StoreError::Io(e.to_string()))?,
+                    None => {
+                        let _ = fs::remove_file(&path);
+                    }
+                }
             }
         }
         let out = g.courses[i].clone();
@@ -543,6 +606,7 @@ impl Store {
             maker_id: account.map(|a| a.maker_id.clone()).unwrap_or_default(),
             record_ms: 0,
             record_holder: String::new(),
+            record_verified: false,
             first_clear: String::new(),
         };
         fs::write(self.dir.join(format!("courses/{code}.bin")), data)
@@ -804,6 +868,17 @@ pub fn handle(
                 Err(e) => store_err(e),
             }
         }
+        ("POST", ["api", "courses", code, "replay"]) => match signed_in() {
+            Some(a) => match store.clear_replay(code, &a.maker_id, body) {
+                Ok(m) => json(200, m.to_json()),
+                Err(e) => store_err(e),
+            },
+            None => err(401, "sign in"),
+        },
+        ("GET", ["api", "courses", code, "replay"]) => match store.record_replay(code) {
+            Some(b) => (200, "application/octet-stream", b),
+            None => err(404, "no verified record"),
+        },
         ("GET", ["api", "courses", code, "comments"]) => json(
             200,
             json!({ "comments": store.comments(code).iter().map(Comment::to_json)
@@ -1200,5 +1275,68 @@ mod tests {
             200
         );
         assert!(store.get(&code).is_none());
+    }
+
+    #[test]
+    fn replays_prove_record_times() {
+        use mmk_modes::replay::Replay;
+        use mmk_sim::{Input, World, input};
+        let dir = tmp("replays");
+        let store = Store::open(&dir).unwrap().with_verified_records(true);
+        // a flat course and a run that clears it
+        let mut ed = mmk_editor::Editor::new("M1");
+        for tx in 0..ed.size().0 {
+            let _ = ed.paint_ground(tx, 0);
+        }
+        let data = ed.save().unwrap();
+        let course = mmk_formats::smm2::Course::parse(&data).unwrap();
+        let mut w = World::from_course(&course);
+        let mut r = Replay::new();
+        while !w.cleared && r.inputs.len() < 20_000 {
+            let jump = if r.inputs.len() % 90 >= 70 {
+                input::JUMP
+            } else {
+                0
+            };
+            let i = Input {
+                buttons: input::RIGHT | input::RUN | jump,
+            };
+            r.push(i);
+            w.step(i);
+        }
+        assert!(w.cleared);
+        let (st, _, v) = handle(&store, "POST", "/api/accounts", &[], br#"{"name":"Rex"}"#);
+        assert_eq!(st, 201);
+        let v: Value = serde_json::from_slice(&v).unwrap();
+        let token = v["token"].as_str().unwrap().to_string();
+        let auth = [("Authorization".to_string(), format!("Bearer {token}"))];
+        let m = store.upload(&data, "rex").unwrap();
+        let url = format!("/api/courses/{}/replay", m.code);
+        // typed-in times don't make records on this server
+        let (_, _, b) = handle(
+            &store,
+            "POST",
+            &format!("/api/courses/{}/clear", m.code),
+            &auth,
+            br#"{"time_ms":1}"#,
+        );
+        let v: Value = serde_json::from_slice(&b).unwrap();
+        assert_eq!(v["record_ms"], 0);
+        // a replay that stops short is refused
+        let mut short = r.clone();
+        short.inputs.truncate(r.inputs.len() - 1);
+        assert_eq!(handle(&store, "POST", &url, &auth, &short.encode()).0, 400);
+        assert_eq!(handle(&store, "POST", &url, &[], &r.encode()).0, 401);
+        let (st, _, b) = handle(&store, "POST", &url, &auth, &r.encode());
+        assert_eq!(st, 200);
+        let v: Value = serde_json::from_slice(&b).unwrap();
+        let ms = (r.inputs.len() as u64 * 1000).div_ceil(60);
+        assert_eq!(
+            (v["record_ms"].as_u64(), v["record_verified"].as_bool()),
+            (Some(ms), Some(true))
+        );
+        let (st, _, ghost) = handle(&store, "GET", &url, &[], b"");
+        assert_eq!((st, Replay::decode(&ghost)), (200, Some(r)));
+        let _ = fs::remove_dir_all(&dir);
     }
 }

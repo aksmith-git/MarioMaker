@@ -24,6 +24,8 @@ pub struct Listing {
     pub maker_id: String,
     pub record_ms: u64,
     pub record_holder: String,
+    /// The record was proven by a replay the server re-simulated.
+    pub record_verified: bool,
     pub first_clear: String,
 }
 
@@ -45,6 +47,7 @@ impl Listing {
             maker_id: s("maker_id"),
             record_ms: n("record_ms"),
             record_holder: s("record_holder"),
+            record_verified: v["record_verified"].as_bool().unwrap_or(false),
             first_clear: s("first_clear"),
         })
     }
@@ -219,6 +222,34 @@ impl Client {
                     .collect()
             })
             .unwrap_or_default())
+    }
+
+    /// Prove a clear with a replay (`mmk_modes::replay`): the server re-simulates it and records
+    /// its time (a verified record when it is the best).
+    pub fn submit_replay(&self, code: &str, replay: &[u8]) -> Result<Listing> {
+        let mut r = self
+            .auth(ureq::post(&format!(
+                "{}/api/courses/{code}/replay",
+                self.base
+            )))
+            .header("Content-Type", "application/octet-stream")
+            .send(replay)
+            .map_err(|e| e.to_string())?;
+        let s = r.body_mut().read_to_string().map_err(|e| e.to_string())?;
+        let v: Value = serde_json::from_str(&s).map_err(|e| e.to_string())?;
+        Listing::from_json(&v).ok_or_else(|| format!("refused: {v}"))
+    }
+
+    /// The verified record's replay (to race as a ghost).
+    pub fn record_replay(&self, code: &str) -> Result<Vec<u8>> {
+        let mut r = ureq::get(&format!("{}/api/courses/{code}/replay", self.base))
+            .call()
+            .map_err(|e| e.to_string())?;
+        r.body_mut()
+            .with_config()
+            .limit(1 << 20)
+            .read_to_vec()
+            .map_err(|e| e.to_string())
     }
 
     /// Remove a course (yours, or any with the admin token).

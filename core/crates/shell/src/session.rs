@@ -70,6 +70,11 @@ pub struct Session {
     pub scripted: Option<fn(u64) -> Input>,
     /// Local multiplayer: inputs of players 2–4 for the next ticks (set by the app each frame).
     pub extra_inputs: Vec<Input>,
+    /// Recording the run since the course (re)started as a replay (`record_replays`), and the
+    /// replay of the last clear, until taken.
+    recording: bool,
+    replay: mmk_modes::replay::Replay,
+    cleared_replay: Option<mmk_modes::replay::Replay>,
     /// Online play: a rollback session (player index = ours) and its link.
     pub net: Option<(
         mmk_netplay::Session<mmk_sim::World>,
@@ -97,6 +102,9 @@ impl Session {
             phase_frames: 0,
             scripted: None,
             extra_inputs: Vec::new(),
+            recording: false,
+            replay: mmk_modes::replay::Replay::new(),
+            cleared_replay: None,
             net: None,
         }
     }
@@ -136,7 +144,20 @@ impl Session {
     }
 
     /// Start the course again (fresh lives, score and timer).
+    /// Record each run (one player, offline) as a replay; a clear's is kept for
+    /// `take_cleared_replay`.
+    pub fn record_replays(&mut self) {
+        self.recording = true;
+        self.replay = mmk_modes::replay::Replay::new();
+    }
+
+    /// The replay of the last clear, once.
+    pub fn take_cleared_replay(&mut self) -> Option<mmk_modes::replay::Replay> {
+        self.cleared_replay.take()
+    }
+
     pub fn restart(&mut self) {
+        self.replay = mmk_modes::replay::Replay::new();
         self.world = match &self.course {
             Some(c) => World::from_course(c),
             None => World::new(),
@@ -248,6 +269,9 @@ impl Session {
             return;
         }
         if self.world.others.is_empty() {
+            if self.recording {
+                self.replay.push(input);
+            }
             self.world.step(input);
         } else {
             let mut all = vec![input];
@@ -270,6 +294,9 @@ impl Session {
         }
         self.was_dying = dying;
         if h.cleared {
+            if self.recording && self.world.others.is_empty() && self.phase != Phase::Cleared {
+                self.cleared_replay = Some(std::mem::take(&mut self.replay));
+            }
             self.set_phase(Phase::Cleared, input.buttons);
         }
     }

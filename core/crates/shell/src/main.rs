@@ -100,6 +100,10 @@ mod native {
         /// Maker name for uploads.
         #[arg(long, default_value = "anonymous")]
         maker: String,
+        /// Account token for the course server (default $MMK_TOKEN): with --code, each clear is
+        /// sent as a replay the server verifies (world records).
+        #[arg(long)]
+        token: Option<String>,
         /// Online play (rollback over UDP) with known addresses: ours, e.g. 0.0.0.0:7000.
         #[arg(long)]
         net_bind: Option<String>,
@@ -197,6 +201,31 @@ mod native {
             None => None,
         };
         let mut game = Game::load(source_ref, if args.edit { None } else { course.as_deref() })?;
+        // a server course: each clear goes to the server as a replay it verifies (records)
+        if let (Some(code), Some(server)) = (&args.code, &args.server) {
+            let token = args
+                .token
+                .clone()
+                .or_else(|| std::env::var("MMK_TOKEN").ok().filter(|t| !t.is_empty()));
+            if let Some(token) = token {
+                game.session.record_replays();
+                let (code, server) = (code.clone(), server.clone());
+                game.on_clear = Some(Box::new(move |r: mmk_modes::replay::Replay| {
+                    let client =
+                        mmk_online::Client::new(server.clone()).with_token(Some(token.clone()));
+                    let code = code.clone();
+                    std::thread::spawn(move || match client.submit_replay(&code, &r.encode()) {
+                        Ok(l) => log(&format!(
+                            "clear sent: record {} ms by {}{}",
+                            l.record_ms,
+                            l.record_holder,
+                            if l.record_verified { " (verified)" } else { "" }
+                        )),
+                        Err(e) => log(&format!("clear not sent: {e}")),
+                    });
+                }));
+            }
+        }
         if args.edit {
             let editor = match &course {
                 Some(bytes) => {

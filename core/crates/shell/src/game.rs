@@ -28,6 +28,9 @@ pub struct Game {
     planner: mmk_host::mesh::MeshPlanner,
     mesh_draws: Vec<mmk_host::mesh::MmkMeshDraw>,
     mesh_frame: crate::mesh::MeshFrame,
+    /// Called with the replay of each clear (`Session::record_replays`), e.g. to send it to the
+    /// course server as a verified time.
+    pub on_clear: Option<Box<dyn FnMut(mmk_modes::replay::Replay)>>,
 }
 
 impl Game {
@@ -66,6 +69,7 @@ impl Game {
             resolver: SpriteResolver::default(),
             sprites: Vec::new(),
             hud: HudText::default(),
+            on_clear: None,
         }
     }
 

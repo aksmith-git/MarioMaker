@@ -150,6 +150,10 @@ enum Cmd {
         /// The relay's WebSocket address for browsers (default: the HTTP port + 1).
         #[arg(long)]
         relay_ws: Option<String>,
+        /// World records only from replays the server re-simulates (typed-in times count as
+        /// clears only).
+        #[arg(long)]
+        verified_records: bool,
     },
     /// Upload a course (raw, zlib or .bcd needs decrypting first) to a course server.
     Upload {
@@ -960,10 +964,11 @@ fn main() -> ExitCode {
             addr,
             admin_token,
             relay_ws,
+            verified_records,
         } => {
             let admin = admin_token.or_else(|| std::env::var("MMK_ADMIN_TOKEN").ok());
             let store = match mmk_server::Store::open(&dir) {
-                Ok(s) => s.with_admin(admin),
+                Ok(s) => s.with_admin(admin).with_verified_records(verified_records),
                 Err(e) => {
                     eprintln!("{}: {e:?}", dir.display());
                     return ExitCode::FAILURE;

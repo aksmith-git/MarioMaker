@@ -71,6 +71,18 @@ account.
 Uploads without a token still work (shown under the `X-Maker` name, with no maker ID). Votes and
 comments need an account.
 
+## Verified records
+
+The engine is deterministic, so a clear can be sent as a **replay**: the inputs of every frame.
+`POST /api/courses/<code>/replay` makes the server play the replay on the course itself; the clear
+time is the replay's, not the client's word, and a best time becomes a *verified* record whose run
+anyone can fetch (`GET …/replay`) to race as a ghost. Start the server with `--verified-records`
+to accept records only this way (typed-in times then count as clears only). `mmk-play --server …
+--code … --token …` sends a replay after each clear.
+
+A replay is tied to the engine version that recorded it (engine updates that change how courses
+play bump it); the server refuses replays from another version.
+
 ## Moderation
 
 With an admin token set:
