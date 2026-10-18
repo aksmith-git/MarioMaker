@@ -146,12 +146,17 @@ final class CourseWorldScene: UIScene {
             let targets: [(Int, SIMD2<Float>)] = Self.buttons.enumerated().compactMap { i, b in
                 layout.rect("\(b.part)/B_Btn_00").map { (i, $0.center) }
             }
-            if let n = nearest(from: here, toward: dir, among: targets) { select(n, animate: true) }
+            if let n = nearest(from: here, toward: dir, among: targets) {
+                UISound.shared.button("Nwk_Title_00", Self.buttons[n].part, .select)
+                select(n, animate: true)
+            }
         } else if pressed.contains(.confirm) {
             let b = Self.buttons[selection]
+            UISound.shared.button("Nwk_Title_00", b.part, .decide)
             layout.play("\(b.part)/Decide", at: tick)
             pending = (b.choice, tick + Int(max(1, layout.length("\(b.part)/Decide"))))
         } else if pressed.contains(.back) {
+            UISound.shared.back("Nwk_Title_00")
             onBack?()
         }
     }
@@ -192,6 +197,7 @@ final class CourseListScene: UIScene {
 
     static let slots = 5
     static let list = "L_CourseList_00"
+    static let layoutName = "Nwk_CourseListGeneral_00"
     static let tabs = ["L_PickUpBtn_00", "L_CoursePointRankBtn_00", "L_LatestBtn_00"]
     static let styles = ["M1", "M3", "MW", "WU", "3W"]
 
@@ -385,6 +391,7 @@ final class CourseListScene: UIScene {
             if open {
                 toggle(false)
             } else {
+                UISound.shared.back(Self.layoutName)
                 layout.play("Out", at: tick)
                 busyUntil = .max
                 onBack?()
@@ -394,6 +401,7 @@ final class CourseListScene: UIScene {
         if open {
             if pressed.contains(.confirm) {
                 let row = rowPane(selection)
+                UISound.shared.button(Self.layoutName, "L_PlayBtn_00", .decide)
                 layout.play("\(row)/L_PlayBtn_00/Decide", at: tick)
                 let c = courses[selection]
                 busyUntil = .max
@@ -408,6 +416,7 @@ final class CourseListScene: UIScene {
         if pressed.contains(.left) || pressed.contains(.right) {
             let n = Tab.allCases.count
             let t = Tab(rawValue: (tab.rawValue + (pressed.contains(.left) ? n - 1 : 1)) % n)!
+            UISound.shared.button(Self.layoutName, Self.tabs[t.rawValue], .decide)
             layout.play("\(Self.tabs[t.rawValue])/Decide", at: tick)
             selectTab(t)
             applyTab(keepSelection: false)
@@ -426,6 +435,7 @@ final class CourseListScene: UIScene {
         let n = max(0, min(courses.count - 1, selection + d))
         guard n != selection else { return }
         selection = n
+        UISound.shared.button(Self.layoutName, Self.list, .select)
         let old = first
         if selection < first { first = selection }
         if selection > first + Self.visible - 1 { first = selection - Self.visible + 1 }
@@ -448,6 +458,7 @@ final class CourseListScene: UIScene {
         }
         fill()
         let row = rowPane(selection)
+        UISound.shared.key(Self.layoutName, "Anm_Toggle_showcoursedetail_\(on ? "Forward" : "Backward")")
         if on {
             layout.play("\(row)/Toggle", at: tick)
             layout.play("\(row)/L_PlayBtn_00/Select", at: tick + 10)

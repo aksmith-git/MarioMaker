@@ -25,5 +25,6 @@ pub mod nso;
 pub mod record;
 pub mod smm1;
 pub mod smm2;
+pub mod xlink;
 
 pub use error::{Error, Result};

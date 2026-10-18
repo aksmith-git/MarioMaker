@@ -36,6 +36,8 @@ final class BootScene: UIScene {
         opening = o
         l.play("Loop", at: 0, loop: true)
         l.play(o, at: 0)
+        // the opening's own sound sequence (BootScene's Anm_<opening>) [obs data]
+        UISound.shared.anim("Boot_BootScene_00", o)
     }
 
     /// The opening to play, with the "seen" flags of the update openings kept in UserDefaults
@@ -76,6 +78,7 @@ final class BootScene: UIScene {
                 state = .inMain
                 stateStart = tick
                 layout.play("InMain", at: tick)
+                UISound.shared.anim("Boot_BootScene_00", "InMain")   // the title call
             }
         case .inMain:
             if layout.finished("InMain", at: tick) {

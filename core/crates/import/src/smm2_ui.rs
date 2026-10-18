@@ -17,6 +17,8 @@
 //! ui/textures/GameSkin/<name>.mtex      the game styles' logos (`Model/<style>_Lyt_Logo`; the
 //!                                       game puts them into `Cmn_GameSkin_00`, e.g. Course
 //!                                       World's course rows)
+//! ui/sound/sounds.json, <sound>.wav     the layouts' button and animation sounds
+//!                                       (`super::smm2_ui_sound`)
 //! courses/title_course_data_<n>.bcd     the title screen's demo courses (as in the RomFS)
 //! ```
 //! Layout archives: `Layout/*.szs` (zstd/Yaz0 → SARC → `<Name>.arc` SARC with `blyt/`,
@@ -40,7 +42,7 @@ use serde_json::{Value, json};
 use crate::smm1::{font_to_json, to_mtex};
 use crate::{ImportError, Progress, Result, read, write};
 
-pub const SMM2_UI_IMPORTER_VERSION: u32 = 3;
+pub const SMM2_UI_IMPORTER_VERSION: u32 = 4;
 
 #[derive(Clone, Debug)]
 pub struct Smm2UiConfig {
@@ -604,6 +606,12 @@ pub fn run_smm2_ui(cfg: &Smm2UiConfig, progress: Progress) -> Result<Smm2UiRepor
         }
     }
 
+    // --- the layouts' sounds (button / animation → sound, from the game's data)
+    progress("ui sounds", 0, 1);
+    let sound = crate::smm2_ui_sound::run(&cfg.romfs, &ui)?;
+    report.skipped.extend(sound.skipped.iter().cloned());
+    progress("ui sounds", 1, 1);
+
     // --- manifest
     let manifest = json!({
         "importer_version": SMM2_UI_IMPORTER_VERSION,
@@ -621,6 +629,7 @@ pub fn run_smm2_ui(cfg: &Smm2UiConfig, progress: Progress) -> Result<Smm2UiRepor
         "title_courses": title_courses,
         "mission_icons": mission_icons,
         "game_skin_icons": skin_icons,
+        "ui_sounds": {"layouts": sound.layouts, "users": sound.users, "sounds": sound.sounds},
         "missing_part_layouts": missing_parts,
         "skipped": report.skipped,
     });

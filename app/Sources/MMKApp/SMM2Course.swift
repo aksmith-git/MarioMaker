@@ -540,6 +540,7 @@ final class CourseScreens: UIScene {
         c.text("T_Zanki_00", ui.format(table: "Play_CourseIn_00", "T_Zanki_Number", ["\(lives)"]) ?? "\(lives)")
         for a in ["AnimEndlessMode", "AnimDefault"] { c.stop(a) }
         c.play(introAnim, at: tick)
+        UISound.shared.anim("Play_CourseIn_00", introAnim)
         irisClosed = false
         irisUntil = 0
         setMode(.intro)
@@ -625,13 +626,16 @@ final class CourseScreens: UIScene {
         hudOut()
         p.stop("Out")
         p.play("In", at: tick)
+        // the pause jingle of the course's game style
+        UISound.shared.key("Cmn_PauseMenu_00", "In_Layout", context: ["In_Layout_\(skin)"])
         setMode(.pause)
-        pauseSelect(0)
+        pauseSelect(0, sound: false)
     }
 
-    func pauseSelect(_ i: Int) {
+    func pauseSelect(_ i: Int, sound: Bool = true) {
         guard let p = pauseL else { return }
         pauseSelection = max(0, min(Self.pauseParts.count - 1, i))
+        if sound { UISound.shared.button("Cmn_PauseMenu_00", Self.pauseParts[pauseSelection], .select) }
         for (k, part) in Self.pauseParts.enumerated() {
             if k == pauseSelection { p.play("\(part)/Select", at: tick) } else { p.hold("\(part)/Select", 0) }
         }
@@ -641,6 +645,7 @@ final class CourseScreens: UIScene {
     @discardableResult
     func pauseDecide() -> Int {
         guard let p = pauseL else { return 0 }
+        UISound.shared.button("Cmn_PauseMenu_00", Self.pauseParts[pauseSelection], .decide)
         let part = "\(Self.pauseParts[pauseSelection])/Decide"
         p.play(part, at: tick)
         return Int(max(0, p.length(part)))
@@ -648,6 +653,7 @@ final class CourseScreens: UIScene {
 
     func hidePause() {
         guard mode == .pause, let p = pauseL else { return }
+        UISound.shared.key("Cmn_PauseMenu_00", "Out_Layout")
         p.stop("In")
         p.play("Out", at: tick)
         closing = (p, tick + Int(max(1, p.length("Out"))))
@@ -681,12 +687,14 @@ final class CourseScreens: UIScene {
         o.stop("Out")
         o.play("In", at: tick)
         setMode(.options)
-        optionsSelect(character)
+        optionsSelect(character, sound: false)
     }
 
-    func optionsSelect(_ i: Int) {
+    func optionsSelect(_ i: Int, sound: Bool = true) {
         guard let o = optionsL else { return }
+        let changed = optionSelection != max(0, min(Self.optionParts.count - 1, i))
         optionSelection = max(0, min(Self.optionParts.count - 1, i))
+        if sound && changed { UISound.shared.button("Cmn_OptionWindow_00", Self.optionParts[optionSelection], .select) }
         for (k, part) in Self.optionParts.enumerated() {
             if k == optionSelection { o.play("\(part)/Select", at: tick) } else { o.hold("\(part)/Select", 0) }
         }
@@ -697,6 +705,7 @@ final class CourseScreens: UIScene {
     func optionsDecide() -> (Int, Bool) {
         guard let o = optionsL else { return (0, true) }
         let part = Self.optionParts[optionSelection]
+        UISound.shared.button("Cmn_OptionWindow_00", part, .decide)
         o.play("\(part)/Decide", at: tick)
         if optionSelection < 4 && optionSelection != character {
             o.stop("\(Self.optionParts[character])/Toggle")
@@ -751,7 +760,7 @@ final class CourseScreens: UIScene {
         c.stop("OutContents")
         c.play("InNet", at: tick)
         setMode(.clear)
-        clearSelect(1)
+        clearSelect(1, sound: false)
     }
 
     private func fillClearInfo(_ l: UILayout, ticks: Int?) {
@@ -780,8 +789,11 @@ final class CourseScreens: UIScene {
     /// Buttons take input once InNet has brought them on screen.
     var clearReady: Bool { mode == .clear && sinceMode >= Int(clearL?.length("InNet") ?? 0) }
 
-    func clearSelect(_ i: Int) {
+    func clearSelect(_ i: Int, sound: Bool = true) {
         guard let c = clearL else { return }
+        if sound && clearSelection != max(0, min(1, i)) {
+            UISound.shared.button("Play_CourseClear_00", Self.clearParts[max(0, min(1, i))], .select)
+        }
         clearSelection = max(0, min(1, i))
         for (k, part) in Self.clearParts.enumerated() {
             if k == clearSelection { c.play("\(part)/Select", at: tick) } else { c.hold("\(part)/Select", 0) }
@@ -791,6 +803,7 @@ final class CourseScreens: UIScene {
     @discardableResult
     func clearDecide() -> Int {
         guard let c = clearL else { return 0 }
+        UISound.shared.button("Play_CourseClear_00", Self.clearParts[clearSelection], .decide)
         let part = "\(Self.clearParts[clearSelection])/Decide"
         c.play(part, at: tick)
         return Int(max(0, c.length(part)))
@@ -819,13 +832,16 @@ final class CourseScreens: UIScene {
         r.stop("OutContents")
         r.play("InNet", at: tick)
         setMode(.retire)
-        retireSelect(1)
+        retireSelect(1, sound: false)
     }
 
     var retireReady: Bool { mode == .retire && sinceMode >= Int(retireL?.length("InNet") ?? 0) / 2 }
 
-    func retireSelect(_ i: Int) {
+    func retireSelect(_ i: Int, sound: Bool = true) {
         guard let r = retireL else { return }
+        if sound && retireSelection != max(0, min(1, i)) {
+            UISound.shared.button("Play_CourseRetire_00", Self.retireParts[max(0, min(1, i))], .select)
+        }
         retireSelection = max(0, min(1, i))
         for (k, part) in Self.retireParts.enumerated() {
             if k == retireSelection { r.play("\(part)/Select", at: tick) } else { r.hold("\(part)/Select", 0) }
@@ -835,6 +851,7 @@ final class CourseScreens: UIScene {
     @discardableResult
     func retireDecide() -> Int {
         guard let r = retireL else { return 0 }
+        UISound.shared.button("Play_CourseRetire_00", Self.retireParts[retireSelection], .decide)
         let part = "\(Self.retireParts[retireSelection])/Decide"
         r.play(part, at: tick)
         return Int(max(0, r.length(part)))

@@ -207,18 +207,32 @@ final class EndlessMenuScene: UIScene {
 
     private func handle(_ p: MenuInput) {
         let l = board.layout
+        let snd = UISound.shared
+        let name = "Nwk_EndlessModeMenu_00"
         if p.contains(.back) {
+            snd.back(name)
             flow?.exit()
             return
         }
-        if p.contains(.up) { onTabs = true; refresh(); return }
-        if p.contains(.down) { onTabs = false; refresh(); return }
+        if p.contains(.up) && !onTabs {
+            snd.button(name, EndlessBoard.tabs[difficulty], .select)
+            onTabs = true
+            refresh()
+            return
+        }
+        if p.contains(.down) && onTabs {
+            snd.button(name, "L_StartBtn_0\(button)", .select)
+            onTabs = false
+            refresh()
+            return
+        }
         if p.contains(.left) || p.contains(.right) {
             let right = p.contains(.right)
             if onTabs {
                 let d = max(0, min(3, difficulty + (right ? 1 : -1)))
                 guard d != difficulty else { return }
                 difficulty = d
+                snd.button(name, EndlessBoard.tabs[d], .decide)
                 l.play("\(EndlessBoard.tabs[d])/Select", at: tick)
                 // the map fades over to the other difficulty's (ChangeOut / ChangeIn, 5 + 5) [inf]
                 l.play("ChangeOut", at: tick)
@@ -226,6 +240,7 @@ final class EndlessMenuScene: UIScene {
                 refresh()
             } else if canContinue {
                 button = right ? 1 : 0
+                snd.button(name, "L_StartBtn_0\(button)", .select)
                 buttonLayer.play("L_StartBtn_0\(button)/Select", at: tick)
                 refresh()
             }
@@ -242,6 +257,7 @@ final class EndlessMenuScene: UIScene {
                 return
             }
             let resume = button == 1 && canContinue
+            snd.button(name, "L_StartBtn_0\(button)", .decide)
             buttonLayer.play("L_StartBtn_0\(button)/Decide", at: tick)
             started = true
             flow?.endlessHandoff = board
@@ -299,6 +315,7 @@ final class EndlessMapScene: UIScene {
             // in), then the walk to the first dot [inf: order]
             l.play("\(EndlessBoard.map)/Telop", at: mapIn)
             l.play("\(EndlessBoard.map)/StartMario", at: mapIn)
+            at(mapIn) { UISound.shared.anim("Nwk_EndlessModeMenu_00", "Telop", pane: EndlessBoard.map) }
             let walk = mapIn + Int(l.length("\(EndlessBoard.map)/Telop"))
             at(walk) { [weak self] in self?.arrive(at: 0, theme: theme, walkFrom: nil) }
         case .resume:
@@ -314,6 +331,7 @@ final class EndlessMapScene: UIScene {
             let d = b.dot(cleared - 1)
             l.stop("\(d)/Type")
             l.play("\(d)/InClear", at: 30)
+            at(30) { UISound.shared.anim("Nwk_EndlessModeMenu_00", "InClear", pane: EndlessBoard.map) }
             at(30 + Int(l.length("\(d)/InClear")) + 10) { [weak self] in
                 self?.arrive(at: cleared, theme: theme, walkFrom: cleared - 1)
             }
@@ -335,6 +353,7 @@ final class EndlessMapScene: UIScene {
         l.visible(d, nil)
         l.hold("\(d)/Type", 2)
         l.play("\(d)/InPlay", at: t)
+        at(t) { UISound.shared.anim("Nwk_EndlessModeMenu_00", "InPlay", pane: d) }
         let move = "\(EndlessBoard.map)/MoveMario_\(String(format: "%02d", min(i, 31)))"
         if walkFrom != nil || i == 0 {
             l.play("\(EndlessBoard.mario)/Walk", at: t, loop: true)
@@ -353,6 +372,7 @@ final class EndlessMapScene: UIScene {
             guard let self else { return }
             l.stop("\(EndlessBoard.mario)/Walk")
             l.play("\(EndlessBoard.mario)/Select", at: self.tick)
+            UISound.shared.button("Nwk_EndlessModeMenu_00", EndlessBoard.mario, .select)
             self.waiting = true
         }
     }
@@ -367,6 +387,7 @@ final class EndlessMapScene: UIScene {
         if p.contains(.back) {
             // Quit on the map: the run stays saved for Continue
             leaving = true
+            UISound.shared.button("Nwk_EndlessModeMenu_00", "\(EndlessBoard.map)/L_EndBtn_00", .decide)
             board.layout.play("\(EndlessBoard.map)/L_EndBtn_00/Decide", at: tick)
             SceneFade.shared.run(.black) { [weak self] in self?.flow?.backToSelect() }
             return
@@ -376,6 +397,7 @@ final class EndlessMapScene: UIScene {
             leaving = true
             let l = board.layout
             l.play("\(EndlessBoard.mario)/Decide", at: tick)
+            UISound.shared.anim("Nwk_EndlessModeMenu_00", "Decide", pane: EndlessBoard.mario)
             // Mario's jump (Decide, 130 frames), then the fade into the course [inf]
             let jump = Int(l.length("\(EndlessBoard.mario)/Decide"))
             at(tick + max(30, jump - 40)) { [weak self] in

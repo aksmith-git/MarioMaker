@@ -132,9 +132,12 @@ final class TitleScene: UIScene {
             if !pressed.isEmpty { toMain(from: .top) }
         case .main:
             if pressed.contains(.left) || pressed.contains(.right) {
-                selectMain(pressed.contains(.left) ? 0 : 1, animate: true)
+                let i = pressed.contains(.left) ? 0 : 1
+                if i != mainSelection { sound.button(Self.layoutName, Self.mainButtons[i], .select) }
+                selectMain(i, animate: true)
             } else if pressed.contains(.confirm) {
                 let b = Self.mainButtons[mainSelection]
+                sound.button(Self.layoutName, b, .decide)
                 title.play("\(b)/Decide", at: tick)
                 if mainSelection == 0 {
                     busyUntil = tick + Int(title.length("\(b)/Decide"))
@@ -149,6 +152,7 @@ final class TitleScene: UIScene {
                     busyUntil = tick + clap + Int(title.length("DecidePlayBtn"))
                 }
             } else if pressed.contains(.back) {
+                sound.back(Self.layoutName, context: "title")
                 title.stop("PressKey")
                 restart("DecideBackBtnTop", at: tick)
                 state = .top
@@ -157,17 +161,19 @@ final class TitleScene: UIScene {
             }
         case .category:
             let n = Self.categoryButtons.count
-            if pressed.contains(.up) {
-                selectCategory((categorySelection + n - 1) % n, animate: true)
-            } else if pressed.contains(.down) {
-                selectCategory((categorySelection + 1) % n, animate: true)
+            if pressed.contains(.up) || pressed.contains(.down) {
+                let i = (categorySelection + (pressed.contains(.up) ? n - 1 : 1)) % n
+                sound.button(Self.layoutName, Self.soundPane(Self.categoryButtons[i]), .select)
+                selectCategory(i, animate: true)
             } else if pressed.contains(.confirm) {
                 let b = Self.categoryButtons[categorySelection]
+                sound.button(Self.layoutName, Self.soundPane(b), .decide)
                 title.play("\(b)/Decide", at: tick)
                 state = .leaving
                 // the button's flash (frames 0–8 of Decide), then the next screen [inf]
                 pending = (Self.categoryChoices[categorySelection], tick + 24)
             } else if pressed.contains(.back) {
+                sound.back(Self.layoutName, context: "title")
                 mainSelection = 1    // back from the Play menu: the cursor on Play [obs]
                 toMain(from: .category)
             }
@@ -176,8 +182,15 @@ final class TitleScene: UIScene {
         }
     }
 
+    /// The layout's name for its sounds (`UISound`), and the pane whose sound type a button
+    /// uses (the added 100 Mario button sounds like the Coursebot one it copies).
+    static let layoutName = "Play_Title_00"
+    static func soundPane(_ b: String) -> String { b == "L_HundredBtn_00" ? "L_CourseRobotPlayBtn_00" : b }
+    private var sound: UISound { UISound.shared }
+
     private func toMain(from: State) {
         if from == .top {
+            sound.anim(Self.layoutName, "PressKey")
             title.stop("DecideBackBtnTop")
             restart("PressKey", at: tick)
             busyUntil = tick + Int(title.length("PressKey"))
