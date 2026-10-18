@@ -7,7 +7,7 @@
 
 use crate::host::CourseStatus;
 use crate::menu::{Buttons, Script, UiInput};
-use crate::screens::{CardInfo, CourseScreens, Mode, PAUSE_PARTS, SKIP_HOLD};
+use crate::screens::{CardInfo, CourseScreens, Mode, SKIP_HOLD};
 use crate::smm1::{RunCardInfo, RunOverlay, RunOverlayMode};
 use crate::{Cx, DrawItem};
 
@@ -127,6 +127,20 @@ pub struct CoursePlay {
 }
 
 const RESULT_GRACE: u32 = 30;
+
+/// Like (or boo) server course `code` as the signed-in account; false (with a message) when
+/// signed out or without a server.
+fn vote(cx: &mut Cx, code: Option<&str>, like: bool) -> bool {
+    let Some(code) = code else {
+        return false;
+    };
+    if !cx.online.signed_in() {
+        cx.toast("Sign in from the Course World player card to vote.");
+        return false;
+    }
+    let args = serde_json::json!({ "code": code, "like": like });
+    cx.online.call(cx.host, "vote", args).is_some()
+}
 
 impl CoursePlay {
     /// A course just loaded into the engine. With `screens`, the SMM2 layouts (`info`; the card
@@ -485,15 +499,43 @@ impl CoursePlay {
         let t = s.tick;
         match self.phase {
             Phase::Paused => {
-                let n = PAUSE_PARTS.len();
+                // top to bottom: close, (a server course) the judge row, Start Over, Exit,
+                // Settings; left / right between Boo and Like [inf]
+                let judge = s.pause_buttons() > 4;
+                let order: &[usize] = if judge {
+                    &[0, 5, 1, 2, 3]
+                } else {
+                    &[0, 1, 2, 3]
+                };
+                let n = order.len();
+                let row = if s.pause_selection == 4 {
+                    5
+                } else {
+                    s.pause_selection
+                };
+                let at = order.iter().position(|&k| k == row).unwrap_or(0);
                 if pressed.has(Buttons::UP) {
-                    s.pause_select((s.pause_selection + n - 1) % n, true);
+                    s.pause_select(order[(at + n - 1) % n], true);
                 }
                 if pressed.has(Buttons::DOWN) {
-                    s.pause_select((s.pause_selection + 1) % n, true);
+                    s.pause_select(order[(at + 1) % n], true);
+                }
+                if judge && s.pause_selection >= 4 {
+                    if pressed.has(Buttons::LEFT) {
+                        s.pause_select(4, true);
+                    }
+                    if pressed.has(Buttons::RIGHT) {
+                        s.pause_select(5, true);
+                    }
                 }
                 if pressed.has(Buttons::BACK) {
                     self.resume();
+                } else if pressed.has(Buttons::CONFIRM) && s.pause_selection >= 4 {
+                    let like = s.pause_selection == 5;
+                    s.pause_decide_sound(s.pause_selection);
+                    if vote(cx, s.info.server_code.as_deref(), like) {
+                        s.pause_voted(like);
+                    }
                 } else if pressed.has(Buttons::CONFIRM) {
                     // a run's exit is Save & Quit
                     let exit = if run.is_none() {
@@ -554,12 +596,23 @@ impl CoursePlay {
                     return None;
                 }
                 if pressed.has(Buttons::LEFT) {
-                    s.clear_select(0, true);
+                    let n = s.clear_neighbour(s.clear_selection, false);
+                    s.clear_select(n, true);
                 }
                 if pressed.has(Buttons::RIGHT) {
-                    s.clear_select(1, true);
+                    let n = s.clear_neighbour(s.clear_selection, true);
+                    s.clear_select(n, true);
                 }
                 if pressed.has(Buttons::CONFIRM) {
+                    if s.clear_selection >= 2 {
+                        // Like / Boo a server course (an account's vote replaces its last one)
+                        let like = s.clear_selection == 3;
+                        s.ui_decide_sound(s.clear_selection);
+                        if vote(cx, s.info.server_code.as_deref(), like) {
+                            s.clear_voted(like);
+                        }
+                        return None;
+                    }
                     let left = s.clear_selection == 0;
                     let wait = s.clear_decide();
                     self.pending = Some((t + wait.max(1), Pending::Clear { left }));
@@ -1010,11 +1063,21 @@ pub(crate) mod tests {
         pub restarts: u32,
         pub values: HashMap<String, String>,
         pub paused: bool,
+        /// A server is configured (`online` accepts calls).
+        pub server: bool,
+        /// Calls started: (id, action, args, token).
+        pub calls: Vec<(u32, String, serde_json::Value, Option<String>)>,
+        /// Answers `poll_online` hands out, first first.
+        pub answers: Vec<(u32, Result<serde_json::Value, String>)>,
+        pub affects_play: bool,
+        pub loaded: Vec<Source>,
+        pub reports: Vec<(String, String)>,
+        pub library: Vec<CourseEntry>,
     }
 
     impl Host for MockHost {
         fn library(&mut self) -> Vec<CourseEntry> {
-            Vec::new()
+            self.library.clone()
         }
         fn request_server_courses(&mut self) -> bool {
             false
@@ -1022,7 +1085,8 @@ pub(crate) mod tests {
         fn poll_server_courses(&mut self) -> Option<Vec<WorldCourse>> {
             None
         }
-        fn load_course(&mut self, _: &Source) -> Result<LoadedCourse, String> {
+        fn load_course(&mut self, s: &Source) -> Result<LoadedCourse, String> {
+            self.loaded.push(s.clone());
             Ok(LoadedCourse::default())
         }
         fn title_courses(&mut self) -> usize {
@@ -1045,6 +1109,28 @@ pub(crate) mod tests {
         fn set_run_counters(&mut self, _: u32, _: u32, _: u32) {}
         fn set_paused(&mut self, p: bool) {
             self.paused = p;
+        }
+        fn report(&mut self, code: &str, what: &str) {
+            self.reports.push((code.into(), what.into()));
+        }
+        fn online(
+            &mut self,
+            id: u32,
+            action: &str,
+            args: &serde_json::Value,
+            token: Option<&str>,
+        ) -> bool {
+            if self.server {
+                self.calls
+                    .push((id, action.into(), args.clone(), token.map(str::to_string)));
+            }
+            self.server
+        }
+        fn poll_online(&mut self) -> Option<(u32, Result<serde_json::Value, String>)> {
+            (!self.answers.is_empty()).then(|| self.answers.remove(0))
+        }
+        fn play_options_affect_play(&self) -> bool {
+            self.affects_play
         }
         fn load_value(&mut self, key: &str) -> Option<String> {
             self.values.get(key).cloned()
@@ -1069,11 +1155,23 @@ pub(crate) mod tests {
 
     /// Run `f` with a context over `host` and `saves`.
     pub fn with<R>(host: &mut MockHost, saves: &mut Saves, f: impl FnOnce(&mut Cx) -> R) -> R {
+        let mut online = crate::online::Online::default();
+        with_online(host, saves, &mut online, f)
+    }
+
+    /// Run `f` with a context over `host`, `saves` and the account state `online`.
+    pub fn with_online<R>(
+        host: &mut MockHost,
+        saves: &mut Saves,
+        online: &mut crate::online::Online,
+        f: impl FnOnce(&mut Cx) -> R,
+    ) -> R {
         let mut fade = crate::fade::SceneFade::new(None);
         let (mut pending, mut now, mut toast) = (None, Vec::new(), None);
         let mut cx = Cx {
             host,
             saves,
+            online,
             fade: &mut fade,
             pending: &mut pending,
             now: &mut now,

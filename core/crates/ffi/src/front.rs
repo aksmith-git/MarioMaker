@@ -85,7 +85,7 @@ pub const MMK_FRONT_INSTANT_FADES: u32 = 2;
 /// 100 Mario with SMM1's layouts.
 pub const MMK_FRONT_HUNDRED_SMM1: u32 = 4;
 
-/// One tick's input (`MmkFrontInput`, 20 bytes).
+/// One tick's input (`MmkFrontInput`, 24 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MmkFrontInput {
@@ -98,6 +98,9 @@ pub struct MmkFrontInput {
     /// The click, layout units (1280 × 720 view, origin centre, y up).
     pub click_x: f32,
     pub click_y: f32,
+    /// A key typed this tick while a text field is open (`MMK_FRONT_TYPING`): a Unicode scalar,
+    /// 8 erases, 10 finishes, 27 cancels; 0 none (one per tick).
+    pub text: u32,
 }
 
 /// One thing to draw, back to front (`MmkFrontItem`, 32 bytes).
@@ -144,6 +147,8 @@ pub const MMK_FRONT_COURSE_DONE: u32 = 2;
 pub const MMK_FRONT_PLAYING: u32 = 4;
 /// No screen (the import lacks the title's layouts).
 pub const MMK_FRONT_NO_SCREEN: u32 = 8;
+/// A text field is open: send typed keys (`MmkFrontInput::text`), keep letters off the menus.
+pub const MMK_FRONT_TYPING: u32 = 16;
 
 /// The front end behind `mmk_front_*`.
 pub struct MmkFront {
@@ -785,15 +790,13 @@ pub unsafe extern "C" fn mmk_front_set_server(front: *mut MmkFront, server: *con
     })
 }
 
-// (`..Default` keeps fields the C input does not carry yet)
-#[allow(clippy::needless_update)]
 fn front_input(i: &MmkFrontInput) -> FrontInput {
     FrontInput {
         menu: Buttons((i.menu & 0x3f) as u8),
         start: i.flags & 1 != 0,
         skip: i.flags & 2 != 0,
         click: (i.flags & 4 != 0).then_some([i.click_x, i.click_y]),
-        ..Default::default()
+        text: char::from_u32(i.text).filter(|&c| c != '\0'),
     }
 }
 
@@ -951,6 +954,9 @@ pub unsafe extern "C" fn mmk_front_status(front: *const MmkFront, out: *mut MmkF
         }
         if matches!(f.front.screen, mmk_front::Screen::None) {
             flags |= MMK_FRONT_NO_SCREEN;
+        }
+        if f.front.typing() {
+            flags |= MMK_FRONT_TYPING;
         }
         *out = MmkFrontStatus {
             flags,
@@ -1195,7 +1201,7 @@ mod tests {
     /// Sizes the Swift side relies on (mmk.h).
     #[test]
     fn layout_matches_header() {
-        assert_eq!(size_of::<MmkFrontInput>(), 20);
+        assert_eq!(size_of::<MmkFrontInput>(), 24);
         assert_eq!(size_of::<MmkFrontItem>(), 32);
         assert_eq!(size_of::<MmkFrontSound>(), 16);
         assert_eq!(size_of::<MmkFrontStatus>(), 16);
@@ -1286,6 +1292,107 @@ mod tests {
             crate::mmk_engine_free(e);
             crate::mmk_assets_free(a);
         }
+    }
+
+    /// The Apple app's host against a live course server: download and play a server course,
+    /// clear it, send the run's replay as a signed-in account (a verified record), vote and
+    /// comment through `Host::online`.
+    #[test]
+    fn host_plays_a_server_course_and_proves_the_clear() {
+        let dir = std::env::temp_dir().join(format!("mmk-ffi-front-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = mmk_server::Store::open(dir.join("server"))
+            .unwrap()
+            .with_verified_records(true);
+        let port = 20000 + (std::process::id() % 20000) as u16 + 7;
+        let addr = format!("127.0.0.1:{port}");
+        let a2 = addr.clone();
+        std::thread::spawn(move || mmk_server::serve(store, &a2));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let server = format!("http://{addr}");
+        // a flat course the run-right-and-jump script clears
+        let mut ed = mmk_editor::Editor::new("M1");
+        for tx in 0..ed.size().0 {
+            let _ = ed.paint_ground(tx, 0);
+        }
+        let data = ed.save().unwrap();
+        let client = mmk_online::Client::new(server.clone());
+        let (_, token) = client.register("Ada").unwrap();
+        let code = client.upload(&data, "Ada").unwrap().code;
+
+        unsafe {
+            let a = crate::mmk_assets_placeholder();
+            let e = crate::mmk_engine_new(a);
+            let (online_tx, online_rx) = channel();
+            let mut h = FfiHost {
+                engine: e,
+                assets: a,
+                audio: std::ptr::null(),
+                cb: MmkFrontHost {
+                    user: std::ptr::null_mut(),
+                    load_value: None,
+                    store_value: None,
+                    set_paused: None,
+                },
+                ui_dir: PathBuf::new(),
+                library: Vec::new(),
+                server: Some(server),
+                downloads: Some(dir.join("downloads")),
+                input: 0,
+                title: None,
+                servers: None,
+                online_tx,
+                online_rx,
+                rng: 1,
+                recording: false,
+                replay: mmk_modes::replay::Replay::new(),
+                cleared_replay: None,
+            };
+            assert!(h.request_server_courses());
+            let answer = |h: &mut FfiHost| {
+                for _ in 0..500 {
+                    if let Some(a) = h.poll_online() {
+                        return a;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                panic!("no answer");
+            };
+            h.load_course(&Source::Server(code.clone())).unwrap();
+            let mut ticks = 0;
+            while !h.course_status().cleared && ticks < 20_000 {
+                h.input = scripted_run(h.engine_ref().world.tick);
+                h.step_course(None);
+                ticks += 1;
+            }
+            assert!(h.course_status().cleared);
+            h.cleared(ticks);
+            let args = json!({"code": code});
+            assert!(h.online(1, "submit_replay", &args, Some(&token)));
+            let (id, r) = answer(&mut h);
+            let l = r.unwrap();
+            assert_eq!(id, 1);
+            assert_eq!(l["record_verified"], true);
+            assert!(l["record_ms"].as_u64().unwrap() > 0);
+            assert!(h.online(
+                2,
+                "vote",
+                &json!({"code": code, "like": true}),
+                Some(&token)
+            ));
+            assert_eq!(answer(&mut h).1.unwrap()["likes"], 1);
+            let c = json!({"code": code, "text": "nice"});
+            assert!(h.online(3, "comment", &c, Some(&token)));
+            answer(&mut h).1.unwrap();
+            assert!(h.online(4, "comments", &args, None));
+            assert_eq!(answer(&mut h).1.unwrap()[0]["text"], "nice");
+            // nothing cleared since: no replay to send
+            assert!(h.online(5, "submit_replay", &args, Some(&token)));
+            assert!(answer(&mut h).1.is_err());
+            crate::mmk_engine_free(e);
+            crate::mmk_assets_free(a);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

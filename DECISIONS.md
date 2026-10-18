@@ -40,6 +40,60 @@ everywhere"); the Swift copies had started to drift from the Rust port.
 **Would change:** a ghost in the Apple app needs the engine snapshot to draw a second world (the
 `ghost` online action answers "not shown in this app yet"); Settings screens in layouts.
 
+## 2026-10-18 — Course World online in the Rust front end: SMM2's own screens over our server
+**Decision:** `mmk-front` gets the Course World online features against the open-source server,
+each on the game's own layout where it has one:
+- **Account:** the hub's player card (`L_PlayerBody_00`) opens `Nwk_PlayerInfo_00` over the hub
+  (its InPlayerInfo / In). The game's face / name / outfit buttons become ours: "Create
+  account" (type a name, `register`), "Sign in with a token" (type an existing account's token,
+  checked with `me`), "Sign out" [departure: no Miis or Nintendo accounts]. The token and the
+  name / maker ID are kept with `Host::store_value` (`online.token`, `online.account`); the card
+  shows the name [inf].
+- **Course page:** "More info" on an open server course row opens `Nwk_CourseListWindow_00` in
+  its course mode (Type 2, contents `Nwk_CourseDetail_00`) over the list: likes, plays, the first
+  clearer and the record holder with the time (names fetched with `maker`), refreshed with
+  `info`. The maker's Mii button opens their profile (the window's maker mode, Type 0, with their
+  uploaded courses as course rows); the first clearer's button opens theirs; the record holder's
+  races the record's ghost (`ghost`, then the course) [inf: the game opens the holder's profile;
+  ghosts are ours]. The "Cleared by / Liked by" column shows the layout's "no one yet"
+  [departure: the server keeps no player lists].
+- **Likes / boos** where SMM2 has them: the judge buttons (`Cmn_GoodBtn_00` /
+  `Cmn_NegativeBtn_00`) on a server course's clear screen and in its pause menu (Type 2, the
+  judge row between the close button and Start Over; ←/→ between Boo and Like [inf]); the voted
+  one keeps the end of its Decide on both screens [inf].
+- **Comments:** "View comments" opens `Nwk_CommentViewer_00` (text comments, left and right in
+  turn, name and date; absolute dates because the host gives no clock for "n hours ago" [inf]);
+  confirm opens `Nwk_CommentPosting_00` in its text form to type one (signed in) [inf: the game
+  posts from the pause / clear screens].
+- **Leaderboards:** the hub's Leaderboards button opens `Nwk_CourseListMaker_00`: Course Makers =
+  `maker_points`; Players = clears, first clears, world records, Endless Easy / Normal / Expert /
+  Super Expert (the sort button's TypeClearCourse categories, cycled by it [inf: the game opens a
+  sort window]); ←/→ step through all eight; rows `Nwk_MakerData_00` (rank, name, score under its
+  label; own row TypeOwn); confirm opens the maker's profile. Versus, followed, friends and
+  official makers are hidden [departure].
+- **Clears:** signed in, a server course's clear is sent as its replay (`submit_replay`: the host
+  records every server course from its start and hands over the cleared run), the server
+  re-simulating it; refused, a plain `clear` with the time follows; with play options that change
+  play (`Host::play_options_affect_play`) the clear goes without a time and no replay [inf].
+  Signed out: the anonymous clear report as before. 100 Mario in SMM2's presentation reports the
+  run's courses cleared after each clear (`endless`; the server keeps the best) [inf: as the run
+  grows, so a run that ends any way counts].
+- **Input:** `FrontInput::text` (one typed key per tick: a character, '\u{8}' erase, '\n' done,
+  '\u{1b}' cancel) with `Front::typing()` telling the host when a field is open; `mmk-play`
+  then routes the keyboard there (`FrontApp::key_text`). Clicks select-and-decide on every new
+  screen, the course list, the Endless menu / map and the SMM1 100 Mario screens.
+- Messages shown by these screens come from the layouts' message tables at run time; our own
+  lines (button labels on the player info, toasts, "No comments yet.") are ours. Empty-list texts
+  go in the loading part's waiting line: its no-data text uses an outlined font style the layer
+  doesn't draw yet.
+**Why:** the owner's Phase 10 (accounts, likes, comments, leaderboards, records and ghosts)
+reachable from SMM2's own Course World on every platform, the server staying ours.
+**Open / would change it:** the pause / clear screens' comment buttons; the server timing a
+replay to the end of the clear (`Replay::run` stops at `World::cleared`) while the clear screen
+shows the goal time, so the record shown differs from the clear screen's time; a Course Maker in
+the front end (upload); thumbnails, Miis and per-player lists if the server gains them; the
+game's sort window, its relative comment times with a host clock.
+
 ## 2026-10-18 — SMM2 2.0/3.0 parts: own modules, behaviour from v3.0.3, test courses from the editor
 **Decision:** the 2.0/3.0 enemies, blocks and gizmos (Spike, Pokey, P Block, Dash Block,
 Mechakoopa, ON/OFF Trampoline, the Koopalings) live in `actors/v3.rs`, `actors/koopalings.rs`,

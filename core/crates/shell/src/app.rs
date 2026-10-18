@@ -601,6 +601,14 @@ impl ApplicationHandler<UserEvent> for App {
                     if matches!(code, KeyCode::ShiftLeft | KeyCode::ShiftRight) {
                         self.shift = pressed;
                     }
+                    // a text field of the front end takes the keys as typed text
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if pressed
+                        && let Some(f) = &mut self.front
+                        && f.key_text(code, event.text.as_deref())
+                    {
+                        return;
+                    }
                     if pressed && self.maker_key(code) {
                         return;
                     }

@@ -27,6 +27,10 @@ pub struct Listing {
     /// The record was proven by a replay the server re-simulated.
     pub record_verified: bool,
     pub first_clear: String,
+    /// The course's description, upload time (seconds since 1970) and attempts.
+    pub description: String,
+    pub uploaded: u64,
+    pub attempts: u64,
 }
 
 impl Listing {
@@ -49,6 +53,9 @@ impl Listing {
             record_holder: s("record_holder"),
             record_verified: v["record_verified"].as_bool().unwrap_or(false),
             first_clear: s("first_clear"),
+            description: s("description"),
+            uploaded: n("uploaded"),
+            attempts: n("attempts"),
         })
     }
 }
@@ -348,7 +355,8 @@ pub fn listing_json(l: &Listing) -> Value {
         "plays": l.plays, "clears": l.clears, "likes": l.likes, "difficulty": l.difficulty,
         "boos": l.boos, "maker_id": l.maker_id, "record_ms": l.record_ms,
         "record_holder": l.record_holder, "record_verified": l.record_verified,
-        "first_clear": l.first_clear,
+        "first_clear": l.first_clear, "description": l.description, "uploaded": l.uploaded,
+        "attempts": l.attempts,
     })
 }
 

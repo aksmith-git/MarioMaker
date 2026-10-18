@@ -71,7 +71,7 @@ enum DebugCapture {
                     : env["MMK_UI_INTRO"] == "0" ? "course-play" : "course-intro"
                 s.debugCourse(name)
                 if let t = freezeTicks { s.runAndFreeze(t, courseScreen: name != "course-play") }
-            } else if screen.hasPrefix("challenge") || screen.hasPrefix("courseworld") || screen == "storymode" {
+            } else if screen.hasPrefix("challenge") || screen.hasPrefix("courseworld") || screen == "storymode" || screen == "account" {
                 // over the library: after its scan
                 afterScan(model) {
                     s.setLibrary(model.library.entries)

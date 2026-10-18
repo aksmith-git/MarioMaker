@@ -76,6 +76,9 @@ final class GameSession: ObservableObject, Identifiable {
     private(set) var showsCourse = true
     /// A course is being played (not the title's demo, not a menu).
     @Published private(set) var playingCourse = false
+    /// A text field of the front end is open (an account name, a comment): macOS types into it
+    /// from the keyboard, iOS asks with a text field.
+    @Published private(set) var typing = false
     private var items: [MmkFrontItem] = []
     private var layers: [UInt32: UILayer] = [:]
     private var click: SIMD2<Float>?
@@ -183,7 +186,10 @@ final class GameSession: ObservableObject, Identifiable {
 
     deinit {
         if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
-        if let front { mmk_front_free(front) }
+        if let front {
+            mmk_front_free(front)
+            InputState.typing = false
+        }
         mmk_engine_set_audio(engine, nil)
         audio = nil
         mmk_engine_free(engine)
@@ -274,6 +280,7 @@ final class GameSession: ObservableObject, Identifiable {
             pausePending = false
             i.flags |= 1
         }
+        if !InputState.typed.isEmpty { i.text = InputState.typed.removeFirst() }
         if first, let c = click {
             click = nil
             i.flags |= 4
@@ -305,6 +312,12 @@ final class GameSession: ObservableObject, Identifiable {
         if text != toast { toast = text }
         var st = MmkFrontStatus()
         mmk_front_status(front, &st)
+        let typingNow = st.flags & UInt32(MMK_FRONT_TYPING) != 0
+        if typingNow != typing {
+            typing = typingNow
+            InputState.typing = typingNow
+            if !typingNow { InputState.typed.removeAll() }
+        }
         let playing = st.flags & UInt32(MMK_FRONT_PLAYING) != 0
         if playing != playingCourse { playingCourse = playing }
         if st.flags & UInt32(MMK_FRONT_COURSE_DONE) != 0 && !reportedDone {
@@ -610,7 +623,24 @@ struct GameView: View {
             }
             .animation(.easeInOut(duration: 0.2), value: session.toast)
         }
+        #if os(iOS)
+        // no keyboard to type into the front end's text fields: ask with a text field
+        .alert("Enter text", isPresented: Binding(get: { session.typing }, set: { _ in })) {
+            TextField("", text: $typed)
+            Button("OK") { send(typed, finish: 10) }
+            Button("Cancel", role: .cancel) { send("", finish: 27) }
+        }
+        #endif
     }
+
+    #if os(iOS)
+    @State private var typed = ""
+
+    private func send(_ text: String, finish: UInt32) {
+        InputState.typed += text.unicodeScalars.map(\.value) + [finish]
+        typed = ""
+    }
+    #endif
 
     private var clearDetail: String {
         guard let t = session.clearTicks else { return "" }

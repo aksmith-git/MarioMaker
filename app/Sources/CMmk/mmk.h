@@ -333,7 +333,9 @@ typedef struct {
     uint32_t buttons;           // engine buttons (MMK_BTN_*) for the course
     uint32_t flags;             // bit 0 pause held, bit 1 skip held, bit 2 click this tick
     float click_x, click_y;     // layout units (1280x720 view, origin centre, y up)
-} MmkFrontInput;                                                       // 20 bytes
+    uint32_t text;              // typed key while MMK_FRONT_TYPING: a Unicode scalar, 8 erase,
+                                // 10 finish, 27 cancel, 0 none (one per tick)
+} MmkFrontInput;                                                       // 24 bytes
 
 typedef struct {
     uint32_t kind;              // 0 layout quads, 1 the course view (the whole 16:9 view)
@@ -349,9 +351,10 @@ typedef struct {
     float delay;                // frames
 } MmkFrontSound;                                                       // 16 bytes
 
-enum { MMK_FRONT_COURSE_SHOWN = 1, MMK_FRONT_COURSE_DONE = 2, MMK_FRONT_PLAYING = 4, MMK_FRONT_NO_SCREEN = 8 };
+enum { MMK_FRONT_COURSE_SHOWN = 1, MMK_FRONT_COURSE_DONE = 2, MMK_FRONT_PLAYING = 4, MMK_FRONT_NO_SCREEN = 8,
+       MMK_FRONT_TYPING = 16 };
 typedef struct {
-    uint32_t flags;             // MMK_FRONT_COURSE_SHOWN | _COURSE_DONE | _PLAYING | _NO_SCREEN
+    uint32_t flags;             // MMK_FRONT_COURSE_SHOWN | _COURSE_DONE | _PLAYING | _NO_SCREEN | _TYPING
     uint32_t _pad;
     uint64_t engine_tick;
 } MmkFrontStatus;                                                      // 16 bytes
