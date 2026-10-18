@@ -888,6 +888,8 @@ static inline bool ss_need(uint32_t bit, bool same) {
     return true;
 }
 
+static NvnTexture *g_pass_color[8];  // the current pass's colour targets (debug pass images)
+static int g_pass_ncolor;
 static void vk_end_pass_at(int line);
 void vk_end_pass(void) { vk_end_pass_at(0); }
 #define vk_end_pass() vk_end_pass_at(__LINE__)
@@ -896,6 +898,25 @@ static void vk_end_pass_at(int line) {
     if (prof && line < 4096) prof_end_line[line]++;
     vkCmdEndRendering(vk_cmd());
     in_pass = false;
+    {   // LARECOMP_DEBUG_PROBE=<x>,<y>: the debug frame's passes log each colour target's texel there (raw bytes)
+        static int px = -2, py;
+        if (px == -2) { const char *e = getenv("LARECOMP_DEBUG_PROBE"); px = -1; if (e) sscanf(e, "%d,%d", &px, &py); }
+        if (g_debug_frame && px >= 0)
+            for (int i = 0; i < g_pass_ncolor; i++) {
+                TexBackend *b = g_pass_color[i] ? (TexBackend *)g_pass_color[i]->backend : NULL;
+                if (!b || !b->image || (uint32_t)px >= b->width || (uint32_t)py >= b->height) continue;
+                VkSpan out = vk_readback(64);
+                VkBufferImageCopy c = {.bufferOffset = out.off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                       .imageOffset = {px, py, 0}, .imageExtent = {1, 1, 1}};
+                VkCommandBuffer cb = vk_cmd();
+                vk_full_barrier(cb);
+                vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
+                renderer_flush();
+                const uint8_t *q = (const uint8_t *)out.ptr + out.off;
+                LOG("[probe] pass %d target %d (%p fmt %d) at %d,%d: %02x%02x%02x%02x %02x%02x%02x%02x\n", debug_pass_no, i,
+                    (void *)g_pass_color[i], b->format, px, py, q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7]);
+            }
+    }
     static int no_pass_png = -1;  // LARECOMP_DEBUG_NO_PASSES=1: the debug frame's log without its pass images
     if (no_pass_png < 0) no_pass_png = getenv("LARECOMP_DEBUG_NO_PASSES") != NULL;
     if (g_debug_frame && !no_pass_png && st.rt.ncolor && st.rt.color[0] && st.rt.color[0]->backend) {
@@ -906,7 +927,18 @@ static void vk_end_pass_at(int line) {
         if (multi && renderer_present_count() != debug_pass_frame) { debug_pass_frame = renderer_present_count(); debug_pass_no = 0; }
         if (multi) snprintf(path, sizeof path, "build/pass_%llu_%03d.png", (unsigned long long)debug_pass_frame, debug_pass_no++);
         else snprintf(path, sizeof path, "build/pass_%03d.png", debug_pass_no++);
-        renderer_save_texture_tex(st.rt.color[0]->backend, path);
+        // LARECOMP_DEBUG_PASS_NCOLOR=<n>: only passes with n colour targets, every target saved (pass_NNN_c<i>.png)
+        static int want_n = -2;
+        if (want_n == -2) want_n = getenv("LARECOMP_DEBUG_PASS_NCOLOR") ? atoi(getenv("LARECOMP_DEBUG_PASS_NCOLOR")) : -1;
+        // (the pass's own targets: st.rt may already name the next pass's when it ends this one)
+        if (want_n < 0) renderer_save_texture_tex(g_pass_color[0] && g_pass_color[0]->backend ? g_pass_color[0]->backend : st.rt.color[0]->backend, path);
+        else if (g_pass_ncolor == want_n)
+            for (int i = 0; i < g_pass_ncolor; i++) {
+                if (!g_pass_color[i] || !g_pass_color[i]->backend) continue;
+                char p2[300];
+                snprintf(p2, sizeof p2, "%.*s_c%d.png", (int)strlen(path) - 4, path, i);
+                renderer_save_texture_tex(g_pass_color[i]->backend, p2);
+            }
     }
 }
 
@@ -933,6 +965,8 @@ static void begin_pass(void) {
     uint32_t w = 0, minw = UINT32_MAX, minh = UINT32_MAX;  // w: first attachment seen
     pass_ncolor = (uint32_t)st.rt.ncolor;
     pass_samples = 1;
+    g_pass_ncolor = st.rt.ncolor;
+    memcpy(g_pass_color, st.rt.color, sizeof g_pass_color);
     for (int i = 0; i < st.rt.ncolor; i++) {
         NvnTexture *t = st.rt.color[i];
         ca[i] = (VkRenderingAttachmentInfo){.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
@@ -3089,7 +3123,7 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
         (unsigned long long)(indexed ? r->x[6] : r->x[4]), (unsigned long long)r->x[0], (unsigned long long)r->x[2],
         (unsigned long long)st.program->stages[0].code_addr, (unsigned long long)st.program->stages[1].code_addr,
         pr->vi->cbuf_mask, pr->fi->cbuf_mask, st.rt.ncolor);
-    for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) LOG(" %ux%u/f%#x", st.rt.color[i]->width, st.rt.color[i]->height, st.rt.color[i]->format);
+    for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) LOG(" %ux%u/f%#x[%p b%p lv%u %llx]", st.rt.color[i]->width, st.rt.color[i]->height, st.rt.color[i]->format, (void *)st.rt.color[i], st.rt.color[i]->backend, st.rt.color[i]->levels, (unsigned long long)st.rt.color[i]->addr);
     if (st.rt.depth) LOG(" d%#x %p", st.rt.depth->format, (void *)st.rt.depth);
     LOG(" | vp %.0f %.0f %.0f %.0f | attrs %#x blend %#x ds %02x%02x%02x poly %02x%02x chmask %08x\n", st.viewport[0][0], st.viewport[0][1],
         st.viewport[0][2], st.viewport[0][3], pr->vi->attr_mask, st.color_state[0], st.ds[0], st.ds[1], st.ds[2], st.poly[0], st.poly[1],

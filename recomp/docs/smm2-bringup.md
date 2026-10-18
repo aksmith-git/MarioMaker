@@ -162,8 +162,17 @@ generated C needs no changes: arm64 shares `generated/smm2` with macOS, and x86-
 - Its frames match Metal's except for one thing: the Mario model is missing in the 3D World title course.
   - His draws are issued, with the same programs, vertex counts and textures as on Metal.
   - His texture is uploaded and the material alpha uniform is 1.
-  - The cause is open. Candidates: the fragment shader's alpha-test discard on the BC1 albedo, or the skinned vertex
-    path with 4 bone indices.
+  - The translated GLSL matches the MSL statement for statement (Metal's `LARECOMP_SAVE_GLSL=1` writes both). The
+    signed LDC offsets and the bone-matrix reads are the same code.
+  - [obs] He *is* drawn. In a pass with two targets he is drawn into a character layer (1600x900 RG11B10F): pass
+    images (`LARECOMP_DEBUG_PASS_NCOLOR=2`) show him there.
+  - The scene's composite shader then copies him into the scene where target 1 (RG16F) is not exactly 1.0. It
+    discards wherever that target reads 1.0, its cleared value.
+  - [obs] A texel probe (`LARECOMP_DEBUG_PROBE=310,555`) reads target 1 as 1.0 (0x3c00) at Mario's pixels after his
+    pass. His fragment shader's second output never lands there.
+  - So the composite discards him. Not the cause: copy aliases (`LARECOMP_VK_COPY_OPT=0`) and storage aliases
+    (`RECOMP_NO_TEX_ALIAS=1`).
+  - Next: that target's write mask, attachment or clear order in the two-target pass.
 - Comparing captures needs care with colour:
   - Vulkan read-backs are raw sRGB; the Ryujinx references are window-server grabs.
   - Raw against grab is about 23 % of pixels apart on colour alone, for Metal too.

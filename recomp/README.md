@@ -107,6 +107,48 @@ The folder with `extracted/` is the data folder (saves, settings, shader caches)
 `~/.local/share/smm2recomp`. Audio needs a running PulseAudio / PipeWire / ALSA device (without one the game runs
 silent).
 
+## Building (iOS / iPadOS)
+
+iOS runs no code it didn't ship with, and there is no compiler on the device, so the game code is built on the Mac
+from your own dump and linked into the app. The app is then signed and installed on your device. The app is made from your dump: it is
+for your own devices only, never to be shared. Metal renderer as on macOS (shaders still translated and compiled at
+run time: `newLibraryWithSource` is allowed), SDL3 built for iOS as a static library, the same arm64 game code as
+macOS (`generated/smm2`).
+
+    # SDL3 for iOS, once: cmake -S SDL3-<ver> -B b -G Ninja -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
+    #   -DCMAKE_OSX_ARCHITECTURES=arm64 -DSDL_SHARED=OFF -DSDL_STATIC=ON -DCMAKE_INSTALL_PREFIX=<deps>/ios-device
+    #   (and iphonesimulator -> <deps>/ios-sim); then cmake --build b && cmake --install b
+    make -C recomp TARGET=ios-arm64 GAME=smm2 DEPS=<deps>/ios-device app        # build/smm2-ios-arm64/SMM2Recomp.app
+    make -C recomp TARGET=iossim-arm64 GAME=smm2 DEPS=<deps>/ios-sim app        # the Simulator (ad-hoc signed)
+
+Signing: `RECOMP_IOS_IDENTITY=<codesigning identity> RECOMP_IOS_PROFILE=<.mobileprovision>` (and
+`RECOMP_IOS_BUNDLE_ID`, default `org.smcraft.smm2recomp`). The guest's memory window sits at 0x7000000000-0x7320000000,
+far above iOS's default address space, and the game uses 3+ GB: the profile must carry
+`com.apple.developer.kernel.extended-virtual-addressing` and `com.apple.developer.kernel.increased-memory-limit`.
+That means an explicit App ID with both capabilities. A wildcard profile lacks them, and the app then stops at start
+with a message. Install over Tailscale with `~/.claude/tools/ios-install-tailscale/ios-install-tailscale <app> --device ipad`,
+or locally with Xcode / `xcrun devicectl device install app`.
+
+Game files go in the app's **Documents** folder (Finder's file sharing for the device, or the Files app):
+`extracted/` (exefs + romfs, laid out by `games/smm2/setup.py` on the Mac), `fonts/` and `sysdata/` (sysdata.py), and
+optionally a `save/` to carry over. The log is `Documents/smm2recomp.log`.
+- **Simulator:** copy them into the app's container, `xcrun simctl get_app_container <device> org.smcraft.smm2recomp data`.
+  macOS privacy blocks links from there into `~/Documents` or external disks.
+
+Input:
+- Touches are the console's touch screen (`nn::hid::GetTouchScreenState`).
+- Game controllers go through SDL (GameController), and an attached keyboard as on the desktop.
+- On the desktop, the left mouse button is a finger on the touch screen (`RECOMP_NO_MOUSE_TOUCH=1` turns it off).
+
+GPUs without BC textures (the Simulator, older iPhones) get BC1-7 decoded on the CPU at upload (`runtime/nvn/bcsoft.c`,
+bcdec: MIT).
+
+The Simulator's Metal is more limited than the devices':
+- It allows at most 32 bytes of colour targets per pass and has no cube arrays.
+- There, colour targets past that budget are dropped and cube-array lookups read zero, so its frames show wrong
+  lighting.
+- iPads with M-series chips have neither limit.
+
 ## Running
 
 Keyboard (LAS Recomp's defaults, remappable in the overlay's Controls tab): WASD left stick, arrows d-pad,
@@ -129,6 +171,9 @@ Added for SMM2:
 | `RECOMP_USER_NAME=<name>` | the account nickname (default "Player") |
 | `LARECOMP_DEBUG_FRAME=<n>` | log every draw of frame n and save each render pass to `build/pass_NNN.png`; `LARECOMP_DEBUG_EACH_DRAW=1` saves the target after every draw (Metal); `LARECOMP_DEBUG_NO_PASSES=1` logs without the images (on Vulkan skipped draws log their reason) |
 | `LARECOMP_TRACE_CALLS=<n>` | log the first n command-buffer recording / call / submit / render-target / clear calls with their guest return address |
+| `RECOMP_NO_MOUSE_TOUCH=1` | the left mouse button no longer touches the console's touch screen (desktop) |
+| `LARECOMP_HOST_INPUT="<frame>:tap:<x>/<y>:<frames>"` | (tests) a finger on the touch screen at game pixel x, y (1280x720) for that many frames |
+| `RECOMP_BC_SOFT=1` | (Metal) decode BC textures on the CPU, as on GPUs without BC support |
 | `RECOMP_NO_CORES=1` | run guest threads without per-core exclusivity (LAS's behaviour; SMM2 races then) |
 | `SMM2_SEED_ALL=1` | with `SMM2_SEED`: every later `sead::Random` gets the same seed too (what the Ryujinx trace build's seed patch does; replays with enemies) |
 | `RECOMP_PAD_SCRIPT=<file>` | play an input script instead of the keyboard / controllers (which are left out meanwhile): `N BUTTONS` per line, the Ryujinx trace tooling's format (A B X Y L R ZL ZR PLUS MINUS UP DOWN LEFT RIGHT LSTICK RSTICK, and JUMP=A RUN=Y SPIN=ZR; `-` = nothing) |

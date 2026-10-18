@@ -9,6 +9,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -93,6 +96,11 @@ void rt_paths_init(void) {
     else {
 #ifdef _WIN32
         snprintf(root, sizeof root, "%s", g_exe_dir);
+#elif TARGET_OS_IPHONE
+        // iOS / iPadOS: the app's Documents folder (Files app / Finder file sharing): extracted/, fonts/, sysdata/,
+        // saves, settings and caches
+        const char *home = getenv("HOME");
+        snprintf(root, sizeof root, "%s/Documents", home && *home ? home : "/tmp");
 #elif defined(__linux__)
         // (the AppImage is read-only): $XDG_DATA_HOME/lasrecomp, ~/.local/share/lasrecomp by default
         const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");

@@ -12,6 +12,8 @@
 # macOS: Homebrew clang/SDL3/FFmpeg, Metal renderer.  Linux: clang + Vulkan.  Windows: MSYS2 UCRT64 + Vulkan.
 # Cross builds (from macOS or any host, with zig as the compiler: tools/fetch_zig.sh, or ZIG=<zig>):
 #   make TARGET=linux-aarch64 | linux-x86_64 | windows-x86_64 GAME=smm2 all   (DEPS=<headers + link libraries>)
+# iOS / iPadOS (Xcode's clang; the game code is linked into the app - nothing compiles on the device):
+#   make TARGET=ios-arm64 | iossim-arm64 GAME=smm2 DEPS=<SDL3 for iOS> app   (tools/make_ios_app.sh signs it)
 UNAME := $(shell uname -s)
 comma := ,
 TARGET ?=
@@ -37,7 +39,17 @@ GAMEFILES := $(DATA)/extracted
 GEN      ?= generated/$(GAME)
 B        ?= build/$(GAME)
 
-ifneq ($(TARGET),)
+IOS := $(filter ios iossim,$(PLATFORM))
+ifneq ($(IOS),)
+# iOS / the Simulator: Xcode's clang for the SDK. The game code is generated/<game> (arm64, as macOS), compiled into
+# the app's executable (iOS loads no code it didn't ship with: no game code library, no first-launch build).
+IOS_SDK  := $(if $(filter iossim,$(PLATFORM)),iphonesimulator,iphoneos)
+IOS_MIN  ?= 17.0
+IOS_TRIPLE := arm64-apple-ios$(IOS_MIN)$(if $(filter iossim,$(PLATFORM)),-simulator)
+CROSS_CC := xcrun --sdk $(IOS_SDK) clang -target $(IOS_TRIPLE)
+CROSS_CXX := xcrun --sdk $(IOS_SDK) clang++ -target $(IOS_TRIPLE)
+B        := build/$(GAME)-$(TARGET)
+else ifneq ($(TARGET),)
 # zig cc / c++ for the target; the generated code depends only on the CPU's FP/SIMD lowering (asm on aarch64, C on
 # x86-64), so targets share it: generated/<game> (aarch64, as macOS) or generated/<game>-c (x86-64)
 ZIG      ?= $(firstword $(wildcard build/zig/zig) zig)
@@ -66,6 +78,7 @@ MINFLAG  := $(if $(MACOS_MIN),-mmacosx-version-min=$(MACOS_MIN))
 CC       := $(or $(CROSS_CC),clang $(MINFLAG) $(CROSS))
 CXX      := $(or $(CROSS_CXX),clang++ $(MINFLAG) $(CROSS))
 LLD      := $(if $(CROSS_CC),,-fuse-ld=lld)  # (zig links with its own lld)
+PLATFORM_SRC := runtime/platform/$(if $(IOS),macos,$(PLATFORM)).c  # (iOS: the macOS layer, TARGET_OS_IPHONE inside)
 IMGUI    := third_party/imgui
 GENFLAGS := -O1 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -Iruntime
 GAMEDEFS := -DGAME_TITLE_ID=$(GAME_TITLE_ID)ull -DGAME_ID='"$(GAME_ID)"' -DGAME_TITLE='"$(GAME_TITLE)"' -DGAME_BUNDLE_ID='"$(GAME_BUNDLE_ID)"' \
@@ -74,7 +87,7 @@ GAMEDEFS := -DGAME_TITLE_ID=$(GAME_TITLE_ID)ull -DGAME_ID='"$(GAME_ID)"' -DGAME_
 GEN_SRC  := $(wildcard $(GEN)/main/*.c) $(wildcard $(GEN)/sdk/*.c)
 GEN_OBJ  := $(patsubst %.c,$(B)/obj/%.o,$(patsubst $(GEN)/%,%,$(GEN_SRC))) $(B)/obj/tools/gamelib_entry.o
 RT_SRC   := $(wildcard runtime/*.c) $(wildcard runtime/hle/*.c) $(wildcard runtime/services/*.c) \
-            $(wildcard runtime/nvn/*.c) $(wildcard runtime/nvn/maxwell/*.c) runtime/platform/$(PLATFORM).c \
+            $(wildcard runtime/nvn/*.c) $(wildcard runtime/nvn/maxwell/*.c) $(PLATFORM_SRC) \
             $(GAME_SRC)
 ifeq ($(PLATFORM),windows)
 RT_SRC   += runtime/platform/windows_exports.c  # (what the game code DLL calls in the exe)
@@ -93,7 +106,24 @@ UI_OBJ   := $(patsubst runtime/%.mm,$(B)/rt/%.o,$(UI_SRC))
 IMGUI_OBJ := $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o \
              $(B)/imgui/imgui_impl_sdl3.o
 
-ifeq ($(PLATFORM),macos)
+ifneq ($(IOS),)
+SDL      := $(or $(DEPS),/Volumes/SSD/smm-work/deps/ios-$(if $(filter iossim,$(PLATFORM)),sim,device))
+EXE      := $(B)/$(GAME_ID)recomp
+DEPINC   := -I$(SDL)/include
+OSFLAGS  := -DGAMELIB_STATIC
+RT_SRC   := $(filter-out runtime/gamebuild.c,$(RT_SRC))
+LDFLAGS  := -L$(SDL)/lib -lSDL3 -framework CoreFoundation -framework Foundation -framework Metal $(if $(filter ios,$(PLATFORM)),-framework MetalFX) \
+            -framework QuartzCore -framework UIKit -framework ImageIO -framework CoreGraphics -framework UniformTypeIdentifiers \
+            -framework AVFoundation -framework AudioToolbox -framework CoreAudio -framework CoreHaptics -framework CoreMotion \
+            -framework GameController -framework CoreBluetooth -framework OpenGLES -framework CoreVideo -framework CoreMedia -framework CoreServices
+BACKEND_SRC := $(wildcard runtime/nvn/*.m)
+BACKEND_OBJ := $(patsubst runtime/%.m,$(B)/rt/%.o,$(BACKEND_SRC))
+IMGUI_OBJ += $(B)/imgui/imgui_impl_metal.o
+UIFLAGS  := -fobjc-arc
+GAMELIB  :=
+EXE_GAME_OBJ := $(GEN_OBJ)  # (linked in)
+APP      := $(B)/SMM2Recomp.app
+else ifeq ($(PLATFORM),macos)
 SDL      := $(or $(DEPS),/opt/homebrew/opt/sdl3)
 FFMPEG   := $(or $(DEPS),/opt/homebrew/opt/ffmpeg)
 EXE      := $(B)/$(GAME_ID)recomp
@@ -195,7 +225,7 @@ $(B)/rt/%.o: runtime/%.m $(RT_HDRS)
 	$(CC) $(RTFLAGS) -fobjc-arc -c $< -o $@
 
 # linked to a temp file, then renamed over: a copy still running keeps its (old) file
-$(EXE): $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ) $(IMGUI_OBJ)
+$(EXE): $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ) $(IMGUI_OBJ) $(EXE_GAME_OBJ)
 	@mkdir -p $(dir $@)link
 	$(CXX) -o $(dir $@)link/$(notdir $@) $^ $(LDFLAGS)
 	mv -f $(dir $@)link/$(notdir $@) $@
@@ -248,6 +278,11 @@ gen:
 clean-gen:
 	rm -rf $(GEN) $(B)/obj
 
+# iOS: the .app bundle around the executable (Info.plist, icon, signing: tools/make_ios_app.sh)
+app: $(EXE)
+	$(if $(IOS),,$(error app: pass TARGET=ios-arm64 | iossim-arm64))
+	tools/make_ios_app.sh $(PLATFORM) $(EXE) $(APP)
+
 # A player package of a cross build (runtime, compiler, generator; nothing from the game): dist/SMM2Recomp-<target>.zip
 #   make TARGET=windows-x86_64 GAME=smm2 DEPS=<deps> all package
 package: all
@@ -279,4 +314,4 @@ JOBS ?= $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 build/test_shaders: tools/test_shaders.m runtime/nvn/maxwell/translate.c runtime/nvn/maxwell/shader.h
 	clang -O1 -fobjc-arc -framework Metal -framework Foundation -o $@ tools/test_shaders.m runtime/nvn/maxwell/translate.c
 
-.PHONY: all venv setup gen clean-gen run gen-objs runtime-objs test-tools smm2 run-smm2 package
+.PHONY: all venv setup gen clean-gen run gen-objs runtime-objs test-tools smm2 run-smm2 package app
