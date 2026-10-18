@@ -25,6 +25,7 @@ use crate::render::{Sprite, SpriteImage};
 use crate::warp::{self, SideHold, Transit};
 
 mod bosses;
+mod debug;
 mod w3;
 
 /// SMM2 shows 24 × 13.5 tiles.
@@ -240,6 +241,8 @@ pub struct World {
     trees_shaken: std::collections::BTreeSet<(usize, usize)>,
     /// Snake blocks in the current area.
     pub snakes: Vec<Snake>,
+    /// Rendering a whole course map (`look_at`): the backdrop doesn't parallax.
+    pub map_view: bool,
     /// Frames since a plain Mushroom Trampoline bounce (1…6, the late-jump window; 0 = none),
     /// and whether jump was pressed this frame.
     tramp_late: i32,
@@ -439,6 +442,7 @@ impl World {
             gone_boxes: Default::default(),
             trees_shaken: Default::default(),
             snakes: Vec::new(),
+            map_view: false,
             tramp_late: 0,
             jump_pressed_now: false,
             prev_jump_tramp: false,
@@ -5609,9 +5613,10 @@ impl World {
         let Some((model, tex)) = self.background() else {
             return;
         };
-        const P: f32 = 0.5;
-        let ox = -128.0 + self.camera_x * (1.0 - P);
-        let oy = (self.level.bottom - 32.0 + self.camera_y * (1.0 - P)).min(self.camera_y);
+        // (a whole-course render pins the backdrop to the world so the views join up)
+        let p = if self.map_view { 1.0 } else { 0.5 };
+        let ox = -128.0 + self.camera_x * (1.0 - p);
+        let oy = (self.level.bottom - 32.0 + self.camera_y * (1.0 - p)).min(self.camera_y);
         let mut k = ((self.camera_x - ox) / 512.0).floor();
         while ox + k * 512.0 < self.camera_x + VIEW_W {
             let mut s = Self::model_sprite(model, tex, ox + k * 512.0, oy, 512.0, 512.0, false, 0);

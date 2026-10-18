@@ -139,6 +139,81 @@ pub fn screenshot(
     ))
 }
 
+/// Render a whole course area (0 main, 1 sub) at `scale`× into one PNG: the view is moved over
+/// the area in view-sized steps (actors spawned as the camera reaches them, nothing ticks) and
+/// the frames are pasted together, without the HUD.
+pub fn map(
+    game: &mut Game,
+    path: &str,
+    area: usize,
+    scale: u32,
+    allow_bc: bool,
+) -> Result<String, String> {
+    let scale = scale.max(1);
+    let world = &mut game.session.world;
+    world.show_area(area);
+    let (left, bottom, right, top) = world.area_bounds();
+    let (vw, vh) = (VIEW.0 as f32, VIEW.1 as f32);
+    let (cols, rows) = (
+        ((right - left) / vw).ceil().max(1.0) as u32,
+        ((top - bottom) / vh).ceil().max(1.0) as u32,
+    );
+    let (fw, fh) = (VIEW.0 * scale, VIEW.1 * scale);
+    let (w, h) = (
+        ((right - left) * scale as f32) as u32,
+        ((top - bottom) * scale as f32) as u32,
+    );
+    let mut out = vec![0u8; (w * h * 4) as usize];
+    let gpu = pollster::block_on(Gpu::new(&instance(), None, allow_bc))?;
+    let mut renderer = Renderer::new(&gpu, FORMAT, &game.cache);
+    renderer.draw_missing = game.placeholder;
+    let tex = target(&gpu, fw, fh);
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    let no_hud = crate::hud::HudText {
+        strip: String::new(),
+        banner: None,
+    };
+    for row in 0..rows {
+        for col in 0..cols {
+            let world = &mut game.session.world;
+            world.look_at(left + col as f32 * vw, bottom + row as f32 * vh);
+            let (cx, cy) = (world.camera_x, world.camera_y);
+            let scene = game.scene();
+            let scene = crate::render::Scene {
+                hud: &no_hud,
+                ..scene
+            };
+            let mut enc = gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            renderer.encode(&gpu, &mut enc, &view, (fw, fh), &scene);
+            let rgba = read_back(&gpu, enc, &tex);
+            // paste: frame pixel (fx, fy) (fy from the top) → world (cx + fx/s, cy + vh − fy/s)
+            let ox = ((cx - left) * scale as f32) as i64;
+            let oy = ((top - (cy + vh)) * scale as f32) as i64;
+            for fy in 0..fh as i64 {
+                let y = oy + fy;
+                if y < 0 || y >= h as i64 {
+                    continue;
+                }
+                for fx in 0..fw as i64 {
+                    let x = ox + fx;
+                    if x < 0 || x >= w as i64 {
+                        continue;
+                    }
+                    let s = ((fy * fw as i64 + fx) * 4) as usize;
+                    let d = ((y * w as i64 + x) * 4) as usize;
+                    out[d..d + 4].copy_from_slice(&rgba[s..s + 4]);
+                }
+            }
+        }
+    }
+    write_png(path, w, h, &out)?;
+    Ok(format!(
+        "{path}: {w}x{h} ({cols}×{rows} views), area {area}"
+    ))
+}
+
 /// Draw every block-compressed texture of the cache at 1:1 with the GPU sampling BCn directly
 /// and compare with the CPU decoder (`texture::decode_rgba`). Returns a report; Err when the GPU
 /// has no BC support or a texture differs by more than rounding.

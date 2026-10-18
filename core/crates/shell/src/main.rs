@@ -45,6 +45,12 @@ mod native {
         /// Headless: render one frame offscreen after --ticks ticks, save it as PNG and exit.
         #[arg(long, value_name = "PNG")]
         screenshot: Option<String>,
+        /// Headless: render a whole course area (no HUD, actors as placed) to a PNG and exit.
+        #[arg(long, value_name = "PNG")]
+        map: Option<String>,
+        /// With --map: 0 main area, 1 sub-area.
+        #[arg(long, default_value_t = 0)]
+        map_area: usize,
         /// Ticks to run before the screenshot (scripted run right + jumps, as the Swift app's
         /// MMK_SCREENSHOT).
         #[arg(long, default_value_t = 150)]
@@ -203,6 +209,17 @@ mod native {
                 }
                 Err(r) => Err(format!("texture check failed:\n{r}")),
             };
+        }
+        if let Some(path) = &args.map {
+            let msg = mmk_shell::headless::map(
+                &mut game,
+                path,
+                args.map_area,
+                args.scale,
+                !args.cpu_textures,
+            )?;
+            println!("{msg}");
+            return Ok(());
         }
         if let Some(path) = &args.screenshot {
             let msg = mmk_shell::headless::screenshot(
