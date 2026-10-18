@@ -407,6 +407,42 @@ mod tests {
     }
 
     #[test]
+    fn a_lift_rides_off_an_open_end_and_falls() {
+        let mut e = flat("M1");
+        e.draw_track((10, 12), (16, 12)).unwrap();
+        e.set_track_end((16, 12), true).unwrap();
+        let lift = e
+            .place_sized(11, 11, 12, 3, 1, crate::DEFAULT_FLAGS)
+            .unwrap();
+        e.attach_to_track(lift).unwrap();
+        let back = round_trip(&e);
+        let mut w = mmk_sim::World::from_course(&back);
+        let is_lift =
+            |a: &&mmk_sim::actors::Actor| matches!(a.kind, mmk_sim::actors::Kind::Lift { .. });
+        let y0 = w.actors.iter().find(is_lift).expect("lift spawned").y;
+        for _ in 0..600 {
+            w.step(mmk_sim::Input::default());
+        }
+        let gone_or_fell = w
+            .actors
+            .iter()
+            .find(is_lift)
+            .is_none_or(|a| a.y < y0 - 48.0);
+        assert!(
+            gone_or_fell,
+            "the lift left the track at the open end and fell"
+        );
+        // with the end closed it stays on the track
+        e.set_track_end((16, 12), false).unwrap();
+        let mut w = mmk_sim::World::from_course(&round_trip(&e));
+        for _ in 0..600 {
+            w.step(mmk_sim::Input::default());
+        }
+        let a = w.actors.iter().find(is_lift).expect("still there");
+        assert!((a.y - y0).abs() < 1.0, "still on the track");
+    }
+
+    #[test]
     fn diagonal_tracks() {
         let mut e = flat("M1");
         let d = e.draw_track((10, 4), (14, 8)).unwrap();

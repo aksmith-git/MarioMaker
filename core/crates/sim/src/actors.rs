@@ -567,6 +567,9 @@ pub struct Actor {
     /// Riding a track, and the offset from the track point to (x, y).
     pub rail: Option<crate::track::Rail>,
     pub rail_off: (f32, f32),
+    /// Left its track at an open end: falls with its last speed (objects without gravity of
+    /// their own; enemies fall by their own rules).
+    pub derailed: bool,
     /// Counted toward a "defeat N" clear condition.
     pub tallied: bool,
     /// Carried by the player: the world positions it; it doesn't step on its own.
@@ -626,6 +629,7 @@ impl Actor {
             target_facing: 1,
             rail: None,
             rail_off: (0.0, 0.0),
+            derailed: false,
             tallied: false,
             held: false,
             camera: (0.0, 0.0),
@@ -1341,10 +1345,24 @@ impl Actor {
     /// One frame; may return a new actor to add (a Fire Piranha's fireball). Uses `target`.
     pub fn step_spawning(&mut self, level: &Level) -> Option<Actor> {
         let before = (self.x, self.y);
-        let out = self.step_inner(level);
+        let out = if self.derailed && self.falls_when_derailed() {
+            // gravity as a falling lift's [inf: the rider's own FallDown state isn't decoded]
+            self.vy = (self.vy - 0.0625).max(-4.0);
+            self.x += self.vx;
+            self.y += self.vy;
+            None
+        } else {
+            self.step_inner(level)
+        };
         self.ride_track(level);
         self.moved = (self.x - before.0, self.y - before.1);
         out
+    }
+
+    /// Objects with no gravity of their own, which a derail must make fall (platforms and
+    /// mounted objects); everything else falls under its own rules once off the track.
+    fn falls_when_derailed(&self) -> bool {
+        self.kind.is_platform() || matches!(self.kind, Kind::TrackMount { .. })
     }
 
     /// On a track the rail sets the position (the actor's own motion is replaced); knocked off
@@ -1357,6 +1375,16 @@ impl Actor {
         }
         let before = r.point(&level.tracks);
         let (px, py) = r.step(&level.tracks);
+        if r.off {
+            // past an open end: it keeps its last motion and falls (FallDown)
+            self.rail = None;
+            self.derailed = true;
+            self.vx = px - before.0;
+            self.vy = py - before.1;
+            self.x = px + self.rail_off.0;
+            self.y = py + self.rail_off.1;
+            return;
+        }
         self.rail = Some(r);
         if self.kind == Kind::Claw {
             // the claw hangs from a pivot that rides the track

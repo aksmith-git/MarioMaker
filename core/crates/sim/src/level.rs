@@ -647,11 +647,11 @@ impl Level {
             .values()
             .map(|c| (c.head.index, c.nodes.iter().map(|n| n.direction).collect()))
             .collect();
-        lvl.tracks = crate::track::Tracks::new(
+        lvl.tracks = crate::track::Tracks::with_ends(
             area.tracks
                 .iter()
                 .filter(|t| t.x != 0 || t.y != 0 || t.r#type != 0 || t.k0 != 0)
-                .map(|t| (t.x, t.y, t.r#type)),
+                .map(|t| (t.x, t.y, t.r#type, t.k0, t.k1)),
         );
 
         // tile-like objects: (x, y) is the centre of the bottom-left tile [toost LevelDrawer
