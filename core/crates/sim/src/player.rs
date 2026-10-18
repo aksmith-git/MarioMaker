@@ -128,18 +128,25 @@ pub enum Form {
 pub const INVULN_DAMAGE: i32 = 127;
 /// Star power (§5.4).
 pub const STAR_FRAMES: i32 = 660;
-/// Grow/shrink animation; the world is frozen meanwhile. [?] Length not traced (change state 3).
-pub const CHANGE_FRAMES: i32 = 48;
+/// Grow/shrink (DemoChange; its controller's Active state sets 30 frames) [obs]; the world is
+/// frozen meanwhile. The shown form alternates in 6-frame steps, see `change_shows_old`.
+pub const CHANGE_FRAMES: i32 = 30;
+
+/// During a grow/shrink with `timer` frames left: is the old form shown? Step k = 6 − timer/6
+/// (≤ 6); odd steps show the old form, even ones the new [obs].
+pub fn change_shows_old(timer: i32) -> bool {
+    (6 - timer / 6).clamp(0, 6) % 2 == 1
+}
 // Death (DownPose 0x71009e13e0 / DownFall 0x71009e1ea0): 45-frame pose, then a hop at 3.2 with
 // gravity −0.16; the restart request comes 140 frames into the fall.
 pub const DOWN_POSE_FRAMES: i32 = 45;
 pub const DOWN_VY: f32 = 3.2;
 pub const DOWN_GRAVITY: f32 = -0.16;
 pub const DOWN_FALL_FRAMES: i32 = 140;
-/// Enemy stomp bounce: [?] not located in the binary (player-physics.md §9 q1); the
-/// player-vs-player pair is used meanwhile.
-pub const STOMP_BOUNCE_HELD: f32 = 4.128;
-pub const STOMP_BOUNCE: f32 = 3.628;
+/// Enemy stomp bounce (0x710072bca0 → jump info): vy 3.9095 whether or not jump is held; the
+/// held-jump gravity then gives the higher bounce [obs]. Players stomping players use 4.128 /
+/// 3.628 (0x71009ce0e0).
+pub const STOMP_BOUNCE: f32 = 3.9095;
 
 /// Who is steering the player.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -623,11 +630,8 @@ impl Player {
 
     /// Bounce off an enemy.
     pub fn bounce(&mut self, jump_held: bool) {
-        self.vy = if jump_held {
-            STOMP_BOUNCE_HELD
-        } else {
-            STOMP_BOUNCE
-        };
+        let _ = jump_held; // the held-jump gravity makes the difference
+        self.vy = STOMP_BOUNCE;
         self.on_ground = false;
         self.slope = None;
     }

@@ -2849,16 +2849,25 @@ impl World {
                 i += 1;
                 continue;
             }
-            // stomp: falling with the feet in the enemy's upper half [inf: window not traced]
+            // stomp window (interactions: 0x710076b6b0, classes 0x7101d035b0) [obs]: the feet
+            // are inside the enemy's top by d > 0 and d < W; W = 10 − 3 + this frame's fall for
+            // ordinary enemies when falling (3 when rising), 12 / 10 for big ones
+            let d = ay + ah - p.y;
+            let falling = p.vy <= 0.0;
+            let w = match (a.big, falling) {
+                (false, true) => 7.0 + (-p.vy).max(0.0),
+                (false, false) => 3.0,
+                (true, true) => 12.0,
+                (true, false) => 10.0,
+            };
+            let in_window = d > 0.0 && d < w;
             // (a Spiny shell's spikes can't be stomped [inf])
-            let stomp = p.vy < 0.0
-                && p.y >= ay + ah * 0.5
+            let stomp = in_window
                 && !a.kind.unstompable()
                 && !(a.shell_of == 2 && self.player.shoe.is_none());
             // a shoe stomp defeats most enemies, spiny or not (stamp_shoe in EnemyDB)
             let shoe_stomp = self.player.shoe.is_some()
-                && p.vy < 0.0
-                && p.y >= ay + ah * 0.5
+                && in_window
                 && !matches!(
                     a.kind,
                     Kind::Thwomp { .. }
@@ -2873,8 +2882,7 @@ impl World {
             // on Yoshi, stomps kill spiny enemies too (EnemyDB stamp_yoshi): not Piranha Plants or
             // Spike Tops
             if self.player.yoshi.is_some()
-                && p.vy < 0.0
-                && p.y >= ay + ah * 0.5
+                && in_window
                 && matches!(a.kind, Kind::Spiny | Kind::SpinyEgg | Kind::Buzzy)
             {
                 let px = p.x;
@@ -2886,7 +2894,7 @@ impl World {
             }
             // a ground pound dive knocks out what it lands on (hipatk), bosses and the
             // indestructible aside
-            if self.player.pound == -1 && p.vy < 0.0 && p.y >= ay + ah * 0.5 {
+            if self.player.pound == -1 && in_window {
                 let tough = matches!(
                     a.kind,
                     Kind::Bowser { .. }
@@ -2908,7 +2916,7 @@ impl World {
                 }
             }
             // a spin jump: stomped enemies vanish; spiky ones are bounced off safely ("Pass")
-            let spin_stomp = self.player.spinning && p.vy < 0.0 && p.y >= ay + ah * 0.5;
+            let spin_stomp = self.player.spinning && in_window;
             let spin_safe = matches!(
                 a.kind,
                 Kind::EnemyFire | Kind::Hammer | Kind::Magic | Kind::Wrench | Kind::AngrySun { .. }
@@ -6261,7 +6269,7 @@ impl World {
             return None;
         }
         let form = match p.control {
-            Control::Change { timer, from } if (timer / 4) % 2 == 0 => from,
+            Control::Change { timer, from } if crate::player::change_shows_old(timer) => from,
             _ => p.form,
         };
         // the raccoon and cape forms are named as SMB1 models so the style remap finds them
