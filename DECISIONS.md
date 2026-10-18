@@ -2,6 +2,33 @@
 
 Newest first. Each entry: what was decided, why, and what would change it.
 
+## 2026-10-18 — The web build runs the SMM2 front end; the UI cache reads through a file source
+**Decision:** the browser shows the same SMM2 menus as `mmk-play` (`mmk-front`), and the UI
+cache no longer reads files itself:
+- **`mmk_ui::UiFiles`** (`read(rel) → Fetch::{Ready, Later, Missing}`, `list`, `is_dir`):
+  `DirFiles` on disk (what `UiCache::open` uses, unchanged behaviour), `MemFiles` in memory.
+  A `Later` texture gets its id and size at once (sizes come from the layout JSON / font
+  metrics) with an empty stand-in (`TextureEntry::ready == false`); the host takes the requests
+  (`take_requests`), reads the files and hands them back (`provide`), as `mmk_assets::Cache`
+  does for the game's textures. Layouts, font metrics and message tables must be `Ready`.
+- **On the web**: the SMM2 UI import lives in OPFS `mmk-ui/` with a file list (`files.txt`;
+  walking ~500 folders of OPFS takes seconds). `open_front` reads all its JSON (782 files, 13 MB;
+  ~0.4 s) and the UI WAVs (19 MB, kept as bytes, decoded on first play) into memory, lists the
+  textures (170 MB) as `Later`; each frame `pump_ui` starts the reads, and the front end holds
+  (at most 30 frames) while they're on their way — screens appear whole; the layer skips quads
+  whose textures are still missing. The host (`web_front`): library = the game data's built-in
+  courses (decoded once in the background, kept zlib-compressed) plus files the page opens;
+  saves / settings in `localStorage`; no course server listing (no HTTP client in the web
+  build); a course's music is read when the front end loads it (until then the bank's music).
+  The import arrives as an `mmk import-smm2-ui` folder, or the in-page dump import makes it
+  (`smm2_ui` now reads through the importer's `Vfs`).
+**Why:** a pluggable source keeps one cache for every host; preloading everything (≈200 MB)
+would cost memory and start-up time, and a "not loaded yet, retry" path through every screen
+would spread async through the front end. Textures are the only bulk and the only thing a
+screen can show late.
+**Would change:** if a screen ever needs a layout the page could not read up front (it reads
+them all), or memory limits on mobile browsers call for evicting textures.
+
 ## 2026-10-18 — SMM2 2.0/3.0 parts: own modules, behaviour from v3.0.3, test courses from the editor
 **Decision:** the 2.0/3.0 enemies, blocks and gizmos (Spike, Pokey, P Block, Dash Block,
 Mechakoopa, ON/OFF Trampoline, the Koopalings) live in `actors/v3.rs`, `actors/koopalings.rs`,
@@ -61,7 +88,8 @@ headless, and the Swift app can switch to it through the FFI (next step: a `mmk_
 create with the UI import(s) and a host vtable of C callbacks, `tick(input)`, `frame()` returning
 draw items whose quads the existing `UILayer` already draws, `sounds()` — replacing the Swift
 screen classes). **Would change:** a web front end needs the UI cache read asynchronously (OPFS)
-before `Ui` can open layouts on demand; until then the web build keeps its plain HUD.
+before `Ui` can open layouts on demand; until then the web build keeps its plain HUD. (Done the
+same day: see "The web build runs the SMM2 front end".)
 
 ## 2026-10-18 — Name: SMCraft
 **Decision:** the project, app and window titles are **SMCraft** (owner's choice). App bundle id

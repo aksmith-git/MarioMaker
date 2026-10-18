@@ -433,7 +433,7 @@ function showCourse(value, fileName) {
 }
 
 async function play(bytes, label) {
-  const info = JSON.parse(await mmk.play_course(bytes));
+  const info = JSON.parse(await mmk.play_course(bytes, label));
   status(`Playing ${label}${info.name ? ` “${info.name}”` : ""} (${info.style}, theme ${info.theme}).`);
   ui.canvas.focus();
   return info;

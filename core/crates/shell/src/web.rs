@@ -281,6 +281,10 @@ fn fetch_music(style: String, theme: u8) {
     }
     wasm_bindgen_futures::spawn_local(async move {
         let files = read_music(&style, theme).await;
+        log(&format!(
+            "music: {style} theme {theme}: {} tracks",
+            files.len()
+        ));
         if let Ok(mut m) = music.lock() {
             *m = files;
         }
@@ -471,12 +475,13 @@ pub fn net_join(url: &str, room: &str, player: usize, players: usize) -> Result<
 /// Play a course: SMM2 course data, raw or zlib-compressed, or an encrypted `.bcd` (needs the
 /// opened game data's key table). Empty bytes play the demo strip (with the front end: back to
 /// the title). While the front end runs, the course plays through its screens (course card,
-/// HUD, pause menu, clear). Resolves to `{name, style, theme}`.
+/// HUD, pause menu, clear). `name`: the file's name (names a course without one of its own).
+/// Resolves to `{name, style, theme}`.
 #[wasm_bindgen]
-pub async fn play_course(bytes: Vec<u8>) -> Result<JsValue, JsValue> {
+pub async fn play_course(bytes: Vec<u8>, name: Option<String>) -> Result<JsValue, JsValue> {
     let (assets, front) = with_web(|w| (w.assets.clone(), w.front))?;
     if front {
-        return play_in_front(bytes, assets.as_ref().and_then(|a| a.keys.clone()));
+        return play_in_front(bytes, name, assets.as_ref().and_then(|a| a.keys.clone()));
     }
     let course = if bytes.is_empty() {
         None
@@ -514,7 +519,11 @@ pub async fn play_course(bytes: Vec<u8>) -> Result<JsValue, JsValue> {
 
 /// [`play_course`] with the front end: the course joins the library and plays with the course
 /// card first; leaving it goes back to the title's Play menu.
-fn play_in_front(bytes: Vec<u8>, keys: Option<Vec<u8>>) -> Result<JsValue, JsValue> {
+fn play_in_front(
+    bytes: Vec<u8>,
+    name: Option<String>,
+    keys: Option<Vec<u8>>,
+) -> Result<JsValue, JsValue> {
     if bytes.is_empty() {
         send(|app| {
             if let Some(f) = app.front.as_mut() {
@@ -532,7 +541,8 @@ fn play_in_front(bytes: Vec<u8>, keys: Option<Vec<u8>>) -> Result<JsValue, JsVal
         w.opened += 1;
         w.opened
     })?;
-    let c = LibCourse::new(format!("file:{n}"), "file", false, &bytes, keys.as_deref())
+    let file = name.as_deref().map_or("file", stem);
+    let c = LibCourse::new(format!("file:{n}"), file, false, &bytes, keys.as_deref())
         .map_err(|e| JsValue::from_str(&e))?;
     let info = serde_json::json!({
         "name": c.entry.name, "style": c.entry.style, "theme": c.entry.theme,
