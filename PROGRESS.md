@@ -438,7 +438,9 @@ Not Nintendo's network: the engine talks to an open-source server the owner can 
   peers through a live relay end identical to a full replay) · browsers ✅ join the same rooms over a
   WebSocket (`mmk server` HTTP port + 1; page "Play online…" or `?relay=&room=&player=&players=`;
   checked with two headless browsers, one joining 3 s late: identical positions at frames 600 and
-  1200) · start sync (`MAX_LEAD` wait) and acked resends ✅ · WebRTC upgrade, versus ⬜
+  1200) · start sync (`MAX_LEAD` wait) and acked resends ✅ · desync checks ✅ (state hashes at
+  confirmed frames every second, compared across peers, logged; `mmk simulate --checksum` run in
+  two processes over the 550 courses: identical) · WebRTC upgrade, versus ⬜
 - ✅ Accounts without Nintendo services; moderation for self-hosters (`--admin-token`: ban/unban,
   delete any course)
 

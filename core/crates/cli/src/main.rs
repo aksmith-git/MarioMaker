@@ -136,6 +136,10 @@ enum Cmd {
         /// Frames per course (60 per second).
         #[arg(long, default_value_t = 3600)]
         frames: u32,
+        /// Print each course's final state hash (compare two runs, e.g. in separate processes,
+        /// to catch nondeterminism that would desync online play).
+        #[arg(long)]
+        checksum: bool,
     },
     /// Run the open-source course server (courses + index in DIR) and the online-play relay
     /// (UDP, same port).
@@ -707,7 +711,8 @@ fn main() -> ExitCode {
             each,
             keys,
             frames,
-        } => simulate(&files, each, keys, frames),
+            checksum,
+        } => simulate(&files, each || checksum, keys, frames, checksum),
         Cmd::MissingArt {
             files,
             assets,
@@ -1251,7 +1256,7 @@ fn read_key_table(path: Option<PathBuf>) -> Option<smm2::KeyTable> {
 
 /// One scripted run: hold right + run, jump in 24-frame bursts every 40 frames, and a long jump
 /// when stuck for a second. Returns (progress 0-1 toward the goal, deaths, cleared).
-fn simulate_course(course: &smm2::Course, frames: u32) -> (f32, u32, bool) {
+fn simulate_course(course: &smm2::Course, frames: u32) -> (f32, u32, bool, u64) {
     use mmk_sim::input::{self, Input};
     let mut w = mmk_sim::World::from_course(course);
     w.lives = 9999; // keep retrying for the whole run
@@ -1284,10 +1289,17 @@ fn simulate_course(course: &smm2::Course, frames: u32) -> (f32, u32, bool) {
         ((best - start_x) / span).clamp(0.0, 1.0),
         lives0.saturating_sub(w.lives),
         cleared,
+        w.checksum(),
     )
 }
 
-fn simulate(files: &[PathBuf], each: bool, keys: Option<PathBuf>, frames: u32) -> ExitCode {
+fn simulate(
+    files: &[PathBuf],
+    each: bool,
+    keys: Option<PathBuf>,
+    frames: u32,
+    checksum: bool,
+) -> ExitCode {
     let table = read_key_table(keys);
     let (mut total, mut panics, mut clears) = (0usize, 0usize, 0usize);
     let mut progress = 0.0f32;
@@ -1305,11 +1317,15 @@ fn simulate(files: &[PathBuf], each: bool, keys: Option<PathBuf>, frames: u32) -
         let style = c.header.game_style.as_str_lossy();
         let run = std::panic::catch_unwind(|| simulate_course(&c, frames));
         let line = match run {
-            Ok((p, deaths, cleared)) => {
+            Ok((p, deaths, cleared, hash)) => {
                 progress += p;
                 clears += cleared as usize;
-                json!({"file": f.display().to_string(), "style": style, "progress": p,
-                       "deaths": deaths, "cleared": cleared})
+                let mut v = json!({"file": f.display().to_string(), "style": style, "progress": p,
+                       "deaths": deaths, "cleared": cleared});
+                if checksum {
+                    v["checksum"] = json!(format!("{hash:016x}"));
+                }
+                v
             }
             Err(e) => {
                 panics += 1;
