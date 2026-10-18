@@ -81,7 +81,7 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   (respawn, big coins kept), Thwomp (+ side), lifts (static / falling), springs (normal / held high
   bounce), Bill Blasters + Bullet Bills, spike traps; moving-solid layer with rider carry; P switch
   (brick ↔ coin swap, P doors), ON/OFF switch + dotted-line blocks, falling donuts, Munchers,
-  conveyor belts; Spiny, Buzzy Beetle (+ fire-proof shell), Spike Top (floor only), Hammer Bro +
+  conveyor belts; Spiny, Buzzy Beetle (+ fire-proof shell), Spike Top (crawls floors, walls, ceilings), Hammer Bro +
   hammers, Bob-omb (fuse, kick, explosion), Dry Bones (collapse/reassemble), Boo; parachutes,
   one-way walls, Burners, Fire Bars, Banzai Bills; vertical areas; liquids (static / one-way /
   oscillating water, lava, poison; deadly kinds kill) and swimming (strokes, sink, swim table,
@@ -234,7 +234,12 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   their contents when bumped; winged lifts bob; winged Thwomps patrol and bob (12-thwomp.md)
 - ✅ Fish Bone: patrol, 40-frame aim, charge (2 / 6 px/f), shatters on contact; fire-proof
 - ✅ Custom autoscroll: camera centre follows the area's part-89 nodes (speed per segment,
-  0.03 easing, pauses during warps/death/goal; the player is pushed at the edges)
+  0.03 easing, pauses during warps/death/goal; the player is pushed at the edges); the main area's
+  path starts at the start unit and ends at the goal unit, so a course without nodes still
+  scrolls (binary pass 3)
+- ✅ Binary pass 3 (course loading): slopes as caps + diagonal (flush with the ground), spike
+  block colours (0 red / 1 blue ON/OFF, 2 timer), cannon facing + aim, goal pole over the goal
+  ground's first column, angry alternate Wiggler
 - ✅ Conveyor slopes (steep slope + belt carry); winged/tracked coins and note blocks —
   SMB1 sample 148/150 playable (left: a Bill Blaster and a Burner on tracks)
 - ✅ Theme music per style: the importer copies every style's theme / hurry / star tracks (105
@@ -266,11 +271,18 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
 - ✅ Bowser Jr.: 3 HP + fireball counter, wait / walk ±24 / fire / hammer / hop / shift jump →
   hover → hip drop, DamageDown → shell slide; Clown Car riders for all three [inf] — SMB1 sample
   77 → 97 playable
+- ✅ Bosses pass 3 (from the binary): shell slide / wakeup, Clown Car steering + ride heights,
+  Jr.'s clown damage and thrown Koopas, Pom Pom's throw / hide / Lapse + homing shuriken, NSMBU
+  anim lengths, boss Key → key event · Bob-omb blast type, Pom Pom decoys ⬜
 - ✅ Lava Bubble (hide / cosine rise / fall), Monty Mole (buried, mound, leap, chase), Angry Sun
   (corner wait, spin, half-ellipse swoop) and Moon (wipes on-screen enemies)
 - ✅ Tracks: graph from track records (lines + quarter arcs), rail follower (0.75 / 1.5 px/f),
   any actor rides (lifts, seesaws, grinders, claws, items, enemies); drawn as lines · junctions,
   open ends, blocks/coins on tracks, exact track tiles ⬜ — SMB1 sample 49 → 52 playable
+  - ✅ Pass 3: the game's rail grid (record templates, end words, cell words) and its follower
+    (cell-centre walk, 2×2 bends at r 24, closed / open ends, start field), junctions 8–15
+    switched by ON/OFF — all 657 corpus riders attach, every fall is at an open end · re-catch
+    of a falling rider onto a lower track (0x7100343680) ⬜
 - ⬜ Measure object/style/theme frequency in real courses
 - ⬜ Add styles, themes, objects in that order (2.0/3.0 items need the update dump)
 
@@ -424,8 +436,10 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   Spin gets out; runs enemies over; hits damage the car (third breaks it) [inf]; "goal in a
   Koopa Troopa Car" condition. Enemy drivers ⬜ (none in the sample)
 - ✅ ! Block (119): 2×2 solid with a drawn path; a hit from below bounces it (7-frame ramp),
-  knocks out enemies on it and grows a chain of 2×2 blocks along the path [inf: the chain motion
-  wasn't decoded], restored after 600 frames
+  knocks out enemies on it and grows a chain of 2×2 blocks along the path, restored after 600 frames
+  - ✅ Pass 3: the chain as decoded — one segment per path point, a head hit slides one out
+    (3 px/f), a ground-pound-type hit sends runs to each turn; snake / track-block path codes are
+    steps into each node, end codes included · world wiring of `hit_all` (ground pound) ⬜
 - ✅ Tree (106): the trunk climbs like a vine up into the canopy, the canopy is a jump-through
   platform, reaching it knocks out the canopy item (vy 4.5) [inf: trigger]
 - ✅ Mushroom Trampoline (113): top-only platform N tiles wide; landing launches at 6.0 (4.43 with
@@ -545,6 +559,11 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
     2.5), Goomba Mask (hidden from Goombas / Boom Boom), Bullet Bill Mask (300 frames of 3.0 px/f
     dash per air time while jump is held, breaks on walls), Red POW Box (3 head bumps: POW quake
     and an 80-px block-breaking ring) · the boxes' worn models drawn above the head
+  - ✅ Binary pass 3: in-view flag (box touches a camera view, edges in), Spike balls leave the
+    model's GeneratorPosition joint, Mechakoopa weapons start at its feet (no "shot" joint),
+    Zappa's Shot ends with the beam's (38 f), winged Pokey hop counter resets, Roy one exit try
+    per frame, quake stun skips invincible players; missile blasts, carried and thrown parts hit
+    like shells; a Bully pushes a shell back; a plain stomp kicks a snowball
 - ⬜ Yoshi variants, shoes, clown cars, etc. (rest of the "every part" list)
 - 🔄 Course Maker (editor): core crate `editor` — each step tested by saving the course, re-opening
   it byte-identically and playing it in the sim (`unsupported_features` empty):
@@ -607,6 +626,8 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   skip hint on the 4th attempt, 48-entry history and map position, clear-rate pick rule, offline
   `Session`) · screens on the SMM2 rules ⬜
 - ⬜ Ninji speedruns / event courses (offline with local data), records and medals
+- ✅ Pass 3 (world.rs, from the binary): blast box, Clown Car exit, cape/hammer boxes, Burner
+  collider, helmet hits, Bill Blaster generator, spawn profiles, escort Toad comeback, goal pole
 
 ### Phase 10 — Online with an open-source server ⬜ (owner request 2026-10-18)
 Not Nintendo's network: the engine talks to an open-source server the owner can run or join.

@@ -127,7 +127,7 @@ impl Kind {
                 [R::DieFall, R::DieFall, R::DieFall, R::Invalid, R::Explode]
             }
             Kind::BobOmb => [R::Damage, R::DieFall, R::CapBound, R::Damage, R::Damage],
-            Kind::SpikeTop => [R::DieFall, R::DieFall, R::CapBound, R::Invalid, R::DieFall],
+            Kind::SpikeTop { .. } => [R::DieFall, R::DieFall, R::CapBound, R::Invalid, R::DieFall],
             Kind::Lakitu => [R::DieFall, R::DieFall, R::DieFall, R::DieFall, R::DieFall],
             Kind::Boo | Kind::RingBoo { .. } => {
                 [R::Invalid, R::Invalid, R::Invalid, R::Pass, R::Pass]
@@ -259,7 +259,7 @@ impl Kind {
             Kind::BulletBill => 14.0,
             Kind::BanzaiBill { .. } => return Some(60.0),
             Kind::BobOmb | Kind::DryBones | Kind::CheepCheep { .. } | Kind::MontyMole => 14.0,
-            Kind::SpikeTop | Kind::RockyWrench | Kind::FishBone | Kind::Pow => 15.9,
+            Kind::SpikeTop { .. } | Kind::RockyWrench | Kind::FishBone | Kind::Pow => 15.9,
             Kind::Lakitu => 26.0,
             Kind::Magikoopa => 20.0,
             Kind::Blooper => 18.0,

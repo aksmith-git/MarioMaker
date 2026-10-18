@@ -523,8 +523,8 @@ hovering near the view and diving at the player; Bowser Jr. hops by a jump solve
 shift-jumps straight up, shoots 3 aimed fireballs (winged: 4 hammers), and attacks from the Clown
 Car every 150 frames. What is still a guess, and why:
 - A stomp on Bowser hurts the player, as on Spike Top (the other "Invalid" stamp).
-- A Bob-omb blast is a Shell-strength hit [?]: the explosion's attack type was not found (Bowser's
-  damage table has no explosion entry). A shell that hits a boss is spent [inf].
+- A Bob-omb blast is a Shell-strength hit [obs]: the exploding bomb's collider carries attack cc 6
+  (shell) (0x7100732640). A shell that hits a boss is spent [inf].
 - The held Key appears 8 px below the boss's centre, where the defeat is recorded [inf].
 - Clown Car steering for riders [?] (the car's 3.8 KB Chase routine is not decoded) and riders
   only flash when hit [?]. Thrown Clown Car shells use the engine's shell launch [?].
@@ -538,6 +538,17 @@ Car every 150 frames. What is still a guess, and why:
 
 What would change this: decoding the Clown Car Chase state, the boss Shell context, BulletPunpun /
 Punpun's Throw and Lapse states, or Ryujinx measurements.
+
+Pass 3 (bosses): those were decoded, and the NSMBU / 3D World animation lengths read from the
+models with their EnemyModelParams play rates. Now settled: NSMBU breath 104 / turn rates; Bowser's
+16-frame speed-history mean for the flame; Bowser Jr.'s wind-ups (SMB3 / SMW 4, NSMBU 25), view test
+(his own box vs the view), arc test, the Shell context (200-frame slide at up to 1.6, brake-turns,
+its own hit rules, ShellWakeup's hop), the Clown Car Chase steering (0.02 / 1.0 within ±320 px) and
+ride heights, Bowser Jr.'s Clown DamageDown and the Koopa Troopas he throws; Pom Pom's whole throw /
+hide / Lapse cycle and the homing shuriken (3W model art); a defeated boss's Key is a key event for
+the player (counted at once). Still open: the Bob-omb explosion's attack type, the shell's own side
+of hitting a boss, the obstacle / gap jumps (Bowser chase, the shell slide's step hop), Boom Boom
+leaving the car when hit (needs a separate car actor), Pom Pom's decoys.
 
 ## 2026-10-18 — SMM1 UI: JSON + `.mtex` cache, layout player in its own crate
 - **Cache form:** `mmk import-smm1` writes each layout as JSON (parsed BFLYT + its BFLAN
@@ -683,12 +694,19 @@ them:
   fixed platforms). Verify in Ryujinx.
 - Spring launch: 6.0 px/frame, or 4.43 with jump held (the held-jump gravity bands then give
   the high bounce) — the binary pairs the speeds with "jump profile" ids whose meaning is [inf].
-- Side Thwomp charge trigger: player within 2 × its half-width vertically and 256 px horizontally
-  [inf]; the normal Thwomp uses the spec's |dx| < W + 32 zone.
+- Side Thwomp (pass 3, from the binary): flag bits 0x18 not both set; looks one way ((flags >> 3)
+  & 3 == 2 right, else left), charges at a player in its 136 px attack box on that side only.
 - P-switch duration 600 frames ([ext] ~10 s; not found in the binary). Dotted-line block colour
   from the alternate flag [?]. Conveyor art uses a placeholder tile until the belt model is found.
 - Simplified for now: Spike Top walks floors only (turns at ledges) instead of crawling around
-  blocks; Hammer Bro alternates a 5.5 jump with a 2.5 hop (no drop-through); Bob-omb blast radius
+  blocks; Hammer Bro alternates a 5.5 jump with a 2.5 hop (no drop-through); Bob-omb blast:
+  a 2-tile diamond of terrain, and actors/players touching a half-18 box 8 px up (pass 3, [obs];
+  one frame here, 16 in the game).
+
+- Spike Top crawls round blocks (pass 3): placed side from the facing field, 30-frame corner
+  turns; an outside corner swings on a quarter circle round the block corner (grid stand-in).
+- Hammer / Sledge Bros jump up or down through terrain (pass 3, 0x71006205d0 / 0x71007a4b20).
+- Simplified for now: Bob-omb blast radius
   1 tile (plus) for terrain and 32 px for actors/player [inf].
 - Fire Bar rotation 2.8125°/frame (the shared counter's step was not located); Burner flame
   12 px wide × 48 px (texture length); one-way walls are drawn nowhere yet (no M1 texture found).
@@ -820,6 +838,9 @@ Riders keep their offset from the track point and move 0.75 px/frame (1.5 winged
 are 32 px long; only free ends reverse. Still guessed: which way curves bulge, the start direction
 field, and open-vs-closed ends (all ends reverse). Junctions aren't built. Tracks are drawn with
 white texels from the field atlas, a placeholder for the real per-cell track tiles.
+**Superseded (pass 3):** the engine now builds the game's own cell grid from the record templates
+in the binary and walks it with the game's follower rules (track.rs header), junctions included;
+the public `Tracks` / `Rail` API is unchanged and world.rs only passes the ON/OFF bit in.
 
 ## 2026-10-18 — Cross-platform shell (owner asked for Windows, macOS, Linux, web and iOS)
 The Rust core has no platform code, so it ports as is. Two ways to reach the platforms the
@@ -1193,3 +1214,26 @@ under `recomp/private|generated|build/`, and text that looks like disassembly or
   carrying; the Goomba Mask's crouch-walk synced to the Goombas (the engine has no crouch-walk);
   the balloon's push-stagger and the multiplayer balloon spin; the Red POW Box's keep-for-a-
   pending-POW rule. Sounds are Event variants only; the sound director maps them later.
+
+## 2026-10-18 — Slopes: the game's surface, a solid wedge underneath
+- A slope object is a band in the game (a sloped floor and a sloped ceiling 16 px apart between
+  two 1×1 end caps). The engine keeps the binary's surface and caps exactly but fills the cells
+  under the surface (and under the high cap) solid instead of modelling the hollow underside:
+  walkers and the player meet the same top, and a slope's underside is rarely reachable. Revisit
+  if a course needs to pass under a floating slope.
+
+## 2026-10-18 — Pass 3: world rules from the binary
+- Clown Car: Jump (not Down + Jump) climbs out; holding Down crouches in it. Escort Toad knocked
+  out: back after 45 frames (his balloon's flight not modelled), no run failure. Burner flames hurt
+  only at full length. Cape spin box alternates sides every 2 frames; hammer box on frames 11–17.
+  Spiny helmet knocks out what is above it whatever the player's speed; Buzzy helmet only Spike Tops
+  and Lakitu. Bill Blaster extras use one course-wide generator (fixed seed; the game's is per play).
+  Spawn boxes per kind from the actor profiles.
+
+## 2026-10-18 — Joint positions come from the model data, missing joints included
+- Where the game places something at a model joint, the engine uses that joint's position from
+  the style's model at the frame the game reads it (Spike's ball: `GeneratorPosition` at the
+  throw's release frame). The 2D and flat NSMBU models are authored facing left (+x behind).
+- When the model has no such joint the game's lookup fails and it uses the actor's position; the
+  engine does the same rather than invent a joint. Mechakoopa's weapons ask for "shot", which no
+  robot model has, so missiles and the laser start at its feet.

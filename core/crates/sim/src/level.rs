@@ -76,6 +76,9 @@ pub struct TileDraw {
     pub flip: u8,
     /// Part of a pipe (drawn in front of the player with the SMM1 layering option).
     pub pipe: bool,
+    /// A background-type tile (semisolid, mushroom platform, bridge, half-collision platform,
+    /// vine, conveyor), drawn behind coins in the SMM1 order (world/smm1.rs `tile_layer`).
+    pub back: bool,
 }
 
 impl TileDraw {
@@ -89,7 +92,15 @@ impl TileDraw {
     }
 }
 
-/// A slope object (87 gentle 2n×n, 88 steep (n+1)×n), in tiles.
+/// The sloped part of a slope object, in tiles: `width` columns rising `height` tiles from the
+/// row `bottom` (the top of the low end cap). The course object is the band of 87-gentle-slope.md
+/// / 88-steep-slope.md (layouts 0x71003929b0 / 0x71003932f0) [obs]: a gentle slope is
+/// (2n + 2) × (n + 1) tiles and a steep one (n + 2) × (n + 1), with a full 1×1 end cap in the low
+/// corner and in the high corner and the diagonal between them (2n columns for 1:2, n for 45°);
+/// the caps are solid cells, flush with the ground beside the low end [obs corpus: the ground
+/// next to a slope's low end has its top row level with the cap]. The band's hollow underside
+/// (16 px under the surface) is not modelled: cells under the surface and under the high cap
+/// are solid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Slope {
     pub left: i32,
@@ -361,7 +372,7 @@ pub struct Level {
     /// Blinking blocks (108): tile and phase group (flag 0x4: the opposite group).
     pub blink_blocks: Vec<(i32, i32, bool)>,
     /// Spike blocks (110): bottom-left tile of the 2×2 block and mode (0 timer, 1 out while ON,
-    /// 2 out while OFF [inf]).
+    /// 2 out while OFF; see `spike_block_mode`).
     pub spike_blocks: Vec<(i32, i32, u8)>,
     /// Vines (64): climb areas (centre x, bottom, top) in px.
     pub vines: Vec<(f32, f32, f32)>,
@@ -442,8 +453,10 @@ pub const SUPPORTED_PARTS: &[i16] = &[
 ];
 
 /// Parts whose alternate form (flag 0x4) the engine implements (or where the flag only picks a
-/// look or sound: 23 the music Note Block [inf], 52 Wiggler [?: no alternate found]). Any other
-/// part with the flag is reported by `unsupported_features`.
+/// look or sound: 23 the music block, kind 0x56 "GakkiBlock", built by the Note Block's builder
+/// 0x71008722e0 and bounced by the same code — only its note sound differs [obs]). 52: the
+/// alternate Wiggler starts angry (0x710067bcc0 sets its state to Angry at build) [obs]. Any
+/// other part with the flag is reported by `unsupported_features`.
 const ALT_FORMS: &[i16] = &[
     0, 1, 2, 3, 10, 11, 12, 13, 15, 19, 23, 25, 28, 32, 34, 36, 40, 41, 42, 45, 46, 47, 48, 51, 52,
     54, 56, 61, 77, 84, 85, 96, 97, 100, 103, 104, 107, 108, 113,
@@ -472,8 +485,8 @@ pub fn unsupported_features(course: &Course) -> Vec<String> {
     if !PLAYABLE_STYLES.contains(&style.as_str()) {
         out.insert(format!("style {style}"));
     }
-    // (custom autoscroll without nodes plays with the usual camera [inf: the uploader cleared
-    // such a course, so the camera can't have stopped])
+    // (a custom autoscroll without nodes runs from its start unit to its end unit,
+    // `Level::finish_custom_scroll`)
     for (ai, area) in course.areas().iter().enumerate() {
         if ai == 1 && area.objects.is_empty() && area.ground.is_empty() {
             continue; // unused sub-area
@@ -506,6 +519,34 @@ pub fn unsupported_features(course: &Course) -> Vec<String> {
     out.into_iter().collect()
 }
 
+/// A spike block's mode in `Level::spike_blocks` from its course flags. The course field
+/// (flags >> 18) & 3 is the colour: 0 red, 1 blue, 2 the timer block. Its BG record
+/// (0x7100394600, group 0x1F) is ON/OFF-linked for 0 and 1, and the area update (0x71004005e0)
+/// drives only the others from the shared 240-frame timer; at load a linked block's phase is
+/// "out" (0) for blue and "in" (2) for red while the switch is ON, the reverse while OFF
+/// (0x7100408000), and every ON/OFF change flips it; the editor models agree (0x71003c2660:
+/// red → `needlecube_red_model` "In", blue → `needlecube_blue_model` "Out", 2 → the timer
+/// model) [obs].
+fn spike_block_mode(flags: u32) -> u8 {
+    match (flags >> 18) & 3 {
+        0 => 2, // red: out while OFF
+        1 => 1, // blue: out while ON
+        _ => 0, // timer
+    }
+}
+
+/// A cannon's barrel angle (degrees, 0 right, counter-clockwise) from its course flags. The
+/// cannon's build (0x71007628a0) takes the facing r = (flags >> 25) & 3 (as a Piranha Plant's:
+/// 0 left, 1 right, 2 down, 3 up) and the aim d = (flags >> 22) & 7, and turns the barrel to
+/// base[r] + 180° − 45°·((d + 1) mod 5), with base = {90°, 270°, 180°, 0°} (_INIT_605,
+/// 0x710242afa4). Relative to the facing, d = 0…4 aim +45°, 0°, −45°, −90°, +90°: five aims
+/// over the half circle on the facing side [obs; corpus d ∈ 0…4].
+fn cannon_angle(flags: u32) -> f32 {
+    let side = [90, 270, 180, 0][((flags >> 25) & 3) as usize];
+    let aim = ((flags >> 22) & 7) as i32;
+    (side + 180 - 45 * ((aim + 1) % 5)).rem_euclid(360) as f32
+}
+
 fn pipe_dir(flags: u32) -> PipeDir {
     match (flags >> 5) & 3 {
         0 => PipeDir::Right,
@@ -526,7 +567,9 @@ fn block_kind(id: i16) -> Option<BlockKind> {
         29 => BlockKind::Hidden,
         63 => BlockKind::Ice,
         99 => BlockKind::OnOff,
-        // dotted-line block: colour from the alternate flag [?]
+        // dotted-line block: the 0x4 flag is its tile variant (0x71003d2600) [obs]; variant 1
+        // is drawn blue, as the blinking block's [inf: the TensenBlock tile entries' colour bit
+        // was not tied to the variant]
         100 => BlockKind::Dotted { blue: false },
         _ => return None,
     })
@@ -627,6 +670,7 @@ impl Level {
             lvl.set(x, y, Cell::Solid);
             lvl.tiles.push(TileDraw {
                 pipe: false,
+                back: false,
                 flip: 0,
                 x,
                 y,
@@ -644,9 +688,12 @@ impl Level {
             let goal_left = ((right - 152.0 - 8.0) / TILE).round() as i32;
             let goal_h = course.header.goal_y as i32;
             lvl.fill_ground(goal_left, 11, goal_h);
-            // pole on a hard block in the goal ground's second column [inf: walk target X0+112
-            // and the 80-px castle then end flush with the ground's right edge]
-            let pole_tile = goal_left + 1;
+            // the pole stands on a block over the goal ground's first column: the goal pole's
+            // fixed unit is rebuilt at x = right − 152, y = 16·goal_y (0x71005aa940, the goal
+            // ground's x), the spawn adds no offset (0x710041b520) and GoalPole's create keeps x
+            // and puts its 16-px solid block one tile above y (0x710088c7f0, shape 0x7101d04710)
+            // [obs]
+            let pole_tile = goal_left;
             lvl.blocks.push(BlockPlacement {
                 x: pole_tile,
                 y: goal_h,
@@ -760,7 +807,9 @@ impl Level {
                 }),
                 113 => Some(Kind::Trampoline {
                     width: o.width.max(1),
-                    // flag 0x4: stationary (lift mode 6); 0x8 picks the ±2-tile range [inf]
+                    // Trampoline init 0x71008c3200 [obs]: flag 0x4 → stationary (lift mode 6);
+                    // otherwise bits 3–4 = s: s odd → mode 1, ±2 tiles, s even → mode 0, ±3
+                    // (the first move is leftward for s = 0 or 3, +0x264 = 1)
                     moving: o.flags & 0x4 == 0,
                     range: if o.flags & 0x8 != 0 { 2 } else { 3 },
                 }),
@@ -827,14 +876,19 @@ impl Level {
                 46 if o.flags & 0x4 != 0 => Some(Kind::EmptyShell { what: 3 }),
                 25 => Some(Kind::Spiny),
                 28 => Some(Kind::Buzzy),
-                40 => Some(Kind::SpikeTop),
+                40 => Some(Kind::SpikeTop {
+                    surface: ((o.flags >> 25) & 3) as u8,
+                }),
                 3 => Some(Kind::HammerBro),
                 15 => Some(Kind::BobOmb),
                 46 => Some(Kind::DryBones),
                 41 => Some(Kind::Boo),
                 57 => Some(Kind::Muncher),
+                // bits 0x18 both set → Dossun, otherwise SideDossun, which looks right when
+                // (flags >> 3) & 3 == 2, else left (0x710076ab10) [obs]
                 12 => Some(Kind::Thwomp {
-                    side: o.flags & 0x4 != 0,
+                    side: o.flags & 0x18 != 0x18,
+                    right: (o.flags >> 3) & 3 == 2,
                 }),
                 11 => Some(Kind::Lift {
                     width: o.width.max(1),
@@ -999,7 +1053,9 @@ impl Level {
                 // blinking block (108-blinking-block.md): the tile hit test (0x71003e14a0,
                 // attribute 13) makes variant 0 solid while the area's blink state is 0 — its
                 // value at the start — and variant 1 solid while it is 1 [obs]; the variant is the
-                // 0x4 flag [inf]
+                // 0x4 flag: a tile part's variant is (flags >> 18) & 3, or the 0x4 bit when that
+                // field is 0 (0x71003d2600), and the editor shows the 0x4 block blue (model
+                // 0xF0D "ChikaChikaBlockBlue", else 0xF0C red; 0x71003c2660) [obs]
                 let alt = o.flags & 0x4 != 0;
                 lvl.blink_blocks.push((tx, ty, alt));
                 lvl.set(tx, ty, if alt { Cell::Empty } else { Cell::Solid });
@@ -1012,7 +1068,7 @@ impl Level {
                         lvl.set(tx + dx, ty + dy, Cell::Solid);
                     }
                 }
-                lvl.spike_blocks.push((tx, ty, ((o.flags >> 18) & 3) as u8));
+                lvl.spike_blocks.push((tx, ty, spike_block_mode(o.flags)));
                 continue;
             }
             if o.id == 64 {
@@ -1030,6 +1086,7 @@ impl Level {
                     };
                     lvl.tiles.push(TileDraw {
                         pipe: false,
+                        back: true,
                         x: tx,
                         y: ty + dy,
                         atlas,
@@ -1053,9 +1110,13 @@ impl Level {
                     lvl.set(tx + dx, ty, Cell::Solid);
                     lvl.tiles.push(TileDraw {
                         pipe: false,
+                        back: true,
                         x: tx + dx,
                         y: ty,
-                        atlas: 49, // [inf] placeholder art (bridge) until the belt model is found
+                        // [inf] placeholder art (bridge): the belt's look is style art (3D World
+                        // draws `3W_Object_conveyor` models, table 0x71020fb4b0), which needs the
+                        // game's atlases to place
+                        atlas: 49,
                         flip: 0,
                     });
                 }
@@ -1100,7 +1161,9 @@ impl Level {
                     h: hgt,
                     contents: Contents::from_part(o.child_id, o.child_flags),
                 };
-                // the trunk climbs like a vine, up into the canopy [inf]
+                // the trunk climbs like a vine, up into the canopy [inf: the trunk is BG unit
+                // group 0x1C (0x7100396ff0) and the player climbs it in its own states
+                // TreeClimb / TreeClimbTop / TreeClimbJump (player code, not traced)]
                 lvl.vines.push((t.x, t.y - 8.0, t.canopy().1));
                 lvl.trees.push(t);
                 continue;
@@ -1146,25 +1209,14 @@ impl Level {
                 continue;
             }
             if o.id == 47 {
-                // cannon: solid block; barrel direction from the facing field (flags >> 24) & 7
-                // (even values left/right/down/up as for Piranha Plants; odd = diagonals [inf])
+                // cannon: solid block
                 if !on_track {
                     lvl.set(tx, ty, Cell::Solid);
                 }
-                let angle = match (o.flags >> 24) & 7 {
-                    0 => 180.0,
-                    1 => 225.0,
-                    2 => 0.0,
-                    3 => 315.0,
-                    4 => 270.0,
-                    5 => 135.0,
-                    6 => 90.0,
-                    _ => 45.0,
-                };
                 lvl.cannons.push(Cannon {
                     x: tx as f32 * TILE + 8.0,
                     y: ty as f32 * TILE,
-                    angle,
+                    angle: cannon_angle(o.flags),
                     red: o.flags & 0x4 != 0,
                 });
                 if on_track {
@@ -1373,6 +1425,7 @@ impl Level {
                         };
                         lvl.tiles.push(TileDraw {
                             pipe: false,
+                            back: true,
                             flip: 0,
                             x: tx + dx,
                             y: y_top,
@@ -1422,12 +1475,62 @@ impl Level {
                 _ => {}
             }
         }
+        if lvl.autoscroll == 4 {
+            lvl.finish_custom_scroll(course, area_index);
+        }
         lvl
     }
 
+    /// Custom autoscroll path (0x7100b61fd0) [obs]: every node's point is clamped to the range
+    /// of view centres; in the main area the path also starts at the autoscroll start unit and
+    /// ends at the end unit, the two fixed units the header rebuilds (0x71005263f0: start x =
+    /// min(right − 160, 160) + 24, end x = max(right − 160, 160) − 24; the start's speed field is
+    /// header byte 0x0E & 3). Their y is (start_y + 4)·16 − 8 and (goal_y + 4)·16 − 8, clamped
+    /// to 104…328 (104 when the area's boundary type is set), + 4. The nodes fill 12 slots by
+    /// number: the start is slot 0 (a course node numbered 0 takes its place), the end slot 11
+    /// (it replaces a course node 11). So a custom-autoscroll course without nodes scrolls from
+    /// the start to the goal.
+    fn finish_custom_scroll(&mut self, course: &Course, area_index: usize) {
+        use crate::world::{VIEW_H, VIEW_W};
+        let span = |v: f32, lo: f32, hi: f32| {
+            if lo > hi {
+                (lo + hi) / 2.0
+            } else {
+                v.clamp(lo, hi)
+            }
+        };
+        let (x0, x1) = (self.left + VIEW_W / 2.0, self.right - VIEW_W / 2.0);
+        let (y0, y1) = (self.bottom + VIEW_H / 2.0, self.top - VIEW_H / 2.0);
+        if area_index == 0 {
+            let y = |h: u8| {
+                let y = if self.boundary_type != 0 {
+                    104.0
+                } else {
+                    ((h as f32 + 4.0) * TILE - 8.0).clamp(104.0, 328.0)
+                };
+                y + 4.0
+            };
+            let edge = self.right - 160.0;
+            let speed = course.header.autoscroll_speed & 3;
+            let (start, end) = (y(course.header.start_y), y(course.header.goal_y));
+            if !self.scroll_nodes.iter().any(|n| n.0 == 0) {
+                self.scroll_nodes
+                    .push((0, edge.min(160.0) + 24.0, start, speed));
+            }
+            self.scroll_nodes.retain(|n| n.0 != 11);
+            self.scroll_nodes.push((11, edge.max(160.0) - 24.0, end, 0));
+        }
+        for n in &mut self.scroll_nodes {
+            n.1 = span(n.1, x0, x1);
+            n.2 = span(n.2, y0, y1);
+        }
+    }
+
     /// Slope art from the field atlas: per column, the cell holding the surface gets a 45° piece
-    /// (atlas row 24) or a lower/upper 2:1 half piece (row 28); cells below get interior ground.
-    /// [inf] atlas positions read off the M1 atlas; to be checked against the game.
+    /// (atlas row 24) or a lower/upper 2:1 half piece (row 28); cells below get interior ground,
+    /// and the end caps the ground top tile.
+    /// [inf] atlas positions read off the M1 atlas: the game's per-cell tile codes (layout
+    /// tables 0x7101cfd9d0 / 0x7101cfdaf0) map to atlas cells only through the game's art.
     fn draw_slope(&mut self, sl: &Slope) {
         for dx in 0..sl.width {
             let x = sl.left + dx;
@@ -1441,6 +1544,7 @@ impl Level {
             for y in sl.bottom..row {
                 self.tiles.push(TileDraw {
                     pipe: false,
+                    back: false,
                     flip: 0,
                     x,
                     y,
@@ -1461,6 +1565,7 @@ impl Level {
             };
             self.tiles.push(TileDraw {
                 pipe: false,
+                back: false,
                 flip: 0,
                 x,
                 y: row,
@@ -1498,6 +1603,7 @@ impl Level {
                     atlas,
                     flip,
                     pipe: true,
+                    back: false,
                 });
             }
         }
@@ -1519,6 +1625,7 @@ impl Level {
                 let id = if y == height - 1 { 10 } else { 12 }; // top edge / interior
                 self.tiles.push(TileDraw {
                     pipe: false,
+                    back: false,
                     flip: 0,
                     x,
                     y,
@@ -1693,5 +1800,87 @@ impl Level {
         };
         lvl.fill_ground(-3, width_tiles + 3, 2);
         lvl
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mmk_formats::smm2::CourseObject;
+
+    /// A part at tile (x, y) of footprint w × h.
+    fn object(id: i16, x: i32, y: i32, w: u8, h: u8, flags: u32) -> CourseObject {
+        use mmk_formats::record::Record;
+        let mut o = CourseObject::parse(&[0; 0x20]);
+        (o.x, o.y, o.width, o.height) = (x * 160 + 80, y * 160 + 80, w, h);
+        (o.flags, o.child_flags) = (0x0600_0040 | flags, 0x0600_0040);
+        (o.id, o.child_id, o.link_id, o.sound_effect_id) = (id, -1, -1, -1);
+        o
+    }
+
+    /// The main area of a blank SMB1 course holding the objects.
+    fn level(objects: Vec<CourseObject>, autoscroll: u8) -> Level {
+        let mut c = Course::blank("M1");
+        c.main.header.autoscroll_type = autoscroll;
+        c.main.objects.items = objects;
+        Level::from_course(&c, 0)
+    }
+
+    #[test]
+    fn cannon_aims_from_its_facing_and_aim_fields() {
+        let f = |side: u32, aim: u32| cannon_angle((side << 25) | (aim << 22));
+        // facing up (3): aims 135, 90, 45, 0, 180
+        assert_eq!(
+            [f(3, 0), f(3, 1), f(3, 2), f(3, 3), f(3, 4)],
+            [135.0, 90.0, 45.0, 0.0, 180.0]
+        );
+        // the middle aim points along the facing: left, right, down
+        assert_eq!([f(0, 1), f(1, 1), f(2, 1)], [180.0, 0.0, 270.0]);
+    }
+
+    #[test]
+    fn spike_block_colours() {
+        let lvl = level(
+            vec![
+                object(110, 10, 4, 2, 2, 0),
+                object(110, 14, 4, 2, 2, 1 << 18),
+                object(110, 18, 4, 2, 2, 2 << 18),
+            ],
+            0,
+        );
+        // red: out while OFF (2); blue: out while ON (1); 2: the timer block (0)
+        let modes: Vec<u8> = lvl.spike_blocks.iter().map(|b| b.2).collect();
+        assert_eq!(modes, [2, 1, 0]);
+    }
+
+    #[test]
+    fn goal_pole_stands_over_the_goal_grounds_first_column() {
+        let lvl = level(vec![], 0);
+        let goal_left = ((lvl.right - 160.0) / TILE).round() as i32;
+        let (x, y) = lvl.goal.unwrap();
+        assert_eq!(x, lvl.right - 152.0);
+        // goal_y 1: the base block on the ground, its top at 32
+        assert_eq!(y, 2.0 * TILE);
+        assert_eq!(lvl.cell(goal_left, 1), Cell::Solid);
+    }
+
+    #[test]
+    fn custom_autoscroll_runs_from_the_start_unit_to_the_end_unit() {
+        use crate::world::{VIEW_H, VIEW_W};
+        // no nodes: the path is the start node (0) and the end node (11); start_y = goal_y = 1
+        // give y = (1 + 4)·16 − 8 = 72 → 104, + 4
+        let lvl = level(vec![], 4);
+        let nodes: Vec<_> = lvl.scroll_nodes.iter().map(|n| (n.0, n.1, n.2)).collect();
+        assert_eq!(
+            nodes,
+            [
+                (0, VIEW_W / 2.0, 108.0),
+                (11, lvl.right - VIEW_W / 2.0, 108.0)
+            ]
+        );
+        // a course node is clamped into the range of view centres
+        let lvl = level(vec![object(89, 0, 26, 3, 1, 1 << 20)], 4);
+        let n1 = lvl.scroll_nodes.iter().find(|n| n.0 == 1).unwrap();
+        assert_eq!((n1.1, n1.2), (VIEW_W / 2.0, lvl.top - VIEW_H / 2.0));
     }
 }

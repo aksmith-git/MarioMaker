@@ -3,9 +3,13 @@
 //! segment trails the head by 16 px along the same path. At the end of the path the chain shakes
 //! (frames 15–59) and the segments drop one by one from frame 70 (+10 per segment) at 3 px/frame.
 //!
-//! Path node codes (decoded from the course corpus): 1 left, 2 right, 3 down, 4 up; corner codes
-//! 5–12 give the direction after the turn (5 down, 6 left, 7 up, 8 left, 9 down, 10 right, 11 up,
-//! 12 right); 13–16 end the path [inf from node sequences].
+//! Path nodes [obs path builder 0x71005be760]: every node is one tile on from the one before, in
+//! the direction the path *enters* it: 1, 5, 7, 14 left; 2, 9, 11, 13 right; 3, 6, 10, 16 down;
+//! 4, 8, 12, 15 up. The corners 5–12 also name the way out (the next node's direction) and
+//! 13–16 are the end nodes, which take their step too (0 stops the list). The first node starts
+//! one tile beyond the row's end in its direction (left of the leftmost block, right of the
+//! rightmost) or, going up / down, from the head block. The game moves the head to node 0, then
+//! to each corner and the end in turn [obs analyzer 0x7100404f80 keeps node 0, 5–16].
 
 use crate::level::TILE;
 
@@ -33,13 +37,14 @@ pub struct Snake {
     prev: Vec<(f32, f32)>,
 }
 
-/// Unit step for a path node code; None ends the path.
+/// Unit step into a path node with this code (also the ! block and track block builders'
+/// mapping, 0x71005b4aa0 / 0x71005b86a0, at 2 tiles); None for codes that make no node.
 pub fn node_step(code: u16) -> Option<(f32, f32)> {
     Some(match code {
-        1 | 6 | 8 => (-1.0, 0.0),
-        2 | 10 | 12 => (1.0, 0.0),
-        3 | 5 | 9 => (0.0, -1.0),
-        4 | 7 | 11 => (0.0, 1.0),
+        1 | 5 | 7 | 14 => (-1.0, 0.0),
+        2 | 9 | 11 | 13 => (1.0, 0.0),
+        3 | 6 | 10 | 16 => (0.0, -1.0),
+        4 | 8 | 12 | 15 => (0.0, 1.0),
         _ => return None,
     })
 }
@@ -52,13 +57,25 @@ impl Snake {
         let mut pts: Vec<(f32, f32)> = (0..n)
             .map(|i| ((left + i as i32) as f32 * TILE + 8.0, cy))
             .collect();
+        let (lx, rx) = (pts[0].0, pts[n - 1].0);
         if reverse {
             pts.reverse();
         }
-        for &c in codes {
-            let Some((dx, dy)) = node_step(c) else { break };
+        for (i, &c) in codes.iter().enumerate() {
+            if c == 0 {
+                break;
+            }
+            let Some((dx, dy)) = node_step(c) else {
+                continue;
+            };
             let (x, y) = *pts.last().unwrap();
-            pts.push((x + dx * TILE, y + dy * TILE));
+            let from = match i {
+                // the first node: past the row's end that way, or above / below the head
+                0 if dx < 0.0 => lx,
+                0 if dx > 0.0 => rx,
+                _ => x,
+            };
+            pts.push((from + dx * TILE, y + dy * TILE));
         }
         let mut s = Self {
             pts,
@@ -147,8 +164,10 @@ mod tests {
 
     #[test]
     fn waits_then_follows_the_path() {
-        // 3 blocks at tiles 10..12, row 5, path: right ×2, turn up, up, end
-        let mut s = Snake::new(10, 5, 3, false, false, &[2, 2, 11, 4, 13]);
+        // 3 blocks at tiles 10..12, row 5, path: right, right into a turn up, up, end
+        let mut s = Snake::new(10, 5, 3, false, false, &[2, 11, 4, 15]);
+        assert_eq!(s.pts.len(), 3 + 4, "a node per code, the end included");
+        assert_eq!(s.pts[4], (14.0 * 16.0 + 8.0, 88.0), "the corner tile");
         let start = s.segments();
         assert_eq!(start[0], (12.0 * 16.0 + 8.0, 88.0));
         s.step(false);

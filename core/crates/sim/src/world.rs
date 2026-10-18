@@ -171,6 +171,8 @@ struct AreaStash {
     level: Level,
     blocks: Blocks,
     spawns: Vec<SpawnRecord>,
+    /// The left area's liquid, held where it was (see `switch_area`).
+    liquid: Option<Liquid>,
 }
 
 #[derive(Clone, Debug)]
@@ -225,6 +227,11 @@ pub struct World {
     /// Particle effect cues of this tick (cleared with `events`).
     pub fx: Vec<crate::fx::Fx>,
     rng: u32,
+    /// The course's shared random generator (scene +0xf8 → +8): a 4-word xorshift
+    /// (0x71014e43e0) that every actor draws from; the game seeds it per play, here it is fixed.
+    course_rng: [u32; 4],
+    /// Escort Toads knocked out: (actor id, frames until he is back).
+    escort_down: Vec<(u32, i32)>,
     field_model: &'static str,
     /// Both areas as loaded (main, sub); index of the current one; the other area's live state.
     area_initial: Vec<Level>,
@@ -407,6 +414,28 @@ fn overlap(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> bool {
     a.0 < b.2 && b.0 < a.2 && a.1 < b.3 && b.1 < a.3
 }
 
+/// The spawn box of an actor kind (centre x, centre y, half width, half height from the
+/// placement), from the actor profiles (profile +0x18, research profiles.txt) [obs]: most
+/// enemies and items are {0, 8, 8, 8}, their Big rows doubled.
+fn spawn_profile(kind: Kind, big: bool) -> (f32, f32, f32, f32) {
+    let base = match kind {
+        Kind::Thwomp { .. } | Kind::KoopaCar => (0.0, 16.0, 16.0, 16.0),
+        Kind::ClownCar { .. } => (0.0, 16.0, 32.0, 32.0),
+        Kind::Lift { falling: true, .. } | Kind::LavaLift { .. } => (0.0, 0.0, 64.0, 128.0),
+        Kind::Lift { .. } | Kind::Trampoline { .. } => (0.0, 0.0, 80.0, 128.0),
+        Kind::Seesaw { .. } => (0.0, 0.0, 128.0, 128.0),
+        Kind::Key => (0.0, 8.0, 128.0, 128.0),
+        Kind::Star => (0.0, 8.0, 8.0, 128.0),
+        Kind::YoshiEgg { .. } => (0.0, 8.0, 22.0, 22.0),
+        Kind::Yoshi { .. } => (0.0, 0.0, 12.0, 16.0),
+        Kind::RingBoo { .. } => (0.0, 16.0, 96.0, 96.0),
+        Kind::FloatCoin => (0.0, 0.0, 16.0, 16.0),
+        _ => (0.0, 8.0, 8.0, 8.0),
+    };
+    let s = if big { 2.0 } else { 1.0 };
+    (base.0 * s, base.1 * s, base.2 * s, base.3 * s)
+}
+
 impl World {
     /// The built-in demo strip (used when no course is loaded).
     pub fn new() -> Self {
@@ -470,6 +499,8 @@ impl World {
             events: Vec::new(),
             fx: Vec::new(),
             rng: 0x2545_f491,
+            course_rng: [0x075b_cd15, 0x159a_55e5, 0x1f12_3bb5, 0x0549_1333],
+            escort_down: Vec::new(),
             field_model: "",
             area_initial: areas,
             area: 0,
@@ -636,6 +667,7 @@ impl World {
             })
             .collect();
         self.actors.clear();
+        self.escort_down.clear();
         self.effects.clear();
         self.reset_generators();
         self.liquid = self.level.liquid.map(Liquid::new);
@@ -687,6 +719,7 @@ impl World {
             level: std::mem::replace(&mut self.level, Level::flat(1)),
             blocks: std::mem::take(&mut self.blocks),
             spawns: std::mem::take(&mut self.spawns),
+            liquid: self.liquid,
         };
         self.area = to;
         self.initial = self.area_initial[to].clone();
@@ -698,10 +731,17 @@ impl World {
                 self.field_model =
                     Box::leak(field_model(&self.level.style, self.level.theme).into_boxed_str());
                 self.actors.clear();
+                self.escort_down.clear();
                 self.effects.clear();
                 self.reset_generators();
-                // [?] whether the liquid keeps moving while the player is away; it restarts here
-                self.liquid = self.level.liquid.map(Liquid::new);
+                // the liquid waits where it was left: both area scenes are built at course start
+                // (two calls of the scene ctor 0x71003fce30 in 0x7100ab7070, each with its own
+                // liquid) and the course update runs the area update 0x71004005e0 for every area
+                // each frame (0x7100aced20) [obs]; but the liquid only counts down its wait and
+                // moves while its area's play flag (+0x88 → +0x40) is set, which the course
+                // update writes on its current area (+0x2f8) only [inf: that +0x2f8 is the area
+                // being played]
+                self.liquid = st.liquid;
                 self.snakes = self
                     .level
                     .snakes
@@ -735,6 +775,17 @@ impl World {
         x ^= x << 5;
         self.rng = x;
         (x >> 8) as f32 / (1u32 << 24) as f32
+    }
+
+    /// A draw 0 ≤ r < n from the course generator: the next xorshift word scaled by n, as the
+    /// game's callers do ((word × n) >> 32).
+    fn course_rand(&mut self, n: u32) -> u32 {
+        let s = &mut self.course_rng;
+        let t = s[0] ^ (s[0] << 11);
+        let w = s[3];
+        let next = t ^ (t >> 8) ^ w ^ (w >> 19);
+        *s = [s[1], s[2], w, next];
+        ((next as u64 * n as u64) >> 32) as u32
     }
 
     fn add_score(&mut self, points: u32, x: f32, y: f32) {
@@ -783,8 +834,11 @@ impl World {
 
     /// The player flies a Koopa Clown Car (42-koopa-clown-car.md, player state 68): toward the
     /// pad direction at up to 2 px/f (diagonals normalised), accelerating 0.05/frame per axis,
-    /// braking by 5 % when over speed; the Fire car shoots with Run; Down + Jump climbs out
-    /// [inf: exit input not traced].
+    /// braking by 5 % when over speed; the Fire car shoots with Run. Jump climbs out [obs]: in
+    /// the car the player runs the Wait body (state 68 exec 0x71009f5440 → 0x71009cd430),
+    /// whose standing sub-states take the ordinary jump check (0x71009c4ed0 → 0x71009cf9c0 →
+    /// jump 0x71009c1d50, launch 3.628 from rest); holding Down crouches in the car (sub-states
+    /// 2–3, `stoop`), where that check isn't made, so Down + Jump does nothing.
     fn fly_clown_car(&mut self, input: Input) {
         let Some(id) = self.player.clown else { return };
         let Some(i) = self.actors.iter().position(|a| a.id == id && a.alive()) else {
@@ -796,10 +850,11 @@ impl World {
         let jump_pressed = jump && !self.clown_prev.0;
         let run_pressed = run && !self.clown_prev.1;
         self.clown_prev = (jump, run);
-        if jump_pressed && input.held(input::DOWN) {
+        if jump_pressed && !input.held(input::DOWN) {
             self.player.clown = None;
             self.actors[i].phase = 0;
-            self.player.vy = 3.5;
+            // the standing jump launch (base 0x7101c8a648; no speed bonus inside the car)
+            self.player.vy = 3.628;
             self.player.on_ground = false;
             self.events.push(Event::Jump);
             return;
@@ -962,7 +1017,11 @@ impl World {
         car.collide(&self.level);
         car.moved = (car.x - before.0, car.y - before.1);
         if car.wall && car.phase == 2 {
-            // bumping a wall turns it around [inf: the car's wall rule wasn't found]
+            // bumping a wall turns it around [inf: RidePlayerRun (exec 0x71006cc280) has no
+            // terrain-wall turn; its only bounce is the side-push callback (+0x7f0 =
+            // 0x71006ca5f0: speed 0.75·|v| away, at least 2 px/f, facing kept, 30-frame lock),
+            // which other actors' pushes send; what a terrain wall does to the car's speed is
+            // the shared actor BG code, not traced]
             car.phase = 3;
             car.timer = 0;
             car.dir = -car.dir;
@@ -1070,7 +1129,11 @@ impl World {
             || !self.player.alive()
             || (self.actors[i].mode != Mode::ShellWait && !crate_held);
         if release && crate_held {
-            // thrown forward [inf: 3.5 px/f, vy 2.0]; it breaks on a wall or an enemy
+            // thrown forward [obs]: the map-object carry action's release message (slot
+            // 0x7100852140, release kind 1) launches at (|thrower speed| + 3, or + 1 when the
+            // thrower moves against the throw) × 0.9 (0x7101c8a540) × the object's throw scale,
+            // vy 2 × its lift scale (both 1 for the shared action, 0x71008548b0), max fall −4;
+            // it breaks on a wall or an enemy
             let a = &mut self.actors[i];
             a.held = false;
             a.x = x;
@@ -1079,7 +1142,9 @@ impl World {
                 a.vx = 0.8 * facing as f32;
                 a.vy = 1.0;
             } else {
-                a.vx = 3.5 * facing as f32 + 0.5 * pvx;
+                let against = pvx * (facing as f32) < 0.0;
+                let base = pvx.abs() + if against { 1.0 } else { 3.0 };
+                a.vx = base * 0.9 * facing as f32;
                 a.vy = 2.0;
             }
             a.phase = 1;
@@ -1293,8 +1358,10 @@ impl World {
         }
         if self.tongue > 0 {
             self.tongue -= 1;
-            // the tip goes out and back over 10 frames, up to 32 px [inf: reach comes from the
-            // animation]
+            // the tip goes out and back over 10 frames, up to 32 px [inf: the tongue contact
+            // (0x7100a2e780 → 0x7100a2e9b0) tests from the tongue-tip point the model gives
+            // (vtable +0x138: a bone of the `eat` animation); the reach lives in the Yoshi
+            // model's animation data, not in code]
             let t = 10 - self.tongue;
             let reach = 32.0 * (1.0 - ((t as f32 - 5.0).abs() / 5.0));
             let x0 = px + facing as f32 * 8.0;
@@ -1310,9 +1377,12 @@ impl World {
         }
     }
 
-    /// Yoshi's tongue caught actor `j` (yoshi.md §5.3 eat reactions, simplified [inf]): eaten
+    /// Yoshi's tongue caught actor `j` (yoshi.md §5.3 eat reactions, simplified): eaten
     /// (GulpDown; a coin counts), held to spit (SpitOut enemies, fire, bones), or a power-up
-    /// for the rider [inf]; Invalid things are left alone.
+    /// for the rider [inf: EnemyDB marks power-ups SpitOut, but the mouth acts on the caught
+    /// actor's own eat handler (actor +0x338: type +0x24, swallow +0x30, replace +0x08;
+    /// catch 0x7100a24920), and the item handlers weren't found, so whether an item is held
+    /// and spat or swallowed into the rider is open]; Invalid things are left alone.
     fn eat(&mut self, j: usize) {
         let a = &self.actors[j];
         if a.big {
@@ -1328,7 +1398,7 @@ impl World {
             | Kind::BulletBill
             | Kind::MontyMole
             | Kind::BobOmb
-            | Kind::SpikeTop
+            | Kind::SpikeTop { .. }
             | Kind::Lakitu
             | Kind::Magikoopa
             | Kind::Blooper
@@ -1784,12 +1854,22 @@ impl World {
         // SMM1 shell physics: shells kicked by the mid-air wall assist
         self.step_shell_assist();
         let masked = self.player.pu.headdress == Some(crate::player::Headdress::Goomba);
+        // the throwers' live children (a Lakitu's spawn limiter, actors.rs `step_lakitu`)
+        let parents: Vec<u32> = self
+            .actors
+            .iter()
+            .filter(|a| a.alive())
+            .filter_map(|a| a.parent)
+            .collect();
         for a in &mut self.actors {
             if a.held {
                 continue;
             }
             if a.kind.is_platform() {
                 continue; // already moved before the player
+            }
+            if a.kind == Kind::Lakitu {
+                a.children = parents.iter().filter(|&&p| p == a.id).count() as u32;
             }
             a.target = if a.kind == Kind::EscortToad {
                 escort_target
@@ -1875,16 +1955,7 @@ impl World {
         if self.player.in_water {
             self.clear.in_water();
         }
-        // the escort Toad knocked out: the run fails [inf]
-        if self.player.alive()
-            && self
-                .actors
-                .iter()
-                .any(|a| a.kind == Kind::EscortToad && !a.alive())
-        {
-            self.player.kill();
-            self.events.push(Event::Death);
-        }
+        self.escort_toad_comeback();
 
         // timer: one count per second of play
         if self.time > 0 {
@@ -1904,6 +1975,39 @@ impl World {
         self.activate();
     }
 
+    /// The escort Toad knocked out doesn't fail the run [obs ChaseKinopio states, init
+    /// 0x7100879060]: Dead (0x710087a6a0, `dead_pose`) lasts 45 frames (exec 0x710087a7c0), then
+    /// Balloon (0x710087a7f0) carries him in a bubble back to the players. The bubble's flight
+    /// isn't modelled: he comes back beside player 1 when the 45 frames are up.
+    fn escort_toad_comeback(&mut self) {
+        for a in &self.actors {
+            if a.kind == Kind::EscortToad
+                && !a.alive()
+                && !self.escort_down.iter().any(|&(id, _)| id == a.id)
+            {
+                self.escort_down.push((a.id, 45));
+            }
+        }
+        let mut back = Vec::new();
+        self.escort_down.retain_mut(|(id, t)| {
+            *t -= 1;
+            if *t > 0 {
+                return true;
+            }
+            back.push(*id);
+            false
+        });
+        for id in back {
+            if let Some(a) = self.actors.iter_mut().find(|a| a.id == id) {
+                a.mode = Mode::Dead;
+            }
+            let p = &self.player;
+            let mut t = Actor::new(Kind::EscortToad, p.x - 16.0 * p.facing as f32, p.y);
+            t.dir = p.facing;
+            self.add_actor(t);
+        }
+    }
+
     /// Local multiplayer: `n` players in all (1–4). The extra players join beside player 1.
     pub fn set_players(&mut self, n: usize) {
         let n = n.clamp(1, 4) - 1;
@@ -1917,7 +2021,8 @@ impl World {
     /// One tick with an input per player (player 1 first). Extra players run the same player
     /// rules — physics, coins, items, enemies, the goal — swapped into player 1's place one at a
     /// time. One who dies, or drops out of the view, comes back beside player 1 [inf: SMM2 puts
-    /// them in a bubble]; any player reaching the goal clears the course for everyone.
+    /// them in a bubble — player state 97 Balloon (0x71009c10e0 / 0x71009c12d0), which belongs
+    /// in player.rs]; any player reaching the goal clears the course for everyone.
     pub fn step_players(&mut self, inputs: &[Input]) {
         self.step(inputs.first().copied().unwrap_or_default());
         let mut i = 0;
@@ -2044,7 +2149,8 @@ impl World {
         // a tree gives up its item, and counts for "shake N trees", when a player climbs its
         // trunk to the top: entering TreeClimbTop (0x7100a15830) sets the tree's per-player
         // release bit and posts the clear-condition event 0x4b with the tree's record [obs];
-        // once per tree here [inf: the condition manager's de-duplication wasn't traced]
+        // (posted on every entry, 0x7100418310); BellTree is condition kind 8, which the
+        // condition manager de-duplicates by placed object (0x7100417fe0): once per tree [obs]
         let py = self.player.y;
         let climbing = self.player.climbing.map(|(vx, _)| vx);
         let mut out = Vec::new();
@@ -2096,7 +2202,8 @@ impl World {
     }
 
     /// Blooper Nanny babies sit on her path, 8 + 12·k frames back (8 + 8·k winged); without
-    /// her they're knocked out too [inf].
+    /// her they go too [obs]: the babies are the Nanny's own sub-models and collision bodies
+    /// (component init 0x7100668ba0, trail 0x7100669120), not actors of their own.
     fn place_baby_bloopers(&mut self) {
         let mut moves = Vec::new();
         for (i, b) in self.actors.iter().enumerate() {
@@ -2143,7 +2250,10 @@ impl World {
         }
     }
 
-    /// Big Mario breaks the bricks he walks into [inf].
+    /// Big Mario breaks the bricks he walks into [inf: the v1.0.0 player code has the Mega form
+    /// (6; scale 2.0 0x71009cca10): its update 0x71009c25c0 sets terrain-sensor flags +0x22c8
+    /// |= 0x4000 (and 0x40000000 / 0x80000000) and, when moving, +0x22cc |= 1, which the shared
+    /// BG collision acts on; which blocks and sides break there isn't traced].
     fn mega_breaks_bricks(&mut self) {
         let p = &self.player;
         if p.form != Form::Mega || p.vx.abs() < 0.5 {
@@ -2549,7 +2659,11 @@ impl World {
         if newly > 0 {
             self.events.push(Event::Coin);
             if self.pink.len() >= self.pink_total {
-                // [inf] the key flies straight to the player (event kind 0)
+                // the key counts at once [obs 0x7100411400]: the last coin queues a key event
+                // (kind 3 if the pickup's flag byte is set, else 0) and the key manager adds it
+                // to the player's keys when it processes the queue; kind 3 only shows a key
+                // flying in (PinkCoinAppearWait → Appear). A key with no lock left for it is
+                // dropped and not counted — the engine has no lock count, so it always counts
                 self.keys += 1;
                 self.events.push(Event::OneUp);
             }
@@ -3023,7 +3137,12 @@ impl World {
                     continue;
                 }
             }
-            // a helmet shields the head; a Spiny helmet knocks out what it rises into [inf]
+            // a helmet shields the head and attacks what is above it [obs]: a helmet hit (cc
+            // 16–19) only counts against a body whose bottom is above the wearer's, this frame
+            // or the last (0x7100730510); it is metcap (Buzzy) / tgzcap (Spiny) in EnemyDB.
+            // tgzcap is DieFall for nearly everything, Thwomps and Boos too, but CapBound for
+            // Buzzy Beetles; metcap is CapBound (a harmless bounce) except for Spike Tops and
+            // Lakitu (DieFall) [obs EnemyDB]
             if let Some(h) = p.helmet
                 && a.kind.is_enemy()
                 && ay >= head - 6.0
@@ -3032,13 +3151,12 @@ impl World {
                     Kind::Bowser { .. } | Kind::BoomBoom { .. } | Kind::BowserJr { .. }
                 )
             {
-                if h == 2
-                    && p.vy > 0.0
-                    && !matches!(
-                        a.kind,
-                        Kind::Thwomp { .. } | Kind::Boo | Kind::RingBoo { .. }
-                    )
-                {
+                let falls = if h == 2 {
+                    !matches!(a.kind, Kind::Buzzy | Kind::ClownCar { .. })
+                } else {
+                    matches!(a.kind, Kind::SpikeTop { .. } | Kind::Lakitu)
+                };
+                if falls && ay > p.y {
                     let px = p.x;
                     self.actors[i].die_fall(px);
                     self.events.push(Event::EnemyDown);
@@ -3062,7 +3180,9 @@ impl World {
                         | Kind::BoomBoom { .. }
                         | Kind::BowserJr { .. }
                 );
-            // Big Mario knocks out what he touches [inf], bosses and the indestructible aside
+            // Big Mario knocks out what he touches [inf: no Mega attack id is set on the body
+            // colliders (0x71009cdc90 sets cc 2 only for the star); not found], bosses and the
+            // indestructible aside
             let mega_hit = self.player.form == Form::Mega
                 && !matches!(
                     a.kind,
@@ -3099,7 +3219,8 @@ impl World {
                 (true, false) => 10.0,
             };
             let in_window = d > 0.0 && d < w;
-            // (a Spiny shell's spikes can't be stomped [inf])
+            // (a Spiny shell's spikes can't be stomped: EnemyDB TogezoShell has the walking
+            // Spiny's stomp row — stamp Damage, stamp_shoe DieFall, stamp_spin DieVanish [obs])
             let stomp = in_window
                 && !a.kind.unstompable()
                 && !(a.shell_of == 2 && self.player.shoe.is_none());
@@ -3384,10 +3505,10 @@ impl World {
         for idx in 0..self.spawns.len() {
             let rec = &self.spawns[idx];
             let s = rec.spawn;
-            // spawn box: the actor box from the feet up (16 × 16, big 32 × 32) [inf: the
-            // per-kind profile boxes aren't tabulated]
-            let h = if s.big { 16.0 } else { 8.0 };
-            let sb = (s.x - h, s.y, s.x + h, s.y + 2.0 * h);
+            // spawn box: the actor profile's box (profile +0x18: centre offset, half size) around
+            // the placement, which 0x71003fcb90 tests against the zone [obs profiles.txt]
+            let (cx, cy, hw, hh) = spawn_profile(s.kind, s.big);
+            let sb = (s.x + cx - hw, s.y + cy - hh, s.x + cx + hw, s.y + cy + hh);
             if rec.spawned {
                 if !touches(sb, zc) {
                     self.spawns[idx].spawned = false;
@@ -3621,27 +3742,27 @@ impl World {
 
     /// Bob-omb explosions (15-bob-omb.md): break breakable blocks around the
     /// bomb, knock out enemies and hurt the player nearby: terrain within the diamond of radius
-    /// 2 tiles [obs], actors and the player within 32 px [inf: the shared Explode collider's
-    /// size wasn't found].
+    /// 2 tiles [obs]; actors and the player touching the blast box [obs]. While the Explode
+    /// flag is up (0x71005eb8b0 sets +0x518 bit 25) the enemy collider update 0x7100732640
+    /// swaps the bomb's body box for a shell-attack (cc 6) box centred 8 px above its feet,
+    /// half 18 × 18 (Big: × 2), that hits any body it touches, players included.
     fn explosions(&mut self) {
-        let bombs: Vec<(f32, f32)> = self
+        let bombs: Vec<(f32, f32, f32)> = self
             .actors
             .iter()
             .filter(|a| a.kind == Kind::BobOmb && a.phase == 9 && a.mode != Mode::Dead)
-            .map(|a| (a.x, a.y + 8.0))
+            .map(|a| (a.x, a.y, if a.big { 2.0 } else { 1.0 }))
             .collect();
-        for &(bx, by) in &bombs {
+        for &(bx, feet, s) in &bombs {
+            let by = feet + 8.0;
+            let (cy, h) = (feet + 8.0 * s, 18.0 * s);
+            let blast = (bx - h, cy - h, bx + h, cy + h);
             for a in &mut self.actors {
                 if a.kind == Kind::BobOmb && a.phase == 9 {
                     a.mode = Mode::Dead;
                     continue;
                 }
-                let (cx, cy) = (a.x, a.y + a.height() / 2.0);
-                if a.kind.is_enemy()
-                    && a.alive()
-                    && (cx - bx).abs() < 32.0
-                    && (cy - by).abs() < 32.0
-                {
+                if a.kind.is_enemy() && a.alive() && overlap(blast, a.bbox()) {
                     if a.kind.is_boss() {
                         a.boss_hit(crate::actors::BossAttack::Blast, bx);
                     } else {
@@ -3679,8 +3800,7 @@ impl World {
                     self.effects.extend(Effect::debris(ox, oy, 0.25, 0.1));
                 }
             }
-            let p = &self.player;
-            if (p.x - bx).abs() < 32.0 && (p.y + 8.0 - by).abs() < 32.0 && self.player.hurt() {
+            if overlap(blast, self.player.hurt_box()) && self.player.hurt() {
                 self.events.push(if self.player.alive() {
                     Event::PowerDown
                 } else {
@@ -3912,8 +4032,10 @@ impl World {
     }
 
     /// Twister wind column: x within ±16 of the twister, from its feet to the column top. The
-    /// player is lifted (vy toward 4.5 at +0.6/frame) [inf: lift speeds live in the player's
-    /// tornado state, not extracted].
+    /// player is lifted (vy toward 4.5 at +0.6/frame) [inf: the twister's contact 0x71008c0630
+    /// fills the player's tornado receiver (actor +0x398: the twister's centre x, top y and x
+    /// speed, flag bit 0); the player state list has no Tornado state, and the code reading
+    /// the receiver for the player wasn't found].
     fn twister_lift(&mut self) {
         let p = &self.player;
         let inside = self.actors.iter().any(|a| {
@@ -3942,7 +4064,9 @@ impl World {
                 self.level
                     .set(x, y, if solid { Cell::Solid } else { Cell::Empty });
             }
-            // a block appearing around the player pushes them out upward [inf]
+            // a block appearing around the player pushes them out upward [inf: the blinking
+            // tiles only switch collision (FlashBlock, 0x71004005e0); the escape of a body
+            // inside a solid tile is the player's terrain-sensor code (player.rs side)]
             let p = &self.player;
             let (tx, ty) = (
                 (p.x / TILE).floor() as i32,
@@ -4005,19 +4129,22 @@ impl World {
     }
 
     /// Raccoon tail swing (TailAttack, 18 frames) [obs], cat scratch / slide (ClimbAttack,
-    /// ClimbSlidingAttack) [obs], cape spin and hammer [inf: hit window frames 12–4 of a
-    /// 16-frame swing, reach 18 px; the cape spin reaches both sides — MantAttack's collider
-    /// wasn't traced]: knocks out enemies and bumps the block it touches.
+    /// ClimbSlidingAttack) [obs], cape spin (MantAttack) and hammer (HammerAttack) [obs]:
+    /// knocks out enemies and bumps the block it touches.
     fn tail_attack(&mut self) {
         let p = &self.player;
         // the raccoon's tail hits through its whole 18-frame swing [obs]; the cat's scratch on
-        // animation frames 0-10 of 17 (ClimbAttack exec 0x7100a1c230 → 0x7100a1b290) [obs]
+        // animation frames 0-10 of 17 (ClimbAttack exec 0x7100a1c230 → 0x7100a1b290) [obs]; the
+        // cape's box is up on every frame of the spin (0x71009f7220 → 0x71009f6710) [obs]; the
+        // hammer's on animation frames 11–17 (HammerAttack exec 0x71009c6150) [obs], here the
+        // part of them inside the player's 16-frame swing (`attack` 15 → 0 is frame 0 → 15)
         let window = match p.form {
             Form::Raccoon => 0..=17,
             Form::Cat => {
                 crate::player::CAT_SCRATCH_FRAMES - 11..=crate::player::CAT_SCRATCH_FRAMES - 1
             }
-            _ => 4..=12,
+            Form::Cape => 1..=15,
+            _ => 1..=4,
         };
         let cat_slide = p.form == Form::Cat && p.cat_slide > 0;
         if !(window.contains(&p.attack) || cat_slide)
@@ -4028,31 +4155,45 @@ impl World {
         {
             return;
         }
-        let both = p.form == Form::Cape;
         // the tail box (centre ±9, 10 up, half 9 × 8) swings behind on animation frames 0–3 and
         // 15–17 (TailAttack exec 0x7100a034e0) [obs]
         let frame = 17 - p.attack;
-        let side = if p.form == Form::Raccoon && !(4..=14).contains(&frame) {
-            -p.facing
-        } else {
-            p.facing
+        // cape / hammer animation frame (0 on the swing's first frame)
+        let swing = 15 - p.attack;
+        let side = match p.form {
+            Form::Raccoon if !(4..=14).contains(&frame) => -p.facing,
+            // the cape box flips sides every 2 animation frames, starting behind
+            // (side = facing ^ (frame / 2 & 1) ^ 1, 0x71009f6710) [obs]
+            Form::Cape if (swing / 2) % 2 == 0 => -p.facing,
+            _ => p.facing,
         };
-        let (x0, x1) = if both {
-            (p.x - 18.0, p.x + 18.0)
-        } else if side > 0 {
+        let (x0, x1) = if side > 0 {
             (p.x, p.x + 18.0)
         } else {
             (p.x - 18.0, p.x)
         };
         let top = if p.form == Form::Raccoon { 18.0 } else { 14.0 };
-        let reach = if p.form == Form::Cat {
-            // the cat's attack box: centre 10 px ahead, 12 up; half 16 × 16 for the scratch,
-            // 8 × 8 for the slide [obs 0x7100a1b290, 0x7100a1d150]
-            let cx = p.x + 10.0 * p.facing as f32;
-            let h = if cat_slide { 8.0 } else { 16.0 };
-            (cx - h, p.y + 12.0 - h, cx + h, p.y + 12.0 + h)
-        } else {
-            (x0, p.y + 2.0, x1, p.y + top)
+        let reach = match p.form {
+            Form::Cat => {
+                // the cat's attack box: centre 10 px ahead, 12 up; half 16 × 16 for the
+                // scratch, 8 × 8 for the slide [obs 0x7100a1b290, 0x7100a1d150]
+                let cx = p.x + 10.0 * p.facing as f32;
+                let h = if cat_slide { 8.0 } else { 16.0 };
+                (cx - h, p.y + 12.0 - h, cx + h, p.y + 12.0 + h)
+            }
+            Form::Cape => {
+                // the mantle box (cc 21): centre 10 px to the side, 14 up; half 10 × 8 [obs]
+                let cx = p.x + 10.0 * side as f32;
+                (cx - 10.0, p.y + 6.0, cx + 10.0, p.y + 22.0)
+            }
+            Form::Builder => {
+                // the hammer box (cc 25): centre 14 up, 20 px ahead once the swing is down
+                // (14 / 16 / 18 on frames 11–13); half 10 × 14 [obs]
+                let ahead = 20.0 + (2.0 * (swing - 10) as f32 - 8.0).min(0.0);
+                let cx = p.x + ahead * side as f32;
+                (cx - 10.0, p.y, cx + 10.0, p.y + 28.0)
+            }
+            _ => (x0, p.y + 2.0, x1, p.y + top),
         };
         let px = p.x;
         let mut hits = 0;
@@ -4083,33 +4224,25 @@ impl World {
             self.events.push(Event::EnemyDown);
         }
         // blocks at the swing's tip: the raccoon probes 16 px ahead, 8 up, on animation frames
-        // 6–10 [obs]; the others once, at the start of their window
-        let probe = if self.player.form == Form::Raccoon {
-            (6..=10).contains(&frame)
-        } else if self.player.form == Form::Cat {
+        // 6–10 [obs]; the cape 16 px out on its current side, 8 up, while more than 2 of its
+        // frames are left (0x71009f6710) [obs]; the hammer once, as its head comes down
+        let probe = match self.player.form {
+            Form::Raccoon => (6..=10).contains(&frame),
             // the scratch probes 16 px ahead, 8 up, from its first frame [obs 0x7100a1b290]
-            self.player.attack == crate::player::CAT_SCRATCH_FRAMES - 1
-        } else {
-            self.player.attack == 12
+            Form::Cat => self.player.attack == crate::player::CAT_SCRATCH_FRAMES - 1,
+            Form::Cape => true,
+            _ => swing == 11,
         };
         if probe {
             let ty = ((self.player.y + 8.0) / TILE).floor() as i32;
-            let sides: &[f32] = if both { &[-1.0, 1.0] } else { &[0.0] };
-            for &side in sides {
-                let dir = if side == 0.0 {
-                    self.player.facing as f32
-                } else {
-                    side
-                };
-                let reach = if matches!(self.player.form, Form::Raccoon | Form::Cat) {
-                    16.0
-                } else {
-                    14.0
-                };
-                let tx = ((self.player.x + dir * reach) / TILE).floor() as i32;
-                if self.blocks.get(tx, ty).is_some_and(|b| b.bump.is_none()) {
-                    self.hit_block(tx, ty, true, HitPower::Break);
-                }
+            let reach = if self.player.form == Form::Builder {
+                14.0
+            } else {
+                16.0
+            };
+            let tx = ((self.player.x + side as f32 * reach) / TILE).floor() as i32;
+            if self.blocks.get(tx, ty).is_some_and(|b| b.bump.is_none()) {
+                self.hit_block(tx, ty, true, HitPower::Break);
             }
         }
     }
@@ -4236,7 +4369,10 @@ impl World {
         }
         // the blue POW's quake goes to every live enemy standing on something, wherever it is
         // (the quake check runs in each enemy's update, 0x710078a9e0, with no range test; only
-        // actors near the view exist) [obs]; the red one also reaches the air, in view [inf]
+        // actors near the view exist) [obs]; the red one also reaches the air, in view [inf:
+        // the red POW's Land (0x71008554a0, id 0x2e) does not post the global quake
+        // (0x7100420860) at all; it sets bit 0 of its helper at +0x4d8 instead, whose effect
+        // wasn't traced — the engine gives it the blue quake plus airborne enemies in view]
         for a in &mut self.actors {
             let in_view = a.x >= v.0 && a.x <= v.2 && a.y >= v.1 && a.y <= v.3;
             if a.kind.is_enemy() && a.alive() && (a.on_ground || (red && in_view)) {
@@ -4301,19 +4437,18 @@ impl World {
         let hb = self.player.hurt_box();
         let mut hit = false;
         for b in &self.level.burners {
-            let len = self.burner_flame(b.alt);
-            if len <= 0.0 {
+            // the flame collider (Burner init 0x7100875190) [obs]: 10 px wide, 40 px long from
+            // the block face (42 downward), centred on the block's middle. It is registered
+            // only in the Fire state (enter 0x7100874b30 adds it, exit 0x7100874c30 removes
+            // it): the growing (FireStart) and shrinking (FireFinish) flames don't hurt [obs]
+            if self.burner_flame(b.alt) < 48.0 {
                 continue;
             }
-            // the flame collider (Burner init 0x7100875190) [obs]: 10 px wide, 40 px long from
-            // the block face (42 downward), centred on the block's middle; its growth while
-            // starting and shrinking follows the flame length [inf]
-            let f = len / 48.0;
             let r = match b.dir {
-                3 => (b.x - 5.0, b.y + 16.0, b.x + 5.0, b.y + 16.0 + 40.0 * f),
-                2 => (b.x - 5.0, b.y - 42.0 * f, b.x + 5.0, b.y),
-                1 => (b.x + 8.0, b.y + 3.0, b.x + 8.0 + 40.0 * f, b.y + 13.0),
-                _ => (b.x - 8.0 - 40.0 * f, b.y + 3.0, b.x - 8.0, b.y + 13.0),
+                3 => (b.x - 5.0, b.y + 16.0, b.x + 5.0, b.y + 56.0),
+                2 => (b.x - 5.0, b.y - 42.0, b.x + 5.0, b.y),
+                1 => (b.x + 8.0, b.y + 3.0, b.x + 48.0, b.y + 13.0),
+                _ => (b.x - 48.0, b.y + 3.0, b.x - 8.0, b.y + 13.0),
             };
             hit |= overlap(hb, r);
         }
@@ -4406,7 +4541,9 @@ impl World {
                     })
             })
             .collect();
-        // tree canopies: platforms you can jump up through [inf: top-only]
+        // tree canopies: platforms you can jump up through [inf: top-only — the canopy is a
+        // model collision (tree init 0x710085cf10 → 0x71008fd2f0, flags 0x401) whose shape and
+        // pass-through attribute come from the BellTree collision asset]
         for (ti, t) in self.level.trees.iter().enumerate() {
             let (_, top) = t.canopy();
             self.level.solids.push(crate::level::Solid {
@@ -4530,8 +4667,9 @@ impl World {
     }
 
     /// Bill Blasters fire toward the player (13-bill-blaster.md): the first shot 60 frames after
-    /// the muzzle is on screen with no player at the blaster, then every 190 frames (random
-    /// extras 0–59 are [inf] seeded per blaster).
+    /// the muzzle is on screen with no player at the blaster, then every 190 frames; with the
+    /// default content both get 0–59 extra frames from the course's shared generator each time
+    /// they are set (0x710069cea0: (word × 60) >> 32), so a held blaster draws every frame [obs].
     fn step_blasters(&mut self) {
         let v = self.view_rect(0.0);
         for bi in 0..self.level.blasters.len() {
@@ -4544,17 +4682,24 @@ impl World {
             let p = &self.player;
             let at_blaster =
                 (p.x - b.x).abs() < 24.0 && (p.y - (b.y + h / 2.0)).abs() < h / 2.0 + 20.0;
-            let (main, cool) = &mut self.blaster_timers[bi];
+            let extra = |w: &mut Self| {
+                if b.contents.is_none() {
+                    w.course_rand(60) as i32
+                } else {
+                    0
+                }
+            };
             if !on_screen || at_blaster {
-                *main = 60;
+                self.blaster_timers[bi].0 = 60 + extra(self);
                 continue;
             }
+            let (main, cool) = &mut self.blaster_timers[bi];
             *main -= 1;
             *cool -= 1;
             if *main > 0 || *cool > 0 {
                 continue;
             }
-            *cool = 190;
+            self.blaster_timers[bi].1 = 190 + extra(self);
             let alive = self
                 .actors
                 .iter()
@@ -4581,6 +4726,8 @@ impl World {
     /// Set dotted-line block solidity from the ON/OFF state (red solid when ON).
     fn apply_on_off(&mut self) {
         let on = self.on_off;
+        // track junctions read the same bit (set = ON) [obs 0x7100341a00]
+        self.level.tracks.on = on;
         let cells: Vec<((i32, i32), bool)> = self
             .blocks
             .map
@@ -4846,8 +4993,9 @@ impl World {
         if !p.alive() {
             return;
         }
-        // pole touch box x ∈ [X0−4, X0+5], y ∈ [Y0+14, Y0+166]; tested against body box B
-        // [inf: box A of a small player on the base block only touches Y0+14]
+        // pole touch box x ∈ [X0−4, X0+5], y ∈ [Y0+14, Y0+166]; its collider (0x710244d810)
+        // accepts collider kinds {0, 1, 2, 24}, so both player body boxes (A, kind 0; B, kind 1;
+        // 0x71009b3990) touch it and the union is box B [obs]
         let hb = p.contact_box();
         if !overlap(hb, (x0 - 4.0, y0 + 14.0, x0 + 5.0, y0 + 166.0)) {
             return;
@@ -5099,7 +5247,8 @@ impl World {
 
     /// Custom autoscroll (89-autoscroll-camera.md, themes.md §4.3): the view centre starts at
     /// the nearest node not behind it and travels node to node at the speed of each segment's
-    /// start node (setting 0–2 → 0.5 / 1.0 / 2.0 px/f [inf: field + 1 = slow/normal/fast]),
+    /// start node (setting 0–2 → 0.5 / 1.0 / 2.0 px/f [inf: field + 1 = slow/normal/fast; the
+    /// loader that fills the camera's node table (+0xb8 + area·0x90) wasn't found]),
     /// easing by max(0.03·|Δ|, 0.01) per frame; it pauses during warps, deaths and the goal.
     fn custom_autoscroll(&mut self) {
         let mut nodes = self.level.scroll_nodes.clone();
@@ -5250,11 +5399,7 @@ impl World {
         for t in &self.level.tiles {
             let (px, py) = (t.x as f32 * TILE, t.y as f32 * TILE);
             if visible(px, py) {
-                let layer = if t.pipe && self.options.smm1_layering {
-                    smm1::PIPE_LAYER
-                } else {
-                    10
-                };
+                let layer = smm1::tile_layer(t, self.options.smm1_layering);
                 let mut s = tile(px, py, t.atlas, layer);
                 s.flip_x = t.flip & 1 != 0;
                 s.flip_y = t.flip & 2 != 0;
@@ -5918,12 +6063,15 @@ impl World {
         self.yoshi_sprites(&mut out);
         if let Some(mut s) = self.player_sprite() {
             if self.player.yoshi.is_some() {
-                // the rider sits on Yoshi's saddle [inf: saddle offset not decoded]
+                // the rider sits on Yoshi's saddle [inf: drawing only; the rider is attached to
+                // a joint of the Yoshi model (Ride exec 0x7100a32570 sits inside a larger
+                // function Ghidra doesn't split), so the offset is in the model asset]
                 s.y += 14.0;
                 s.image.texture = "yoshi_wait.0";
             }
             if let Some(h) = self.player.helmet {
-                // the helmet on the head [inf: offset]
+                // the helmet on the head [inf: drawing only; the shell model follows the
+                // player model's head joint (asset data)]
                 let p = &self.player;
                 out.push(Self::model_sprite(
                     if h == 2 {
@@ -6006,7 +6154,8 @@ impl World {
     }
 
     /// The background: a 512×512 picture repeated sideways, anchored 32 px below the area bottom,
-    /// scrolling at half the camera speed [inf parallax 0.5].
+    /// scrolling at half the camera speed [inf parallax 0.5: drawing only; the background
+    /// layer's scroll factor is set by the BG draw code, not traced this pass].
     fn background_sprites(&self, out: &mut Vec<Sprite>) {
         let Some((model, tex)) = self.background() else {
             return;
@@ -6299,7 +6448,7 @@ impl World {
             Kind::Donut => ("M1_Object_block_chikuwa", "fall.0", 16.0, 16.0, false),
             Kind::Spiny => ("M1_Enemy_togezo", walk2(8), 16.0, 16.0, a.dir > 0),
             Kind::Buzzy => ("M1_Enemy_met", walk2(8), 16.0, 16.0, a.dir > 0),
-            Kind::SpikeTop => ("M1_Enemy_togemetA", walk2(8), 16.0, 16.0, a.dir > 0),
+            Kind::SpikeTop { .. } => ("M1_Enemy_togemetA", walk2(8), 16.0, 16.0, a.dir > 0),
             Kind::HammerBro if a.alt => (
                 "M1_Enemy_bros_mega",
                 if a.timer < 12 { "throw.0" } else { walk2(8) },
@@ -7347,8 +7496,14 @@ mod tests {
     #[test]
     fn thwomp_slams_and_returns() {
         let mut lvl = Level::flat(40);
-        lvl.spawns
-            .push(spawn(Kind::Thwomp { side: false }, 200.0, 120.0));
+        lvl.spawns.push(spawn(
+            Kind::Thwomp {
+                side: false,
+                right: false,
+            },
+            200.0,
+            120.0,
+        ));
         let mut w = World::with_level(lvl);
         w.player.x = 60.0;
         run(&mut w, 0, 10);
@@ -7538,6 +7693,72 @@ mod tests {
             w.blocks.get(13, 2).is_none(),
             "brick next to the bomb breaks"
         );
+    }
+
+    #[test]
+    fn the_blast_box_is_half_18_around_8_px_up() {
+        let mut w = World::with_level(Level::flat(40));
+        w.player.x = 40.0;
+        let mut bomb = Actor::new(Kind::BobOmb, 200.0, 32.0);
+        bomb.phase = 9;
+        w.add_actor(bomb);
+        // the blast spans x 182…218; a Goomba (half 8) touches it up to 25.99 px away
+        w.add_actor(Actor::new(Kind::Goomba, 225.0, 32.0));
+        w.add_actor(Actor::new(Kind::Goomba, 227.0, 32.0));
+        w.explosions();
+        let goombas: Vec<bool> = w
+            .actors
+            .iter()
+            .filter(|a| a.kind == Kind::Goomba)
+            .map(|a| a.alive())
+            .collect();
+        assert_eq!(goombas, [false, true]);
+    }
+
+    #[test]
+    fn a_rising_liquid_waits_where_it_was_while_the_player_is_in_the_other_area() {
+        let mut main = Level::flat(40);
+        main.liquid = Some(crate::level::LiquidSpec {
+            kind: 2,
+            start: 12.0,
+            end: 200.0,
+            mode: 1,
+            speed: 3,
+            full: false,
+        });
+        let mut w = World::with_areas(vec![main, Level::flat(40)]);
+        w.player.x = 100.0;
+        w.player.y = 300.0;
+        for _ in 0..120 {
+            if let Some(l) = w.liquid.as_mut() {
+                l.step();
+            }
+        }
+        let h = w.liquid.unwrap().y;
+        assert!(h > 12.0);
+        w.switch_area(1);
+        w.switch_area(0);
+        assert_eq!(w.liquid.unwrap().y, h);
+    }
+
+    #[test]
+    fn the_cape_spin_box_starts_behind_and_flips_every_two_frames() {
+        let mut w = World::with_level(Level::flat(40));
+        w.player.x = 100.0;
+        w.player.y = 32.0;
+        w.player.facing = 1;
+        w.player.form = Form::Cape;
+        w.add_actor(Actor::new(Kind::Goomba, 88.0, 32.0));
+        w.add_actor(Actor::new(Kind::Goomba, 112.0, 32.0));
+        w.player.attack = 15; // animation frame 0: behind
+        w.tail_attack();
+        assert_eq!(
+            w.actors.iter().map(|a| a.alive()).collect::<Vec<_>>(),
+            [false, true]
+        );
+        w.player.attack = 13; // frame 2: in front
+        w.tail_attack();
+        assert!(!w.actors[1].alive());
     }
 
     #[test]
@@ -7801,9 +8022,13 @@ mod tests {
         let car = w.actors.iter().find(|a| a.spawn == Some(0)).unwrap();
         assert!((car.vx - 2.0).abs() < 1e-3, "{}", car.vx);
         assert_eq!(w.player.x, car.x);
-        // Down + Jump: out
+        // crouching in the car, Jump does nothing; standing, Jump climbs out (0x71009cd430)
         run(&mut w, input::DOWN | input::JUMP, 1);
+        assert!(w.player.clown.is_some());
+        run(&mut w, 0, 1);
+        run(&mut w, input::JUMP, 1);
         assert!(w.player.clown.is_none());
+        assert!(w.player.vy > 3.0, "{}", w.player.vy);
     }
 
     #[test]
@@ -8005,7 +8230,10 @@ mod tests {
             .unwrap();
         let x0 = w.actors[bell].x;
         run(&mut w, 0, 10);
-        assert!(w.actors[bell].x != x0, "the bell walks like a mushroom");
+        assert!(
+            w.actors[bell].x == x0,
+            "the bell waits where it lands (0x7100837860)"
+        );
         run(&mut w, input::RIGHT | input::RUN, 90);
         run(&mut w, 0, 60);
         assert_eq!(w.player.form, Form::Cat, "picked up the bell");
@@ -8352,6 +8580,33 @@ mod tests {
         run(&mut w2, 0, 200);
         assert_eq!(w2.burner_flame(false), 0.0);
         assert!(w2.burner_flame(true) > 0.0);
+        // only the full flame (the Fire state) has a collider: a player in the growing flame
+        // (FireStart, counter 5) is safe, in the full one (counter 50) burnt
+        let mut lvl2 = Level::flat(40);
+        lvl2.burners.push(crate::level::Burner {
+            x: 72.0,
+            y: 32.0,
+            dir: 3,
+            alt: false,
+        });
+        let mut w4 = World::with_level(lvl2);
+        w4.player.x = 72.0;
+        w4.player.y = 56.0;
+        w4.area_timer = 7;
+        w4.events.clear();
+        w4.fire_hazards();
+        assert!(
+            !w4.events
+                .iter()
+                .any(|e| matches!(e, Event::PowerDown | Event::Death))
+        );
+        w4.area_timer = 52;
+        w4.fire_hazards();
+        assert!(
+            w4.events
+                .iter()
+                .any(|e| matches!(e, Event::PowerDown | Event::Death))
+        );
         let mut lvl = Level::flat(40);
         lvl.firebars.push(crate::level::FireBar {
             x: 120.0,
@@ -8624,17 +8879,20 @@ mod tests {
     #[test]
     fn exclamation_block_hit_from_below_grows_its_chain() {
         let mut lvl = Level::flat(60);
-        lvl.exclamations.push(((3, 4), vec![2, 2, 15]));
+        lvl.exclamations.push(((3, 4), vec![2, 2, 13]));
         let mut w = World::with_level(lvl);
         w.player.x = 4.0 * TILE;
         run(&mut w, 0, 2);
         run(&mut w, input::JUMP, 30);
-        let b = &w.exclamations[0];
-        assert!(b.emptied(), "hit from below");
-        run(&mut w, 0, 30);
-        assert_eq!(w.exclamations[0].boxes().len(), 3, "chain out to the right");
-        // the chain is solid: stand on its far end
-        w.player.x = 8.0 * TILE;
+        assert!(w.exclamations[0].timer > 0, "hit from below");
+        run(&mut w, 0, 40);
+        assert_eq!(
+            w.exclamations[0].boxes().len(),
+            2,
+            "a head hit sends one segment out"
+        );
+        // the segment is solid: stand on it
+        w.player.x = 6.0 * TILE;
         w.player.y = 6.0 * TILE + 4.0;
         run(&mut w, 0, 10);
         assert!(w.player.on_ground && (w.player.y - 6.0 * TILE).abs() < 0.5);
@@ -8723,7 +8981,7 @@ mod tests {
             120.0,
             32.0,
         ));
-        lvl.spawns.push(spawn(Kind::Goomba, 260.0, 32.0));
+        lvl.spawns.push(spawn(Kind::Goomba, 220.0, 32.0));
         let mut w = World::with_level(lvl);
         w.style = crate::player::Style::W3;
         w.player.x = 100.0;
@@ -8753,8 +9011,8 @@ mod tests {
     #[test]
     fn track_block_follows_its_path_while_on() {
         let mut lvl = Level::flat(60);
-        // right, right, end
-        lvl.track_paths.push((0, vec![2, 2, 15]));
+        // right, then the end (entered moving right): two 2-tile steps
+        lvl.track_paths.push((0, vec![2, 13]));
         lvl.spawns.push(spawn(
             Kind::TrackBlock {
                 path: 0,
@@ -8808,10 +9066,13 @@ mod tests {
             .position(|a| a.kind == Kind::Goomba)
             .unwrap();
         let (gx, gy) = (w.actors[gi].x, w.actors[gi].y);
-        w.player.x = gx - 22.0;
+        w.player.x = gx - 30.0;
         w.player.y = gy;
         w.player.facing = 1;
-        run(&mut w, input::RUN, 8);
+        // the hammer's box comes down on animation frame 11 (0x71009c6150)
+        run(&mut w, input::RUN, 10);
+        assert!(w.actors[gi].alive(), "not yet");
+        run(&mut w, input::RUN, 4);
         assert!(!w.actors[gi].alive(), "hammer hit");
         assert_eq!(w.player.form, Form::Builder, "not hurt");
         assert_eq!(w.player.at_goal().form, 7);
@@ -8838,7 +9099,7 @@ mod tests {
             168.0,
             64.0,
         );
-        s.rail = Some(1);
+        s.rail = Some(0); // start field 0: right on a horizontal track
         lvl.spawns.push(s);
         let mut w = World::with_level(lvl);
         run(&mut w, 0, 2);
@@ -8856,7 +9117,7 @@ mod tests {
     }
 
     #[test]
-    fn escort_toad_follows_the_player_and_his_loss_fails_the_run() {
+    fn escort_toad_follows_the_player_and_comes_back_when_knocked_out() {
         let mut lvl = Level::flat(80);
         lvl.spawns.push(spawn(Kind::EscortToad, 40.0, 32.0));
         let mut w = World::with_level(lvl);
@@ -8869,7 +9130,7 @@ mod tests {
             .unwrap();
         let gap = w.player.x - t.x;
         assert!(gap > 16.0 && gap < 60.0, "trails the player: {gap}");
-        // knocked out → the player loses the run
+        // knocked out: no fail; 45 frames later he is back beside the player (0x710087a7c0)
         let i = w
             .actors
             .iter()
@@ -8877,8 +9138,17 @@ mod tests {
             .unwrap();
         let x = w.actors[i].x;
         w.actors[i].die_fall(x);
+        let toads = |w: &World| {
+            w.actors
+                .iter()
+                .filter(|a| a.kind == Kind::EscortToad && a.alive())
+                .count()
+        };
+        run(&mut w, 0, 44);
+        assert!(w.player.alive());
+        assert_eq!(toads(&w), 0);
         run(&mut w, 0, 1);
-        assert!(!w.player.alive());
+        assert_eq!(toads(&w), 1);
     }
 
     #[test]

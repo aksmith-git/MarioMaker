@@ -139,6 +139,19 @@ const SPIKE_RANGE: (f32, f32) = (32.0, 288.0);
 /// [obs].
 const SPIKE_POST: i32 = 35;
 const SPIKE_BURST_REST: i32 = 120;
+/// The `GeneratorPosition` joint at the throw's release frame (`SPIKE_ANIM`), px forward of
+/// and above the feet per style, read from the models' skeletal animations (throw_ed / Throw):
+/// SMB1 (−1 → 3, 23 → 24 over throw_ed; 3, 24 at frame 14), SMB3 / SMW (3, 25), NSMBU (2, 24
+/// at frame 52), 3D World (z 6.6 forward, 28.76 at frame 39). The 2D and NSMBU Spike models
+/// are flat and drawn facing left with +x behind (a Koopaling's `magic` joint sits at −x, the
+/// wings at +x), so their +3 / +2 lie behind the Spike; the 3D World model faces +z.
+const SPIKE_HAND: [(f32, f32); 5] = [
+    (-3.0, 24.0),
+    (-3.0, 25.0),
+    (-3.0, 25.0),
+    (-2.0, 24.0),
+    (6.6, 28.76),
+];
 
 mod ball {
     /// SMB1 / SMB3 release: flies level at 1.5 px/f without gravity.
@@ -169,6 +182,10 @@ const POKEY_WING_WALK: f32 = 0.5;
 const POKEY_SWAY: f32 = 1.5;
 const POKEY_SWAY_RATE: f32 = 5.0;
 const POKEY_HOPS: [f32; 3] = [2.5, 2.5, 4.7];
+/// `V3State::flags` bits of a Pokey: segments settling (DamageWait) last frame; touching a
+/// side wall last frame.
+const POKEY_SETTLING: u8 = 1;
+const POKEY_WALLED: u8 = 2;
 pub const POKEY_MAX: usize = 8;
 
 // ---------------------------------------------------------------- Mechakoopa
@@ -203,10 +220,11 @@ const MECHA_SIGN_LEN: [i32; 2] = [30, 28];
 const MECHA_CHARGE: [i32; 2] = [60, 71];
 const MECHA_FIRE_WAIT: i32 = 8;
 const MECHA_FIRE_ED: i32 = 20;
-/// Zappa's Shot lasts while the beam does: it grows for its 40 frames and fades for 10 after
-/// the Sign (69 frames, which ends 2 frames before Charge does) [obs beam timers; the robot's
-/// wait is [inf] from them].
-const ZAPPA_SHOT: i32 = 69 - 71 + 40 + 10;
+/// Zappa's Shot lasts until the beam leaves its Shot: the beam's Sign takes 69 frames from the
+/// Charge enter (2 fewer than the Charge), its Shot 40; leaving Shot it raises the robot's
+/// controller byte +0x2A, and the robot's Shot ends on that byte (or the beam gone), not on
+/// the 10 fade frames [obs 0x71011cf1d0, beam Shot exit 0x7100de6330].
+const ZAPPA_SHOT: i32 = 69 - 71 + 40;
 
 /// Missile [obs]: speed 1.2 at launch; phases aim (target 0.5, accel 0.01, wanted turn ≤ 1.5°,
 /// turn-rate change ≤ 0.03°/f), home (1.2, 0.01, ≤ 0.7°, 0.05°) and overshoot (0.5, 0.007,
@@ -290,11 +308,15 @@ impl Actor {
         level.cell_at(px, self.y - 1.0) == Cell::Empty && !slope
     }
 
-    /// The box overlaps the camera view (actor flag 0x520 bit 3, "active" [inf]).
+    /// Actor flag 0x520 bit 3: each frame the enemy base sets it when the actor's box touches a
+    /// rectangle of the camera manager's views list (+0x138, one list per area), edges
+    /// included, and clears it otherwise [obs v3 0x7101294a80 = v1 0x7100792c90]. The list is
+    /// rebuilt every frame from the active cameras (v1 0x7100b64340): in single player it holds
+    /// just the camera's view.
     pub(super) fn v3_in_view(&self) -> bool {
         let (x0, y0, x1, y1) = self.bbox();
         let (cx, cy) = self.camera;
-        x1 > cx && x0 < cx + crate::world::VIEW_W && y1 > cy && y0 < cy + crate::world::VIEW_H
+        x1 >= cx && x0 <= cx + crate::world::VIEW_W && y1 >= cy && y0 <= cy + crate::world::VIEW_H
     }
 
     /// The solid surface of a 2.0 / 3.0 platform.
@@ -503,17 +525,23 @@ impl Actor {
         out
     }
 
-    /// The thrown ball, leaving the Spike's hands over its head [inf: the hand bone's place at
-    /// the release frame].
-    fn spike_ball(&self, level: &Level, st: usize) -> Actor {
+    /// Where the ball is at the throw's release frame: its centre on the model's
+    /// `GeneratorPosition` joint, which the lifted ball follows every frame [obs 0x71010e7670:
+    /// joint position, minus the ball's centre offset +0x2FC for its feet]. The joint at the
+    /// release frame (model data, `SPIKE_HAND`), forward and up from the Spike's feet.
+    pub fn spike_hand(&self, st: usize) -> (f32, f32) {
         let s = self.v3_scale();
+        let (fwd, up) = SPIKE_HAND[st.min(4)];
+        (self.x + fwd * s * self.dir as f32, self.y + up * s)
+    }
+
+    /// The thrown ball, leaving the `GeneratorPosition` joint at the release frame.
+    fn spike_ball(&self, level: &Level, st: usize) -> Actor {
         let snow = level.theme == 6;
-        let mut b = Actor::new(
-            Kind::SpikeBall { snow },
-            self.x + 4.0 * s * self.dir as f32,
-            self.y + 16.0 * s,
-        );
+        let (hx, hy) = self.spike_hand(st);
+        let mut b = Actor::new(Kind::SpikeBall { snow }, hx, hy);
         b.big = self.big;
+        b.y -= b.height() / 2.0;
         b.dir = self.dir;
         b.v3.owner = self.id;
         b.kick_lock = 90; // the ball ignores its thrower for 90 frames [obs]
@@ -696,12 +724,25 @@ impl Actor {
             self.vx = self.vx.clamp(-0.5, 0.5);
         }
         self.collide(level);
-        if self.wings && self.on_ground {
-            // winged: hops 2.5, 2.5, 4.7 on its landings [inf: the Wing context's hop table]
-            self.vy = POKEY_HOPS[self.v3.count as usize % 3];
-            self.v3.count = self.v3.count.wrapping_add(1);
-            self.on_ground = false;
+        // winged (flag +0x523 bit 1), in Walk: each landing hops 2.5, 2.5, 4.7, … — a counter
+        // set to 2 on Walk enter and when a side-wall contact ends (+0x658 bits 2/3, the bits
+        // walkers test for walls) gives 4.7 at 0 (then back to 2) and 2.5 otherwise (−1)
+        // [obs Walk exe 0x7101254790, enter 0x7101254540]. `count` 0 is the game's 2.
+        let walled = self.wall;
+        if self.wings {
+            let was_settling = self.v3.flags & POKEY_SETTLING != 0;
+            let left_wall = self.v3.flags & POKEY_WALLED != 0 && !walled;
+            if (was_settling && !settling) || left_wall {
+                self.v3.count = 0;
+            }
+            if !settling && self.on_ground {
+                self.vy = POKEY_HOPS[self.v3.count as usize % 3];
+                self.v3.count = (self.v3.count + 1) % 3;
+                self.on_ground = false;
+            }
         }
+        self.v3.flags =
+            (if settling { POKEY_SETTLING } else { 0 }) | (if walled { POKEY_WALLED } else { 0 });
         if self.turn_lock == 0 && (self.wall || self.v3_ledge(level, self.dir)) {
             self.turn();
         }
@@ -756,10 +797,14 @@ impl Actor {
 
     // ------------------------------------------------------------ Mechakoopa
 
-    /// The shot joint ("shot"): ahead of and above the feet [inf: the joint's rest position].
+    /// The weapon origin. The game asks the robot's model for a joint named "shot" (0x71011d0620
+    /// via the model's joint lookup 0x71011d8820) and, when the lookup fails, uses the actor's
+    /// position. No robot model has that joint (M1 / M3 / MW / NSMBU `koopamecha_model`: body,
+    /// parachute, wing1L, wing1R only), so the origin is the robot's feet [obs]; the controller
+    /// then adds its weapon offset (Blasta 8 px ahead, big 16, 0x71011d17b0; Zappa none,
+    /// 0x71011cea30). The beam keeps that origin (its per-frame joint lookup fails too).
     pub fn mecha_muzzle(&self) -> (f32, f32) {
-        let s = self.v3_scale();
-        (self.x + 10.0 * s * self.dir as f32, self.y + 9.0 * s)
+        (self.x, self.y)
     }
 
     /// The player is in the weapon's window: Blasta 0…288 px ahead and −160…159 px up; Zappa
@@ -913,11 +958,8 @@ impl Actor {
                     if weapon == 1 {
                         let (mx, my) = self.mecha_muzzle();
                         let s = self.v3_scale();
-                        let mut m = Actor::new(
-                            Kind::MechaMissile,
-                            mx + 8.0 * s * self.dir as f32,
-                            my - 6.0 * s,
-                        );
+                        let mut m =
+                            Actor::new(Kind::MechaMissile, mx + 8.0 * s * self.dir as f32, my);
                         m.big = self.big;
                         m.dir = self.dir;
                         m.speed = 1.2;
@@ -1143,11 +1185,12 @@ impl Actor {
             self.mode = Mode::Dead;
             return;
         }
-        // the reach to the first solid tile along the beam (the telegraph shows it too)
+        // the reach to the first solid tile along the beam (the telegraph shows it too): the
+        // Shot's terrain ray runs level with the origin [obs 0x7100de6740]
         let mut reach = 0.0;
         while reach < LASER_MAX {
             let x = self.x + (reach + 4.0) * self.dir as f32;
-            if level.cell_at(x, self.y - 2.0).is_solid() {
+            if level.cell_at(x, self.y).is_solid() {
                 break;
             }
             reach += 4.0;

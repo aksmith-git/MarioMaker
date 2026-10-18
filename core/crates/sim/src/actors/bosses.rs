@@ -1,6 +1,6 @@
 //! Bosses: Bowser (62-bowser.md), Boom Boom and Pom Pom (77-boom-boom.md) and Bowser Jr.
-//! (98-bowser-jr.md). Facts are [obs] unless marked; the specs cite the binary for each one and
-//! say why the few remaining [inf] / [?] choices could not be read from it.
+//! (98-bowser-jr.md). Facts are observed in the binary unless marked; the specs cite the address
+//! for each one and say why the few remaining marked choices could not be read from it.
 //!
 //! State layout on the shared actor fields: HP in `hops`; `phase` is the state (0 = not set up
 //! yet); `timer` is the actor timer (counted down at the start of every boss step, states wait
@@ -10,7 +10,7 @@
 //! (counted down by the generic step) is the hurt flash, and for a boss in a Clown Car also its
 //! invulnerability.
 
-use super::{Actor, Kind, MAX_FALL, Mode, SHELL_WAKE};
+use super::{Actor, Kind, MAX_FALL, Mode};
 use crate::fmath::DetMath;
 use crate::level::{Cell, Level, TILE};
 use crate::world::{VIEW_H, VIEW_W};
@@ -71,15 +71,23 @@ const BOWSER_GRAVITY: f32 = -0.1;
 const BOWSER_BG_HALF: [f32; 4] = [13.0, 12.0, 14.0, 15.9];
 /// Where a flame leaves, per style: ahead of / above Bowser's origin (×2 big).
 const BOWSER_MOUTH: [(f32, f32); 4] = [(28.0, 21.0), (24.0, 24.0), (24.0, 21.0), (20.0, 24.0)];
-/// The fire animation: its length, and the frame at which the flame leaves (SMB1: at its end).
-/// NSMBU's length is not in the 2D sprite data [?]; one frame past its fire frame is used.
-const BOWSER_BREATH: [(u8, u8); 4] = [(35, 35), (48, 36), (48, 10), (49, 48)];
+/// The fire animation (Shoot, anim 0x2a): its length, and the frame at which the flame leaves
+/// (SMB1: at its end). Lengths are the models' animations at their EnemyModelParams play rate
+/// (1.0 for Shoot in every style and size): SMB1 `fire_ftp` 35, SMB3 / SMW `fire` 48, NSMBU
+/// `kp_fire1` 104. Fire frames: table 0x7101c8baa0.
+const BOWSER_BREATH: [(u8, u8); 4] = [(35, 35), (48, 36), (48, 10), (104, 48)];
 /// The flame's own speed (BulletKoopaFire +0x183c); Bowser's forward speed is added.
 const BOWSER_FIRE_SPEED: f32 = 1.5;
 /// A flame's lane: 17 px (big 34) above or below the mouth, or level.
 const FIRE_LANE: f32 = 17.0;
-/// The Turn animation (non-SMB1) before he turns round: SMB3 30 frames, SMW 45, NSMBU [?] 30.
-const BOWSER_TURN: [i32; 4] = [0, 30, 45, 30];
+/// The Turn animation (anim 13, non-SMB1) before he turns round: the model's animation length
+/// and its EnemyModelParams play rate — SMB3 `turn` 30 and SMW `turn` 45 at 2.0, NSMBU
+/// `lkp_walk` 160 at 3.0; a big Bowser plays it at 1.0 in every style. Frames = length / rate,
+/// rounded up [inf: the anim player's exact end test].
+const BOWSER_TURN: [(f32, f32); 4] = [(0.0, 1.0), (30.0, 2.0), (45.0, 2.0), (160.0, 3.0)];
+/// The flame's carried speed is the mean of Bowser's own x steps over the last 16 frames
+/// (actor ring +0x560, capacity 16 set by the enemy base 0x7100786710, filled by 0x710078adb0).
+const SPEED_HISTORY: usize = 16;
 
 /// Bowser states (numbering ours; names from the state table).
 mod bw {
@@ -159,7 +167,28 @@ mod bb {
     pub const POM_THROW: u8 = 23;
     pub const POM_LAPSE: u8 = 24;
     pub const POM_DAMAGE: u8 = 25;
+    pub const POM_THROW_END: u8 = 26;
+    pub const POM_HIDE: u8 = 27;
+    pub const POM_LAPSE_MOVE: u8 = 28;
+    pub const POM_APPEAR: u8 = 29;
 }
+
+/// Pom Pom's state lengths: the 3W_Enemy_punpun animations (play rate 1.0), [on foot, winged].
+const POM_THROW_SIGN: [i32; 2] = [42, 18];
+const POM_THROW: i32 = 14;
+const POM_THROW_END: [i32; 2] = [37, 19];
+/// After ThrowEnd's animation she waits 60 frames (0x7100757c40) before hiding.
+const POM_AFTER_THROW: i32 = 60;
+const POM_HIDE: i32 = 56;
+const POM_LAPSE: i32 = 120;
+const POM_LAPSE_MOVE: i32 = 60;
+const POM_APPEAR: i32 = 58;
+/// DamageDown: `PressDown` after a stomp, else `FireBallDown` then `FireBallDownEnd`.
+const POM_PRESS: i32 = 59;
+const POM_DAMAGE_HOP: i32 = 40;
+const POM_DAMAGE_END: i32 = 76;
+/// The throw target sits 11.87 px above the player's feet (0x7101c8a8d0).
+const POM_AIM_UP: f32 = 11.871_2;
 
 // ---------------------------------------------------------------- Bowser Jr. constants
 
@@ -176,16 +205,36 @@ const JR_PROBE: f32 = 30.0;
 const JR_SHIFT_JUMP: f32 = 5.5;
 const JR_SHIFT_JUMP_BIG: f32 = 6.0;
 const JR_HOVER_AT: f32 = 0.4;
+/// The Hop and ShiftJump wind-up before the stored jump starts (anim tables at 0x7100186f90:
+/// none in SMB1, JumpSt in SMB3 / SMW, QuakeSt / JumpSt in NSMBU): SMB3 / SMW `squat` 4
+/// frames, NSMBU `bl_quake_st` / `bl_jump_st` 25, all at play rate 1.0 (EnemyModelParams).
+const JR_WINDUP: [i32; 4] = [0, 4, 4, 25];
+/// `jr_sub` value while a wind-up plays.
+const JR_WINDING: u8 = 2;
 const JR_HIP_GRAVITY: f32 = -0.75;
 const JR_HIP_CAP: f32 = -8.0;
 const JR_HIP_LAND: i32 = 50;
 /// DamageDown (non-NSMBU): bounce vy 3.0, 15 frames.
 const JR_DAMAGE: i32 = 15;
-/// The Shell context: 20 frames still, then the slide (1.5 px/f) [?: its length].
+/// The Shell context (BossBase Shell, states 0x710216e4a0): ShellWait 20 frames still; its
+/// exit arms a 200-frame slide counter (0x7100614a80) that ShellSlide and ShellJump count
+/// down. ShellSlide (0x7100614b10) ramps its acceleration to 0.1 by 0.02 per frame and its
+/// speed to 1.6 by that; a player behind him or the area edge (16 px) makes him brake by 0.1
+/// per frame (0.3 above 1.6) and turn, with 10 frames before the next turn; a wall bounces
+/// the speed back. Once the counter is spent and he stands on the floor, ShellWakeup.
 const JR_SHELL_WAIT: i32 = 20;
-const JR_SHELL_SPEED: f32 = 1.5;
-const JR_SHELL_FRAMES: i32 = 150;
-const JR_SHELL_OUT: i32 = 20;
+const JR_SHELL_FRAMES: i32 = 200;
+const JR_SHELL_TOP: f32 = 1.6;
+const JR_SHELL_ACCEL: f32 = 0.1;
+const JR_SHELL_JERK: f32 = 0.02;
+const JR_SHELL_TURN: u8 = 10;
+/// ShellSlide sub-phases (+0x90): 1 settle and aim, 2 slide, 4 brake and turn.
+const SL_AIM: u8 = 1;
+const SL_SLIDE: u8 = 2;
+const SL_BRAKE: u8 = 4;
+/// ShellWakeup (0x7100617170): hops out at vy 3.0; at vy ≤ 0.4 the Basic action resumes.
+const JR_WAKE_HOP: f32 = 3.0;
+const JR_WAKE_END: f32 = 0.4;
 /// Fire: 3 shots, each one 26 frames into a 60-frame animation.
 const JR_FIRE_ANIM: i32 = 60;
 const JR_FIRE_AT: i32 = 26;
@@ -216,13 +265,22 @@ mod jr {
     pub const C_THROW: u8 = 17;
     pub const C_POST_THROW: u8 = 18;
     pub const C_SHOT: u8 = 19;
+    pub const C_DAMAGE: u8 = 20;
 }
+
+/// Bowser Jr.'s Clown DamageDown (0x71006e8fe0 / 0x71006e9130, outside 3D World): 4 + 18
+/// frames, then he ducks into the car (y scale −0.1 per frame to 0.01, 10 frames), stays down
+/// 36 frames and comes back up (to 0.9 at +0.1, 9 frames) → Wait. Guarded throughout.
+const JR_CLOWN_DAMAGE: i32 = 4 + 18 + 10 + 36 + 9;
+/// Clown Wait (0x71006e84b0): once the player has been near, frames away from him count down
+/// from 150, clearing the attack timer at each wrap (the next approach attacks at once).
+const JR_CLOWN_FORGET: u8 = 150;
 
 /// Bowser Jr. in a Clown Car: an attack every 150 frames while the player is near.
 const JR_CLOWN_ATTACK: i32 = 150;
-/// Clown Car steering for riders [?: the car's Chase state is not decoded].
+/// Clown Car Chase steering (0x71006dd810): top speed 1.0 px/f, acceleration 0.02 px/f².
 const CLOWN_SPEED: f32 = 1.0;
-const CLOWN_ACCEL: f32 = 0.03;
+const CLOWN_ACCEL: f32 = 0.02;
 
 impl Kind {
     pub fn is_boss(self) -> bool {
@@ -317,12 +375,14 @@ impl Actor {
 
     /// Pom Pom has vanished (Lapse): no contact at all.
     pub fn boss_hidden(&self) -> bool {
-        matches!(self.kind, Kind::BoomBoom { pom: true, .. }) && self.phase == bb::POM_LAPSE
+        matches!(self.kind, Kind::BoomBoom { pom: true, .. })
+            && matches!(self.phase, bb::POM_LAPSE | bb::POM_LAPSE_MOVE)
     }
 
     /// Immune; stomps bounce off. Boom Boom: from DamageDown (or the start of Defend) until 9
-    /// frames into the stand-up hop. Bowser Jr.: DamageDown and the shell [inf: the Shell
-    /// context's own hit rules are not decoded].
+    /// frames into the stand-up hop. Bowser Jr.: DamageDown and the shell (the Shell context's
+    /// damage slot 0x7100614380 takes no HP for the attacks the engine delivers; see
+    /// `jr_shell_hit`).
     pub fn boss_guarding(&self) -> bool {
         if self.kind.boss_clown() && self.kick_lock > 0 {
             return true;
@@ -334,7 +394,7 @@ impl Actor {
             Kind::BoomBoom { pom: true, .. } => self.phase == bb::POM_DAMAGE,
             Kind::BowserJr { .. } => matches!(
                 self.phase,
-                jr::DAMAGE_DOWN | jr::SHELL_WAIT | jr::SHELL | jr::SHELL_OUT
+                jr::DAMAGE_DOWN | jr::SHELL_WAIT | jr::SHELL | jr::SHELL_OUT | jr::C_DAMAGE
             ),
             _ => false,
         }
@@ -404,6 +464,9 @@ impl Actor {
                 self.pause = 0;
                 self.jr_rearm_cooldown();
                 if clown {
+                    // the Clown Wait's "has been near" flag and away counter (bytes 1, 2)
+                    self.set_byte(1, 0);
+                    self.set_byte(2, 0);
                     self.phase = jr::CLOWN;
                 } else {
                     self.jr_enter_wait_or_fall();
@@ -415,7 +478,9 @@ impl Actor {
 
     /// A hit from `attack` (coming from `from_x`), through the boss HP rules.
     ///
-    /// Bowser (helper 0x71006b4c20): fire 1, shell 3, Bob-omb blast [?] 3; a block hit only
+    /// Bowser (helper 0x71006b4c20): fire 1, shell 3, Bob-omb blast 3 [?: the explosion's
+    /// collider attack kind was not found; the kind → attack map 0x7100730510 would make kind 5
+    /// attack 33 (Bowser −2, the others killed)]; a block hit only
     /// bumps him (HitBlock); stomps are Invalid. Boom Boom / Bowser Jr. (boss helper
     /// 0x71006116d0): a fireball drains the counter (5, big 10) and costs 1 HP when it empties
     /// (then refills); every other hit costs 1 HP; none while guarded. Star, POW quake and lava
@@ -450,6 +515,11 @@ impl Actor {
             self.kick_lock = 16;
             return BossHit::Hurt;
         }
+        if matches!(self.kind, Kind::BowserJr { .. })
+            && matches!(self.phase, jr::SHELL_WAIT | jr::SHELL | jr::SHELL_OUT)
+        {
+            return self.jr_shell_hit(attack);
+        }
         if self.boss_guarding() {
             return if attack == BossAttack::Stomp {
                 BossHit::Guarded
@@ -471,14 +541,48 @@ impl Actor {
             self.die_fall(from_x);
             return BossHit::Defeated;
         }
-        self.boss_damage_state();
+        self.boss_damage_state(attack);
         BossHit::Hurt
     }
 
+    /// A hit on Bowser Jr. in his shell: the Shell context's own damage slot (0x7100614380).
+    /// Fire (and shoe smoke) does nothing; a stomp bounces the player off (vy 3.91, reaction
+    /// 5); a block bump (also tail, cape, climb attacks) knocks the shell up into ShellJump
+    /// (vy 2.0, gravity −0.1875; not during ShellWakeup); the heel ground pound and attacks
+    /// 33 / 34 go to the boss damage (and kill); every other hit only plays the hurt reaction.
+    fn jr_shell_hit(&mut self, attack: BossAttack) -> BossHit {
+        match attack {
+            BossAttack::Stomp => BossHit::Guarded,
+            BossAttack::BlockHit if self.phase != jr::SHELL_OUT => {
+                if self.phase == jr::SHELL_WAIT {
+                    // leaving ShellWait arms the slide counter
+                    self.phase = jr::SHELL;
+                    self.pause = JR_SHELL_FRAMES;
+                    self.speed = 0.0;
+                    self.heading = 0.0;
+                }
+                // ShellJump lands back in the slide, aimed at the player
+                self.jr_set_sub(SL_AIM);
+                self.vy = 2.0;
+                self.on_ground = false;
+                BossHit::Absorbed
+            }
+            _ => BossHit::Ignored,
+        }
+    }
+
     /// After losing HP: Boom Boom DamageDown (winged: PataDamageDown, keeping its wings), Bowser
-    /// Jr. DamageDown. A Clown Car rider only flashes and stays in the car [?: the riders'
-    /// Clown-context damage states are not decoded].
-    fn boss_damage_state(&mut self) {
+    /// Jr. DamageDown. In a Clown Car Bowser Jr. stays aboard (his helper's damage hand-off
+    /// 0x7100619040 skips the Clown context) and plays the Clown DamageDown. Boom Boom's
+    /// hand-off (0x71006368d0) has no such check: the game moves him to his Basic / Wing action
+    /// and so out of the car [?: not modelled — the engine's car is part of its rider; he only
+    /// flashes and stays aboard].
+    fn boss_damage_state(&mut self, attack: BossAttack) {
+        if let Kind::BowserJr { clown: true, .. } = self.kind {
+            self.phase = jr::C_DAMAGE;
+            self.timer = JR_CLOWN_DAMAGE;
+            return;
+        }
         if self.kind.boss_clown() {
             self.kick_lock = 60;
             return;
@@ -486,10 +590,18 @@ impl Actor {
         self.vx = 0.0;
         match self.kind {
             Kind::BoomBoom { pom: true, .. } => {
+                // 0x7100757780: stomp-type attacks (0–3) PressDown in place, else a 2.5 hop
                 self.phase = bb::POM_DAMAGE;
-                self.vy = 2.5;
-                self.on_ground = false;
-                self.timer = 30;
+                self.trail.clear();
+                if attack == BossAttack::Stomp {
+                    self.timer = POM_PRESS;
+                    self.set_byte(1, 0);
+                } else {
+                    self.vy = 2.5;
+                    self.on_ground = false;
+                    self.timer = POM_DAMAGE_HOP;
+                    self.set_byte(1, 1);
+                }
             }
             Kind::BoomBoom { .. } => {
                 self.phase = if self.wings {
@@ -510,23 +622,93 @@ impl Actor {
         }
     }
 
-    /// Koopa Clown Car ride [?: the car's Chase steering (0x71006dd810) is not decoded]: no
-    /// gravity; eases toward the player's x and bobs ±8 px around its spawn height (3°/frame),
-    /// facing the player.
+    /// How far above the car's origin a boss rides (car-side placement 0x71006d6ca0: the car
+    /// position minus the rider's ride offset +0x838, less 16 px per extra unit of car scale).
+    /// Bowser Jr. and Boom Boom set −21 in their Clown entries (0x71006e7b30, 0x7100638910);
+    /// Bowser takes his from the generic Clown context (0x71007961e0) out of EnemyModelParams
+    /// [inf: the field whose values match, −36 SMB1, −38 SMB3 / SMW, −40 NSMBU].
+    pub fn clown_ride_height(&self, style: &str) -> f32 {
+        let base = match self.kind {
+            Kind::Bowser { .. } => match style {
+                "M1" => 36.0,
+                "M3" | "MW" => 38.0,
+                _ => 40.0,
+            },
+            _ => 21.0,
+        };
+        base + 16.0 * (self.scale() - 1.0)
+    }
+
+    /// The Koopa Clown Car under a boss (Chase, 0x71006dd810). Within 320 px across and 800 px
+    /// up or down of the player (0x71006e0f30) it accelerates by 0.02 px/f² (winged rider:
+    /// 0.03, up to 2.0) toward the player's centre and is held to 1.0 px/f; out of that range
+    /// it drifts as Free does (0x71006dd230: speed × 0.95, then a ±0.2 vertical bob in 0.01
+    /// steps once below 0.3). The rider faces the player when the player is more than 16 px
+    /// away. Not modelled: water (acceleration × 0.75), the damping on contact, and Bowser
+    /// Jr.'s lean / brake phases on the car (+0x52c).
     fn step_clown(&mut self, level: &Level) {
-        let (px, _) = self.target;
-        let want = ((px - self.x) / 48.0).clamp(-CLOWN_SPEED, CLOWN_SPEED);
-        self.vx = Self::approach(self.vx, want, CLOWN_ACCEL);
-        let ty = self.home_y + 8.0 * (self.age as f32 * 3.0).to_radians().dsin();
-        self.vy = (ty - self.y).clamp(-1.0, 1.0);
+        let ride = self.clown_ride_height(&level.style);
+        let (dx, dy) = (
+            self.target.0 - self.x,
+            self.target.1 + 8.0 - (self.y - ride),
+        );
+        if dx.abs() <= 320.0 && dy.abs() <= 800.0 {
+            let (top, accel) = if self.wings {
+                (2.0, 0.03)
+            } else {
+                (CLOWN_SPEED, CLOWN_ACCEL)
+            };
+            let d = dx.dhypot(dy);
+            if d > 0.0 {
+                self.vx += accel * dx / d;
+                self.vy += accel * dy / d;
+            }
+            let v = self.vx.dhypot(self.vy);
+            if v > top {
+                self.vx *= top / v;
+                self.vy *= top / v;
+            }
+            if d > 16.0 && dx != 0.0 {
+                self.dir = if dx < 0.0 { -1 } else { 1 };
+            }
+            self.heading = 0.0;
+        } else {
+            self.vx *= 0.95;
+            if self.vx.dhypot(self.vy) < 0.3 {
+                // the bob: toward +0.2 or −0.2 by 0.01, turning at each end
+                if self.heading == 0.0 {
+                    self.heading = if self.vy < 0.0 { -1.0 } else { 1.0 };
+                }
+                let goal = 0.2 * self.heading;
+                self.vy = Self::approach(self.vy, goal, 0.01);
+                if self.vy == goal {
+                    self.heading = -self.heading;
+                }
+            } else {
+                self.vy *= 0.95;
+            }
+        }
         self.collide(level);
-        self.dir = self.toward_target();
     }
 
     /// Flames and shuriken: straight flight through terrain. A Bowser flame with a lane
     /// (`home_y`) climbs or dives at half its forward speed until it is within half a step of
     /// the lane, then flies level (BulletKoopaFire ThreeWayFire 0x71003b2380).
     pub(super) fn step_boss_shot(&mut self) {
+        if self.kind == Kind::Shuriken {
+            // BulletPunpunShuriken Move (0x71003b9490): while the target (home) is still ahead
+            // it turns toward it by at most 2° a frame, staying within 45° of level; speed 1.0
+            // (big 1.5), `heading` is its climb angle in degrees
+            let d = self.dir as f32;
+            let (dx, dy) = (self.home_x - self.x, self.home_y - self.y);
+            if dx * d > 0.0 {
+                let want = dy.datan2(dx.abs()).to_degrees();
+                self.heading = Self::approach(self.heading, want, 2.0).clamp(-45.0, 45.0);
+            }
+            let (sn, cs) = self.heading.to_radians().dsin_cos();
+            self.vx = cs * self.speed * d;
+            self.vy = sn * self.speed;
+        }
         if self.kind == Kind::BowserFire
             && !self.home_y.is_nan()
             && (self.y - self.home_y).abs() <= (self.vy * 0.5).abs()
@@ -563,6 +745,31 @@ impl Actor {
     fn bowser_set_sub(&mut self, s: u8) {
         let b = self.byte(3);
         self.set_byte(3, (b & !bwf::SUB) | ((s << 2) & bwf::SUB));
+    }
+
+    /// Frames the Turn animation takes (SMB1: none).
+    fn bowser_turn_frames(&self, st: usize) -> f32 {
+        let (len, rate) = BOWSER_TURN[st];
+        let rate = if self.big { 1.0 } else { rate };
+        (len / rate).ceil()
+    }
+
+    /// Records this frame's position for the speed history (16 steps kept).
+    fn bowser_record_step(&mut self) {
+        self.trail.push((self.x, self.y));
+        if self.trail.len() > SPEED_HISTORY + 1 {
+            self.trail.remove(0);
+        }
+    }
+
+    /// The mean of his own x steps over the last 16 frames (the speed history).
+    fn bowser_mean_speed(&self) -> f32 {
+        match (self.trail.first(), self.trail.last()) {
+            (Some(a), Some(b)) if self.trail.len() > 1 => {
+                (b.0 - a.0) / (self.trail.len() - 1) as f32
+            }
+            _ => 0.0,
+        }
     }
 
     fn bowser_bg_half(&self, st: usize) -> f32 {
@@ -756,10 +963,12 @@ impl Actor {
         }
         if self.phase == bw::CLOWN {
             self.step_clown(level);
+            self.bowser_record_step();
             return self.bowser_fire(st);
         }
         let state = self.phase;
         self.bowser_move(level, st);
+        self.bowser_record_step();
         // the fire helper runs in Fall, LandOn, Walk, LittleJump, MiddleJump and a Fly that
         // came from a middle jump (0x71006b1de0)
         let fire_state = match state {
@@ -919,7 +1128,7 @@ impl Actor {
             bw::TURN => {
                 self.fall(level, BOWSER_GRAVITY);
                 self.speed += 1.0;
-                if self.speed < BOWSER_TURN[st] as f32 {
+                if self.speed < self.bowser_turn_frames(st) {
                     return;
                 }
                 self.dir = -self.dir;
@@ -1174,15 +1383,18 @@ impl Actor {
         out
     }
 
-    /// A BulletKoopaFire (0x71006a2d40): at the mouth, 1.5 px/f plus Bowser's own forward
-    /// speed [inf: the game averages a short speed history], one of three lanes at random.
+    /// A BulletKoopaFire (0x71006a2d40): at the mouth, 1.5 px/f plus Bowser's carried speed —
+    /// the mean of his x steps over the last 16 frames (ring +0x560), 0 unless it points the
+    /// way he faces — one of three lanes at random. (The game's ring leaves out the motion of a
+    /// platform carrying him; the engine's position history includes it.)
     fn bowser_flame(&mut self, st: usize) -> Actor {
         let s = self.scale();
         let d = self.dir as f32;
         let (mx, my) = BOWSER_MOUTH[st];
         let mut f = Actor::new(Kind::BowserFire, self.x + d * mx * s, self.y + my * s);
         f.dir = self.dir;
-        let carry = if self.vx * d > 0.0 { self.vx } else { 0.0 };
+        let mean = self.bowser_mean_speed();
+        let carry = if mean * d >= 0.0 { mean } else { 0.0 };
         f.vx = BOWSER_FIRE_SPEED * d + carry;
         let lane = FIRE_LANE * s;
         let (ty, vy) = match self.rand(3) {
@@ -1557,7 +1769,8 @@ impl Actor {
         let ty = if hy - self.y > 0.0 { 1.0 } else { -1.0 };
         self.vy = Self::approach(self.vy, ty, 0.075);
         self.collide(level);
-        if self.timer == 0 {
+        // the swoop waits until his box is in the player's view (0x710035f7f0)
+        if self.timer == 0 && self.box_in_view() {
             self.bb_enter_attack();
         }
     }
@@ -1628,12 +1841,19 @@ impl Actor {
         self.collide(level);
     }
 
-    /// Pom Pom (Punpun, 3D World), partly decoded: waits 60 frames facing the player; on foot
-    /// she then throws (ThrowSign → Throw), winged she first jumps (vy 6.0 for 15 frames, then
-    /// hovers bobbing 0.4·sin at 8°/frame) and throws from the air. A hit: a 2.5 hop, then she
-    /// vanishes for 120 frames (Lapse) and takes 60 frames to reappear. [?] the throw timing,
-    /// the shuriken's flight and where she reappears are not decoded (shown as before: three
-    /// aimed stars 12 frames apart at 2 px/f, reappearing 64 px on the player's far side).
+    /// Pom Pom (Punpun, 3D World; Basic states 0x7102181380). Wait 60 frames facing the
+    /// player; on foot she then throws, winged she first jumps (vy 6.0 for 15 frames, then
+    /// hovers bobbing 0.4·sin at 8°/frame) and throws from the air. A throw: ThrowSign (on foot
+    /// `ThrowSignLeft/Right` 42 frames, winged `JumpThrowSign` 18; the player's position + 11.87
+    /// px is taken as the target, 0x7100757c50), Throw (14 frames; the shuriken leaves at its
+    /// start, 0x7100756400), ThrowEnd (on foot `ThrowEnd` 37, winged `JumpThrowEnd` 19, then 60
+    /// frames, 0x7100757c40), Hide (`Hide` 56: a 2.5 hop at frame 10, level again at 23), then
+    /// Lapse: gone for at least 120 frames while a new spot is searched for (0x71007587d0, one
+    /// try per frame), LapseMove 60 frames to it, Appear (`Appear` 58) → Wait. A hit
+    /// (DamageDown 0x7100757780): a stomp plays `PressDown` (59), anything else hops her at 2.5
+    /// through `FireBallDown` (40) and, landed, `FireBallDownEnd` (76) → Lapse. Animation
+    /// lengths are the 3W model's at play rate 1.0. Not modelled: the PunpunFake decoys she
+    /// leaves at further spots after a hit.
     fn step_pom_pom(&mut self, level: &Level) -> Option<Actor> {
         let toward = self.toward_target();
         let mut shot = None;
@@ -1650,8 +1870,7 @@ impl Actor {
                         self.timer = 15;
                         self.heading = 0.0;
                     } else {
-                        self.phase = bb::POM_THROW_SIGN;
-                        self.pause = 20;
+                        self.pom_enter_throw_sign();
                     }
                 }
             }
@@ -1667,66 +1886,96 @@ impl Actor {
                     self.vy = 0.4 * self.heading.to_radians().dsin();
                     self.collide(level);
                     if self.heading >= 45.0 * 8.0 {
-                        self.phase = bb::POM_THROW_SIGN;
-                        self.pause = 20;
+                        self.pom_enter_throw_sign();
                     }
                 }
             }
-            bb::POM_THROW_SIGN => {
+            bb::POM_THROW_SIGN | bb::POM_THROW | bb::POM_THROW_END => {
                 self.vx = 0.0;
-                if self.wings {
+                if self.wings && self.phase == bb::POM_THROW_SIGN {
                     self.heading += 8.0;
                     self.vy = 0.4 * self.heading.to_radians().dsin();
                     self.collide(level);
-                } else {
-                    self.fall(level, G);
-                }
-                self.pause -= 1;
-                if self.pause <= 0 {
-                    self.phase = bb::POM_THROW;
-                    self.pause = 36;
-                }
-            }
-            bb::POM_THROW => {
-                if self.wings {
+                } else if self.wings && self.phase == bb::POM_THROW {
                     self.vy = 0.0;
                     self.collide(level);
                 } else {
+                    // ThrowEnd and Throw's exit restore the gravity (0x7100756630 / 6640)
                     self.fall(level, G);
                 }
-                if self.pause % 12 == 0 {
-                    let (px, py) = self.target;
-                    let (sx, sy) = (self.x, self.y + 16.0 * self.scale());
-                    let (dx, dy) = (px - sx, py + 8.0 - sy);
-                    let d = (dx * dx + dy * dy).sqrt().max(1.0);
-                    let mut s = Actor::new(Kind::Shuriken, sx, sy - 4.0);
-                    s.vx = 2.0 * dx / d;
-                    s.vy = 2.0 * dy / d;
-                    s.timer = 300;
-                    shot = Some(s);
+                if self.timer == 0 {
+                    match self.phase {
+                        bb::POM_THROW_SIGN => {
+                            // Throw: the shuriken leaves for the target taken at ThrowSign
+                            shot = Some(self.pom_shuriken());
+                            self.phase = bb::POM_THROW;
+                            self.timer = POM_THROW;
+                        }
+                        bb::POM_THROW => {
+                            self.phase = bb::POM_THROW_END;
+                            self.timer = POM_THROW_END[self.wings as usize] + POM_AFTER_THROW;
+                        }
+                        _ => {
+                            self.phase = bb::POM_HIDE;
+                            self.timer = POM_HIDE;
+                        }
+                    }
                 }
-                self.pause -= 1;
-                if self.pause <= 0 {
-                    self.phase = bb::POM_WAIT;
-                    self.timer = 60;
+            }
+            bb::POM_HIDE => {
+                self.vx = 0.0;
+                let frame = POM_HIDE - self.timer;
+                if frame == 10 {
+                    self.vy = 2.5;
+                    self.on_ground = false;
+                } else if frame == 23 {
+                    self.vy = 0.0;
+                }
+                self.fall(level, G);
+                if self.timer == 0 {
+                    self.pom_enter_lapse();
                 }
             }
             bb::POM_DAMAGE => {
                 self.vx = 0.0;
                 self.fall(level, G);
-                if self.timer == 0 && self.on_ground {
-                    self.phase = bb::POM_LAPSE;
-                    self.pause = 120 + 60;
+                if self.timer == 0 {
+                    // FireBallDown, landed: FireBallDownEnd (the hop's chain byte 1 = 1)
+                    if self.byte(1) == 1 && self.on_ground {
+                        self.set_byte(1, 0);
+                        self.timer = POM_DAMAGE_END;
+                    } else {
+                        self.pom_enter_lapse();
+                    }
                 }
             }
             bb::POM_LAPSE => {
                 self.vx = 0.0;
                 self.vy = 0.0;
-                self.pause -= 1;
-                if self.pause <= 0 {
-                    let (px, py) = self.target;
-                    self.x = px - toward as f32 * 64.0;
-                    self.y = py;
+                self.pause += 1;
+                if !self.pom_spot_found() {
+                    self.pom_try_spot(level);
+                }
+                if self.timer == 0 && self.pom_spot_found() {
+                    self.phase = bb::POM_LAPSE_MOVE;
+                    self.timer = POM_LAPSE_MOVE;
+                }
+            }
+            bb::POM_LAPSE_MOVE => {
+                if self.timer == 0 {
+                    let (x, y) = self.trail[0];
+                    self.x = x;
+                    self.y = y;
+                    self.on_ground = true;
+                    self.phase = bb::POM_APPEAR;
+                    self.timer = POM_APPEAR;
+                }
+            }
+            bb::POM_APPEAR => {
+                self.vx = 0.0;
+                self.dir = toward;
+                self.fall(level, G);
+                if self.timer == 0 {
                     self.phase = bb::POM_WAIT;
                     self.timer = 60;
                 }
@@ -1737,6 +1986,85 @@ impl Actor {
             }
         }
         shot
+    }
+
+    fn pom_enter_throw_sign(&mut self) {
+        self.phase = bb::POM_THROW_SIGN;
+        self.timer = POM_THROW_SIGN[self.wings as usize];
+        // the throw target: the player's position, 11.87 px up (0x7100757c50)
+        self.home_x = self.target.0;
+        self.home_y = self.target.1 + POM_AIM_UP;
+    }
+
+    /// The shuriken (BulletPunpunShuriken, 0x71003b8db0) leaves her hand flying level the way
+    /// she faces; it homes on the target (see `step_boss_shot`).
+    fn pom_shuriken(&self) -> Actor {
+        let mut s = Actor::new(Kind::Shuriken, self.x, self.y + 12.0 * self.scale());
+        s.dir = self.dir;
+        s.big = self.big;
+        s.speed = if self.big { 1.5 } else { 1.0 };
+        s.heading = 0.0;
+        s.home_x = self.home_x;
+        s.home_y = self.home_y;
+        s.vx = s.speed * self.dir as f32;
+        s.timer = 600;
+        s
+    }
+
+    /// Lapse (0x71007569f0): gone for at least 120 frames while a new spot is searched for.
+    fn pom_enter_lapse(&mut self) {
+        self.phase = bb::POM_LAPSE;
+        self.timer = POM_LAPSE;
+        self.pause = 0;
+        self.vx = 0.0;
+        self.vy = 0.0;
+        self.trail.clear();
+    }
+
+    fn pom_spot_found(&self) -> bool {
+        !self.trail.is_empty()
+    }
+
+    /// One try at a new spot (0x71007587d0): a random point in a 384 × 300 box from 192 px left
+    /// of and below the view centre; looking down from it (to 108 px below the centre) for
+    /// ground with room for her above; at least 28 px (big 56) from the player, her box inside
+    /// the view at that spot, and for the first 90 frames 12 px (big 24) from where she was.
+    fn pom_try_spot(&mut self, level: &Level) {
+        let (cx, cy) = self.view_centre();
+        let x = cx - 192.0 + 384.0 * self.rand(1 << 16) as f32 / 65536.0;
+        let top = cy - 192.0 + 300.0 * self.rand(1 << 16) as f32 / 65536.0;
+        let s = self.scale();
+        let mut y = top;
+        let ground = loop {
+            if y < cy - 108.0 {
+                return;
+            }
+            if level.cell_at(x, y).is_solid() {
+                break ((y / TILE).floor() + 1.0) * TILE;
+            }
+            y -= 1.0;
+        };
+        if top < ground {
+            return;
+        }
+        let h = self.height();
+        if (1..=h as i32).any(|k| level.cell_at(x, ground + k as f32).is_solid()) {
+            return;
+        }
+        let (px, py) = self.target;
+        if (px - x).dhypot(py - ground) < 28.0 * s {
+            return;
+        }
+        let mut probe = self.clone();
+        probe.x = x;
+        probe.y = ground;
+        if !probe.box_in_view() {
+            return;
+        }
+        if self.pause <= 90 && (self.x - x).dhypot(self.y - ground) < 12.0 * s {
+            return;
+        }
+        self.trail = vec![(x, ground)];
     }
 
     // ------------------------------------------------------------ Bowser Jr.
@@ -1761,6 +2089,15 @@ impl Actor {
 
     fn jr_sub(&self) -> u8 {
         self.byte(3)
+    }
+
+    /// The Hop / ShiftJump wind-up has just finished (the stored jump starts now).
+    fn jr_wound_up(&mut self) -> bool {
+        if self.jr_sub() == JR_WINDING && self.timer == 0 {
+            self.jr_set_sub(0);
+            return true;
+        }
+        false
     }
 
     fn jr_set_sub(&mut self, s: u8) {
@@ -1792,10 +2129,20 @@ impl Actor {
                 }
             }
             jr::HOP => {
-                self.fall_capped(level, G, CAP);
-                if self.on_ground && self.vy <= 0.0 {
+                if self.jr_wound_up() {
+                    self.vx = self.speed;
+                    self.vy = self.heading;
+                    self.on_ground = false;
+                }
+                if self.jr_sub() == JR_WINDING {
                     self.vx = 0.0;
-                    self.jr_enter_wait();
+                    self.fall_capped(level, G, CAP);
+                } else {
+                    self.fall_capped(level, G, CAP);
+                    if self.on_ground && self.vy <= 0.0 {
+                        self.vx = 0.0;
+                        self.jr_enter_wait();
+                    }
                 }
             }
             jr::WALK => self.jr_walk(level),
@@ -1812,6 +2159,16 @@ impl Actor {
                 };
             }
             jr::SHIFT_JUMP => {
+                if self.jr_wound_up() {
+                    self.vy = self.heading;
+                    self.on_ground = false;
+                }
+                if self.jr_sub() == JR_WINDING {
+                    // vx = vy = 0 and no gravity while the wind-up plays
+                    self.vx = 0.0;
+                    self.vy = 0.0;
+                    return None;
+                }
                 self.fall_capped(level, G, CAP);
                 if self.vy <= JR_HOVER_AT {
                     self.jr_rearm_cooldown();
@@ -1872,34 +2229,139 @@ impl Actor {
                 self.fall_capped(level, G, CAP);
                 if self.timer == 0 {
                     self.phase = jr::SHELL;
-                    self.timer = JR_SHELL_FRAMES;
-                    self.vx = JR_SHELL_SPEED * self.toward_target() as f32;
+                    self.pause = JR_SHELL_FRAMES;
+                    self.speed = 0.0;
+                    self.heading = 0.0;
+                    self.set_byte(1, 0);
+                    self.jr_set_sub(SL_AIM);
                 }
             }
-            jr::SHELL => {
-                let vx = self.vx;
-                self.fall_capped(level, G, CAP);
-                if self.wall {
-                    self.vx = -vx;
-                }
-                if self.timer == 0 {
-                    self.phase = jr::SHELL_OUT;
-                    self.timer = JR_SHELL_OUT;
-                }
-            }
-            jr::SHELL_OUT => {
-                self.vx = Self::approach(self.vx, 0.0, 0.2);
-                self.fall_capped(level, G, CAP);
-                if self.timer == 0 {
-                    // the Basic action restarts: home is here (0x71006e9a80)
-                    self.home_x = self.x;
-                    self.jr_rearm_cooldown();
-                    self.jr_enter_wait_or_fall();
-                }
-            }
+            jr::SHELL => self.jr_shell_slide(level),
+            jr::SHELL_OUT => self.jr_shell_wakeup(level),
             _ => out = self.jr_clown(level),
         }
         out
+    }
+
+    /// Within 16 px of the area edge he is sliding toward (his background half-width 6, big 12).
+    fn jr_at_area_edge(&self, level: &Level) -> bool {
+        let w = 6.0 * self.scale();
+        (self.vx < 0.0 && self.x - w <= level.left + 16.0)
+            || (self.vx > 0.0 && level.right - 16.0 <= self.x + w)
+    }
+
+    /// ShellSlide (0x7100614b10). `pause` is the slide counter, `speed` the slide speed,
+    /// `heading` its acceleration, chain byte 1 the turn cooldown, `jr_sub` the sub-phase.
+    /// [?: the obstacle analysis when he meets a wall on the ground — hop a step at vy 3.0 /
+    /// 1.5 px/f, or wake up at a tall wall — is not modelled; he bounces back as the game does
+    /// for the walls it does not jump]
+    fn jr_shell_slide(&mut self, level: &Level) {
+        if self.pause > 0 {
+            self.pause -= 1;
+        }
+        let toward = self.toward_target();
+        match self.jr_sub() {
+            SL_AIM => {
+                self.fall_capped(level, G, CAP);
+                if self.on_ground {
+                    self.dir = toward;
+                    self.speed = 0.0;
+                    self.heading = 0.0;
+                    self.jr_set_sub(SL_SLIDE);
+                }
+                return;
+            }
+            SL_BRAKE => {
+                let step = if self.vx.abs() > JR_SHELL_TOP {
+                    0.3
+                } else {
+                    0.1
+                };
+                self.vx = Self::approach(self.vx, 0.0, step);
+                self.fall_capped(level, G, CAP);
+                if self.vx == 0.0 || self.jr_at_area_edge(level) {
+                    self.vx = 0.0;
+                    self.speed = 0.0;
+                    self.heading = 0.0;
+                    self.dir = -self.dir;
+                    self.set_byte(1, JR_SHELL_TURN);
+                    self.jr_set_sub(SL_AIM);
+                }
+                return;
+            }
+            _ => {}
+        }
+        if self.dir != toward && self.speed.abs() > 1e-5 {
+            self.jr_set_sub(SL_BRAKE);
+        }
+        let cooldown = self.byte(1);
+        if cooldown > 0 {
+            self.set_byte(1, cooldown - 1);
+        }
+        if cooldown <= 1 && self.pause == 0 && self.on_ground && self.jr_feet_on_floor(level) {
+            self.jr_enter_wakeup();
+            return;
+        }
+        if self.jr_at_area_edge(level) {
+            self.jr_set_sub(SL_BRAKE);
+        }
+        self.heading = Self::approach(self.heading, JR_SHELL_ACCEL, JR_SHELL_JERK);
+        self.speed = Self::approach(self.speed, JR_SHELL_TOP, self.heading);
+        self.vx = self.speed * self.dir as f32;
+        let ground = self.on_ground;
+        self.fall_capped(level, G, CAP);
+        if self.wall {
+            // "koura_hit": back off the wall (in the air ×−0.2)
+            self.speed *= if ground { -1.0 } else { -0.2 };
+            self.vx = self.speed * self.dir as f32;
+        }
+    }
+
+    /// Both foot probes (x ∓ 4, big 8) find the floor within 10 px below.
+    fn jr_feet_on_floor(&self, level: &Level) -> bool {
+        let f = 4.0 * self.scale();
+        [self.x - f, self.x + f]
+            .iter()
+            .all(|&fx| (0..=14).any(|k| level.cell_at(fx, self.y + 4.0 - k as f32).is_solid()))
+    }
+
+    /// ShellWakeup (0x7100616f80): the brake is the larger of the slide acceleration and a
+    /// tenth of his speed (0x7100617170 sub 5).
+    fn jr_enter_wakeup(&mut self) {
+        self.phase = jr::SHELL_OUT;
+        self.heading = self.heading.max(self.vx.abs() * 0.1);
+        self.speed = self.vx.abs();
+        self.jr_set_sub(5);
+    }
+
+    /// ShellWakeup: brakes to a stop; once his vertical speed is within the brake he hops out
+    /// (vy 3.0, vx 0); at vy ≤ 0.4 the Basic action restarts with home here (ReturnFromShell
+    /// 0x71006eea30 is not modelled beyond that [?]).
+    fn jr_shell_wakeup(&mut self, level: &Level) {
+        if self.jr_sub() == 5 {
+            self.speed = (self.speed - self.heading).max(0.0);
+            if self.jr_at_area_edge(level) {
+                self.speed = 0.0;
+            }
+            self.vx = self.speed * self.dir as f32;
+            if self.vy.abs() <= self.heading {
+                self.vy = JR_WAKE_HOP;
+                self.on_ground = false;
+                self.vx = 0.0;
+                self.speed = 0.0;
+                self.jr_set_sub(6);
+            }
+            self.fall_capped(level, G, CAP);
+            return;
+        }
+        self.vx = 0.0;
+        self.fall_capped(level, G, CAP);
+        if self.vy <= JR_WAKE_END {
+            self.home_x = self.x;
+            self.jr_set_sub(0);
+            self.jr_rearm_cooldown();
+            self.jr_enter_wait_or_fall();
+        }
     }
 
     fn jr_enter_prev_hip_drop(&mut self, st: usize) {
@@ -1927,19 +2389,22 @@ impl Actor {
             return;
         }
         let just_shot = self.jr_sub() == 1;
+        let windup = JR_WINDUP[style_index(level)];
         if cooldown == 0 && self.on_ground {
-            self.jr_set_sub(0);
             self.phase = jr::SHIFT_JUMP;
             self.vx = 0.0;
-            self.vy = if self.big {
+            self.vy = 0.0;
+            self.speed = 0.0;
+            self.heading = if self.big {
                 JR_SHIFT_JUMP_BIG
             } else {
                 JR_SHIFT_JUMP
             };
-            self.on_ground = false;
+            self.jr_set_sub(JR_WINDING);
+            self.timer = windup;
             return;
         }
-        if !(self.on_ground && just_shot) && self.player_in_view() {
+        if !(self.on_ground && just_shot) && self.box_in_view() {
             let r = self.rand(100);
             if r < if self.wings { 75 } else { 70 } {
                 self.phase = jr::SHOT;
@@ -1966,13 +2431,14 @@ impl Actor {
             .is_solid();
         if !ceiling {
             for d in [heading, -heading] {
-                // SMB1 jumps at once; the other styles first finish a wind-up animation whose
-                // length is not in the 2D sprite data [?] (taken as 0)
+                // the solved jump waits for the wind-up animation (SMB1: none)
                 if let Some(v) = self.jr_hop_probe(level, d) {
                     self.phase = jr::HOP;
-                    self.vx = v.0 * d as f32;
-                    self.vy = v.1;
-                    self.on_ground = false;
+                    self.vx = 0.0;
+                    self.speed = v.0 * d as f32;
+                    self.heading = v.1;
+                    self.jr_set_sub(JR_WINDING);
+                    self.timer = windup;
                     return;
                 }
             }
@@ -1982,12 +2448,25 @@ impl Actor {
         self.timer = JR_WALK_FRAMES;
     }
 
-    /// The player is inside the view [inf: 0x710035f7f0 is a view test on the player's box;
-    /// its margins were not read].
-    fn player_in_view(&self) -> bool {
-        let (px, py) = self.target;
+    /// The boss's view box touches the targeted player's camera view (0x710035f7f0: the box
+    /// from slot 0x298 against the view rectangle, edges inclusive). The box (0x710078cbc0) is
+    /// centred on the hitbox centre with half-extents (size / 2 + 16) / 2 from slot 0x2a0's
+    /// size: Bowser Jr. 32 (big 64) square, Boom Boom 30 × 24 (big ×3).
+    fn box_in_view(&self) -> bool {
+        let (w, h) = match self.kind {
+            Kind::BoomBoom { .. } => {
+                let k = if self.big { 3.0 } else { 1.0 };
+                (30.0 * k, 24.0 * k)
+            }
+            _ => {
+                let k = if self.big { 64.0 } else { 32.0 };
+                (k, k)
+            }
+        };
+        let (hx, hy) = ((w / 2.0 + 16.0) / 2.0, (h / 2.0 + 16.0) / 2.0);
+        let (x, y) = (self.x, self.y + self.height() / 2.0);
         let (cx, cy) = self.camera;
-        px > cx && px < cx + VIEW_W && py > cy - 32.0 && py < cy + VIEW_H
+        x - hx <= cx + VIEW_W && x + hx >= cx && y - hy <= cy + VIEW_H && y + hy >= cy
     }
 
     /// The hop probe: 30 px ahead at feet + 4 and feet + 20; unless both are walls, look down
@@ -2024,22 +2503,48 @@ impl Actor {
         }
         let ly = land?;
         let v = jr_jump_velocity(JR_PROBE, ly - self.y, self.wings)?;
-        // the arc must be clear of terrain (0x7100619f50) [inf: sampled at the feet and head
-        // each frame rather than with the game's background sensors]
-        let (mut x, mut yy, mut vy) = (self.x, self.y, v.1);
-        for _ in 0..180 {
+        self.jr_arc_clear(level, v.0 * df, v.1).then_some(v)
+    }
+
+    /// The arc test (0x7100619f50): the jump is flown frame by frame (gravity −0.1875, cap
+    /// −4) from 1 px above his feet; every 15 frames the path since the last check is swept at
+    /// the feet and at 0.33, 0.66 and 0.99 of his background height (15.9, big 31.8). The feet
+    /// sweep landing on a floor ends the test: clear if the three higher sweeps to the landing
+    /// point are clear. Any other hit, dropping 96 px below the area bottom, or 300 frames
+    /// without landing fail. (Not modelled: the game also fails an arc that crosses the
+    /// liquid surface.)
+    fn jr_arc_clear(&self, level: &Level, vx: f32, mut vy: f32) -> bool {
+        let h = 15.9 * self.scale();
+        let rows = [0.33 * h, 0.66 * h, 0.99 * h];
+        let (mut x, mut y) = (self.x, self.y + 1.0);
+        let mut last = (x, y);
+        for i in 0..300 {
             vy = (vy + G).max(CAP);
-            x += v.0 * df;
-            yy += vy;
-            if vy < 0.0 && yy <= ly {
-                break;
+            x += vx;
+            y += vy;
+            if i % 15 != 0 {
+                continue;
             }
-            let h = self.height();
-            if level.cell_at(x, yy + 1.0).is_solid() || level.cell_at(x, yy + h - 1.0).is_solid() {
-                return None;
+            if last.1 + h + 16.0 <= level.bottom - 96.0 {
+                return false;
             }
+            if let Some((hx, hy, floor)) = sweep(level, last, (x, y)) {
+                if !floor {
+                    return false;
+                }
+                return rows
+                    .iter()
+                    .all(|&r| sweep(level, (last.0, last.1 + r), (hx, hy + r)).is_none());
+            }
+            if rows
+                .iter()
+                .any(|&r| sweep(level, (last.0, last.1 + r), (x, y + r)).is_some())
+            {
+                return false;
+            }
+            last = (x, y);
         }
-        Some(v)
+        false
     }
 
     /// Walk (0x71006eb460): toward 1.25 (winged 0.8) in 0.1 steps; stops (→ Wait) 24 px from
@@ -2124,10 +2629,12 @@ impl Actor {
         f
     }
 
-    /// The Clown Car machine (init 0x71006e81c0): every 150 frames that the player is within
-    /// 80 px or he is well inside the view, he ducks (10 frames), throws two shells (one each
-    /// way) after 30 frames, comes back up (10 frames) and at 1 HP also fires (or, winged,
-    /// throws hammers). The thrown shells' own launch is not decoded [?].
+    /// The Clown Car machine (init 0x71006e81c0). Wait (0x71006e84b0): the attack timer runs
+    /// while the player is within 80 px or he is inside the view band (left + 32 … right − 32),
+    /// and also before the player has ever been near; after that, 150 frames away clear it.
+    /// At 0 he ducks (10 frames), throws two Green Koopa Troopas one each way after 30
+    /// (ThrowShell 0x71006e88e0 → 0x71006e64d0), comes back up (10 frames) and at 1 HP also
+    /// fires (or, winged, throws hammers); each attack ends with the timer at 150.
     fn jr_clown(&mut self, level: &Level) -> Option<Actor> {
         self.step_clown(level);
         let mut out = None;
@@ -2136,13 +2643,33 @@ impl Actor {
                 let near = (self.target.0 - self.x).abs() < 80.0
                     || (self.x >= self.camera.0 + 32.0 && self.x <= self.camera.0 + VIEW_W - 32.0);
                 if near {
-                    if self.pause > 0 {
-                        self.pause -= 1;
+                    // chain byte 1: the player has been near; byte 2: the frames away
+                    self.set_byte(1, 1);
+                } else if self.byte(1) != 0 {
+                    // +0x6c: counts down 150 frames away, clearing the attack timer whenever
+                    // it runs out (and on the first frame away while it is 0)
+                    let c = self.byte(2);
+                    if c != 0 {
+                        self.set_byte(2, c - 1);
+                        if c != 1 {
+                            return None;
+                        }
                     }
-                    if self.pause == 0 {
-                        self.phase = jr::C_PRE_THROW;
-                        self.timer = 10;
-                    }
+                    self.pause = 0;
+                    self.set_byte(2, JR_CLOWN_FORGET);
+                    return None;
+                }
+                if self.pause > 0 {
+                    self.pause -= 1;
+                }
+                if self.pause == 0 {
+                    self.phase = jr::C_PRE_THROW;
+                    self.timer = 10;
+                }
+            }
+            jr::C_DAMAGE => {
+                if self.timer == 0 {
+                    self.phase = jr::CLOWN;
                 }
             }
             jr::C_PRE_THROW => {
@@ -2154,19 +2681,23 @@ impl Actor {
             }
             jr::C_THROW => {
                 if self.timer == 0 {
-                    // two shells, left and right (one per frame: the engine spawns one actor
-                    // per step)
+                    // two Green Koopa Troopas (course actor 97, big 98, default spawn flags),
+                    // left from x − 8 then right from x + 8 (big ±16), at y + 16 (big 24):
+                    // vy 4.0 and ±0.5 px/f (0x71006e64d0; it also hands over his speed
+                    // history, which is ~0 for a rider carried by the car; the game throws both
+                    // in one frame, the engine one per step)
                     let k = self.jr_sub();
                     let d = if k == 0 { -1 } else { 1 };
+                    let (ox, oy) = if self.big { (16.0, 24.0) } else { (8.0, 16.0) };
                     let mut s = Actor::new(
-                        Kind::Shell { red: false },
-                        self.x + d as f32 * 8.0 * self.scale(),
-                        self.y + 16.0 * self.scale(),
+                        Kind::Koopa { red: false },
+                        self.x + d as f32 * ox,
+                        self.y + oy,
                     );
-                    s.mode = Mode::ShellWait;
-                    s.timer = SHELL_WAKE;
-                    s.vx = d as f32;
-                    s.vy = 2.0;
+                    s.big = self.big;
+                    s.dir = d;
+                    s.vx = 0.5 * d as f32;
+                    s.vy = 4.0;
                     out = Some(s);
                     if k == 0 {
                         self.jr_set_sub(1);
@@ -2208,6 +2739,25 @@ impl Actor {
 const BBF_GUARD: u8 = 0x01;
 const BBF_IMMUNE: u8 = 0x02;
 const BBF_REPEAT: u8 = 0x04;
+
+/// Sweeps the segment `a` → `b` through the terrain one pixel at a time: the first point
+/// inside a solid cell, and whether it was a floor (entered from above while moving down).
+fn sweep(level: &Level, a: (f32, f32), b: (f32, f32)) -> Option<(f32, f32, bool)> {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let n = dx.abs().max(dy.abs()).ceil().max(1.0) as usize;
+    let mut prev = a;
+    for k in 1..=n {
+        let t = k as f32 / n as f32;
+        let p = (a.0 + dx * t, a.1 + dy * t);
+        if level.cell_at(p.0, p.1).is_solid() {
+            let top = ((p.1 / TILE).floor() + 1.0) * TILE;
+            let floor = dy < 0.0 && prev.1 >= top && !level.cell_at(p.0, prev.1).is_solid();
+            return Some((p.0, if floor { top } else { p.1 }, floor));
+        }
+        prev = p;
+    }
+    None
+}
 
 /// The boss jump solver (0x7100619690): the launch (vx ≥ 0, vy) that lands `dy` above (or
 /// below) a point `dx` away under gravity −0.1875 / fall cap −4, clearing 16 px (32 winged)
@@ -2317,15 +2867,10 @@ impl Actor {
                 };
                 ("M1_Enemy_bunbun", tex, 32.0, 32.0, face)
             }
-            // [inf] placeholder art: Pom Pom's shuriken uses Magikoopa's magic sparkle (the
-            // 3D World art is not a 2D sprite)
-            Kind::Shuriken => (
-                "M1_Enemy_kameck",
-                cycle(&["effect.0", "effect.1", "effect.2"], 4),
-                16.0,
-                16.0,
-                false,
-            ),
+            // Pom Pom (3D World only) throws BulletPunpunShuriken, drawn with the 3D World model
+            // `3W_Enemy_punpunshuriken` (its one animation, `Spin`, 35 frames) through the
+            // `M1_` name like the other 3D World enemies; it has no 2D sprite in any style
+            Kind::Shuriken => ("M1_Enemy_punpunshuriken", "spin.0", 16.0, 16.0, false),
             Kind::BowserJr { .. } => {
                 if self.boss_in_shell() {
                     let tex = if self.phase == jr::SHELL {
@@ -2348,6 +2893,9 @@ impl Actor {
                     jr::SHOT | jr::C_SHOT => "fire.1",
                     jr::PREV_HIP_DROP | jr::HIP_DROP => "before.0",
                     jr::CLOWN | jr::C_PRE_THROW | jr::C_THROW | jr::C_POST_THROW => "wait.0",
+                    // ducked into the car between the Clown DamageDown's 22nd and 68th frame
+                    jr::C_DAMAGE if (9..=55).contains(&self.timer) => return None,
+                    jr::C_DAMAGE => "wait.0",
                     _ if !self.on_ground => cycle(&["fall.0", "fall.1"], 5),
                     _ => cycle(&["wait.0", "wait.1"], 10),
                 };
@@ -2672,12 +3220,13 @@ mod tests {
         let mut jumped = false;
         let mut min_vy: f32 = 0.0;
         for _ in 0..1500 {
-            let was = a.phase;
+            let (was, vy) = (a.phase, a.vy);
             let _ = a.step_spawning(&level);
-            if a.phase == jr::SHIFT_JUMP && was != jr::SHIFT_JUMP {
+            if a.phase == jr::SHIFT_JUMP && was == jr::SHIFT_JUMP && vy == 0.0 && a.vy > 0.0 {
+                // SMB1: no wind-up, the jump starts on the state's first frame
                 jumped = true;
                 assert_eq!(a.vx, 0.0);
-                assert!((a.vy - JR_SHIFT_JUMP).abs() < 1e-6);
+                assert!((a.vy - (JR_SHIFT_JUMP + G)).abs() < 1e-6, "{}", a.vy);
             }
             if a.phase == jr::HIP_DROP {
                 min_vy = min_vy.min(a.vy);
@@ -2758,19 +3307,238 @@ mod tests {
             30.0 * TILE,
         );
         let _ = a.step_spawning(&level);
-        assert_eq!(a.boss_hit(BossAttack::Stomp, a.x), BossHit::Hurt);
+        let mut b = a.clone();
+        // a shell: the 2.5 hop, FireBallDown 40 + FireBallDownEnd 76, then Lapse
+        assert_eq!(a.boss_hit(BossAttack::Shell, a.x), BossHit::Hurt);
         assert!((a.vy - 2.5).abs() < 1e-6, "hop 2.5");
-        let mut hidden = 0;
-        for _ in 0..400 {
+        let (mut seen, mut hidden, mut moved) = (0, 0, false);
+        let start = a.x;
+        for _ in 0..600 {
             let _ = a.step_spawning(&level);
             if a.boss_hidden() {
                 hidden += 1;
             } else if hidden > 0 {
+                moved = (a.x - start).abs() > 1.0;
+                break;
+            } else {
+                seen += 1;
+            }
+        }
+        assert_eq!(seen, POM_DAMAGE_HOP + POM_DAMAGE_END - 1, "damage frames");
+        assert!(hidden >= POM_LAPSE + POM_LAPSE_MOVE, "{hidden}");
+        assert!(!a.boss_hidden() && moved, "reappears elsewhere");
+        assert_eq!(a.phase, bb::POM_APPEAR);
+        // a stomp: PressDown in place, no hop
+        assert_eq!(b.boss_hit(BossAttack::Stomp, b.x), BossHit::Hurt);
+        assert_eq!((b.vy, b.timer), (0.0, POM_PRESS));
+    }
+
+    #[test]
+    fn pom_pom_throws_one_homing_shuriken_then_hides() {
+        let (level, mut a) = boss(
+            Kind::BoomBoom {
+                key: false,
+                clown: false,
+                pom: true,
+            },
+            30.0 * TILE,
+        );
+        a.target = (a.x - 100.0, 64.0);
+        let mut shots = Vec::new();
+        let mut thrown_at = None;
+        for f in 0..400 {
+            if let Some(s) = a.step_spawning(&level) {
+                shots.push(s);
+                thrown_at.get_or_insert(f);
+            }
+            if a.phase == bb::POM_HIDE {
                 break;
             }
         }
-        assert!(hidden >= 120, "{hidden}");
-        assert!(!a.boss_hidden());
+        // Wait 60 (frames 0–59), ThrowSign 42 → the shuriken as Throw starts
+        assert_eq!(thrown_at, Some(59 + POM_THROW_SIGN[0]));
+        assert_eq!(shots.len(), 1);
+        let mut s = shots.remove(0);
+        assert_eq!(s.dir, -1);
+        let mut climb: f32 = 0.0;
+        for _ in 0..60 {
+            s.step_boss_shot();
+            climb = climb.max(s.heading);
+            assert!((s.vx.dhypot(s.vy) - 1.0).abs() < 1e-4);
+        }
+        // the target is 32 px up: it turns up by 2° a frame, never past 45°
+        assert!(climb > 10.0 && climb <= 45.0, "{climb}");
+    }
+
+    fn styled(mut level: Level, style: &str) -> Level {
+        level.style = style.into();
+        level
+    }
+
+    #[test]
+    fn bowser_turn_and_breath_lengths_follow_the_models() {
+        let (_, mut a) = boss(BOWSER, 30.0 * TILE);
+        assert_eq!(a.bowser_turn_frames(1), 15.0); // SMB3 turn 30 at rate 2
+        assert_eq!(a.bowser_turn_frames(2), 23.0); // SMW 45 at 2, rounded up
+        assert_eq!(a.bowser_turn_frames(3), 54.0); // NSMBU lkp_walk 160 at 3
+        a.big = true;
+        assert_eq!(a.bowser_turn_frames(3), 160.0);
+        assert_eq!(BOWSER_BREATH[3], (104, 48));
+    }
+
+    #[test]
+    fn bowser_flame_carries_the_mean_of_his_last_16_steps() {
+        let (_, mut a) = boss(BOWSER, 30.0 * TILE);
+        a.dir = 1;
+        for k in 0..20 {
+            a.x = 100.0 + 0.5 * k as f32;
+            a.bowser_record_step();
+        }
+        assert_eq!(a.trail.len(), SPEED_HISTORY + 1);
+        let f = a.bowser_flame(0);
+        assert!((f.vx - (BOWSER_FIRE_SPEED + 0.5)).abs() < 1e-5, "{}", f.vx);
+        // moving backward: nothing is carried
+        a.dir = -1;
+        let f = a.bowser_flame(0);
+        assert!((f.vx + BOWSER_FIRE_SPEED).abs() < 1e-5);
+    }
+
+    #[test]
+    fn bowser_jr_hop_and_shift_jump_wait_for_the_wind_up() {
+        for (style, wind) in [("M3", 4), ("WU", 25)] {
+            let (level, mut a) = boss(BOWSER_JR, 30.0 * TILE);
+            let level = styled(level, style);
+            let mut winding = 0;
+            let mut launched = false;
+            for _ in 0..600 {
+                let _ = a.step_spawning(&level);
+                if matches!(a.phase, jr::HOP | jr::SHIFT_JUMP) && a.jr_sub() == JR_WINDING {
+                    winding += 1;
+                    assert_eq!(a.vx, 0.0);
+                } else if winding > 0 {
+                    launched = a.vy > 0.0;
+                    break;
+                }
+            }
+            assert!(launched, "{style}");
+            assert_eq!(winding, wind, "{style}");
+        }
+    }
+
+    #[test]
+    fn the_view_test_uses_the_boss_box_with_inclusive_edges() {
+        let (_, mut a) = boss(BOWSER_JR, 30.0 * TILE);
+        // Bowser Jr.'s view box: ±16 around his hitbox centre
+        a.camera = (a.x + 16.0, 0.0);
+        assert!(a.box_in_view());
+        a.camera = (a.x + 16.5, 0.0);
+        assert!(!a.box_in_view());
+    }
+
+    #[test]
+    fn the_hop_arc_fails_under_a_low_ceiling_and_clears_open_ground() {
+        let (mut level, a) = boss(BOWSER_JR, 30.0 * TILE);
+        assert!(a.jr_arc_clear(&level, 1.0, 2.0));
+        // a block 1 tile above his head along the arc
+        let (tx, ty) = (((a.x + 16.0) / TILE) as i32, 4);
+        level.set(tx, ty, Cell::Solid);
+        level.set(tx + 1, ty, Cell::Solid);
+        assert!(!a.jr_arc_clear(&level, 1.0, 3.5));
+    }
+
+    #[test]
+    fn bowser_jr_slides_for_200_frames_at_up_to_1_6_then_hops_out() {
+        let (level, mut a) = boss(BOWSER_JR, 60.0 * TILE);
+        a.phase = jr::SHELL_WAIT;
+        a.hops = 2;
+        a.timer = 1;
+        // far enough that he never passes the player (which would brake and turn him)
+        a.target = (a.x - 900.0, 32.0);
+        let mut slide = 0;
+        let mut top: f32 = 0.0;
+        for _ in 0..400 {
+            let _ = a.step_spawning(&level);
+            if a.phase == jr::SHELL {
+                slide += 1;
+                top = top.max(a.vx.abs());
+            }
+            if a.phase == jr::SHELL_OUT && a.jr_sub() == 6 {
+                break;
+            }
+        }
+        assert!(
+            (JR_SHELL_FRAMES..=JR_SHELL_FRAMES + 2).contains(&slide),
+            "{slide}"
+        );
+        assert!((top - JR_SHELL_TOP).abs() < 1e-5, "{top}");
+        assert_eq!(a.vx, 0.0);
+        assert!((a.vy - JR_WAKE_HOP - G).abs() < 1e-5 || a.vy < JR_WAKE_HOP);
+        // the hit rules in the shell: a stomp bounces off, a block bump knocks it up
+        a.phase = jr::SHELL;
+        assert_eq!(a.boss_hit(BossAttack::Stomp, a.x), BossHit::Guarded);
+        assert_eq!(a.boss_hit(BossAttack::Fire, a.x), BossHit::Ignored);
+        assert_eq!(a.boss_hit(BossAttack::BlockHit, a.x), BossHit::Absorbed);
+        assert_eq!((a.vy, a.boss_hp()), (2.0, 2));
+    }
+
+    #[test]
+    fn a_clown_car_rider_steers_at_0_02_up_to_1_and_drifts_out_of_range() {
+        let clown = Kind::BowserJr {
+            key: false,
+            clown: true,
+        };
+        let (level, mut a) = boss(clown, 30.0 * TILE);
+        a.y = 100.0;
+        a.on_ground = false;
+        a.target = (a.x + 200.0, 100.0);
+        let _ = a.step_spawning(&level);
+        assert!(
+            (a.vx.dhypot(a.vy) - CLOWN_ACCEL).abs() < 1e-3,
+            "{} {}",
+            a.vx,
+            a.vy
+        );
+        for _ in 0..200 {
+            a.target = (a.x + 200.0, a.y);
+            let _ = a.step_spawning(&level);
+        }
+        assert!((a.vx - CLOWN_SPEED).abs() < 0.05, "{}", a.vx);
+        // beyond 320 px it lets go (Free drift)
+        a.target = (a.x + 400.0, a.y);
+        let v = a.vx;
+        let _ = a.step_spawning(&level);
+        assert!((a.vx - v * 0.95).abs() < 1e-4);
+        // the car under him: 21 px below Bowser Jr., 38 below an SMB3 Bowser
+        assert_eq!(a.clown_ride_height("M1"), 21.0);
+        let (_, b) = boss(BOWSER, 0.0);
+        assert_eq!(b.clown_ride_height("M3"), 38.0);
+    }
+
+    #[test]
+    fn bowser_jr_in_a_clown_car_ducks_when_hurt_and_throws_koopa_troopas() {
+        let clown = Kind::BowserJr {
+            key: false,
+            clown: true,
+        };
+        let (level, mut a) = boss(clown, 30.0 * TILE);
+        a.y = 100.0;
+        a.on_ground = false;
+        a.target = (a.x - 40.0, 100.0);
+        let mut thrown = Vec::new();
+        for _ in 0..80 {
+            if let Some(s) = a.step_spawning(&level) {
+                thrown.push(s);
+            }
+        }
+        assert_eq!(thrown.len(), 2);
+        for (s, d) in thrown.iter().zip([-1, 1]) {
+            assert_eq!(s.kind, Kind::Koopa { red: false });
+            assert_eq!((s.vx, s.vy, s.dir), (0.5 * d as f32, 4.0, d));
+        }
+        a.phase = jr::CLOWN;
+        assert_eq!(a.boss_hit(BossAttack::Stomp, a.x), BossHit::Hurt);
+        assert_eq!((a.phase, a.timer), (jr::C_DAMAGE, JR_CLOWN_DAMAGE));
+        assert_eq!(a.boss_hit(BossAttack::Stomp, a.x), BossHit::Guarded);
     }
 
     #[test]

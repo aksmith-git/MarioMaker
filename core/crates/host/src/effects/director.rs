@@ -63,7 +63,7 @@ pub fn actor_user(kind: Kind) -> Option<&'static str> {
         Kind::Donut => "ChikuwaBlock",
         Kind::Spiny | Kind::SpinyEgg => "Togezo",
         Kind::Buzzy => "Met",
-        Kind::SpikeTop => "Togemet",
+        Kind::SpikeTop { .. } => "Togemet",
         Kind::HammerBro => "Bros",
         Kind::Hammer => "Hammer",
         Kind::BobOmb => "Bombhei",

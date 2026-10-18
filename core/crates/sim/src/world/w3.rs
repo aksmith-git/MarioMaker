@@ -328,8 +328,13 @@ pub(super) fn fire_hit(e: &mut Actor, from_x: f32) -> Option<bool> {
 }
 
 /// A sliding shell meeting a Bully: the shell attack is Invalid in its EnemyDB row, but its push
-/// component takes the shell as a heavy push (2.5 px/f) [obs 0x7100649cb0]; the shell bounces
-/// back [inf: the shell's side is the generic enemy-vs-enemy handler 0x710072bca0, not traced].
+/// component takes the shell as a heavy push (2.5 px/f) [obs 0x7100649cb0]. The shell is
+/// pushed back by the Bully's pusher flag (+0x523 bit 1, Bully builder 0x7100645c20): the
+/// generic handler's push path (0x710072bca0 → 0x7100730370, 4-frame cooldown 0x710078c330)
+/// calls the shell's push hook 0x71005f7fb0, which faces it away from the Bully, sets its speed
+/// to max(4, |v| + 2) with the slide's target speed |v| clamped to 2.5…4, and a 2.4 hop when its
+/// vy is below 2.4 [obs v1]. [simplified: the engine's slide has no speed easing, so the shell
+/// leaves at the target speed]
 /// A sliding shell meeting a Piranha Creeper head tramples it 2 pieces back and is bounced back
 /// [obs 0x710071e460; inf: 4 pieces for shells whose collider has flag +0x91 bit 1, not
 /// identified]. True when handled.
@@ -352,8 +357,13 @@ pub(super) fn shell_hit(a: &mut Actor, b: &mut Actor) -> bool {
     };
     if (bully.x - shell.x) * shell.vx > 0.0 {
         bully.bully_push_by(bully_push::HEAVY, shell.x, false);
-        shell.dir = -shell.dir;
-        shell.vx = -shell.vx;
+        let away = if shell.x < bully.x { -1 } else { 1 };
+        shell.dir = away;
+        shell.vx = shell.vx.abs().clamp(2.5, 4.0) * away as f32;
+        if shell.vy < 2.4 {
+            shell.vy = 2.4;
+            shell.on_ground = false;
+        }
     }
     true
 }
@@ -611,6 +621,11 @@ mod tests {
             .unwrap();
         assert_eq!(shell.mode, Mode::ShellSlide);
         assert!(shell.vx < 0.0, "bounced back");
+        assert!(
+            (shell.vx + 2.5).abs() < 1e-4,
+            "at the slide's target speed (2.5…4): {}",
+            shell.vx
+        );
         let b = enemy(&w, Kind::Bully);
         assert!(b.alive() && b.bully_pushed(), "a shell pushes it hard");
     }
