@@ -10,9 +10,15 @@
 # them and ../scripts/check_no_proprietary.py blocks them. They may be symlinks to another disk.
 #
 # macOS: Homebrew clang/SDL3/FFmpeg, Metal renderer.  Linux: clang + Vulkan.  Windows: MSYS2 UCRT64 + Vulkan.
+# Cross builds (from macOS or any host, with zig as the compiler: tools/fetch_zig.sh, or ZIG=<zig>):
+#   make TARGET=linux-aarch64 | linux-x86_64 | windows-x86_64 GAME=smm2 all   (DEPS=<headers + link libraries>)
 UNAME := $(shell uname -s)
 comma := ,
-ifneq ($(filter MINGW% MSYS% CYGWIN% Windows_NT,$(UNAME) $(OS)),)
+TARGET ?=
+ifneq ($(TARGET),)
+PLATFORM := $(word 1,$(subst -, ,$(TARGET)))
+ARCH     := $(word 2,$(subst -, ,$(TARGET)))
+else ifneq ($(filter MINGW% MSYS% CYGWIN% Windows_NT,$(UNAME) $(OS)),)
 PLATFORM := windows
 else ifeq ($(UNAME),Linux)
 PLATFORM := linux
@@ -22,6 +28,7 @@ endif
 
 GAME     ?= smm2
 GAMEDIR  := games/$(GAME)
+GAME_MOVIES := 1  # (runtime/hle/movie.c + FFmpeg: games whose code uses the movie library; game.mk may say 0)
 include $(GAMEDIR)/game.mk
 
 # Game files (set up by `make setup` from the dump), recompiled code, build products: one folder each per game.
@@ -30,7 +37,19 @@ GAMEFILES := $(DATA)/extracted
 GEN      ?= generated/$(GAME)
 B        ?= build/$(GAME)
 
-ifeq ($(PLATFORM),linux)
+ifneq ($(TARGET),)
+# zig cc / c++ for the target; the generated code depends only on the CPU's FP/SIMD lowering (asm on aarch64, C on
+# x86-64), so targets share it: generated/<game> (aarch64, as macOS) or generated/<game>-c (x86-64)
+ZIG      ?= $(firstword $(wildcard build/zig/zig) zig)
+ZTARGET  := $(ARCH)-$(if $(filter windows,$(PLATFORM)),windows-gnu,linux-gnu.2.36)
+CROSS_CC := $(ZIG) cc -target $(ZTARGET)
+CROSS_CXX := $(ZIG) c++ -target $(ZTARGET)
+B        := build/$(GAME)-$(TARGET)
+ifeq ($(ARCH),x86_64)
+GEN      := generated/$(GAME)-c
+endif
+GENSIMD  := --simd $(if $(filter aarch64,$(ARCH)),asm,c)
+else ifeq ($(PLATFORM),linux)
 HOSTARCH := $(patsubst arm64,aarch64,$(shell uname -m))
 ARCH     ?= $(HOSTARCH)
 ifneq ($(ARCH),$(HOSTARCH))
@@ -44,8 +63,9 @@ endif
 MACOS_MIN ?=
 DEPS      ?=
 MINFLAG  := $(if $(MACOS_MIN),-mmacosx-version-min=$(MACOS_MIN))
-CC       := clang $(MINFLAG) $(CROSS)
-CXX      := clang++ $(MINFLAG) $(CROSS)
+CC       := $(or $(CROSS_CC),clang $(MINFLAG) $(CROSS))
+CXX      := $(or $(CROSS_CXX),clang++ $(MINFLAG) $(CROSS))
+LLD      := $(if $(CROSS_CC),,-fuse-ld=lld)  # (zig links with its own lld)
 IMGUI    := third_party/imgui
 GENFLAGS := -O1 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -Iruntime
 GAMEDEFS := -DGAME_TITLE_ID=$(GAME_TITLE_ID)ull -DGAME_ID='"$(GAME_ID)"' -DGAME_TITLE='"$(GAME_TITLE)"' -DGAME_BUNDLE_ID='"$(GAME_BUNDLE_ID)"' \
@@ -56,6 +76,15 @@ GEN_OBJ  := $(patsubst %.c,$(B)/obj/%.o,$(patsubst $(GEN)/%,%,$(GEN_SRC))) $(B)/
 RT_SRC   := $(wildcard runtime/*.c) $(wildcard runtime/hle/*.c) $(wildcard runtime/services/*.c) \
             $(wildcard runtime/nvn/*.c) $(wildcard runtime/nvn/maxwell/*.c) runtime/platform/$(PLATFORM).c \
             $(GAME_SRC)
+ifeq ($(PLATFORM),windows)
+RT_SRC   += runtime/platform/windows_exports.c  # (what the game code DLL calls in the exe)
+endif
+ifeq ($(strip $(GAME_MOVIES)),0)
+RT_SRC   := $(filter-out runtime/hle/movie.c,$(RT_SRC))
+FFMPEG_LIBS :=
+else
+FFMPEG_LIBS := -lavformat -lavcodec -lavutil -lswscale
+endif
 RT_HDRS  := $(wildcard runtime/*.h) $(wildcard runtime/platform/*.h) $(wildcard runtime/nvn/*.h) \
             $(wildcard runtime/nvn/maxwell/*.h) $(wildcard runtime/nvn/vulkan/*.h) $(wildcard runtime/ui/*.h) \
             $(GAMEDIR)/game.mk
@@ -69,7 +98,7 @@ SDL      := $(or $(DEPS),/opt/homebrew/opt/sdl3)
 FFMPEG   := $(or $(DEPS),/opt/homebrew/opt/ffmpeg)
 EXE      := $(B)/$(GAME_ID)recomp
 DEPINC   := -I$(SDL)/include -I$(FFMPEG)/include
-LDFLAGS  := -L$(SDL)/lib -lSDL3 -Wl,-rpath,$(SDL)/lib -L$(FFMPEG)/lib -lavformat -lavcodec -lavutil -lswscale -Wl,-rpath,$(FFMPEG)/lib \
+LDFLAGS  := -L$(SDL)/lib -lSDL3 -Wl,-rpath,$(SDL)/lib $(if $(FFMPEG_LIBS),-L$(FFMPEG)/lib $(FFMPEG_LIBS) -Wl$(comma)-rpath$(comma)$(FFMPEG)/lib) \
             -framework CoreFoundation -framework Foundation -framework Metal -framework MetalFX -framework QuartzCore -framework AppKit -framework ImageIO -framework CoreGraphics -framework UniformTypeIdentifiers
 BACKEND_SRC := $(wildcard runtime/nvn/*.m)
 BACKEND_OBJ := $(patsubst runtime/%.m,$(B)/rt/%.o,$(BACKEND_SRC))
@@ -82,27 +111,27 @@ else ifeq ($(PLATFORM),linux)
 EXE      := $(B)/$(GAME_ID)recomp
 DEPINC   := $(if $(DEPS),-I$(DEPS)/include)
 ifeq ($(ARCH),x86_64)
-GENARCH  ?= -march=x86-64-v3  # AVX2 + FMA for the lifted FP/SIMD code (checked at startup)
+GENARCH  ?= $(if $(CROSS_CC),-mcpu=x86_64_v3,-march=x86-64-v3)  # AVX2 + FMA for the lifted FP/SIMD code (checked at startup; zig: -mcpu)
 endif
 GENFLAGS += $(GENARCH) -fPIC
 OSFLAGS  := -Wno-format
 SHADERC  ?= -lshaderc
-LDFLAGS  := -fuse-ld=lld -rdynamic $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
-            -lvulkan $(SHADERC) -lpthread -ldl -lm
+LDFLAGS  := $(LLD) -rdynamic $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 $(FFMPEG_LIBS) \
+            -lvulkan $(SHADERC) -lpthread -ldl -lm $(if $(CROSS_CC),-Wl$(comma)--allow-shlib-undefined -Wl$(comma)-rpath$(comma)'$$ORIGIN/lib')
 BACKEND_SRC := $(wildcard runtime/nvn/vulkan/*.c) $(wildcard runtime/nvn/vulkan/*.cpp)
 BACKEND_OBJ := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/%.o,$(BACKEND_SRC)))
 IMGUI_OBJ += $(B)/imgui/imgui_impl_vulkan.o
 UIFLAGS  := -x c++
 GAMELIB  := $(B)/$(GAME_ID)game.so
-GAMELIB_LDFLAGS := -shared -fuse-ld=lld
+GAMELIB_LDFLAGS := -shared $(LLD)
 GAMELIB_SHARED := -shared
 else
 EXE      := $(B)/$(GAME_ID)recomp.exe
 DEPINC   := $(if $(DEPS),-I$(DEPS)/include)
 OSFLAGS  := -D_FILE_OFFSET_BITS=64 -D_POSIX_THREAD_SAFE_FUNCTIONS -D_CRT_RAND_S -DWIN32_LEAN_AND_MEAN -DNOMINMAX
-GENARCH  ?= -march=x86-64-v3
+GENARCH  ?= $(if $(CROSS_CC),-mcpu=x86_64_v3,-march=x86-64-v3)
 GENFLAGS += -D_FILE_OFFSET_BITS=64 $(GENARCH)
-LDFLAGS  := -fuse-ld=lld -Wl,--stack,16777216 $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
+LDFLAGS  := $(LLD) -Wl,--stack,16777216 $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 $(FFMPEG_LIBS) \
             -lvulkan-1 -lwinmm -lole32 -lshell32 -lcomdlg32 -luuid -lshaderc_shared
 BACKEND_SRC := $(wildcard runtime/nvn/vulkan/*.c) $(wildcard runtime/nvn/vulkan/*.cpp)
 BACKEND_OBJ := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/%.o,$(BACKEND_SRC)))
@@ -110,7 +139,7 @@ IMGUI_OBJ += $(B)/imgui/imgui_impl_vulkan.o
 UIFLAGS  := -x c++ $(OSFLAGS)
 GAMELIB  := $(B)/$(GAME_ID)game.dll
 LDFLAGS  += -Wl,--export-all-symbols -Wl,--out-implib,$(B)/$(GAME_ID)recomp.dll.a
-GAMELIB_LDFLAGS := -shared -fuse-ld=lld $(B)/$(GAME_ID)recomp.dll.a
+GAMELIB_LDFLAGS := -shared $(LLD) $(B)/$(GAME_ID)recomp.dll.a
 GAMELIB_SHARED := -shared
 endif
 
@@ -138,7 +167,8 @@ $(B)/rt/gamelib.o: $(GAMELIB_SRCS)
 $(B)/rt/gamelib.o: RTFLAGS += -DGAMELIB_ID='"$(GAMELIB_ID)"'
 $(B)/rt/gamebuild.o: $(GAMELIB_SRCS) Makefile
 $(B)/rt/gamebuild.o: RTFLAGS += -DGAMELIB_ID='"$(GAMELIB_ID)"' -DGAMELIB_CFLAGS='"$(strip $(filter-out -Iruntime,$(GENFLAGS)))"' \
-                                -DGAMELIB_SHARED='"$(GAMELIB_SHARED)"'
+                                -DGAMELIB_SHARED='"$(GAMELIB_SHARED)"' -DGAMEBUILD_HLE='"$(GAME_HLE)"' \
+                                -DGAMEBUILD_PATCHES='"$(GAME_PATCHES)"'
 
 $(B)/rt/%.o: runtime/%.c $(RT_HDRS)
 	@mkdir -p $(dir $@)
@@ -169,6 +199,8 @@ $(EXE): $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ) $(IMGUI_OBJ)
 	@mkdir -p $(dir $@)link
 	$(CXX) -o $(dir $@)link/$(notdir $@) $^ $(LDFLAGS)
 	mv -f $(dir $@)link/$(notdir $@) $@
+	$(if $(and $(CROSS_CC),$(filter windows,$(PLATFORM))),(echo LIBRARY $(notdir $@); cat runtime/platform/windows_exports.def) > $(B)/exports.def && \
+	    $(ZIG) dlltool -m i386:x86-64 -d $(B)/exports.def -l $(B)/$(GAME_ID)recomp.dll.a)
 
 # its id file (<library>.id) says what it was built from without loading it (runtime/gamelib.c)
 $(GAMELIB): $(GEN_OBJ) | $(EXE)
@@ -216,6 +248,12 @@ gen:
 clean-gen:
 	rm -rf $(GEN) $(B)/obj
 
+# A player package of a cross build (runtime, compiler, generator; nothing from the game): dist/SMM2Recomp-<target>.zip
+#   make TARGET=windows-x86_64 GAME=smm2 DEPS=<deps> all package
+package: all
+	$(if $(TARGET),,$(error package: pass TARGET=windows-x86_64 | linux-x86_64 | linux-aarch64))
+	tools/package.sh $(TARGET) $(B) $(GAME_ID) $(GAME_HLE) $(DEPS)
+
 # Run from the data folder (saves, settings and shader caches go there); RUN_ARGS / env vars as the runtime reads them
 run: all
 	cd $(DATA) && $(CURDIR)/$(EXE) extracted $(RUN_ARGS)
@@ -241,4 +279,4 @@ JOBS ?= $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 build/test_shaders: tools/test_shaders.m runtime/nvn/maxwell/translate.c runtime/nvn/maxwell/shader.h
 	clang -O1 -fobjc-arc -framework Metal -framework Foundation -o $@ tools/test_shaders.m runtime/nvn/maxwell/translate.c
 
-.PHONY: all venv setup gen clean-gen run gen-objs runtime-objs test-tools smm2 run-smm2
+.PHONY: all venv setup gen clean-gen run gen-objs runtime-objs test-tools smm2 run-smm2 package

@@ -78,7 +78,8 @@ bool gamelib_load(const char *game_dir, char *why, size_t why_size) {
     static bool tried;
     if (!tried) {
         tried = true;
-        snprintf(g_error, sizeof g_error, "the game code hasn't been built: set up the game files on the start screen");
+        snprintf(g_error, sizeof g_error, "the game code hasn't been built: put your game files in extracted/ (exefs, romfs), and for the first-launch "
+                 "build run setup.bat / setup.sh next to the program (tools/venv; zig/ and gamelib-src/ must be there too)");
         char c[3][1100];
         int n = candidates(game_dir, c);
         const char *env = getenv("LARECOMP_GAME_LIB");

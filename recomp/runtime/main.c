@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "gamebuild.h"
 #include "gamelib.h"
 #include "paths.h"
 #include "settings.h"
@@ -120,6 +121,38 @@ static void teardown(void) {
     LOG("[reboot] game torn down in %llums (%d reset hooks)\n", (unsigned long long)((plat_now_ns() - t0) / 1000000), n);
 }
 
+static void build_progress(double fraction, const char *step) {
+    static int last = -100;
+    int pct = (int)(fraction * 100);
+    if (pct >= last + 5) { last = pct; LOG("[gamebuild] %d%% %s\n", pct, step); }
+}
+
+// First launch of a packaged build (no start screen): the game code library isn't there yet, the player's game files
+// are. It is built from them once (runtime/gamebuild.c: the generator, then the bundled compiler), into <root>.
+static void first_launch_build(const char *root) {
+    char main_nso[1100];
+    snprintf(main_nso, sizeof main_nso, "%s/exefs/main", root);
+    FILE *f = fopen(main_nso, "rb");
+    if (!f) return;  // (no game files: gamelib_load says so)
+    fclose(f);
+    if (!gamebuild_available()) {
+        LOG("[gamebuild] the game code isn't built and the builder (tools/venv + tools/gen.py, zig/) isn't here\n");
+        return;
+    }
+    LOG("[gamebuild] first launch: building the game code from %s (a few minutes to half an hour)\n", root);
+#ifdef _WIN32
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, GAME_TITLE,
+                             "First launch: " GAME_TITLE " now recompiles the game code from your own game files. This "
+                             "takes from a few minutes to half an hour; the game starts by itself when it's done (progress in the "
+                             "console window).", NULL);
+#endif
+    int jobs = SDL_GetNumLogicalCPUCores();
+    GameBuildOpts o = {build_progress, jobs > 1 ? jobs : 1};
+    char why[512];
+    if (!gamebuild_run(root, &o, why, sizeof why)) FATAL("building the game code failed: %s (details above)\n", why);
+    LOG("[gamebuild] done\n");
+}
+
 static void boot(const char *root) {
     char exefs[1024], romfs[1024], npdm_path[1024];
     snprintf(exefs, sizeof exefs, "%s/exefs", root);
@@ -128,6 +161,7 @@ static void boot(const char *root) {
     if (!g_romfs_dir) g_romfs_dir = strdup(romfs);
 
     char why[512];
+    if (!gamelib_present(root)) first_launch_build(root);
     if (!gamelib_load(root, why, sizeof why)) FATAL("%s\n", why);
     loader_load(exefs);
     mods_boot();

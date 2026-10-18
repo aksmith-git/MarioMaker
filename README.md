@@ -44,8 +44,11 @@ screen. Controllers work too. Details and options: [recomp/README.md](recomp/REA
 
 ## Windows
 
-Being built: the recomp's Windows build (x64, Vulkan) and its instructions go in
-[docs/windows.md](docs/windows.md).
+The SMM2 Recomp builds for Windows 10/11 x64 on Vulkan: `smm2recomp.exe`, cross-compiled from macOS with zig, and a
+player package (`make -C recomp TARGET=windows-x86_64 GAME=smm2 DEPS=<deps> all package` ->
+`dist/SMM2Recomp-windows-x86_64.zip`, nothing from the game in it). On first launch it recompiles the game code from
+your own dump on your PC. **It has not been run on Windows yet.** [docs/windows.md](docs/windows.md) has the
+requirements, the build, the first-launch dump setup and recompile, how to play, and troubleshooting.
 
 ## The course server
 

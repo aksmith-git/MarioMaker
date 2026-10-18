@@ -316,6 +316,8 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     VkImageCreateFlags flags = 0;
     if (!depthfmt) flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;  // format views (NVN texture views, raw sRGB views)
     if (type == VK_IMAGE_TYPE_2D && layers >= 6 && tw == th && samples == 1) flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    // (3D colour targets: a depth slice is drawn through a 2D view - SMM2 fills its colour-correction LUT that way)
+    if (type == VK_IMAGE_TYPE_3D && (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
     VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = flags, .imageType = type, .format = vf,
                             .extent = {tw, th, depth}, .mipLevels = levels, .arrayLayers = layers,
                             .samples = (VkSampleCountFlagBits)samples, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage,
@@ -393,6 +395,30 @@ static void live_remove(TexBackend *b) {
     b->reg = 0;
 }
 
+// ---- storage aliases (as metal.m). Engines create texture objects over the same memory again and again (SMM2's agl
+// allocates its render targets per frame from a pool: a target drawn through one NVNtexture is sampled through another
+// made over the same storage). On the console they are the same texels; here each object had its own image, and the
+// one sampled was never drawn into (black frames). Textures over the same storage with the same shape share one
+// backend (reference counted). RECOMP_NO_TEX_ALIAS=1: off.
+#define ALIAS_BUCKETS 4096
+typedef struct Alias { uint64_t addr; uint32_t fmt, w, h, d, lv, tgt, samples; TexBackend *b; struct Alias *next; } Alias;
+static Alias *g_alias[ALIAS_BUCKETS];
+static unsigned alias_bucket(uint64_t addr) { return (unsigned)((addr >> 9) * 0x9E3779B1u) & (ALIAS_BUCKETS - 1); }
+static bool alias_on(const NvnTexture *t) {
+    static int off = -1;
+    if (off < 0) off = getenv("RECOMP_NO_TEX_ALIAS") != NULL;
+    return !off && t->addr >= GUEST_LO && t->addr < GUEST_HI;
+}
+static bool alias_match(const Alias *a, const NvnTexture *t) {
+    return a->addr == t->addr && a->fmt == t->format && a->w == t->width && a->h == t->height && a->d == t->depth &&
+           a->lv == t->levels && a->tgt == t->target && a->samples == t->samples;
+}
+static void alias_remove(TexBackend *b) {
+    for (unsigned k = 0; k < ALIAS_BUCKETS; k++)
+        for (Alias **pp = &g_alias[k]; *pp; pp = &(*pp)->next)
+            if ((*pp)->b == b) { Alias *a = *pp; *pp = a->next; free(a); return; }
+}
+
 static TexBackend *tex_backend(NvnTexture *t) {
     TexBackend *b = t->backend;
     if (b) {
@@ -402,8 +428,27 @@ static TexBackend *tex_backend(NvnTexture *t) {
         }
         return b;
     }
+    if (alias_on(t)) {
+        for (Alias *a = g_alias[alias_bucket(t->addr)]; a; a = a->next)
+            if (alias_match(a, t)) {
+                static int logged;
+                if (logged++ < 5) LOG("[vk] texture %p (%ux%u f%#x %s) aliases storage %llx\n", (void *)t, t->width, t->height,
+                                      t->format, t->label, (unsigned long long)t->addr);
+                a->b->refs++;
+                t->backend = a->b;
+                return tex_backend(t);  // (the rescale check)
+            }
+    }
     vk_collect_dead();
     b = calloc(1, sizeof *b);
+    b->refs = 1;
+    if (alias_on(t)) {
+        Alias *a = calloc(1, sizeof *a);
+        *a = (Alias){t->addr, t->format, t->width, t->height, t->depth, t->levels, t->target, t->samples, b, NULL};
+        unsigned k = alias_bucket(t->addr);
+        a->next = g_alias[k];
+        g_alias[k] = a;
+    }
     b->scalable = tex_scalable(t);
     create_image(t, b);
     t->backend = b;
@@ -411,17 +456,25 @@ static TexBackend *tex_backend(NvnTexture *t) {
     return b;
 }
 
+static void backend_free(TexBackend *b) {
+    alias_remove(b);
+    live_remove(b);
+    destroy_image(b);
+    free(b->pending_rgba);
+    free(b);
+}
+
 void backend_texture_destroyed(NvnTexture *t) {
     TexBackend *b = t->backend;
-    if (b) {
-        extern void vk_alias_texture_destroyed(NvnTexture *t);  // (exec.c copy aliases: a source's contents handed over)
-        vk_alias_texture_destroyed(t);
-        live_remove(b);
-        destroy_image(b);
-        free(b->pending_rgba);
-        free(b);
-    }
     t->backend = NULL;
+    if (!b) return;
+    extern void vk_alias_texture_destroyed(NvnTexture *t);  // (exec.c copy aliases: a source's contents handed over)
+    vk_alias_texture_destroyed(t);
+    // (the live list names one owner: when it goes first, the next texture over the storage to be used is not listed;
+    // vk_textures_reset frees such backends through the alias table)
+    if (b->reg && g_live[b->reg - 1] == t) live_remove(b);
+    if (--b->refs > 0) return;  // other textures over the same storage still use it
+    backend_free(b);
 }
 
 // Reboot (device.c backend_reset; GPU idle): every game texture and its views go.
@@ -429,7 +482,14 @@ void vk_textures_reset(void) {
     int n = g_nlive;
     extern void vk_alias_reset(void);
     vk_alias_reset();
-    while (g_nlive > 0) backend_texture_destroyed(g_live[g_nlive - 1]);
+    while (g_nlive > 0) {
+        NvnTexture *t = g_live[g_nlive - 1];
+        TexBackend *b = t->backend;
+        if (b) b->refs = 1;  // (its aliases go with it)
+        backend_texture_destroyed(t);
+    }
+    for (unsigned k = 0; k < ALIAS_BUCKETS; k++)  // (backends whose listed owner had gone)
+        while (g_alias[k]) backend_free(g_alias[k]->b);
     vk_collect_dead();
     LOG("[vk] reboot: %d textures released\n", n);
 }
@@ -599,10 +659,23 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     }
 }
 
+// A texture rendered to before it was ever sampled starts from what its memory holds, as on the GPU (as metal.m):
+// SMM2 loads each 2D style's tile sheet from a file and then draws the animated tiles into the same texture every
+// frame; without the upload only the animated cells existed and the ground and blocks were missing.
+static void first_render_use(NvnTexture *t, TexBackend *b) {
+    if (b->gpu_owned || b->uploaded || b->scalable || !t->addr || t->target == 10 || renderer_format_is_depth(t->format)) return;
+    if (!t->layout.fmt || !t->layout.fmt->bpb) return;
+    const uint64_t *m = (const uint64_t *)(uintptr_t)t->addr;
+    uint64_t n = tegra_total_size(&t->layout) / 8;
+    bool data = false;
+    for (uint64_t i = 0; i < n && !data; i++) data = m[i] != 0;
+    if (data) upload_texture(t, b);
+}
+
 TexBackend *vk_tex(NvnTexture *t, bool for_render) {
     TexBackend *b = tex_backend(t);
     if (b->pending_rgba) upload_pending(b);
-    if (for_render) b->gpu_owned = true;
+    if (for_render) { first_render_use(t, b); b->gpu_owned = true; }
     else if (!b->gpu_owned) {
         extern uint64_t prof_up_ns;
         uint64_t t0 = prof_up_ns != ~0ull ? SDL_GetTicksNS() : 0;
@@ -612,7 +685,11 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
     return b;
 }
 
-void renderer_mark_gpu_owned(NvnTexture *t) { tex_backend(t)->gpu_owned = true; }
+void renderer_mark_gpu_owned(NvnTexture *t) {
+    TexBackend *b = tex_backend(t);
+    first_render_use(t, b);
+    b->gpu_owned = true;
+}
 bool renderer_is_gpu_owned(NvnTexture *t) { return tex_backend(t)->gpu_owned; }
 void backend_pool_written(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 
@@ -705,9 +782,15 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
     if (ly0 >= b->layers) ly0 = b->layers - 1;
     if (ly0 + nly > b->layers) nly = b->layers - ly0;
     if (render) {
-        VkImageViewType type = b->base_type == VK_IMAGE_VIEW_TYPE_3D ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
-        if (b->base_type == VK_IMAGE_VIEW_TYPE_3D) return VK_NULL_HANDLE;  // (3D render targets: not used by the game)
-        return vk_image_view(b, type, fmt, lv0, 1, ly0, 1, IDENTITY, b->aspect);
+        if (b->base_type == VK_IMAGE_VIEW_TYPE_3D) {
+            // 3D target: the view's layer is a depth slice (create_image made the image 2D-array compatible), drawn
+            // through a 2D view of that slice (SMM2 fills its colour-correction LUT one slice per target; renderer.m)
+            uint32_t d = b->depth >> lv0 ? b->depth >> lv0 : 1;
+            uint32_t slice = v && (v->setmask & 2) ? v->min_layer : 0;
+            if (slice >= d) slice = d - 1;
+            return vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, fmt, lv0, 1, slice, 1, IDENTITY, b->aspect);
+        }
+        return vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, fmt, lv0, 1, ly0, 1, IDENTITY, b->aspect);
     }
     VkImageAspectFlags aspect = b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : b->aspect;
     VkComponentMapping sw = IDENTITY;
@@ -738,6 +821,11 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
         return vk_image_view(b, want, fmt, lv0, nlv, ly0, have == VK_IMAGE_VIEW_TYPE_CUBE ? nly : 1, sw, aspect);
     if (want == VK_IMAGE_VIEW_TYPE_CUBE && have == VK_IMAGE_VIEW_TYPE_2D_ARRAY && b->layers >= 6 && b->width == b->height)
         return vk_image_view(b, want, fmt, lv0, nlv, ly0 + 6 <= b->layers ? ly0 : 0, 6, sw, aspect);
+    if (want == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY && have == VK_IMAGE_VIEW_TYPE_2D_ARRAY && b->layers >= 6 && b->width == b->height)
+        // (a 2D array sampled as cubes, six layers each: SMM2's character reflection maps, 72 layers; renderer.m)
+        return vk_image_view(b, want, fmt, lv0, nlv, 0, b->layers / 6 * 6, sw, aspect);
+    if (want == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY && have == VK_IMAGE_VIEW_TYPE_CUBE)
+        return vk_image_view(b, want, fmt, lv0, nlv, 0, 6, sw, aspect);
     if (want == VK_IMAGE_VIEW_TYPE_1D_ARRAY && have == VK_IMAGE_VIEW_TYPE_1D)
         return vk_image_view(b, want, fmt, lv0, nlv, 0, 1, sw, aspect);
     static int nlog;

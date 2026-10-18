@@ -210,7 +210,11 @@ unsigned long long rt_game_files_size(const char *game_dir) {
 // Window / Dock icon: icon.png shipped next to the exe or in the .app (none for a plain source build).
 void rt_window_icon(SDL_Window *w) {
     char p[1100];
+#if SDL_VERSION_ATLEAST(3, 4, 0)  // (SDL_LoadPNG: SDL 3.4; distributions ship 3.2: no icon there)
     if (!rt_resource("icon.png", NULL, p, sizeof p)) return;
     SDL_Surface *s = SDL_LoadPNG(p);
     if (s) SDL_SetWindowIcon(w, s), SDL_DestroySurface(s);
+#else
+    (void)w, (void)p;
+#endif
 }
