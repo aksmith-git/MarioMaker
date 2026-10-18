@@ -80,8 +80,10 @@ pub struct W3State {
     pub walled: bool,
 }
 
-/// Other Charvaarghs a Charvaargh keeps track of [inf: the game's list (area +0xC0) is not
-/// bounded here; the first 8 others are kept].
+/// Other Charvaarghs a Charvaargh keeps track of. The game's list (area +0xC0) is a pool with a
+/// capacity at +0x28: a Charvaargh created while it is full is simply not registered [obs init
+/// 0x710079db70]; the first 8 others are kept here [?: where the pool is built and its capacity
+/// set was not found].
 pub const PEERS: usize = 8;
 
 /// `W3State::flags` bits.
@@ -118,8 +120,13 @@ fn ease(v: f32, target: f32, step: f32) -> f32 {
 }
 
 /// Frames a one-shot animation of `frames` frames takes at play rate `rate`: the state that
-/// waits for its end leaves on the first frame the animation frame reaches the end [obs: the
-/// frame advances by the rate once per frame; the exact frame of the end test is [inf] ±1].
+/// waits for its end leaves on the first frame the animation frame reaches the end. The model
+/// update adds the rate once per frame and holds a one-shot at its frame count (v1 0x7100f4d7f0);
+/// the end test is frame ≥ frame count (0x7100f4d4a0, from the anim's slot 0x48 0x7100903190);
+/// state changes run exit and enter at once (0x71011ca9b0) and the enter's play call sets the
+/// start frame (0x7100902f30; 0 for these states), so on
+/// the k-th frame after the enter the state sees k × rate whether the model update runs before
+/// or after it [obs].
 fn anim_len(frames: f32, rate: f32) -> i32 {
     (frames / rate).ceil() as i32
 }
@@ -2595,8 +2602,11 @@ impl Actor {
     }
 
     /// Points `backs` px (ascending) behind the head along the vertical leap's path, with their
-    /// depth: the body follows the head's path as in the side leap [inf: against the posed
-    /// bones the boxes stay within ≈ 25 px]; before the leap's start the path runs straight down.
+    /// depth: the body follows the head's path as in the side leap; before the leap's start the
+    /// path runs straight down [inf: the game puts the boxes on the posed spine bones of the
+    /// AttackFront/Rear animations (0x710079e290); against those the boxes stay within ≈ 25 px.
+    /// Matching exactly needs every bone's per-frame pose from the model, i.e. a large table of
+    /// asset data, which the sim does not carry].
     fn charvaargh_vert_points(&self, backs: &[f32]) -> Vec<(f32, f32, f32)> {
         const STEP: f32 = 0.25;
         let t0 = self.charvaargh_vert_t();

@@ -470,7 +470,8 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   - ✅ Binary pass 3: in-view flag (box touches a camera view, edges in), Spike balls leave the
     model's GeneratorPosition joint, Mechakoopa weapons start at its feet (no "shot" joint),
     Zappa's Shot ends with the beam's (38 f), winged Pokey hop counter resets, Roy one exit try
-    per frame, quake stun skips invincible players
+    per frame, quake stun skips invincible players; missile blasts, carried and thrown parts hit
+    like shells; a Bully pushes a shell back; a plain stomp kicks a snowball
 - ⬜ Yoshi variants, shoes, clown cars, power-ups per style, Master Sword, etc. (rest of the
   "every part" list)
 - 🔄 Course Maker (editor): core crate `editor` — each step tested by saving the course, re-opening
