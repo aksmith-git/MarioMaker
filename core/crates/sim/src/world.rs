@@ -3778,14 +3778,17 @@ impl World {
     /// bumps the block it touches.
     fn tail_attack(&mut self) {
         let p = &self.player;
-        // the raccoon's tail hits through its whole 18-frame swing [obs]; the cat's scratch from
-        // its first frame (it lunges into what it hits) [inf]
+        // the raccoon's tail hits through its whole 18-frame swing [obs]; the cat's scratch on
+        // animation frames 0-10 of 17 (ClimbAttack exec 0x7100a1c230 → 0x7100a1b290) [obs]
         let window = match p.form {
             Form::Raccoon => 0..=17,
-            Form::Cat => 2..=15,
+            Form::Cat => {
+                crate::player::CAT_SCRATCH_FRAMES - 11..=crate::player::CAT_SCRATCH_FRAMES - 1
+            }
             _ => 4..=12,
         };
-        if !window.contains(&p.attack)
+        let cat_slide = p.form == Form::Cat && p.cat_slide > 0;
+        if !(window.contains(&p.attack) || cat_slide)
             || !matches!(
                 p.form,
                 Form::Raccoon | Form::Cape | Form::Cat | Form::Builder
@@ -3810,7 +3813,15 @@ impl World {
             (p.x - 18.0, p.x)
         };
         let top = if p.form == Form::Raccoon { 18.0 } else { 14.0 };
-        let reach = (x0, p.y + 2.0, x1, p.y + top);
+        let reach = if p.form == Form::Cat {
+            // the cat's attack box: centre 10 px ahead, 12 up; half 16 × 16 for the scratch,
+            // 8 × 8 for the slide [obs 0x7100a1b290, 0x7100a1d150]
+            let cx = p.x + 10.0 * p.facing as f32;
+            let h = if cat_slide { 8.0 } else { 16.0 };
+            (cx - h, p.y + 12.0 - h, cx + h, p.y + 12.0 + h)
+        } else {
+            (x0, p.y + 2.0, x1, p.y + top)
+        };
         let px = p.x;
         let mut hits = 0;
         for a in &mut self.actors {
@@ -3839,6 +3850,9 @@ impl World {
         // 6–10 [obs]; the others once, at the start of their window
         let probe = if self.player.form == Form::Raccoon {
             (6..=10).contains(&frame)
+        } else if self.player.form == Form::Cat {
+            // the scratch probes 16 px ahead, 8 up, from its first frame [obs 0x7100a1b290]
+            self.player.attack == crate::player::CAT_SCRATCH_FRAMES - 1
         } else {
             self.player.attack == 12
         };
@@ -3851,7 +3865,7 @@ impl World {
                 } else {
                     side
                 };
-                let reach = if self.player.form == Form::Raccoon {
+                let reach = if matches!(self.player.form, Form::Raccoon | Form::Cat) {
                     16.0
                 } else {
                     14.0

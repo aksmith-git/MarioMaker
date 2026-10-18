@@ -48,6 +48,10 @@ const SKID_DECEL: f32 = 0.12;
 const SKID_DECEL_ICE: f32 = 0.028;
 const SKID_DECEL_ICE_STAR: f32 = 0.038;
 const SKID_REACCEL: f32 = 0.25;
+/// Cat scratch (ClimbAttack, 17-frame animation) and slide attack (ClimbSlidingAttack, 44)
+/// lengths [obs: 3W_Player_Animation_MarioClimb].
+pub const CAT_SCRATCH_FRAMES: i32 = 17;
+const CAT_SLIDE_FRAMES: i32 = 44;
 /// Frames the Turn state holds the stopped player (counter +0x242c = 8) [obs].
 const SKID_PAUSE: i32 = 8;
 
@@ -399,7 +403,8 @@ pub struct Player {
     pub cat_climb: i32,
     pub cat_wall: i32,
     cat_climbed: f32,
-    cat_climb_used: bool,
+    cat_climbs: u8,
+    cat_reattach: i32,
     pub dive: bool,
     /// Sideways spring pushes: frames left in which another push counts as consecutive (10
     /// after each push), and how many came in a row (to 4) [obs 0x71009f37e0].
@@ -409,6 +414,8 @@ pub struct Player {
     /// 100-frame counter runs out) [obs].
     pub stun: i32,
     pub roll: i32,
+    /// Cat slide attack: frames left of its 44-frame animation.
+    pub cat_slide: i32,
     roll_used: bool,
     /// Riding Yoshi (his actor id), the re-mount lockout, and what the world must do with
     /// Yoshi this frame (dismounted / knocked off by a hit).
@@ -498,12 +505,14 @@ impl Player {
             cat_climb: 0,
             cat_wall: 0,
             cat_climbed: 0.0,
-            cat_climb_used: false,
+            cat_climbs: 0,
+            cat_reattach: 0,
             dive: false,
             side_push: 0,
             side_chain: 0,
             stun: 0,
             roll: 0,
+            cat_slide: 0,
             roll_used: false,
             yoshi: None,
             yoshi_lock: 0,
@@ -753,11 +762,27 @@ impl Player {
         if self.on_ground {
             self.dash = if run && dir != 0 { self.dash + 1 } else { 0 };
         }
-        if self.form == Form::Cat && self.attack > 4 && self.vx.abs() >= 2.0 {
-            // cat slide attack: speed held for its first 12 frames [inf: decel after is the
-            // normal table rather than 0.075]
-            self.vx = 2.5 * self.facing as f32;
-            self.pose = Pose::Walk;
+        if self.cat_slide > 0 {
+            // cat slide attack (ClimbSlidingAttack 0x7100a1d030 / 0x7100a1d150) [obs]: 2.5 px/f
+            // forward with no accel for 12 frames, then down to 0 at 0.075 (ice 0.0375) until
+            // the 44-frame animation ends; then it stops dead unless a direction is held (on
+            // ice it halves instead). No steering meanwhile.
+            let elapsed = CAT_SLIDE_FRAMES - self.cat_slide;
+            if elapsed < 12 {
+                self.vx = 2.5 * self.facing as f32;
+            } else {
+                let decel = if self.on_ice { 0.0375 } else { 0.075 };
+                self.vx = approach(self.vx, 0.0, decel);
+            }
+            self.cat_slide -= 1;
+            if self.cat_slide == 0 {
+                if self.on_ice {
+                    self.vx *= 0.5;
+                } else if dir == 0 {
+                    self.vx = 0.0;
+                }
+            }
+            self.pose = Pose::Slide;
             return;
         }
         let t = self.thresholds();
@@ -1019,13 +1044,22 @@ impl Player {
             && self.cat_climb == 0
         {
             // the raccoon's tail_attack animation is 18 frames (TailAttack 0x7100a034e0 ends
-            // with it) [obs]
-            self.attack = if self.form == Form::Raccoon { 18 } else { 16 };
+            // with it); the cat's scratch is ClimbAttack (0x7100a1c170 / 0x7100a1c230), which
+            // ends with its 17-frame animation and leaves normal movement alone [obs]
+            self.attack = match self.form {
+                Form::Raccoon => 18,
+                Form::Cat => CAT_SCRATCH_FRAMES,
+                _ => 16,
+            };
             if self.form == Form::Cat {
-                if self.on_ground {
-                    // slide attack: 2.5 px/f forward for 12 frames, then the normal decel
+                if self.on_ground && self.crouch {
+                    // crouching, the attack is the slide (ClimbSlidingAttack, entered from the
+                    // crouch check 0x7100a1b3f0) [obs]
+                    self.attack = 0;
+                    self.cat_slide = CAT_SLIDE_FRAMES;
+                    self.crouch = false;
                     self.vx = 2.5 * self.facing as f32;
-                } else if !self.roll_used && !self.in_water {
+                } else if !self.on_ground && !self.roll_used && !self.in_water {
                     // rolling attack: a small rise (vy 2.4, gravity −0.1) once per air time
                     self.vy = 2.4;
                     self.roll = 24;
@@ -1065,7 +1099,7 @@ impl Player {
 
         // crouch: big forms on the ground with Down held (kept through a crouch jump)
         if self.on_ground {
-            let want = self.big() && inp.held(input::DOWN) && !self.sliding;
+            let want = self.big() && inp.held(input::DOWN) && !self.sliding && self.cat_slide == 0;
             if want != self.crouch && (want || self.can_stand(level)) {
                 self.crouch = want;
             }
@@ -1136,7 +1170,8 @@ impl Player {
                     self.skid = SkidPhase::None;
                 }
             } else {
-                // leaving the ground ends the Turn state
+                // leaving the ground ends the Turn state and the cat slide
+                self.cat_slide = 0;
                 self.skid = SkidPhase::None;
                 self.air(inp);
             }
@@ -1392,22 +1427,33 @@ impl Player {
     /// Cat wall climb (§5.4 Neko): pushing into a wall in the air climbs it at 1.0 px/f (1.5
     /// with run) for up to 120 frames or 120 px, gravity 0; reaching the top pops up (vy 4.8).
     /// Then WallClimbFall: gravity −0.085, max fall −2.0 while still on the wall. Jump → the
-    /// wall jump; stick away or the wall ending lets go. One climb per air time [inf].
+    /// wall jump; stick away or the wall ending lets go. The wall is only taken while falling
+    /// (attach check 0x7100a1aa30); the first two attachments of an air time climb, later ones
+    /// only slide (count +0x271c, bumped in WallClimb enter 0x7100a1b5b0, cleared on landing);
+    /// after letting go the wall can't be taken again for 16 frames (+0x2714) [obs].
     fn cat_wall_climb(&mut self, inp: Input, pressed: bool, level: &Level) -> bool {
         let dir = inp.dir_x();
+        if self.cat_reattach > 0 {
+            self.cat_reattach -= 1;
+        }
         if self.cat_climb == 0 {
-            if self.cat_climb_used
+            if self.cat_reattach > 0
                 || self.held.is_some()
                 || self.shoe.is_some()
                 || dir == 0
+                || self.vy >= 0.0
                 || !self.wall_at(level, dir)
             {
                 return false;
             }
-            self.cat_climb = 1;
+            if self.cat_climbs < 2 {
+                self.cat_climb = 1;
+                self.cat_climbs += 1;
+            } else {
+                self.cat_climb = -1;
+            }
             self.cat_wall = dir;
             self.cat_climbed = 0.0;
-            self.cat_climb_used = true;
             self.spinning = false;
         }
         let w = self.cat_wall;
@@ -1418,10 +1464,12 @@ impl Player {
             self.vx = -w as f32 * 2.25;
             self.facing = -w;
             self.cat_climb = 0;
+            self.cat_reattach = 16;
             return true;
         }
         if dir == -w {
             self.cat_climb = 0;
+            self.cat_reattach = 16;
             return false;
         }
         if self.cat_climb > 0 {
@@ -1429,6 +1477,7 @@ impl Player {
                 // over the top
                 self.vy = 4.8;
                 self.cat_climb = 0;
+                self.cat_reattach = 16;
                 return true;
             }
             let speed = if inp.held(input::RUN) { 1.5 } else { 1.0 };
@@ -1443,6 +1492,7 @@ impl Player {
         // sliding down after the climb
         if !self.wall_at(level, w) {
             self.cat_climb = 0;
+            self.cat_reattach = 16;
             return false;
         }
         self.vy = (self.vy - 0.085).max(-2.0);
@@ -1473,7 +1523,8 @@ impl Player {
             self.pound = 0;
             self.wall_slide = 0;
             self.cat_climb = 0;
-            self.cat_climb_used = false;
+            self.cat_climbs = 0;
+            self.cat_reattach = 0;
             self.dive = false;
             self.roll_used = false;
             return;
@@ -2417,6 +2468,44 @@ mod tests {
             c.step(run, &level);
         }
         assert!(c.dashing(), "the cat dashes after 60 frames ({})", c.dash);
+    }
+
+    #[test]
+    fn cat_slide_attack_from_a_crouch_and_scratch() {
+        let level = Level::flat(100);
+        let mut p = cat(&level);
+        let down = Input {
+            buttons: input::DOWN,
+        };
+        p.step(down, &level);
+        assert!(p.crouch);
+        p.step(
+            Input {
+                buttons: input::DOWN | input::RUN,
+            },
+            &level,
+        );
+        assert_eq!(p.cat_slide, CAT_SLIDE_FRAMES - 1);
+        let mut speeds = vec![p.vx];
+        for _ in 0..50 {
+            p.step(down, &level);
+            speeds.push(p.vx);
+        }
+        assert!(speeds[..12].iter().all(|v| *v == 2.5), "{speeds:?}");
+        assert!((speeds[12] - (2.5 - 0.075)).abs() < 1e-5, "{speeds:?}");
+        // the 44-frame animation ends with no direction held: a dead stop
+        assert_eq!(p.cat_slide, 0);
+        assert_eq!(p.vx, 0.0);
+        // standing, Run is the scratch: 17 frames, movement untouched
+        let mut q = cat(&level);
+        q.step(
+            Input {
+                buttons: input::RUN,
+            },
+            &level,
+        );
+        assert_eq!(q.attack, CAT_SCRATCH_FRAMES - 1);
+        assert_eq!(q.vx, 0.0);
     }
 
     #[test]
