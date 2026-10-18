@@ -1679,8 +1679,8 @@ impl World {
         self.magikoopas();
         self.claws(input);
         self.pow_quake();
-        // a Sledge Bro landing on screen stuns grounded players (3-hammer-bro.md) [inf: 100
-        // frames]
+        // a Sledge Bro landing on screen stuns grounded players for 100 frames (3-hammer-bro.md,
+        // QuakeDamage 0x71009d5680 / 0x71009d5910) [obs]
         let v = self.view_rect(0.0);
         if self.actors.iter().any(|a| {
             a.kind == Kind::HammerBro

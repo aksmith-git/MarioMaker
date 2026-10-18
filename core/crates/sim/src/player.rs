@@ -363,7 +363,8 @@ pub struct Player {
     pub dive: bool,
     /// Flung by a sideways spring: frames the push speed is held (no air control) [inf].
     pub side_push: i32,
-    /// Stunned by a Sledge Bro's landing quake: frames the controls do nothing [inf: length].
+    /// Stunned by a Sledge Bro's landing quake (QuakeDamage 0x4e: no movement until the
+    /// 100-frame counter runs out) [obs].
     pub stun: i32,
     pub roll: i32,
     roll_used: bool,
