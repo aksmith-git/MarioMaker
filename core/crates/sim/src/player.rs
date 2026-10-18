@@ -349,9 +349,9 @@ pub struct Player {
     /// Wearing a Goomba's Shoe (Some(stiletto)): spikes and Munchers underfoot are safe, stomps
     /// defeat most enemies; a hit knocks the shoe off instead of costing a form.
     pub shoe: Option<bool>,
-    /// The "shoe" is a Dry Bones Shell (rides like the shoe [inf]).
+    /// The "shoe" is a Dry Bones Shell (ridden with the shoe states, +0x4b0) [obs].
     pub shoe_karon: bool,
-    /// Wearing a shell as a helmet: 1 Buzzy, 2 Spiny. It takes one hit [inf]; a Spiny helmet
+    /// Wearing a shell as a helmet: 1 Buzzy, 2 Spiny. It takes one hit [obs 0x71009ee7b0]; a Spiny helmet
     /// also knocks out what the player jumps into from below.
     pub helmet: Option<u8>,
     /// Flying a Koopa Clown Car (its actor id).
@@ -631,14 +631,13 @@ impl Player {
             self.invuln = INVULN_DAMAGE;
             return true;
         }
-        if self.shoe.take().is_some() {
-            // [ext] a hit in the shoe only knocks the shoe off
-            self.shoe_karon = false;
-            self.invuln = INVULN_DAMAGE;
-            return true;
-        }
-        if self.helmet.take().is_some() {
-            // the helmet takes the hit [inf]
+        // the damage entry (0x71009d41d0) [obs]: gliding with the cape (SMW) the hit only
+        // spins the player out of the flight; otherwise Yoshi (0x7100a1fff0), then the shoe
+        // (0x71009fc4c0), then the helmet (0x71009ee7b0: it flies off as a shell, 127 frames
+        // of invincibility) take the hit before the form does
+        if self.style == Style::MW && matches!(self.cape, CapeState::Fly { .. }) {
+            self.cape = CapeState::None;
+            self.spinning = true;
             self.invuln = INVULN_DAMAGE;
             return true;
         }
@@ -651,6 +650,16 @@ impl Player {
             self.vy = 4.628;
             self.vx = 0.0;
             self.on_ground = false;
+            return true;
+        }
+        if self.shoe.take().is_some() {
+            // a hit in the shoe only knocks the shoe off
+            self.shoe_karon = false;
+            self.invuln = INVULN_DAMAGE;
+            return true;
+        }
+        if self.helmet.take().is_some() {
+            self.invuln = INVULN_DAMAGE;
             return true;
         }
         match self.form {
@@ -1031,8 +1040,8 @@ impl Player {
         {
             self.throw = true;
         }
-        // raccoon tail swing / cape spin / cat scratch on Run (player-physics.md §5.4)
-        // [inf: 16 frames]
+        // raccoon tail swing / cape spin / cat scratch on Run (player-physics.md §5.4); the
+        // cape spin and the hammer last 16 frames [inf]
         if run
             && !self.prev_run
             && matches!(

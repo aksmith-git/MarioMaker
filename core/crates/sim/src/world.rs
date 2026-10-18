@@ -1937,14 +1937,18 @@ impl World {
     /// the canopy band, +16 px) knocks its item out: up at vy 4.5 from 40 px above the origin
     /// [obs; the trigger itself is inferred].
     fn shake_trees(&mut self) {
-        let (px, py) = (self.player.x, self.player.y);
+        // a tree gives up its item, and counts for "shake N trees", when a player climbs its
+        // trunk to the top: entering TreeClimbTop (0x7100a15830) sets the tree's per-player
+        // release bit and posts the clear-condition event 0x4b with the tree's record [obs];
+        // once per tree here [inf: the condition manager's de-duplication wasn't traced]
+        let py = self.player.y;
+        let climbing = self.player.climbing.map(|(vx, _)| vx);
         let mut out = Vec::new();
         let mut shaken = 0;
         for (ti, t) in self.level.trees.iter().enumerate() {
             let (bottom, top) = t.canopy();
-            if (px - t.x).abs() <= 26.0
-                && py + 16.0 >= bottom + 8.0
-                && py <= top
+            if climbing == Some(t.x)
+                && py + 16.0 >= top - 1.0
                 && self.trees_shaken.insert((self.area, ti))
             {
                 shaken += 1;
@@ -1953,7 +1957,6 @@ impl World {
                 }
             }
         }
-        // "shake N trees" counts each tree once [inf: what counts as a bell-tree action]
         if self.clear.goal == crate::clear::Goal::BellTrees {
             for _ in 0..shaken {
                 let r = self.clear.count(None, 1);
@@ -2855,9 +2858,11 @@ impl World {
             let p = &self.player;
             let (ax, ay, ah) = (a.x, a.y, a.height());
             let head = p.y + p.sensors().head_y;
-            // empty shells (the 0x4 forms): a Buzzy or Spiny shell met with the head becomes a
-            // helmet, a Dry Bones Shell landed on is ridden like a shoe [inf: mechanics not
-            // decoded]
+            // empty shells (the 0x4 forms): a Buzzy or Spiny shell that comes down on the head
+            // of a player without a helmet becomes the helmet (enemy contact 0x710072bca0 →
+            // player 0x71009ee570, the shell's helmet type +0x540) [obs]; a Dry Bones Shell is
+            // ridden with the shoe states, flagged as the shell (+0x4ac / +0x4b0: "karon_*"
+            // animations, 0x71009f61a0) [obs]
             if matches!(a.kind, Kind::Shell { .. })
                 && a.shell_of != 0
                 && a.mode == Mode::ShellWait
@@ -3824,9 +3829,10 @@ impl World {
         self.events.push(Event::Bump);
     }
 
-    /// Raccoon tail swing / cape spin [inf: hit window frames 12–4 of the 16-frame swing, reach
-    /// 18 px in front at body height; the cape spin reaches both sides]: knocks out enemies and
-    /// bumps the block it touches.
+    /// Raccoon tail swing (TailAttack, 18 frames) [obs], cat scratch / slide (ClimbAttack,
+    /// ClimbSlidingAttack) [obs], cape spin and hammer [inf: hit window frames 12–4 of a
+    /// 16-frame swing, reach 18 px; the cape spin reaches both sides — MantAttack's collider
+    /// wasn't traced]: knocks out enemies and bumps the block it touches.
     fn tail_attack(&mut self) {
         let p = &self.player;
         // the raccoon's tail hits through its whole 18-frame swing [obs]; the cat's scratch on
