@@ -299,7 +299,12 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   owner's iPad (`ios-install-tailscale <app> --device ipad` once signed), tap-to-select in layout
   menus, iCloud placeholder files in picked folders, the in-app importer on iOS
 - 🔄 Engine-drawn menus everywhere (layout player), so every platform shows the same screens:
-  SMM2 title + Play menu and the SMM1 100 Mario screens in the Swift app; not yet in `mmk-play`
+  ✅ the SMM2 front end is Rust (`mmk-front`: opening, fades, title + Play menu, Course World over
+  a library folder and the course server, Endless / SMM1-layout 100 Mario, in-course HUD / card /
+  pause / settings / clear / give up / time up / game over, UI sounds) and `mmk-play` runs it by
+  default (Windows, Linux, macOS); headless captures (`--front-screen`) match the Swift app's to
+  within rounding on every deterministic screen. Open: the Swift app on `mmk-front` through the
+  FFI, the web build (async UI cache), Settings screens
 
 ### Phase 9 — SMM2 single-player like-for-like 🔄 (owner request 2026-10-18)
 - 🔄 SMM2 layouts through the same layout player (private map: `research/specs/smm2-layouts.md`):

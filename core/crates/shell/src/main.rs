@@ -300,7 +300,9 @@ mod native {
             } else {
                 mmk_front::challenge::Presentation::Smm2
             },
-            instant_fades: capture.is_some(),
+            // (captures change scenes at once, as the Swift app's frozen captures; MMK_FADES=1
+            // keeps the fades to capture them)
+            instant_fades: capture.is_some() && std::env::var("MMK_FADES").as_deref() != Ok("1"),
             script: args.front_script.clone(),
             title_input: args.front_input.clone(),
             ..Default::default()
