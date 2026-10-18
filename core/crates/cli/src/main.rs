@@ -154,6 +154,18 @@ enum Cmd {
         /// clears only).
         #[arg(long)]
         verified_records: bool,
+        /// Request threads.
+        #[arg(long, default_value_t = 8)]
+        threads: usize,
+        /// Writes (uploads, votes, comments, clears) per client address per minute.
+        #[arg(long, default_value_t = 60)]
+        writes_per_minute: u32,
+        /// New accounts per client address per hour.
+        #[arg(long, default_value_t = 5)]
+        accounts_per_hour: u32,
+        /// Behind your own reverse proxy: take client addresses from X-Forwarded-For.
+        #[arg(long)]
+        trust_proxy: bool,
     },
     /// Upload a course (raw, zlib or .bcd needs decrypting first) to a course server.
     Upload {
@@ -965,6 +977,10 @@ fn main() -> ExitCode {
             admin_token,
             relay_ws,
             verified_records,
+            threads,
+            writes_per_minute,
+            accounts_per_hour,
+            trust_proxy,
         } => {
             let admin = admin_token.or_else(|| std::env::var("MMK_ADMIN_TOKEN").ok());
             let store = match mmk_server::Store::open(&dir) {
@@ -987,7 +1003,15 @@ fn main() -> ExitCode {
                 Err(e) => eprintln!("mmk-server: no relay ({e})"),
             }
             eprintln!("mmk-server: {} on http://{addr}", dir.display());
-            match mmk_server::serve(store, &addr) {
+            let opts = mmk_server::ServeOptions {
+                threads,
+                limits: mmk_server::limits::Limits {
+                    writes_per_minute,
+                    accounts_per_hour,
+                },
+                trust_proxy,
+            };
+            match mmk_server::serve_with(store, &addr, opts) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("server: {e}");

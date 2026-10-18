@@ -422,7 +422,8 @@ Not Nintendo's network: the engine talks to an open-source server the owner can 
   served for ghosts; `--verified-records`; `mmk-play --code … --token` submits on clear) · ghosts ✅
   in the portable shell (`mmk-play --code … --ghost` races the record's run, `--ghost-file`,
   `--record-replay`; drawn half transparent, 2D styles; the 3D styles' player is a mesh ⬜) ·
-  ghosts in the Swift app ⬜ ·
+  ghosts in the Swift app ⬜ · server hardening ✅ (request thread pool, CORS preflight for browsers,
+  per-address limits on writes and new accounts → 429, `--trust-proxy`, `/api/health`) ·
   SMMDB import ⬜ · ⏳ owner: keep this or connect to another open-source server
 - ⬜ Course World client: browse, play, like/boo, comment, upload from the editor
 - ✅ Local multiplayer (co-op, up to 4: Mario, Luigi, Toad, Toadette as the models' _2/_3/_4

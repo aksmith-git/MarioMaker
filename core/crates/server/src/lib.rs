@@ -10,6 +10,7 @@
 //! | GET | `/api/courses/<code>` | metadata |
 //! | GET | `/api/courses/<code>/data` | course data (bytes) |
 //! | POST | `/api/courses/<code>/play`, `/clear` | statistics |
+//! | GET | `/api/health` | liveness: counts and the replay engine version |
 //! | GET | `/api/pool?min=&max=&count=` | random courses by difficulty value (fail rate 0–100) |
 //! | POST | `/api/accounts` (body `{"name"}`) | new account → `{account, token}` (token shown once) |
 //! | GET | `/api/me` | the caller's account |
@@ -31,6 +32,7 @@
 //! The difficulty value is 100 − clear rate once a course has been played, as SMM1's 100 Mario
 //! bands use it. Courses are identified by SMM2-style codes (XXX-XXX-XXX).
 
+pub mod limits;
 pub mod ws;
 
 use std::collections::HashMap;
@@ -303,6 +305,12 @@ impl Store {
             admin: None,
             verified_records: false,
         })
+    }
+
+    /// (courses, accounts) held.
+    pub fn counts(&self) -> (usize, usize) {
+        let g = self.inner.lock().unwrap();
+        (g.courses.len(), g.accounts.list.len())
     }
 
     /// Enable moderation with this admin token.
@@ -932,6 +940,14 @@ pub fn handle(
                 None => err(404, "no such ranking"),
             }
         }
+        ("GET", ["api", "health"]) => {
+            let (courses, accounts) = store.counts();
+            json(
+                200,
+                json!({ "ok": true, "courses": courses, "accounts": accounts,
+                        "sim_version": mmk_modes::replay::SIM_VERSION }),
+            )
+        }
         ("GET", ["api"]) | ("GET", [""]) => {
             json(200, json!({ "server": "mmk-server", "version": 1 }))
         }
@@ -1013,36 +1029,113 @@ pub fn start_relay(
 /// Endless Challenge difficulties.
 pub const ENDLESS: &[&str] = &["easy", "normal", "expert", "super_expert"];
 
+/// How `serve` runs.
+#[derive(Clone, Copy, Debug)]
+pub struct ServeOptions {
+    /// Request threads (replay verification and big uploads don't hold up other requests).
+    pub threads: usize,
+    pub limits: limits::Limits,
+    /// Take the client address from `X-Forwarded-For` (only behind a reverse proxy you run).
+    pub trust_proxy: bool,
+}
+
+impl Default for ServeOptions {
+    fn default() -> Self {
+        Self {
+            threads: 8,
+            limits: limits::Limits::default(),
+            trust_proxy: false,
+        }
+    }
+}
+
+/// CORS headers for browsers (any origin: the API is public and uses bearer tokens, not
+/// cookies).
+fn cors(
+    resp: tiny_http::Response<std::io::Cursor<Vec<u8>>>,
+) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    let h = |k: &str, v: &str| tiny_http::Header::from_bytes(k, v).unwrap();
+    resp.with_header(h("Access-Control-Allow-Origin", "*"))
+        .with_header(h(
+            "Access-Control-Allow-Methods",
+            "GET, POST, DELETE, OPTIONS",
+        ))
+        .with_header(h(
+            "Access-Control-Allow-Headers",
+            "Authorization, Content-Type, X-Maker",
+        ))
+        .with_header(h("Access-Control-Max-Age", "86400"))
+}
+
 pub fn serve(store: Store, addr: &str) -> Result<(), String> {
-    let server = tiny_http::Server::http(addr).map_err(|e| e.to_string())?;
-    for mut req in server.incoming_requests() {
-        let method = req.method().as_str().to_string();
-        let url = req.url().to_string();
-        let headers: Vec<(String, String)> = req
-            .headers()
-            .iter()
-            .map(|h| {
-                (
-                    h.field.as_str().as_str().to_string(),
-                    h.value.as_str().to_string(),
-                )
+    serve_with(store, addr, ServeOptions::default())
+}
+
+pub fn serve_with(store: Store, addr: &str, opts: ServeOptions) -> Result<(), String> {
+    let server = std::sync::Arc::new(tiny_http::Server::http(addr).map_err(|e| e.to_string())?);
+    let store = std::sync::Arc::new(store);
+    let gate = std::sync::Arc::new(limits::Gate::new(opts.limits));
+    let workers: Vec<_> = (0..opts.threads.max(1))
+        .map(|_| {
+            let (server, store, gate) = (server.clone(), store.clone(), gate.clone());
+            std::thread::spawn(move || {
+                while let Ok(req) = server.recv() {
+                    respond(&store, &gate, opts.trust_proxy, req);
+                }
             })
-            .collect();
-        let mut body = Vec::new();
-        let _ = std::io::Read::read_to_end(
-            &mut std::io::Read::take(req.as_reader(), MAX_UPLOAD as u64 + 1),
-            &mut body,
-        );
-        let (status, ctype, out) = handle(&store, &method, &url, &headers, &body);
-        let resp = tiny_http::Response::from_data(out)
-            .with_status_code(status)
-            .with_header(tiny_http::Header::from_bytes("Content-Type", ctype).unwrap())
-            .with_header(
-                tiny_http::Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap(),
-            );
-        let _ = req.respond(resp);
+        })
+        .collect();
+    for w in workers {
+        let _ = w.join();
     }
     Ok(())
+}
+
+fn respond(store: &Store, gate: &limits::Gate, trust_proxy: bool, mut req: tiny_http::Request) {
+    let method = req.method().as_str().to_string();
+    let url = req.url().to_string();
+    let headers: Vec<(String, String)> = req
+        .headers()
+        .iter()
+        .map(|h| {
+            (
+                h.field.as_str().as_str().to_string(),
+                h.value.as_str().to_string(),
+            )
+        })
+        .collect();
+    let reply = |req: tiny_http::Request, status: u16, ctype: &str, out: Vec<u8>| {
+        let resp = tiny_http::Response::from_data(out)
+            .with_status_code(status)
+            .with_header(tiny_http::Header::from_bytes("Content-Type", ctype).unwrap());
+        let _ = req.respond(cors(resp));
+    };
+    if method == "OPTIONS" {
+        // CORS preflight
+        return reply(req, 204, "text/plain", Vec::new());
+    }
+    let forwarded = headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("x-forwarded-for"))
+        .and_then(|(_, v)| v.split(',').next()?.trim().parse().ok());
+    let ip = match (trust_proxy, forwarded) {
+        (true, Some(ip)) => Some(ip),
+        _ => req.remote_addr().map(|a| a.ip()),
+    };
+    let path = url.split('?').next().unwrap_or("");
+    if let (Some(ip), Some(kind)) = (ip, limits::kind_of(&method, path))
+        && !gate.allow(ip, kind, std::time::Instant::now())
+    {
+        let body = serde_json::to_vec(&json!({ "error": "too many requests, slow down" })).unwrap();
+        return reply(req, 429, "application/json", body);
+    }
+    let mut body = Vec::new();
+    let _ = std::io::Read::read_to_end(
+        &mut std::io::Read::take(req.as_reader(), MAX_UPLOAD as u64 + 1),
+        &mut body,
+    );
+    let (status, ctype, out) = handle(store, &method, &url, &headers, &body);
+    reply(req, status, ctype, out);
 }
 
 #[cfg(test)]

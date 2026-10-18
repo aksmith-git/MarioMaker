@@ -26,6 +26,13 @@ MMK_ADMIN_TOKEN=$(openssl rand -hex 32) ./core/target/release/mmk server \
 
 Open the ports in your firewall: TCP 8640 and 8641, UDP 8640.
 
+Other options: `--threads` (request threads, default 8), `--writes-per-minute` (uploads, votes,
+comments and clears per client address, default 60), `--accounts-per-hour` (new accounts per
+address, default 5), `--trust-proxy` (behind your own reverse proxy: take the client address from
+`X-Forwarded-For`; never set it on a server reachable directly, or anyone can fake addresses).
+Over a limit the server answers 429. `GET /api/health` reports that the server is up, its course
+and account counts, and the engine version its replays need.
+
 ### What's in the data folder
 
 | File | Holds |
