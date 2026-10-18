@@ -93,6 +93,8 @@ pub struct Scene<'a> {
     pub meshes: &'a crate::mesh::MeshFrame,
     /// A replay's player racing alongside (drawn half transparent over the course).
     pub ghost: &'a [DrawSprite],
+    /// Particle effects (`crate::effects`), drawn over the course under the HUD.
+    pub effects: &'a crate::effects::EffectFrame,
 }
 
 /// A cache texture on the GPU: not uploaded yet, unusable on this path, or ready.
@@ -156,6 +158,8 @@ enum Bind {
     Hud,
     /// Mesh group `i` of the frame's `MeshFrame`.
     Mesh(usize),
+    /// The effects pass (`crate::effects`).
+    Effects,
 }
 
 /// The meshes' shader: skinned vertices arrive in NDC with their depth; lit unless a card.
@@ -286,6 +290,7 @@ pub struct Renderer {
     mesh_vbuf: wgpu::Buffer,
     mesh_ibuf: wgpu::Buffer,
     depth: Option<(wgpu::Texture, wgpu::TextureView)>,
+    effects: crate::effects::EffectsPass,
 }
 
 pub(crate) fn make_texture(
@@ -452,7 +457,9 @@ impl Renderer {
         let grey = grey_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let mesh_vbuf = Self::buffer(device, "mesh vertices", 1 << 16, wgpu::BufferUsages::VERTEX);
         let mesh_ibuf = Self::buffer(device, "mesh indices", 1 << 16, wgpu::BufferUsages::INDEX);
+        let effects = crate::effects::EffectsPass::new(gpu, format, &layout);
         Self {
+            effects,
             mesh_pipeline,
             mesh_samplers: Default::default(),
             mesh_binds: Default::default(),
@@ -700,6 +707,7 @@ impl Renderer {
             .collect();
         self.skipped_textures = 0;
         self.mesh_binds.clear();
+        self.effects.reset();
     }
 
     /// Upload cache texture `i` if it hasn't been yet (pixels are read from the cache now).
@@ -860,6 +868,21 @@ impl Renderer {
                 ],
             );
         }
+        // effects (crate::effects): their own vertices, drawn here in the batch order
+        for t in scene.effects.textures.iter().flatten() {
+            self.ensure(gpu, *t as usize);
+        }
+        let views = &self.textures;
+        self.effects.prepare(
+            gpu,
+            scene.effects,
+            |i| match views.get(i as usize) {
+                Some(TexState::Ready(_, v)) => Some(v.clone()),
+                _ => None,
+            },
+            ndc,
+        );
+        self.batches.push((0, 0, Bind::Effects));
         self.push(Bind::Hud, Self::full_quad());
 
         // meshes: world px → NDC like the sprites, depth as skinned
@@ -971,6 +994,12 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.vbuf.slice(..));
                 continue;
             }
+            if let Bind::Effects = bind {
+                self.effects.draw(&mut pass);
+                pass.set_pipeline(&self.pipeline);
+                pass.set_vertex_buffer(0, self.vbuf.slice(..));
+                continue;
+            }
             if let Bind::Ghost(t) = bind {
                 pass.set_pipeline(&self.ghost_pipeline);
                 pass.set_bind_group(0, self.texture(t as usize).expect("checked above"), &[]);
@@ -984,7 +1013,7 @@ impl Renderer {
                 Bind::Missing(i) => &self.missing[i],
                 Bind::Sky => &self.sky.1,
                 Bind::Hud => &self.hud.1,
-                Bind::Mesh(_) => continue,
+                Bind::Mesh(_) | Bind::Effects => continue,
             };
             pass.set_bind_group(0, group, &[]);
             pass.draw(start..start + n, 0..1);

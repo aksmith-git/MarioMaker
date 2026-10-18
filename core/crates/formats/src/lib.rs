@@ -27,6 +27,8 @@ pub mod record;
 pub mod rpx;
 pub mod smm1;
 pub mod smm2;
+pub mod vfxb;
 pub mod xlink;
+pub mod xlink_triggers;
 
 pub use error::{Error, Result};

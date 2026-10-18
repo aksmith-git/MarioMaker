@@ -7,6 +7,7 @@
 //! lives in the user's Application Support folder.
 
 pub mod audio;
+pub mod effects;
 pub mod vfs;
 
 use std::collections::HashMap;
@@ -398,13 +399,18 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
     // each style's theme music, decoded per course by the player
     audio::export_music(&cfg.romfs, &out, STYLES)?;
 
+    // 5b. particle effects and their links (after the textures: adds to textures/index.json)
+    let fx = effects::import_effects(&cfg.romfs, &out, progress)?;
+
     // 6. manifest
     let manifest: Value = json!({
         "importer_version": IMPORTER_VERSION,
         "game": "SMM2",
         "build": build,
         "module_id": nso.module_id_hex(),
-        "stages": ["identify", "keys", "tables", "textures", "audio", "sprites", "meshes"],
+        "stages": ["identify", "keys", "tables", "textures", "audio", "sprites", "meshes", "effects"],
+        "effect_users": fx.users,
+        "effect_sets": fx.sets,
         "texture_styles": STYLES,
         "mesh_styles": meshes::MESH_STYLES,
         "textures": texture_count,

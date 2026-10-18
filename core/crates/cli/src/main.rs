@@ -94,6 +94,14 @@ enum Cmd {
         #[arg(long, default_value = "USen")]
         language: String,
     },
+    /// Run only the effects stage of `import` (particle effects and their links, from the
+    /// user's own extracted RomFS) into an existing asset cache folder (`<root>/smm2-<build>`).
+    ImportEffects {
+        /// Extracted RomFS (update applied).
+        romfs: PathBuf,
+        /// The asset cache folder to add the effects to.
+        cache: PathBuf,
+    },
     /// Decode a BFLYT / BFLAN / BFFNT / MSBT file (Yaz0 removed) and print it as JSON.
     Lyt { file: PathBuf },
     /// Smoke-run courses headlessly with a scripted run-and-jump input: reports crashes, how far
@@ -987,6 +995,31 @@ fn main() -> ExitCode {
                         r.costume_sounds,
                         r.skipped.len(),
                         r.out_dir.display()
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("import failed: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Cmd::ImportEffects { romfs, cache } => {
+            let mut last = String::new();
+            let mut progress = |stage: &str, done: usize, total: usize| {
+                if stage != last || done == total {
+                    eprintln!("{stage}: {done}/{total}");
+                    last = stage.to_string();
+                }
+            };
+            match mmk_import::effects::import_effects(&romfs, &cache, &mut progress) {
+                Ok(c) => {
+                    println!(
+                        "imported {} effect users, {} emitter sets, {} textures into {}",
+                        c.users,
+                        c.sets,
+                        c.textures,
+                        cache.display()
                     );
                     ExitCode::SUCCESS
                 }

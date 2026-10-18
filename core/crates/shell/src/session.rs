@@ -67,6 +67,8 @@ pub struct Session {
     step: FixedStep,
     pub(crate) audio: Option<Arc<AudioOut>>,
     director: Option<Director>,
+    /// The particle effects of the course (None: the cache has none).
+    pub effects: Option<mmk_host::effects::EffectDirector>,
     /// The start button must be released before it pauses again.
     held_start: bool,
     /// Buttons held when a result screen opened (not counted as presses).
@@ -107,6 +109,7 @@ impl Session {
             step: FixedStep::default(),
             audio: None,
             director: None,
+            effects: None,
             held_start: true,
             held: 0,
             was_dying: false,
@@ -324,6 +327,9 @@ impl Session {
             if let Some(d) = &mut self.director {
                 d.after_step(&self.world);
             }
+            if let Some(e) = &mut self.effects {
+                e.step(&self.world);
+            }
             return;
         }
         if self.world.others.is_empty() {
@@ -350,6 +356,9 @@ impl Session {
         }
         if let Some(d) = &mut self.director {
             d.after_step(&self.world);
+        }
+        if let Some(e) = &mut self.effects {
+            e.step(&self.world);
         }
         let h = self.world.hud();
         let dying = !self.world.player.alive();

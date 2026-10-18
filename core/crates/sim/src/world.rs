@@ -193,6 +193,8 @@ pub struct World {
     countdown_delay: i32,
     pub cleared: bool,
     pub events: Vec<Event>,
+    /// Particle effect cues of this tick (cleared with `events`).
+    pub fx: Vec<crate::fx::Fx>,
     rng: u32,
     field_model: &'static str,
     /// Both areas as loaded (main, sub); index of the current one; the other area's live state.
@@ -435,6 +437,7 @@ impl World {
             countdown_delay: 0,
             cleared: false,
             events: Vec::new(),
+            fx: Vec::new(),
             rng: 0x2545_f491,
             field_model: "",
             area_initial: areas,
@@ -1494,6 +1497,7 @@ impl World {
             input
         };
         self.events.clear();
+        self.fx.clear();
         self.tick += 1;
 
         // death sequence: the world is frozen; restart when the fall ends
