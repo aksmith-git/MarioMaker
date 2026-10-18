@@ -362,6 +362,26 @@ pub trait Host {
     fn report(&mut self, _code: &str, _what: &str) {}
     /// A course was cleared (e.g. send the replay); `ticks` its time.
     fn cleared(&mut self, _ticks: i64) {}
+    /// Start a call to the course server: the JSON actions of `mmk_online::call` (`register
+    /// {name}`, `me`, `info {code}`, `vote {code, like}`, `clear {code, time_ms}`, `comments
+    /// {code}`, `comment {code, text}`, `maker {maker_id}`, `rankings {kind, limit}`, `endless
+    /// {difficulty, cleared}`), plus two the host carries out with its engine:
+    /// `submit_replay {code}` (the replay of the run just cleared) and `ghost {code}` (download
+    /// the record's replay and race it from the next start of that course). `token`: the
+    /// signed-in account's. The answer comes back from [`Host::poll_online`] under `id`.
+    /// False: no server configured (nothing will come back).
+    fn online(&mut self, _id: u32, _action: &str, _args: &Value, _token: Option<&str>) -> bool {
+        false
+    }
+    /// The next answer of an earlier [`Host::online`] call, once it arrived.
+    fn poll_online(&mut self) -> Option<(u32, Result<Value, String>)> {
+        None
+    }
+    /// The engine's play options change play (SMM1 extras, `mmk_sim::Options::affects_play`):
+    /// replays are then neither sent nor raced.
+    fn play_options_affect_play(&self) -> bool {
+        false
+    }
     /// Small persistent values (save data, settings) by key.
     fn load_value(&mut self, key: &str) -> Option<String>;
     fn store_value(&mut self, key: &str, value: &str);

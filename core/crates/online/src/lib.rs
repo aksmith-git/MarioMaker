@@ -341,6 +341,101 @@ impl Client {
     }
 }
 
+/// A listing as JSON (the FFI's and the front ends' shape).
+pub fn listing_json(l: &Listing) -> Value {
+    serde_json::json!({
+        "code": l.code, "name": l.name, "maker": l.maker, "style": l.style, "theme": l.theme,
+        "plays": l.plays, "clears": l.clears, "likes": l.likes, "difficulty": l.difficulty,
+        "boos": l.boos, "maker_id": l.maker_id, "record_ms": l.record_ms,
+        "record_holder": l.record_holder, "record_verified": l.record_verified,
+        "first_clear": l.first_clear,
+    })
+}
+
+fn account_json(a: &Account) -> Value {
+    serde_json::json!({ "id": a.id, "name": a.name, "maker_id": a.maker_id })
+}
+
+/// One server call by name, JSON in and out (the C API's `mmk_online_call` and the front ends'
+/// `Host::online`):
+///
+/// | action | args | result |
+/// |---|---|---|
+/// | `register` | `{name}` | `{account, token}` (keep the token; it is the credential) |
+/// | `me` | — | account `{id, name, maker_id}` |
+/// | `info` | `{code}` | listing |
+/// | `search` | `{q, sort, offset, limit}` | `[listing]` |
+/// | `vote` | `{code, like: bool}` | listing |
+/// | `clear` | `{code, time_ms}` | listing |
+/// | `comments` | `{code}` | `[{maker_id, name, text, posted}]` |
+/// | `comment` | `{code, text}` | `{}` |
+/// | `maker` | `{maker_id}` | `{maker, courses}` |
+/// | `rankings` | `{kind, limit}` | `[{rank, score, maker_id, name}]` |
+/// | `endless` | `{difficulty, cleared}` | `{best}` |
+/// | `delete` | `{code}` | `{}` |
+///
+/// Replays (bytes) go through [`Client::submit_replay`] / [`Client::record_replay`].
+pub fn call(server: &str, token: Option<&str>, action: &str, args: &Value) -> Result<Value> {
+    use serde_json::json;
+    let c = Client::new(server).with_token(token.filter(|t| !t.is_empty()).map(str::to_string));
+    let s = |k: &str| args[k].as_str().unwrap_or_default();
+    let n = |k: &str| args[k].as_u64().unwrap_or(0);
+    Ok(match action {
+        "register" => {
+            let (a, t) = c.register(s("name"))?;
+            json!({ "account": account_json(&a), "token": t })
+        }
+        "me" => account_json(&c.me()?),
+        "info" => listing_json(&c.info(s("code"))?),
+        "search" => Value::Array(
+            c.search(
+                s("q"),
+                args["style"].as_str(),
+                args["sort"].as_str().unwrap_or("popular"),
+                n("offset") as usize,
+                args["limit"].as_u64().unwrap_or(100).clamp(1, 500) as usize,
+            )?
+            .iter()
+            .map(listing_json)
+            .collect(),
+        ),
+        "vote" => listing_json(&c.vote(s("code"), args["like"].as_bool().unwrap_or(true))?),
+        "clear" => listing_json(&c.clear(s("code"), n("time_ms"))?),
+        "comments" => Value::Array(
+            c.comments(s("code"))?
+                .iter()
+                .map(|m| {
+                    json!({ "maker_id": m.maker_id, "name": m.name, "text": m.text,
+                            "posted": m.posted })
+                })
+                .collect(),
+        ),
+        "comment" => {
+            c.comment(s("code"), s("text"))?;
+            json!({})
+        }
+        "maker" => {
+            let (a, list) = c.maker(s("maker_id"))?;
+            json!({ "maker": account_json(&a),
+                    "courses": list.iter().map(listing_json).collect::<Vec<_>>() })
+        }
+        "rankings" => Value::Array(
+            c.rankings(s("kind"), n("limit").clamp(1, 500) as usize)?
+                .into_iter()
+                .map(|(rank, score, id, name)| {
+                    json!({ "rank": rank, "score": score, "maker_id": id, "name": name })
+                })
+                .collect(),
+        ),
+        "endless" => json!({ "best": c.endless(s("difficulty"), n("cleared"))? }),
+        "delete" => {
+            c.delete(s("code"))?;
+            json!({})
+        }
+        _ => return Err(format!("unknown action {action}")),
+    })
+}
+
 fn encode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {

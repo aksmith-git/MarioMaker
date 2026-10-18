@@ -4,7 +4,7 @@
 
 use std::ffi::{CStr, c_char};
 
-use mmk_online::{Client, Listing};
+use mmk_online::Client;
 use serde_json::{Value, json};
 
 use crate::{guard, set_error};
@@ -16,15 +16,7 @@ fn str_arg<'a>(p: *const c_char) -> Option<&'a str> {
     unsafe { CStr::from_ptr(p) }.to_str().ok()
 }
 
-fn listing_json(l: &Listing) -> Value {
-    json!({
-        "code": l.code, "name": l.name, "maker": l.maker, "style": l.style, "theme": l.theme,
-        "plays": l.plays, "clears": l.clears, "likes": l.likes, "difficulty": l.difficulty,
-        "boos": l.boos, "maker_id": l.maker_id, "record_ms": l.record_ms,
-        "record_holder": l.record_holder, "record_verified": l.record_verified,
-        "first_clear": l.first_clear,
-    })
-}
+use mmk_online::listing_json;
 
 /// Copy `s` into `buf` (NUL-terminated when it fits) and return its length; `cap` 0 sizes it.
 fn give(s: &str, buf: *mut c_char, cap: usize) -> usize {
@@ -135,26 +127,9 @@ pub unsafe extern "C" fn mmk_online_report(
     })
 }
 
-fn account_json(a: &mmk_online::Account) -> Value {
-    json!({ "id": a.id, "name": a.name, "maker_id": a.maker_id })
-}
-
-/// One account-side call, JSON in and out (so the C API stays one function):
-///
-/// | action | args | result |
-/// |---|---|---|
-/// | `register` | `{name}` | `{account, token}` (keep the token; it is the credential) |
-/// | `me` | — | account |
-/// | `vote` | `{code, like: bool}` | listing |
-/// | `clear` | `{code, time_ms}` | listing |
-/// | `comments` | `{code}` | `[{maker_id, name, text, posted}]` |
-/// | `comment` | `{code, text}` | `{}` |
-/// | `maker` | `{maker_id}` | `{maker, courses}` |
-/// | `rankings` | `{kind, limit}` | `[{rank, score, maker_id, name}]` |
-/// | `endless` | `{difficulty, cleared}` | `{best}` |
-/// | `delete` | `{code}` | `{}` |
-/// | `submit_replay` | `{code, path}` (a replay file) | listing |
-/// | `record_replay` | `{code, path}` (written) | `{}` |
+/// One account-side call, JSON in and out (so the C API stays one function): the actions of
+/// [`mmk_online::call`], plus `submit_replay {code, path}` (a replay file) → listing and
+/// `record_replay {code, path}` (written) → `{}`.
 pub fn call(
     server: &str,
     token: Option<&str>,
@@ -163,46 +138,7 @@ pub fn call(
 ) -> Result<Value, String> {
     let c = Client::new(server).with_token(token.filter(|t| !t.is_empty()).map(str::to_string));
     let s = |k: &str| args[k].as_str().unwrap_or_default();
-    let n = |k: &str| args[k].as_u64().unwrap_or(0);
     Ok(match action {
-        "register" => {
-            let (a, t) = c.register(s("name"))?;
-            json!({ "account": account_json(&a), "token": t })
-        }
-        "me" => account_json(&c.me()?),
-        "vote" => listing_json(&c.vote(s("code"), args["like"].as_bool().unwrap_or(true))?),
-        "clear" => listing_json(&c.clear(s("code"), n("time_ms"))?),
-        "comments" => Value::Array(
-            c.comments(s("code"))?
-                .iter()
-                .map(|m| {
-                    json!({ "maker_id": m.maker_id, "name": m.name, "text": m.text,
-                            "posted": m.posted })
-                })
-                .collect(),
-        ),
-        "comment" => {
-            c.comment(s("code"), s("text"))?;
-            json!({})
-        }
-        "maker" => {
-            let (a, list) = c.maker(s("maker_id"))?;
-            json!({ "maker": account_json(&a),
-                    "courses": list.iter().map(listing_json).collect::<Vec<_>>() })
-        }
-        "rankings" => Value::Array(
-            c.rankings(s("kind"), n("limit").clamp(1, 500) as usize)?
-                .into_iter()
-                .map(|(rank, score, id, name)| {
-                    json!({ "rank": rank, "score": score, "maker_id": id, "name": name })
-                })
-                .collect(),
-        ),
-        "endless" => json!({ "best": c.endless(s("difficulty"), n("cleared"))? }),
-        "delete" => {
-            c.delete(s("code"))?;
-            json!({})
-        }
         "submit_replay" => {
             let bytes = std::fs::read(s("path")).map_err(|e| format!("{}: {e}", s("path")))?;
             listing_json(&c.submit_replay(s("code"), &bytes)?)
@@ -212,7 +148,7 @@ pub fn call(
             std::fs::write(s("path"), bytes).map_err(|e| format!("{}: {e}", s("path")))?;
             json!({})
         }
-        _ => return Err(format!("unknown action {action}")),
+        _ => return mmk_online::call(server, token, action, args),
     })
 }
 
