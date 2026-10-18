@@ -5197,11 +5197,7 @@ impl World {
         for t in &self.level.tiles {
             let (px, py) = (t.x as f32 * TILE, t.y as f32 * TILE);
             if visible(px, py) {
-                let layer = if t.pipe && self.options.smm1_layering {
-                    smm1::PIPE_LAYER
-                } else {
-                    10
-                };
+                let layer = smm1::tile_layer(t, self.options.smm1_layering);
                 let mut s = tile(px, py, t.atlas, layer);
                 s.flip_x = t.flip & 1 != 0;
                 s.flip_y = t.flip & 2 != 0;

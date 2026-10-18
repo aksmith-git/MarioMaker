@@ -2293,6 +2293,11 @@ impl Actor {
             }
             Kind::RockyWrench => return self.step_rocky(),
             Kind::Wiggler => {
+                if self.alt && self.age <= 1 && self.phase == 0 {
+                    // the alternate (0x4) Wiggler is built in its Angry state (0x710067bcc0)
+                    self.phase = 1;
+                    self.timer = 60;
+                }
                 if self.timer > 0 {
                     self.timer -= 1; // anger pause
                     self.vx = 0.0;

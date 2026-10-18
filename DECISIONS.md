@@ -1122,3 +1122,10 @@ decided after the native ports, with the reasons written down either way.
 **Rules:** no Nintendo binaries, assets, keys, recompiled output or disassembly in git —
 `scripts/check_no_proprietary.py` now also blocks native binaries, SPIR-V, AArch64 ELFs, anything
 under `recomp/private|generated|build/`, and text that looks like disassembly or recompiled code.
+
+## 2026-10-18 — Slopes: the game's surface, a solid wedge underneath
+- A slope object is a band in the game (a sloped floor and a sloped ceiling 16 px apart between
+  two 1×1 end caps). The engine keeps the binary's surface and caps exactly but fills the cells
+  under the surface (and under the high cap) solid instead of modelling the hollow underside:
+  walkers and the player meet the same top, and a slope's underside is rarely reachable. Revisit
+  if a course needs to pass under a floating slope.

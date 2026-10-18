@@ -361,7 +361,8 @@ mod tests {
         let back = round_trip(&e);
         let lvl = Level::from_course(&back, 0);
         assert_eq!(lvl.autoscroll, 4);
-        assert_eq!(lvl.scroll_nodes.len(), 2);
+        // the two nodes (numbered 0 and 1, so the first replaces the start node) and the end
+        assert_eq!(lvl.scroll_nodes.len(), 3);
         assert_eq!(
             lvl.scroll_nodes[1],
             (1, 40.0 * 16.0 + 8.0, 12.0 * 16.0 + 8.0, 2)
