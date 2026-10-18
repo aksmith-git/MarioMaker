@@ -394,6 +394,16 @@ Not Nintendo's network: the engine talks to an open-source server the owner can 
   4 players, NAT traversal / relay via the server, WebRTC for the web, versus ⬜
 - ⬜ Accounts without Nintendo services; moderation tools for self-hosters
 
+### Phase 11 — SMM1 extras, each behind a setting ⬜ (owner request 2026-10-18)
+From the owner's SMM1 (Wii U) dump, as options layered on SMM2 play:
+- ⬜ Costumes (Mystery Mushroom): costume characters, their walk/jump art and sounds, the 100 Mario
+  costume rewards
+- ⬜ Lanky Mario (Weird Mushroom): the tall form and its floatier jump
+- ⬜ Pipes drawn over the player (SMM1 layering), as a display setting
+- ⬜ Mid-air shell kicks / shell jumps (SMM1 physics quirk), as a physics setting
+- ⬜ Other SMM1-only behaviours worth offering (to survey: SMM1 sound effects, Big Mushroom in all
+  styles, …)
+
 ---
 
 ## Phase 1 detail

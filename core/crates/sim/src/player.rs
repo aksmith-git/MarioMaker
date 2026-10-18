@@ -1338,8 +1338,9 @@ impl Player {
 
     /// Wall slide / wall jump (§3.3, every style): falling against a wall with the stick toward
     /// it slides at ≥ −2.0; jump → vy 3.5 and 2.25 px/f away; 15 frames of stick held away let go.
-    /// Ground pound (NSMBU / 3DW): Down in the air → a wind-up with no speed or gravity
-    /// [inf: 12 frames], then a dive at −6.0 until landing.
+    /// Ground pound (NSMBU / 3DW, HipAttack): Down in the air → a wind-up with no speed or gravity
+    /// for the `hip_start` animation (NSMBU 9 frames, 3D World 24) plus 5 frames, then a dive
+    /// that starts at −6.0 (fall cap −6.0) until landing [obs].
     fn step_wall_and_pound(&mut self, inp: Input, pressed: bool, level: &Level) {
         let down = inp.held(input::DOWN);
         let down_pressed = down && !self.prev_down;
@@ -1372,7 +1373,11 @@ impl Player {
             if self.form == Form::Cat {
                 self.dive = true;
             } else {
-                self.pound = 12;
+                self.pound = if self.style == Style::W3 {
+                    24 + 5
+                } else {
+                    9 + 5
+                };
             }
             self.wall_slide = 0;
         }

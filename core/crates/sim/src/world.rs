@@ -7568,7 +7568,10 @@ mod tests {
         w.player.on_ground = false;
         run(&mut w, input::DOWN, 1);
         assert!(w.player.pound > 0);
+        // hip_start (9 frames) + 5 [obs]
         run(&mut w, input::DOWN, 12);
+        assert_eq!(w.player.vy, 0.0, "still winding up");
+        run(&mut w, input::DOWN, 2);
         assert_eq!(w.player.vy, -6.0);
     }
 
