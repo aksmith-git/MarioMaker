@@ -150,7 +150,7 @@ The release is built with zig (the compiler the package also ships) and MSYS2's 
      | `smm2game.dll` | 186 MB | the game code (plus a 440 MB `.pdb`) |
 
      `smm2game.dll` is made from your dump: don't share it. The package doesn't contain it.
-   - `package` writes `dist/SMM2Recomp-windows-x86_64.zip` (96 MB).
+   - `package` writes `dist/SMM2Recomp-windows-x86_64.zip` (85 MB).
 
 ## Troubleshooting
 

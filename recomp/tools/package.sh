@@ -34,6 +34,7 @@ cp -R "build/zig-$ZT" "$OUT/zig"
 # what the game code is compiled against (the same files GAMELIB_ID hashes)
 cp runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h runtime/game.h tools/gamelib_entry.c "$OUT/gamelib-src/"
 cp "$HLE" "$OUT/gamelib-src/hle_symbols.txt"
+cp games/smm2/patches.py "$OUT/gamelib-src/patches.py"  # (the generator's per-instruction patches for main)
 # the generator and the game's setup tools
 cp tools/gen.py tools/lifter.py tools/analyze.py tools/nso.py tools/passes.py tools/patches.py tools/simd_c.py "$OUT/tools/"
 cp games/smm2/setup.py games/smm2/sysdata.py "$OUT/tools/games/smm2/"
