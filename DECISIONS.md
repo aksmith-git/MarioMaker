@@ -1068,6 +1068,21 @@ renderers upload a texture when a sprite first uses it. Measured on the same cou
   Basics sets its own flag (which also grows the title-course rotation from 8 to 10), power-up
   lessons set nothing; Nina's introduction is one flag for every lesson kind (save +0x100 bit 10).
 
+## 2026-10-19 — Recomp R1: blocking shader compiles, repeatable boots, like-for-like frame captures
+The recompiled game reaches and renders the title screen on macOS (findings: `recomp/docs/smm2-bringup.md`).
+Three choices made on the way, for the ports that follow:
+- **First-use shader compiles block** (LAS compiled in the background and skipped draws until ready). SMM2 renders
+  some things exactly once (the colour-correction LUT, light probes); a skipped draw is never redone, and the scene
+  stayed black. The warm-up cache keeps later runs fast; `LARECOMP_ASYNC_SHADERS=1` keeps LAS's way for comparison.
+- **Repeatable boots through the game's own seed.** The title course (and other randomness) comes from a
+  `sead::Random` seeded with the system tick. `SMM2_SEED=<n>` fixes that one seed in the game glue
+  (`games/smm2/seed.c`) rather than making the clock fake: frames are then bit-identical from boot to boot, which
+  frame comparisons and the input-replay milestone (R2) need.
+- **Frames are compared the way they are captured.** Ryujinx's reference frames are window grabs, which the window
+  server colour-manages into the display's space; our raw frames are sRGB bytes. Ours are grabbed the same way for
+  comparisons (`LARECOMP_CG_SHOT`), at the same size (1280x720 game area). Raw-against-grab differs by a uniform
+  shift that would hide real differences (26.6 % of pixels against 6.96 % like for like).
+
 ## 2026-10-18 — Native SMM2 port by static recompilation: base on LAS Recomp, borrow from the Wonder framework
 **Goal (owner):** a native port of Super Mario Maker 2 v3.0.3 for macOS, Windows, Linux, iOS/iPadOS
 and the web, built by static recompilation from the player's own dump, with SMM1's 100 Mario

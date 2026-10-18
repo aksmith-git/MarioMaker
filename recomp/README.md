@@ -56,3 +56,17 @@ Useful environment variables (inherited from LAS Recomp): `LARECOMP_WINDOW_SHOT=
 that frame (`LARECOMP_SHOT_PATH=<png>`, `LARECOMP_EXIT_AFTER_SHOT=1`), `LARECOMP_SCREENSHOT_EVERY=<n>`,
 `LARECOMP_TRACE_SVC=1`, `LARECOMP_LOG_FILES=1` (RomFS files as they are read). `RECOMP_MOD_DIR=<dir>` serves files
 from `<dir>/romfs/` over the game's.
+
+Added for SMM2:
+
+| Variable | Effect |
+|---|---|
+| `SMM2_SEED=<n>` | fixed seed for the game's global random generator: every boot shows the same title course and frames repeat exactly (`4`: the course Ryujinx shows) |
+| `LARECOMP_CG_SHOT=<frame>` | capture the window through the window server at that frame (colour-managed, like the Ryujinx reference grabs); with `LARECOMP_WINDOW=1280x720` for comparisons |
+| `LARECOMP_ASYNC_SHADERS=1` | compile shaders in the background and skip their draws meanwhile (LAS's behaviour; SMM2 then misses one-shot renders) |
+| `RECOMP_USER_NAME=<name>` | the account nickname (default "Player") |
+| `LARECOMP_DEBUG_FRAME=<n>` | log every draw of frame n and save each render pass to `build/pass_NNN.png`; `LARECOMP_DEBUG_EACH_DRAW=1` saves the target after every draw |
+| `LARECOMP_TRACE_CALLS=<n>` | log the first n command-buffer recording / call / submit / render-target / clear calls with their guest return address |
+| `RECOMP_NO_CORES=1` | run guest threads without per-core exclusivity (LAS's behaviour; SMM2 races then) |
+
+Status and evidence: `../PROGRESS.md` ("Recomp"); what the bring-up needed: [docs/smm2-bringup.md](docs/smm2-bringup.md).

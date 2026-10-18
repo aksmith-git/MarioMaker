@@ -5,6 +5,7 @@
 #include "ui/menu.h"
 // Metal renderer for the NVN layer: window, textures, command execution, presentation.
 #include <sys/stat.h>
+#include <dlfcn.h>
 #import <AppKit/AppKit.h>
 #import <Metal/Metal.h>
 #import <MetalFX/MetalFX.h>
@@ -1008,6 +1009,35 @@ void backend_represent(void) {
     else SDL_Delay(16);
 }
 
+// Our window's image from the window server (CGWindowListCreateImage, looked up at run time: it is deprecated in
+// favour of ScreenCaptureKit, but a process may still capture its own windows with it) -> PNG.
+static void window_server_shot(const char *path) {
+    CFArrayRef list = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID);
+    CGWindowID wid = 0;
+    for (CFIndex i = 0; list && i < CFArrayGetCount(list) && !wid; i++) {
+        CFDictionaryRef w = CFArrayGetValueAtIndex(list, i);
+        int pid = 0, layer_no = -1;
+        CFNumberRef n = CFDictionaryGetValue(w, kCGWindowOwnerPID);
+        if (n) CFNumberGetValue(n, kCFNumberIntType, &pid);
+        n = CFDictionaryGetValue(w, kCGWindowLayer);
+        if (n) CFNumberGetValue(n, kCFNumberIntType, &layer_no);
+        if (pid == getpid() && layer_no == 0 && (n = CFDictionaryGetValue(w, kCGWindowNumber)))
+            CFNumberGetValue(n, kCFNumberIntType, &wid);
+    }
+    if (list) CFRelease(list);
+    typedef CGImageRef (*WLCI)(CGRect, uint32_t, uint32_t, uint32_t);
+    WLCI fn = (WLCI)dlsym(RTLD_DEFAULT, "CGWindowListCreateImage");
+    CGImageRef img = wid && fn ? fn(CGRectNull, kCGWindowListOptionIncludingWindow, wid,
+                                    kCGWindowImageBoundsIgnoreFraming | kCGWindowImageNominalResolution) : NULL;
+    if (!img) { LOG("[metal] window server shot failed (window %u)\n", wid); return; }
+    CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)path, strlen(path), false);
+    CGImageDestinationRef dest = CGImageDestinationCreateWithURL(url, (__bridge CFStringRef)UTTypePNG.identifier, 1, NULL);
+    if (dest) { CGImageDestinationAddImage(dest, img, NULL); CGImageDestinationFinalize(dest); CFRelease(dest); }
+    LOG("[metal] window server shot %s (%zux%zu)\n", path, CGImageGetWidth(img), CGImageGetHeight(img));
+    CFRelease(url);
+    CGImageRelease(img);
+}
+
 void backend_present(NvnTexture *t) {
     g_last_presented = t;
     extern void renderer_submit(void);
@@ -1117,6 +1147,17 @@ void backend_present(NvnTexture *t) {
         }
         [cb presentDrawable:drawable];
         [cb commit];
+        {   // LARECOMP_CG_SHOT=<frame> (+ LARECOMP_SHOT_PATH): capture our window as the window server composites it,
+            // colour-managed into the display's space - the way the Ryujinx reference grabs its window, so the two
+            // compare like for like
+            static long cg_shot = -1;
+            if (cg_shot < 0) cg_shot = getenv("LARECOMP_CG_SHOT") ? atol(getenv("LARECOMP_CG_SHOT")) : 0;
+            if (cg_shot && (long)total_frames == cg_shot) {
+                [cb waitUntilScheduled];
+                usleep(100000);  // (let the window server show this frame)
+                window_server_shot(getenv("LARECOMP_SHOT_PATH") ? getenv("LARECOMP_SHOT_PATH") : "build/cg_window.png");
+            }
+        }
         if (shot_tex) {
             [cb waitUntilCompleted];
             // LARECOMP_SHOT_PATH: where (parallel test runs each write their own; default build/window.png)
