@@ -356,8 +356,10 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   180 f, vanish and respawn at the start (alternate)
 - ✅ 3D World enemies (actors/w3.rs, world/w3.rs): Ant Trooper (wall/ceiling crawl, horned),
   Stingby (patrol, alert, charge), Skipsqueak (+ Spiny; jumps with the player), Hop-Chops,
-  Porcupuffer (4 HP, homing, surface patrol), Bully (push-back, stun), Charvaargh (lava leap with
-  8 segments), Piranha Creeper (path creep, sleeping form) — guesses listed in DECISIONS.md
+  Porcupuffer (4 HP, homing, surface patrol), Bully (push-back, ledge teeter), Charvaargh (lava leap with
+  8 segments), Piranha Creeper (path creep, sleeping form) — guesses burnt down against the
+  binary (2026-10-18): animation-timed states, Charvaargh's real arc, creeper pieces and node table,
+  Bully push table / sight box / ledge teeter; what is left is listed in DECISIONS.md
 - ✅ Fire Bars, Burners, airship Cannons and Bill Blasters on tracks: a carrier actor rides the
   track as the moving solid and the fixed object follows it — sample 550/550 by the coverage check
 - ✅ Story Mode parts: the stone (75, heavy carry: thrown ≤ 0.8 px/f, never breaks), the escort

@@ -1493,7 +1493,8 @@ impl Actor {
         {
             spawned = self.step_piranha(fire);
         }
-        if self.y < -4.0 * TILE && self.mode != Mode::DieFall {
+        // (a Charvaargh dives far below the lava between leaps: actors/w3.rs)
+        if self.y < -4.0 * TILE && self.mode != Mode::DieFall && self.kind != Kind::Charvaargh {
             self.mode = Mode::Dead; // fell into a pit
         }
         spawned

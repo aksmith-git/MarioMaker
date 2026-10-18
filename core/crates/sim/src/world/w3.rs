@@ -1,6 +1,7 @@
 //! World-side rules for the 3D World enemies (actors/w3.rs): what the world senses for them each
 //! frame, the player touching them, fireballs and shells hitting them, and the Piranha Creeper's
-//! stalk. Reactions follow each spec's EnemyDB rows; the inferred ones are marked [inf].
+//! stalk. Reactions follow each spec's EnemyDB rows and the enemies' own touch callbacks; the
+//! few the binary does not settle are marked [inf] with the reason.
 
 use super::{Event, World, overlap};
 use crate::actors::{Actor, Kind, Mode, STOMP_FRAMES, bully_push, creeper_corner};
@@ -8,10 +9,14 @@ use crate::liquid::Liquid;
 use crate::player::Player;
 use crate::render::Sprite;
 
-/// [inf] a Bully's touch shoves the player away (2.0 px/f, a 2.0 hop) instead of hurting.
-const BULLY_SHOVE: f32 = 2.0;
-/// [inf] Charvaargh's body segments touch within a 32×32 box round their centres.
-const SEGMENT_HALF: f32 = 16.0;
+/// Walking into a Bully puts the player in its Pushed state: thrown back at 3.0 px/f, and every
+/// 4th push also 4.0 up [obs player state 0x4f, 0x71009d5b90]. The Pushed state's
+/// control lock (until 20 frames of its animation have played) lives in the player code and is
+/// not modelled here.
+const BULLY_SHOVE: f32 = 3.0;
+const BULLY_SHOVE_HOP: f32 = 4.0;
+/// Charvaargh's 8 body touch boxes are 40×40 round their centres [obs 0x710079e290].
+const SEGMENT_HALF: f32 = 20.0;
 
 /// Before each step: the liquid and the nearest player, as the 3D World enemies see them.
 pub(super) fn sense(a: &mut Actor, liquid: Option<Liquid>, p: &Player) {
@@ -22,18 +27,24 @@ pub(super) fn sense(a: &mut Actor, liquid: Option<Liquid>, p: &Player) {
     a.w3.liquid = liquid.filter(|l| !l.spec.full).map(|l| (l.y, l.water()));
     a.w3.player_wet = p.in_water;
     a.w3.player_h = p.hurt_box().3 - p.y;
-    // [?] the spec's "jumping" player flag: read as airborne and rising
-    a.w3.player_rising = p.alive() && !p.on_ground && p.vy > 0.0;
+    // the player flag Skipsqueak watches (+0x488 bit 14) is set when a jump is launched and on
+    // each swim stroke [obs 0x71009f0710, 0x7100a104a0]; it lasts that one frame [inf: its
+    // clearing was not found]. Here: airborne and rising after standing, or a stroke's kick.
+    let launched = !p.on_ground && p.vy > 0.0 && a.w3.player_ground_prev;
+    let stroke = p.in_water && p.vy > 0.0 && p.vy > a.w3.player_vy_prev + 0.5;
+    a.w3.player_rising = p.alive() && (launched || stroke);
+    a.w3.player_ground_prev = p.on_ground;
+    a.w3.player_vy_prev = p.vy;
 }
 
-/// Spiky on top: a stomp hurts the player, a spin jump bounces off safely.
+/// Spiky on top: a stomp hurts the player, a spin jump bounces off safely. Spiny Skipsqueak and
+/// Porcupuffer: stamp Invalid [obs EnemyDB]; the horned Ant Trooper's stamp row is ReactOnly,
+/// its top hurts through the "Needle" collider on its horn [inf: that collider's callback was
+/// not traced].
 fn spiky(kind: Kind) -> bool {
     matches!(
         kind,
-        Kind::AntTrooper { horned: true }
-            | Kind::Skipsqueak { spiny: true }
-            | Kind::Porcupuffer
-            | Kind::Charvaargh
+        Kind::AntTrooper { horned: true } | Kind::Skipsqueak { spiny: true } | Kind::Porcupuffer
     )
 }
 
@@ -44,21 +55,18 @@ impl World {
         let hurt = self.player.hurt_box();
         let a = &self.actors[i];
         let kind = a.kind;
-        let body = overlap(hurt, a.bbox());
+        // a Charvaargh touches only through its 8 body boxes while it leaps [obs 0x710079e290]
+        let body = kind != Kind::Charvaargh && overlap(hurt, a.bbox());
         let segment = kind == Kind::Charvaargh
             && a.charvaargh_segments().iter().any(|&(sx, sy)| {
-                let b = (
-                    sx - SEGMENT_HALF,
-                    sy - SEGMENT_HALF,
-                    sx + SEGMENT_HALF,
-                    sy + SEGMENT_HALF,
-                );
-                overlap(hurt, b)
+                let h = SEGMENT_HALF;
+                overlap(hurt, (sx - h, sy - h, sx + h, sy + h))
             });
         if !body && !segment {
             return false;
         }
-        // a trampled creeper head is flat and harmless [inf]
+        // a trampled creeper head is flat and harmless [inf: whether its touch callback hurts
+        // in Damage / DamageWait was not traced]
         if matches!(kind, Kind::PiranhaCreeper { .. }) && a.creeper_trampled() {
             return false;
         }
@@ -66,20 +74,23 @@ impl World {
         let p = &self.player;
         let px = p.x;
         if p.star > 0 {
-            // a Super Star knocks them off (Charvaargh shrugs it off [inf])
-            if kind != Kind::Charvaargh {
-                self.actors[i].die_fall(px);
-                self.w3_defeated(ax, ay);
-            }
+            // a Super Star knocks them all off, Charvaargh too [obs 0x710079c5f0]
+            self.actors[i].die_fall(px);
+            self.w3_defeated(ax, ay);
             return false;
+        }
+        if kind == Kind::Charvaargh {
+            // anything else touching it is hurt: no stomp, no spin bounce [obs 0x710079c5f0]
+            return self.w3_hurt();
         }
         let above = body && p.vy < 0.0 && p.y >= ay + ah * 0.5;
         let (shoe, spin, pound) = (p.shoe.is_some(), p.spinning, p.pound == -1);
         if above {
             match kind {
                 Kind::Bully => {
-                    // ReactOnly: pushed back, the player bounces
-                    let s = if pound || shoe {
+                    // ReactOnly: pushed back (a ground pound hardest), the player bounces
+                    // [obs 0x7100649cb0]
+                    let s = if pound {
                         bully_push::HEAVY
                     } else {
                         bully_push::STOMP
@@ -90,19 +101,20 @@ impl World {
                     return false;
                 }
                 Kind::PiranhaCreeper { .. } => {
-                    // [inf] a stomp tramples the head (Damage → DamageWait)
+                    // a stomp tramples the head (Damage → DamageWait) [inf: which hits set the
+                    // head's damage flags was not traced; the Trampled animations say stomps]
                     if self.actors[i].creeper_trample() {
                         self.events.push(Event::Stomp);
                     }
                     self.player.bounce(jump_held);
                     return false;
                 }
-                Kind::Charvaargh => {
-                    if spin {
-                        self.player.bounce(jump_held);
-                        self.events.push(Event::Bump);
-                        return false;
-                    }
+                Kind::AntTrooper { horned } if !shoe && !pound && (!horned || spin) => {
+                    // stamp / spin: ReactOnly, it only squashes for a moment and walks on
+                    // [obs EnemyDB, 0x7100601700]; the player bounces
+                    self.player.bounce(jump_held);
+                    self.events.push(Event::Bump);
+                    return false;
                 }
                 _ if shoe => {
                     // stamp_shoe defeats them all (DieVanish / DieStamp in the rows)
@@ -126,12 +138,10 @@ impl World {
                         a.wings = false;
                         a.vy = a.vy.min(0.0);
                     } else if pound || spin {
-                        // hipatk / stamp_spin: DieFall (Stingby, Skipsqueak) [obs]; the same
-                        // for the others [inf]
+                        // hipatk / stamp_spin: DieFall (Hop-Chops' spin: DieVanish) [obs EnemyDB]
                         a.die_fall(px);
                     } else {
-                        // DieStamp: flattened (Ant Trooper: the rows say ReactOnly, but in the
-                        // game a stomp defeats the plain one [inf])
+                        // DieStamp: flattened [obs EnemyDB]
                         a.mode = Mode::Stomped;
                         a.timer = STOMP_FRAMES;
                         a.vx = 0.0;
@@ -159,16 +169,25 @@ impl World {
             return false;
         }
         if kind == Kind::Bully {
-            // [inf] a Bully shoves instead of hurting
-            let side = if self.player.x < ax { -1.0 } else { 1.0 };
-            self.player.vx = BULLY_SHOVE * side + self.actors[i].vx;
-            if self.player.on_ground {
-                self.player.vy = BULLY_SHOVE;
-                self.player.on_ground = false;
+            // the touch never hurts: the Bully is pushed (light, 7 frames apart) and the
+            // player thrown back [obs 0x7100649cb0, player Pushed 0x71009d5b90]
+            let b = &mut self.actors[i];
+            if b.bully_body_push(px) {
+                let side = if px < ax { -1.0 } else { 1.0 };
+                self.player.vx = BULLY_SHOVE * side;
+                if b.bully_shove_count().is_multiple_of(4) {
+                    self.player.vy = BULLY_SHOVE_HOP;
+                    self.player.on_ground = false;
+                }
+                self.events.push(Event::Bump);
             }
-            self.events.push(Event::Bump);
             return false;
         }
+        self.w3_hurt()
+    }
+
+    /// The player touched something harmful: true when hurt.
+    fn w3_hurt(&mut self) -> bool {
         if self.player.hurt() {
             self.events.push(if self.player.alive() {
                 Event::PowerDown
@@ -188,7 +207,7 @@ impl World {
     }
 
     /// Piranha Creeper stalks: one piece per path cell behind the head (a corner piece where the
-    /// path turns). [inf] the pieces are drawn unrotated: sprites carry no rotation.
+    /// path turns). They are drawn unrotated: the sprite list carries no rotation.
     pub(super) fn w3_sprites(&self, out: &mut Vec<Sprite>) {
         for a in &self.actors {
             let Kind::PiranhaCreeper { path, .. } = a.kind else {
@@ -240,8 +259,10 @@ pub(super) fn fire_hit(e: &mut Actor, from_x: f32) -> Option<bool> {
     }
 }
 
-/// A sliding shell meeting a Bully: shells are Invalid on it [obs], so the shell bounces back
-/// [inf]. True when handled.
+/// A sliding shell meeting a Bully: the shell attack is Invalid in its EnemyDB row, but its push
+/// component takes the shell as a heavy push (2.5 px/f) [obs 0x7100649cb0]; the shell bounces
+/// back [inf: the shell's side is the generic enemy-vs-enemy handler 0x710072bca0, not traced].
+/// True when handled.
 pub(super) fn shell_hit(a: &mut Actor, b: &mut Actor) -> bool {
     let (shell, bully) = if a.mode == Mode::ShellSlide && b.kind == Kind::Bully {
         (a, b)
@@ -251,6 +272,7 @@ pub(super) fn shell_hit(a: &mut Actor, b: &mut Actor) -> bool {
         return false;
     };
     if (bully.x - shell.x) * shell.vx > 0.0 {
+        bully.bully_push_by(bully_push::HEAVY, shell.x, false);
         shell.dir = -shell.dir;
         shell.vx = -shell.vx;
     }
@@ -326,11 +348,7 @@ mod tests {
 
     #[test]
     fn plain_ones_are_stomped_spiny_ones_hurt() {
-        for kind in [
-            Kind::AntTrooper { horned: false },
-            Kind::Skipsqueak { spiny: false },
-            Kind::HopChops,
-        ] {
+        for kind in [Kind::Skipsqueak { spiny: false }, Kind::HopChops] {
             let mut w = world_with(kind);
             assert!(stomp(&mut w, kind), "{kind:?}: bounced");
             assert!(w.player.alive());
@@ -349,6 +367,38 @@ mod tests {
             stomp(&mut w, kind);
             assert!(!w.player.alive(), "{kind:?}: a stomp hurts a small player");
         }
+    }
+
+    #[test]
+    fn an_ant_trooper_shrugs_off_a_stomp_but_not_a_ground_pound() {
+        let kind = Kind::AntTrooper { horned: false };
+        let mut w = world_with(kind);
+        assert!(stomp(&mut w, kind), "bounced");
+        assert!(w.player.alive());
+        assert_eq!(
+            enemy(&w, kind).mode,
+            Mode::Normal,
+            "ReactOnly: still walking"
+        );
+        let mut w = world_with(kind);
+        let (x, y, h) = {
+            let a = enemy(&w, kind);
+            (a.x, a.y, a.height())
+        };
+        w.player.x = x;
+        w.player.y = y + h - 2.0;
+        w.player.vy = -1.0;
+        w.player.pound = -1;
+        w.player.on_ground = false;
+        run(&mut w, 0, 1);
+        let e = enemy(&w, kind);
+        assert_eq!(
+            e.mode,
+            Mode::DieFall,
+            "hipatk: DieFall (player y {}, alive {})",
+            w.player.y,
+            w.player.alive()
+        );
     }
 
     #[test]
@@ -386,8 +436,12 @@ mod tests {
         let b = enemy(&w, Kind::Bully);
         assert!(b.alive() && b.bully_pushed());
         assert!(b.vx.abs() > 0.5, "pushed by the fireball");
-        // walking into it shoves the player back unhurt
-        let (bx, by) = (b.x, b.y);
+        // walking into it shoves the player back unhurt, and pushes the Bully lightly
+        run(&mut w, 0, 80);
+        let (bx, by) = {
+            let b = enemy(&w, Kind::Bully);
+            (b.x, b.y)
+        };
         w.player.x = bx - 18.0;
         w.player.y = by;
         w.player.vy = 0.0;
@@ -395,7 +449,9 @@ mod tests {
         w.player.invuln = 0;
         run(&mut w, 0, 1);
         assert!(w.player.alive());
-        assert!(w.player.vx < -1.0, "shoved left: {}", w.player.vx);
+        assert!(w.player.vx < -2.0, "shoved left: {}", w.player.vx);
+        let b = enemy(&w, Kind::Bully);
+        assert!(b.bully_pushed() && b.vx > 0.5, "pushed right: {}", b.vx);
     }
 
     #[test]
@@ -427,7 +483,8 @@ mod tests {
             .unwrap();
         assert_eq!(shell.mode, Mode::ShellSlide);
         assert!(shell.vx < 0.0, "bounced back");
-        assert!(enemy(&w, Kind::Bully).alive());
+        let b = enemy(&w, Kind::Bully);
+        assert!(b.alive() && b.bully_pushed(), "a shell pushes it hard");
     }
 
     #[test]
@@ -472,26 +529,64 @@ mod tests {
         );
     }
 
-    #[test]
-    fn charvaargh_hurts_even_starred_players_cannot_beat_it() {
+    /// A castle course with lava at 44 and a Charvaargh in it; runs until it leaps.
+    fn leaping_charvaargh() -> World {
         let mut lvl = Level::flat(60);
-        lvl.spawns.push(spawn(Kind::Charvaargh, 200.0, 32.0));
+        lvl.theme = 2;
+        lvl.liquid = Some(LiquidSpec {
+            kind: 2,
+            start: 44.0,
+            end: 44.0,
+            mode: 0,
+            speed: 0,
+            full: false,
+        });
+        lvl.spawns.push(spawn(Kind::Charvaargh, 200.0, 12.0));
         let mut w = World::with_level(lvl);
         w.player.x = 40.0;
+        w.player.y = 200.0; // out of reach
         run(&mut w, 0, 2);
-        let (x, y) = (enemy(&w, Kind::Charvaargh).x, enemy(&w, Kind::Charvaargh).y);
-        w.player.star = 600;
-        w.player.x = x;
-        w.player.y = y + 8.0;
-        run(&mut w, 0, 1);
-        assert!(enemy(&w, Kind::Charvaargh).alive());
-        w.player.star = 0;
+        assert!(
+            enemy(&w, Kind::Charvaargh).charvaargh_segments().is_empty(),
+            "harmless while it waits"
+        );
+        for _ in 0..300 {
+            if enemy(&w, Kind::Charvaargh).charvaargh_segments().len() == 8 {
+                break;
+            }
+            w.player.y = 200.0;
+            w.player.vy = 0.0;
+            run(&mut w, 0, 1);
+        }
+        // 100 frames in, the head and the front of the body are well above the lava
+        for _ in 0..100 {
+            w.player.y = 200.0;
+            w.player.vy = 0.0;
+            run(&mut w, 0, 1);
+        }
+        w
+    }
+
+    #[test]
+    fn a_leaping_charvaargh_hurts_through_its_body_and_only_a_star_beats_it() {
+        let mut w = leaping_charvaargh();
+        let (sx, sy) = enemy(&w, Kind::Charvaargh).charvaargh_segments()[2];
+        assert!(sy > 80.0, "above the lava: {sy}");
+        w.player.x = sx;
+        w.player.y = sy - 8.0;
+        w.player.vy = -1.0;
+        w.player.spinning = true; // no spin bounce off it
         w.player.invuln = 0;
-        let (x, y) = (enemy(&w, Kind::Charvaargh).x, enemy(&w, Kind::Charvaargh).y);
-        w.player.x = x;
-        w.player.y = y + 8.0;
         run(&mut w, 0, 1);
-        assert!(!w.player.alive());
+        assert!(!w.player.alive(), "hurt by its body");
+
+        let mut w = leaping_charvaargh();
+        let (sx, sy) = enemy(&w, Kind::Charvaargh).charvaargh_segments()[1];
+        w.player.star = 600;
+        w.player.x = sx;
+        w.player.y = sy - 8.0;
+        run(&mut w, 0, 1);
+        assert_eq!(enemy(&w, Kind::Charvaargh).mode, Mode::DieFall);
     }
 
     #[test]
