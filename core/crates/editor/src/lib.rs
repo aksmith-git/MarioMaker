@@ -684,7 +684,8 @@ mod tests {
         assert!(lvl.conveyors.iter().any(|c| c.0 == 40 && c.1 == 46));
         assert_eq!(lvl.cell(80, 7), Cell::Solid, "6-tile pipe");
         assert!(lvl.vines.iter().any(|v| v.2 - v.1 == 9.0 * 16.0));
-        assert!(lvl.slopes.iter().any(|s| s.width == 5 && s.height == 4));
+        // a 5 × 4 steep slope: 3 diagonal columns rising 3 tiles between its end caps
+        assert!(lvl.slopes.iter().any(|s| s.width == 3 && s.height == 3));
     }
 
     #[test]
