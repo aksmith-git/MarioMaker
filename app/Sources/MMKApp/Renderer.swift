@@ -140,6 +140,12 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     // MARK: frame
 
+    /// The sprites' world → NDC transform (x' = x·sx + tx, y' = y·sy + ty) as a 4×4 matrix (the
+    /// 2D styles' meshes, without a 3D scene). Depth: z = +500 … −500 → 0 … 1.
+    static func orthoMatrix(_ x: SIMD4<Float>) -> simd_float4x4 {
+        simd_float4x4(columns: (SIMD4(x.x, 0, 0, 0), SIMD4(0, x.y, 0, 0), SIMD4(0, 0, -0.001, 0), SIMD4(x.z, x.w, 0.5, 1)))
+    }
+
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
@@ -154,17 +160,26 @@ final class Renderer: NSObject, MTKViewDelegate {
         mmk_engine_snapshot(engine, &snap)
         var meshPtr: UnsafePointer<MmkMeshDraw>?
         let meshCount = showCourse ? mmk_engine_meshes(engine, &meshPtr) : 0
-        if meshCount > 0 && meshRenderer == nil {
+        var bgPtr: UnsafePointer<MmkMeshDraw>?
+        let bgCount = showCourse ? mmk_engine_background(engine, &bgPtr) : 0
+        var scene3d = MmkScene3d()
+        let has3d = mmk_engine_scene3d(engine, &scene3d)
+        if meshCount + bgCount > 0 && meshRenderer == nil {
             meshRenderer = try? MeshRenderer(device: device, assets: session.assets.handle,
                                              colorFormat: .bgra8Unorm_srgb, depthFormat: Self.depthFormat)
             meshRenderer?.texture = { [weak self] i in self?.texture(forBatch: i) }
         }
         let meshFrame = meshCount > 0 ? meshRenderer?.prepare(UnsafeBufferPointer(start: meshPtr, count: meshCount)) : nil
+        let bgFrame = bgCount > 0 && has3d && scene3d.has_background
+            ? meshRenderer?.prepare(UnsafeBufferPointer(start: bgPtr, count: bgCount)) : nil
+        let flipY = mmk_engine_view_flags(engine) & 1 != 0
+        let fieldVP = has3d ? MeshRenderer.matrix(scene3d.field_view_proj) : nil
 
-        // black bars outside the game view; the sky is drawn inside it below
+        // black bars outside the game view; the sky and the background scene are drawn inside it
+        // in a pass of their own, the course over them with the depth cleared
         pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
         pass.colorAttachments[0].loadAction = .clear
-        guard let cmd = queue.makeCommandBuffer(), let enc = cmd.makeRenderCommandEncoder(descriptor: pass) else { return }
+        guard let cmd = queue.makeCommandBuffer(), let bgEnc = cmd.makeRenderCommandEncoder(descriptor: pass) else { return }
 
         // letterbox the 16:9 view into the drawable, at an integer scale when it fits
         let dw = Double(view.drawableSize.width), dh = Double(view.drawableSize.height)
@@ -172,7 +187,8 @@ final class Renderer: NSObject, MTKViewDelegate {
         let integer = showCourse && UserDefaults.standard.bool(forKey: SettingsKey.integerScale)
         let scale = fit >= 1 && integer ? floor(fit) : fit
         let vw = Double(snap.view_w) * scale, vh = Double(snap.view_h) * scale
-        enc.setViewport(MTLViewport(originX: (dw - vw) / 2, originY: (dh - vh) / 2, width: vw, height: vh, znear: 0, zfar: 1))
+        let viewport = MTLViewport(originX: (dw - vw) / 2, originY: (dh - vh) / 2, width: vw, height: vh, znear: 0, zfar: 1)
+        bgEnc.setViewport(viewport)
 
         // world px → NDC: x' = x * sx + tx (camera snapped to whole pixels)
         let camX = Float(snap.camera_x.rounded()), camY = Float(snap.camera_y.rounded())
@@ -183,9 +199,9 @@ final class Renderer: NSObject, MTKViewDelegate {
             xform.w = -xform.w
         }
 
-        enc.setRenderPipelineState(pipeline)
-        enc.setFragmentSamplerState(sampler, index: 0)
-        enc.setDepthStencilState(spriteDepth)
+        bgEnc.setRenderPipelineState(pipeline)
+        bgEnc.setFragmentSamplerState(sampler, index: 0)
+        bgEnc.setDepthStencilState(spriteDepth)
 
         // clear colour behind the theme background (black for underground/castle)
         let clear = mmk_engine_clear_color(engine)
@@ -196,12 +212,30 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         if showCourse, let sky = skyTexture {
             var ident = SIMD4<Float>(1, 1, 0, 0)
-            enc.setVertexBytes(&ident, length: 16, index: 1)
+            bgEnc.setVertexBytes(&ident, length: 16, index: 1)
             let quad: [SIMD4<Float>] = [SIMD4(-1, -1, 0, 0), SIMD4(1, -1, 1, 0), SIMD4(1, 1, 1, 1), SIMD4(-1, -1, 0, 0), SIMD4(1, 1, 1, 1), SIMD4(-1, 1, 0, 1)]
-            enc.setFragmentTexture(sky, index: 0)
-            quad.withUnsafeBytes { enc.setVertexBytes($0.baseAddress!, length: $0.count, index: 0) }
-            enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+            bgEnc.setFragmentTexture(sky, index: 0)
+            quad.withUnsafeBytes { bgEnc.setVertexBytes($0.baseAddress!, length: $0.count, index: 0) }
+            bgEnc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         }
+        // the 3D styles' background scene, with its own camera and depth
+        if let bgFrame, let meshRenderer {
+            let cam = MeshRenderer.Camera(viewProj: MeshRenderer.matrix(scene3d.background_view_proj), layered: false,
+                                          flipY: flipY, light: MeshRenderer.lightRows(scene3d.background_light))
+            meshRenderer.encode(bgEnc, frame: bgFrame, range: 0..<bgFrame.posed.count, camera: cam)
+        }
+        bgEnc.endEncoding()
+
+        pass.colorAttachments[0].loadAction = .load
+        pass.depthAttachment.loadAction = .clear
+        guard let enc = cmd.makeRenderCommandEncoder(descriptor: pass) else { return }
+        enc.setViewport(viewport)
+        enc.setRenderPipelineState(pipeline)
+        enc.setFragmentSamplerState(sampler, index: 0)
+        enc.setDepthStencilState(spriteDepth)
+        // 3D World's slight perspective: sprites go through the field camera at z = 0 (projected
+        // here, so the sprite shader keeps its plain transform)
+        if fieldVP != nil { xform = SIMD4<Float>(1, 1, 0, 0) }
         enc.setVertexBytes(&xform, length: MemoryLayout<SIMD4<Float>>.size, index: 1)
 
         let sprites = UnsafeBufferPointer(start: snap.sprites, count: showCourse ? snap.sprite_count : 0)
@@ -234,7 +268,10 @@ final class Renderer: NSObject, MTKViewDelegate {
             flush()
             var end = nextMesh
             while end < meshFrame.posed.count && Int(meshFrame.posed[end].draw.order) <= order { end += 1 }
-            meshRenderer.encode(enc, frame: meshFrame, range: nextMesh..<end, view: xform)
+            let cam = MeshRenderer.Camera(viewProj: fieldVP ?? Self.orthoMatrix(xform), layered: true,
+                                          flipY: flipY && fieldVP != nil,
+                                          light: has3d ? MeshRenderer.lightRows(scene3d.field_light) : MeshRenderer.neutralLight)
+            meshRenderer.encode(enc, frame: meshFrame, range: nextMesh..<end, camera: cam)
             nextMesh = end
             enc.setRenderPipelineState(pipeline)
             enc.setFragmentSamplerState(sampler, index: 0)
@@ -249,7 +286,15 @@ final class Renderer: NSObject, MTKViewDelegate {
             if key != batchTexture { flush(); batchTexture = key }
             var (u0, u1) = (s.u0, s.u1)
             if s.flags & 1 != 0 { swap(&u0, &u1) }
-            let x0 = s.x.rounded(), y0 = s.y.rounded(), x1 = x0 + s.w, y1 = y0 + s.h
+            var x0 = s.x.rounded(), y0 = s.y.rounded(), x1 = x0 + s.w, y1 = y0 + s.h
+            if let vp = fieldVP {
+                func ndc(_ x: Float, _ y: Float) -> SIMD2<Float> {
+                    let c = vp * SIMD4<Float>(x, y, 0, 1)
+                    return SIMD2(c.x / c.w, (flipY ? -1 : 1) * c.y / c.w)
+                }
+                let a = ndc(x0, y0), b = ndc(x1, y1)
+                (x0, y0, x1, y1) = (a.x, a.y, b.x, b.y)
+            }
             // two triangles; v is top-down in the texture, y is up in the world
             verts += [SIMD4(x0, y0, u0, s.v1), SIMD4(x1, y0, u1, s.v1), SIMD4(x1, y1, u1, s.v0),
                       SIMD4(x0, y0, u0, s.v1), SIMD4(x1, y1, u1, s.v0), SIMD4(x0, y1, u0, s.v0)]

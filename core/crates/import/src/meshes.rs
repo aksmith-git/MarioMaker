@@ -22,15 +22,15 @@ use crate::{Result, write};
 /// Styles whose models get meshes.
 pub const MESH_STYLES: &[&str] = &["WU", "3W"];
 
-/// Whether a model file gets a mesh: the 3D styles' actors, objects, items, players and 3D World
-/// terrain pieces. Backgrounds (`_DV_`), shadow/collision helpers (`_S_`), layout and
-/// environment-map files and the NSMBU field atlases (drawn as tiles) are skipped.
+/// Whether a model file gets a mesh: the 3D styles' actors, objects, items, players, 3D World
+/// terrain pieces and the background scenes (`_DV_`, with their animated parts `DVObj_`).
+/// Shadow/collision helpers (`_S_`), layout and environment-map files and the NSMBU field
+/// atlases (drawn as tiles) are skipped.
 pub fn wants_mesh(model: &str) -> bool {
     let Some((style, rest)) = model.split_once('_') else {
         return false;
     };
     MESH_STYLES.contains(&style)
-        && !rest.starts_with("DV")
         && !rest.starts_with("S_")
         && !rest.starts_with("Lyt_")
         && !rest.starts_with("EnvMap")
@@ -45,6 +45,123 @@ fn rot(m: &Affine, n: [f32; 3]) -> [f32; 3] {
         v.map(|x| x / len)
     } else {
         [0.0, 0.0, 1.0]
+    }
+}
+
+/// Shader parameters kept in the cache (the uber shader has ~100; these drive our shading).
+fn keep_param(name: &str) -> bool {
+    name.starts_with("const_color")
+        || name.starts_with("tex_srt")
+        || name.starts_with("tev_")
+        || name.starts_with("edge_light")
+        || matches!(
+            name,
+            "albedo_ratio"
+                | "vertex_color_ratio"
+                | "emission_intensity"
+                | "specular_intensity"
+                | "specular_roughness"
+                | "material_indirect_scale"
+                | "bake_ao_ratio"
+                | "gsys_bake_st0"
+                | "gsys_bake_st1"
+                | "bloom_intensity"
+                | "fresnel_coeff"
+        )
+}
+
+/// Shader options kept: those that differ from the default, without the per-stage "form"
+/// combiner settings and game-effect colour slots.
+fn keep_option(name: &str, value: &str) -> bool {
+    !matches!(value, "0" | "-1" | "")
+        && !name.starts_with("form")
+        && !name.starts_with("game_effect")
+}
+
+/// A BFRES material → cache material (textures by shader sampler, render state, parameters).
+pub fn convert_material(mat: &bfres::Material) -> MeshMaterial {
+    // the material sampler a shader sampler reads (assignment table, else the same name)
+    let tex_of = |shader_sampler: &str| -> Option<(String, [u8; 2])> {
+        let ms = mat
+            .sampler_assign
+            .iter()
+            .find(|(s, _)| s == shader_sampler)
+            .map(|(_, m)| m.as_str())
+            .unwrap_or(shader_sampler);
+        let i = mat.samplers.iter().position(|s| s.name == ms)?;
+        let w = &mat.samplers[i].wrap;
+        Some((
+            mat.textures.get(i)?.clone(),
+            [wrap_code(w[0]), wrap_code(w[1])],
+        ))
+    };
+    let (albedo, wrap) = match tex_of("_a0") {
+        Some((t, w)) => (Some(t), w),
+        None => (
+            mat.textures.first().cloned(),
+            mat.samplers
+                .first()
+                .map(|s| [wrap_code(s.wrap[0]), wrap_code(s.wrap[1])])
+                .unwrap_or([0, 0]),
+        ),
+    };
+    let mut textures = Vec::new();
+    if mat.sampler_assign.is_empty() {
+        for (i, smp) in mat.samplers.iter().enumerate() {
+            if smp.name != "_a0"
+                && let Some(t) = mat.textures.get(i)
+            {
+                textures.push((smp.name.clone(), t.clone()));
+            }
+        }
+    } else {
+        for (shader_sampler, _) in &mat.sampler_assign {
+            if shader_sampler != "_a0"
+                && let Some((t, _)) = tex_of(shader_sampler)
+            {
+                textures.push((shader_sampler.clone(), t));
+            }
+        }
+    }
+    let rs = |k: &str| mat.render_str(k).unwrap_or("");
+    let alpha_test = rs("gsys_alpha_test_enable") == "true";
+    let additive = rs("gsys_color_blend_rgb_dst_func") == "one";
+    let blend = match rs("gsys_render_state_mode") {
+        "opaque" => alpha_test as u8,
+        "mask" => 1,
+        "translucent" => 2 + additive as u8,
+        _ if rs("gsys_render_state_blend_mode") == "none" => alpha_test as u8,
+        _ => 2 + additive as u8,
+    };
+    let cull = match rs("gsys_render_state_display_face") {
+        "back" => 1,
+        "both" => 2,
+        "none" => 3,
+        _ => 0,
+    };
+    MeshMaterial {
+        name: mat.name.clone(),
+        albedo,
+        wrap,
+        unlit: false,
+        textures,
+        blend,
+        alpha_ref: mat.render_f32("gsys_alpha_test_value").unwrap_or(0.5),
+        cull,
+        params: mat
+            .params
+            .iter()
+            .filter(|p| {
+                keep_param(&p.name) && (12..=15).contains(&p.kind) || p.name.starts_with("tex_srt")
+            })
+            .map(|p| (p.name.clone(), p.values.clone()))
+            .collect(),
+        options: mat
+            .options
+            .iter()
+            .filter(|(n, v)| keep_option(n, v))
+            .cloned()
+            .collect(),
     }
 }
 
@@ -82,28 +199,7 @@ pub fn convert_model(m: &bfres::Model) -> MeshModel {
             }
         })
         .collect();
-    let mut materials: Vec<MeshMaterial> = m
-        .materials
-        .iter()
-        .map(|mat| {
-            let slot = mat
-                .samplers
-                .iter()
-                .position(|s| s.name == "_a0")
-                .unwrap_or(0);
-            let wrap = mat
-                .samplers
-                .get(slot)
-                .map(|s| [wrap_code(s.wrap[0]), wrap_code(s.wrap[1])])
-                .unwrap_or([0, 0]);
-            MeshMaterial {
-                name: mat.name.clone(),
-                albedo: mat.textures.get(slot).or(mat.textures.first()).cloned(),
-                wrap,
-                unlit: false,
-            }
-        })
-        .collect();
+    let mut materials: Vec<MeshMaterial> = m.materials.iter().map(convert_material).collect();
     let palette = |i: f32| -> usize {
         sk.matrix_to_bone
             .get(i as usize)
@@ -114,6 +210,11 @@ pub fn convert_model(m: &bfres::Model) -> MeshModel {
     let mut indices = Vec::new();
     let mut shapes = Vec::new();
     let mut card_materials = Vec::new();
+    // vertex colours / second UVs: kept if any shape has them (others get white / 0)
+    let any_color = m.shapes.iter().any(|s| s.attribute("_c0").is_some());
+    let any_uv1 = m.shapes.iter().any(|s| s.attribute("_u1").is_some());
+    let mut colors: Vec<[u8; 4]> = Vec::new();
+    let mut uv1s: Vec<[f32; 2]> = Vec::new();
     for s in &m.shapes {
         let Some(lod) = s
             .lods
@@ -128,6 +229,8 @@ pub fn convert_model(m: &bfres::Model) -> MeshModel {
         };
         let idx = s.attribute("_i0");
         let wgt = s.attribute("_w0");
+        let col = s.attribute("_c0");
+        let uv1 = s.attribute("_u1");
         let first_index = indices.len() as u32;
         let base = vertices.len() as u32;
         let mut remap: HashMap<u32, u32> = HashMap::new();
@@ -193,6 +296,20 @@ pub fn convert_model(m: &bfres::Model) -> MeshModel {
                     }
                 }
                 vertices.push(v);
+                if any_color {
+                    let c = col
+                        .and_then(|a| a.values.get(k))
+                        .copied()
+                        .unwrap_or([1.0; 4]);
+                    colors.push(c.map(|x| (x.clamp(0.0, 1.0) * 255.0).round() as u8));
+                }
+                if any_uv1 {
+                    let t = uv1
+                        .and_then(|a| a.values.get(k))
+                        .copied()
+                        .unwrap_or_default();
+                    uv1s.push([t[0], t[1]]);
+                }
                 next
             });
             indices.push(out);
@@ -237,6 +354,8 @@ pub fn convert_model(m: &bfres::Model) -> MeshModel {
         vertices,
         indices,
         bounds,
+        colors,
+        uv1: uv1s,
     }
 }
 
@@ -457,6 +576,7 @@ mod tests {
                     name: "_a0".into(),
                     wrap: [Wrap::Repeat, Wrap::Clamp, Wrap::Clamp],
                 }],
+                ..Default::default()
             }],
             shapes: vec![
                 // smooth: two vertices half/half, one on the root
@@ -643,8 +763,10 @@ mod tests {
         assert!(wants_mesh("WU_Enemy_kuribo"));
         assert!(wants_mesh("3W_Field_plain"));
         assert!(!wants_mesh("WU_Field_plain"));
-        assert!(!wants_mesh("3W_DV_plain"));
-        assert!(!wants_mesh("3W_DVObj_water_FishA"));
+        assert!(wants_mesh("3W_DV_plain"));
+        assert!(wants_mesh("WU_DV_plain_D"));
+        assert!(wants_mesh("3W_DVObj_water_FishA"));
+        assert!(!wants_mesh("3W_S_DV_plain"));
         assert!(!wants_mesh("M1_Enemy_kuribo"));
         assert!(!wants_mesh("3W_S_Object_halfcol"));
     }

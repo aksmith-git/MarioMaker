@@ -13,6 +13,7 @@ pub mod course;
 pub mod effects;
 pub mod frame;
 pub mod mesh;
+pub mod scene3d;
 pub mod texture;
 
 pub use frame::{DrawSprite, SpriteResolver, clear_color, place};

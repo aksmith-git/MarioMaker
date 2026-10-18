@@ -4,6 +4,7 @@
 //! parity with the Python reference package `smmfmt`. Contains no Nintendo data or key material:
 //! the SMM2 course key table is supplied by the caller from the user's own game executable.
 
+pub mod aamp;
 pub mod aes_modes;
 pub mod archive;
 pub mod audio;

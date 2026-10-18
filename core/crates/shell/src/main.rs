@@ -75,6 +75,14 @@ mod native {
         /// Screenshot size as a multiple of the 384×216 view.
         #[arg(long, default_value_t = 3)]
         scale: u32,
+        /// Screenshot size in pixels, WxH (overrides --scale; the view is fitted, e.g. 1280x720
+        /// to compare with the console's frames).
+        #[arg(long)]
+        size: Option<String>,
+        /// Screenshot: draw the view with its bottom-left at X,Y world px instead of where the
+        /// camera is (to line frames up with reference captures; nothing else changes).
+        #[arg(long, value_name = "X,Y")]
+        view_at: Option<String>,
         /// Decode BC textures on the CPU even if the GPU samples them (tests the fallback).
         #[arg(long)]
         cpu_textures: bool,
@@ -768,6 +776,8 @@ mod native {
                     &out,
                     0,
                     args.scale,
+                    None,
+                    None,
                     false,
                     !args.cpu_textures,
                 )?;
@@ -791,11 +801,29 @@ mod native {
             if args.record_replay.is_some() {
                 game.session.record_replays();
             }
+            let size = match args.size.as_deref().map(|s| {
+                s.split_once('x')
+                    .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))
+            }) {
+                Some(None) => return Err("--size: expected WxH, e.g. 1280x720".into()),
+                Some(Some(wh)) => Some(wh),
+                None => None,
+            };
+            let view_at = match args.view_at.as_deref().map(|s| {
+                s.split_once(',')
+                    .and_then(|(x, y)| Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?)))
+            }) {
+                Some(None) => return Err("--view-at: expected X,Y, e.g. 0,0".into()),
+                Some(Some(p)) => Some(p),
+                None => None,
+            };
             let msg = mmk_shell::headless::screenshot(
                 &mut game,
                 path,
                 args.ticks,
                 args.scale,
+                size,
+                view_at,
                 !args.idle,
                 !args.cpu_textures,
             )?;

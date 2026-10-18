@@ -37,10 +37,35 @@ pub struct MmkMeshModel {
     pub shape_count: u32,
     /// Rest-pose bounds: min x, y, z, max x, y, z (model units = world px).
     pub bounds: [f32; 6],
+    /// Vertex colours, RGBA8 per vertex (NULL if the model has none).
+    pub colors: *const u8,
 }
 
-/// Shape flag: draw without lighting (pre-rendered sprite cards).
+/// Shape flag: pre-rendered sprite card (cut out by alpha, no lighting).
 pub const MMK_MESH_UNLIT: u32 = 1;
+/// Shape flag: self-lit material (no lighting: sky, clouds, glowing parts).
+pub const MMK_MESH_SELF_LIT: u32 = 2;
+/// Shape flag: the environment's fogs apply.
+pub const MMK_MESH_FOG: u32 = 4;
+/// Shape flag: alpha-tested (discard below `alpha_ref`).
+pub const MMK_MESH_ALPHA_TEST: u32 = 8;
+/// Shape flags bits 4–5: blending (0 opaque, 1 alpha blended, 2 additive).
+pub const MMK_MESH_BLEND_SHIFT: u32 = 4;
+/// Shape flags bits 6–7: faces drawn (0 front, 1 back, 2 both, 3 none).
+pub const MMK_MESH_FACES_SHIFT: u32 = 6;
+/// Shape flags bits 12–13: what the extra texture is (0 none, 1 emission added, 2 alpha mask,
+/// 3 sky base under the albedo's cloud layer).
+pub const MMK_MESH_EXTRA_SHIFT: u32 = 12;
+/// Shape flag: the second distance fog applies (`enable_fog1`).
+pub const MMK_MESH_FOG1: u32 = 1 << 14;
+/// Shape flag: the height fog applies (`enable_fog_y`).
+pub const MMK_MESH_FOG_Y: u32 = 1 << 15;
+/// Shape flag: texture coordinates from the world position (u = x / 64, v = −y / 64, then the
+/// SRT) instead of the model's (`tex_coord0_calc` 5 with `enable_tex_coord0_mtx_cancel`).
+pub const MMK_MESH_WORLD_UV: u32 = 1 << 16;
+/// World pixels one repeat of a world-mapped texture covers [inf: measured on the castle walls'
+/// bricks in a reference frame, 8 rows of ~8.1 px].
+pub const WORLD_UV_SPAN: f32 = 64.0;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -50,8 +75,142 @@ pub struct MmkMeshShape {
     pub material: u32,
     /// Bone that switches the shape's visibility.
     pub bone: u32,
-    /// bit 0 `MMK_MESH_UNLIT`; bits 8–9 wrap u, bits 10–11 wrap v (0 repeat, 1 mirror, 2 clamp).
+    /// `MMK_MESH_*` bits 0–7 (see [`ShapeLook`]); bits 8–9 wrap u, bits 10–11 wrap v (0 repeat,
+    /// 1 mirror, 2 clamp).
     pub flags: u32,
+    /// Alpha-test reference (with `MMK_MESH_ALPHA_TEST`).
+    pub alpha_ref: f32,
+    /// Texture SRT of the albedo coordinates: scale u, scale v, rotate (radians), translate u,
+    /// translate v.
+    pub srt: [f32; 5],
+    /// How much the vertex colours tint the albedo (0 none … 1 fully).
+    pub vertex_color_ratio: f32,
+    /// The extra texture (`MMK_MESH_EXTRA_SHIFT`): texture index or `TEXTURE_NONE`.
+    pub extra_texture: u32,
+    /// Emission strength (extra mode 1).
+    pub emission: f32,
+    /// Colour the albedo is multiplied by (TEV stage 0's constant colour).
+    pub tint: [f32; 3],
+}
+
+/// How a shape's material is drawn, worked out once for both renderers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShapeLook {
+    /// `MMK_MESH_*` bits 0–7 and 12–15, and the wrap bits 8–11 of [`MmkMeshShape::flags`].
+    pub flags: u32,
+    pub alpha_ref: f32,
+    pub srt: [f32; 5],
+    pub vertex_color_ratio: f32,
+    /// Name of the extra texture (in the model file's texture folder), if any.
+    pub extra: Option<String>,
+    pub emission: f32,
+    /// Colour the albedo is multiplied by.
+    pub tint: [f32; 3],
+}
+
+impl ShapeLook {
+    pub fn blend(&self) -> u32 {
+        (self.flags >> MMK_MESH_BLEND_SHIFT) & 3
+    }
+    pub fn faces(&self) -> u32 {
+        (self.flags >> MMK_MESH_FACES_SHIFT) & 3
+    }
+    pub fn extra_mode(&self) -> u32 {
+        (self.flags >> MMK_MESH_EXTRA_SHIFT) & 3
+    }
+}
+
+/// The look of a material (None: a plain lit opaque shape). The uber shader lights a material
+/// only with its `enable_diffuse` option (sky, clouds and glowing parts are self-lit) and fogs it
+/// with `enable_fog`; caches without shader options light everything.
+pub fn shape_look(mat: Option<&mmk_assets::mesh::MeshMaterial>) -> ShapeLook {
+    let Some(m) = mat else {
+        return ShapeLook {
+            flags: 2 << MMK_MESH_FACES_SHIFT,
+            alpha_ref: 0.5,
+            srt: [1.0, 1.0, 0.0, 0.0, 0.0],
+            vertex_color_ratio: 1.0,
+            extra: None,
+            emission: 0.0,
+            tint: [1.0; 3],
+        };
+    };
+    let self_lit = !m.unlit && !m.options.is_empty() && m.option("enable_diffuse") != Some("1");
+    let fog = m.option("enable_fog") == Some("1");
+    let on = |k: &str| m.option(k) == Some("1");
+    // the extra texture: the sky's base (HDRI) under its cloud layer, an emission map, or the
+    // alpha mask the uber shader reads through `gsys_user0`
+    let (extra_mode, extra) = if on("enable_sky") && m.texture("_s0").is_some() {
+        (3, m.texture("_s0"))
+    } else if on("enable_emission") && m.texture("_e0").is_some() {
+        (1, m.texture("_e0"))
+    } else if m.texture("gsys_user0").is_some() {
+        (2, m.texture("gsys_user0"))
+    } else {
+        (0, None)
+    };
+    let blend = match m.blend {
+        2 => 1,
+        3 => 2,
+        _ => 0,
+    };
+    let mut flags = (m.unlit as u32 * MMK_MESH_UNLIT)
+        | (self_lit as u32 * MMK_MESH_SELF_LIT)
+        | (fog as u32 * MMK_MESH_FOG)
+        | ((m.blend == 1) as u32 * MMK_MESH_ALPHA_TEST)
+        | blend << MMK_MESH_BLEND_SHIFT
+        | (m.cull as u32 & 3) << MMK_MESH_FACES_SHIFT
+        | (m.wrap[0] as u32 & 3) << 8
+        | (m.wrap[1] as u32 & 3) << 10
+        | extra_mode << MMK_MESH_EXTRA_SHIFT
+        | (on("enable_fog1") as u32 * MMK_MESH_FOG1)
+        | (on("enable_fog_y") as u32 * MMK_MESH_FOG_Y)
+        | ((m.option("tex_coord0_calc") == Some("5") && on("enable_tex_coord0_mtx_cancel")) as u32
+            * MMK_MESH_WORLD_UV);
+    if m.unlit {
+        // cards are seen from both sides (mirrored for the walking direction)
+        flags = (flags & !(3 << MMK_MESH_FACES_SHIFT)) | 2 << MMK_MESH_FACES_SHIFT;
+    }
+    // tex_srt0: [mode, scale u, scale v, rotate, translate u, translate v]
+    let srt = match m.param("tex_srt0") {
+        Some(p) if p.len() >= 6 => [p[1], p[2], p[3], p[4], p[5]],
+        _ => [1.0, 1.0, 0.0, 0.0, 0.0],
+    };
+    ShapeLook {
+        flags,
+        alpha_ref: m.alpha_ref,
+        srt,
+        vertex_color_ratio: m
+            .param("vertex_color_ratio")
+            .and_then(|v| v.first().copied())
+            .unwrap_or(1.0),
+        extra: extra.map(String::from),
+        emission: m
+            .param("emission_intensity")
+            .and_then(|v| v.first().copied())
+            .unwrap_or(1.0),
+        // TEV stage 0 with colour source 200 multiplies the albedo by constant colour 0 [inf:
+        // from the options of the materials that use it, e.g. the castle walls' warm tint;
+        // characters enable the stage with source 0 and a black constant]
+        tint: match m.param("const_color0") {
+            Some(c)
+                if on("enable_tev0_color")
+                    && m.option("tev_tev0_color_color") == Some("200")
+                    && c.len() >= 3 =>
+            {
+                [c[0], c[1], c[2]]
+            }
+            _ => [1.0; 3],
+        },
+    }
+}
+
+/// Texture coordinates through a shape's SRT [inf: scale, then rotation about the origin, then
+/// translation].
+pub fn apply_srt(uv: [f32; 2], srt: &[f32; 5]) -> [f32; 2] {
+    let (u, v) = (uv[0] * srt[0], uv[1] * srt[1]);
+    let (s, c) = srt[2].sin_cos();
+    [c * u - s * v + srt[3], s * u + c * v + srt[4]]
 }
 
 #[repr(C)]
@@ -343,6 +502,16 @@ impl MeshStore {
         Some((bones, self.shape_texture.len()))
     }
 
+    /// Texture index of a shape look's extra texture in mesh file `mesh` (`TEXTURE_NONE` if
+    /// none).
+    pub fn extra_texture(&mut self, cache: &Cache, mesh: i32, look: &ShapeLook) -> u32 {
+        let (Some(name), Some(lm)) = (look.extra.as_deref(), self.mesh(mesh)) else {
+            return TEXTURE_NONE;
+        };
+        let file = lm.name.clone();
+        self.texture(cache, &file, name, 0)
+    }
+
     /// Model-space world matrix of `bone` after the last `pose` call.
     pub fn posed_bone(&self, bone: usize) -> Option<Affine> {
         self.pose.world.get(bone).copied()
@@ -614,11 +783,18 @@ impl MeshStore {
         frame: &str,
     ) -> Option<MeshPlan> {
         let stem = frame.split('.').next().unwrap_or(frame);
+        // the SMB1 texture the sim sized the sprite by: this frame's, else another frame of the
+        // same animation, else any texture of the model (frames of an actor share a size)
+        let size = |t: &mmk_assets::cache::TextureEntry| (t.width as f32, t.height as f32);
         let ref_size = cache
             .texture_index(model, frame)
-            .map(|i| {
-                let t = &cache.textures[i];
-                (t.width as f32, t.height as f32)
+            .map(|i| size(&cache.textures[i]))
+            .or_else(|| {
+                let of_model = || cache.textures.iter().filter(|t| t.model == model);
+                of_model()
+                    .find(|t| t.name.split('.').next() == Some(stem))
+                    .or_else(|| of_model().next())
+                    .map(size)
             })
             .unwrap_or((16.0, 16.0));
         let candidates = anim_candidates(frame);
@@ -764,7 +940,10 @@ impl MeshStore {
         let (scale, ox, oy) = if tile {
             (1.0, s.x + s.w / 2.0, s.y)
         } else {
-            (s.w / plan.ref_size.0.max(1.0), s.x + s.w / 2.0, s.y)
+            // the sim's box over the SMB1 picture's size; the smaller ratio, since some boxes
+            // are wider than the picture (a big Sledge Bro: 64 × 64 for a 24 × 32 picture)
+            let k = (s.w / plan.ref_size.0.max(1.0)).min(s.h / plan.ref_size.1.max(1.0));
+            (k, s.x + s.w / 2.0, s.y)
         };
         let facing_right = if plan.art_faces_right {
             !s.flip_x
@@ -842,19 +1021,114 @@ pub fn mesh_style(style: &str) -> bool {
 
 // --- one frame -----------------------------------------------------------------------------------
 
+/// The 3D scene of one frame: cameras and lighting of the play field and the background.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Scene3dFrame {
+    pub field: crate::scene3d::Camera,
+    /// The background scene's camera (None when the theme has no background model).
+    pub background: Option<crate::scene3d::Camera>,
+    pub field_light: [[f32; 4]; crate::scene3d::LIGHT_ROWS],
+    pub background_light: [[f32; 4]; crate::scene3d::LIGHT_ROWS],
+}
+
+/// What a course's theme needs, worked out once: its SceneDB row, environments and background
+/// model.
+#[derive(Clone, Debug, Default)]
+struct ThemeScene {
+    key: (String, u8, bool, bool),
+    row: Option<crate::scene3d::SceneRow>,
+    field_env: crate::scene3d::Env,
+    background_env: crate::scene3d::Env,
+    /// (mesh, model, animation) of the background scene.
+    background: Option<(i32, u32, i32)>,
+}
+
 /// Turns a world's sprites into this frame's draw lists: the sprites that stay 2D (placed, in
-/// draw order) and, for the 3D styles, the mesh draws. Remembers each sprite name's plan; `reset`
-/// when the course or cache changes.
+/// draw order) and, for the 3D styles, the mesh draws, the background scene's draws and the 3D
+/// scene (cameras, lights). Remembers each sprite name's plan; `reset` when the course or cache
+/// changes.
 #[derive(Default)]
 pub struct MeshPlanner {
     plans: HashMap<(&'static str, &'static str), Option<MeshPlan>>,
     tiles: HashMap<(&'static str, u32), Option<MeshPlan>>,
+    theme: Option<ThemeScene>,
+    /// This frame's 3D scene (3D styles with a mesh stage only).
+    pub scene: Option<Scene3dFrame>,
+    /// This frame's background-scene draws (drawn with `scene.background`).
+    pub background: Vec<MmkMeshDraw>,
 }
 
 impl MeshPlanner {
     pub fn reset(&mut self) {
         self.plans.clear();
         self.tiles.clear();
+        self.theme = None;
+    }
+
+    /// The theme's scene, (re)built when the course's style / theme / night / orientation
+    /// changes.
+    fn theme_scene(
+        &mut self,
+        world: &mmk_sim::World,
+        cache: &Cache,
+        store: &mut MeshStore,
+    ) -> &ThemeScene {
+        let l = &world.level;
+        let key = (l.style.clone(), l.theme, l.night, l.vertical);
+        if self.theme.as_ref().is_none_or(|t| t.key != key) {
+            let row = crate::scene3d::scene_row(cache, &l.style, l.theme, l.night, l.vertical)
+                // vertical areas fall back to the horizontal scene when there is no `_V` model
+                .filter(|r| store.find(&r.dv_model) >= 0)
+                .or_else(|| crate::scene3d::scene_row(cache, &l.style, l.theme, l.night, false));
+            let env = |name: Option<&str>| {
+                name.and_then(|n| crate::scene3d::load_env(&cache.root, n))
+                    .unwrap_or_default()
+            };
+            // the background model's sky material: its constant colours colour the sky
+            let sky = row.as_ref().and_then(|r| {
+                let id = store.find(&r.dv_model);
+                let lm = store.mesh(id)?;
+                let mat = lm
+                    .file
+                    .models
+                    .iter()
+                    .flat_map(|m| &m.materials)
+                    .find(|m| m.option("enable_sky") == Some("1"))?;
+                let mut c = [[1.0f32; 4]; 6];
+                for (i, slot) in c.iter_mut().enumerate() {
+                    let v = mat.param(&format!("const_color{i}"))?;
+                    slot[..v.len().min(4)].copy_from_slice(&v[..v.len().min(4)]);
+                }
+                Some(c)
+            });
+            let background = row.as_ref().and_then(|r| {
+                let mesh = store.find(&r.dv_model);
+                let lm = store.mesh(mesh)?;
+                let model = lm
+                    .file
+                    .models
+                    .iter()
+                    .position(|m| m.name == r.dv_model)
+                    .unwrap_or(0) as u32;
+                let anim = store.find_anim(
+                    std::slice::from_ref(&r.dv_model),
+                    &[""],
+                    &[r.dv_model.as_str()],
+                );
+                Some((mesh, model, anim))
+            });
+            self.theme = Some(ThemeScene {
+                key,
+                field_env: env(row.as_ref().map(|r| r.env_model.as_str())),
+                background_env: crate::scene3d::Env {
+                    sky,
+                    ..env(row.as_ref().map(|r| r.env_dv.as_str()))
+                },
+                row,
+                background,
+            });
+        }
+        self.theme.as_ref().expect("set above")
     }
 
     /// `store`: the cache's meshes, or None to draw everything as sprites. Each mesh draw's
@@ -873,10 +1147,49 @@ impl MeshPlanner {
         let style = world.level.style.as_str();
         sprites.clear();
         meshes.clear();
+        self.background.clear();
+        self.scene = None;
         let mut store = store.filter(|s| mesh_style(style) && s.available());
         let tick = world.tick as f32;
+        let mut has_background = false;
+        if let Some(store) = store.as_deref_mut() {
+            let cam = (world.camera_x, world.camera_y);
+            let t = self.theme_scene(world, cache, store).clone();
+            let field = crate::scene3d::field_camera(style, cam);
+            let background = t
+                .row
+                .as_ref()
+                .filter(|_| t.background.is_some())
+                .map(|r| crate::scene3d::background_camera(r, cam));
+            if let (Some((mesh, model, anim)), Some(_)) = (t.background, &background) {
+                has_background = true;
+                self.background.push(MmkMeshDraw {
+                    mesh,
+                    model,
+                    anim,
+                    time: tick,
+                    transform: [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                    layer: 0,
+                    order: 0,
+                    flags: 0,
+                    variant: 0,
+                });
+            }
+            self.scene = Some(Scene3dFrame {
+                field_light: t.field_env.uniform(field.eye),
+                background_light: t
+                    .background_env
+                    .uniform(background.map_or(field.eye, |c| c.eye)),
+                field,
+                background,
+            });
+        }
         for s in list {
             let key = (s.image.model, s.image.texture);
+            // the 2D backdrop gives way to the background scene
+            if has_background && key.0.contains("_DV_") {
+                continue;
+            }
             if let Some(store) = store.as_deref_mut() {
                 let plan = match s.image.rect {
                     // 3D World terrain and blocks are models per field-atlas cell

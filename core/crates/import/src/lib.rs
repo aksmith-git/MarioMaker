@@ -22,6 +22,7 @@ use mmk_formats::smm2::crypto::{KeyTable, decrypt_bcd};
 use mmk_formats::smm2::keyfind;
 use serde_json::{Value, json};
 
+pub mod env;
 pub mod meshes;
 pub mod modes;
 pub mod sprites;
@@ -29,7 +30,8 @@ pub mod sprites;
 /// 5: mesh stage (meshes/, anims/), StaticModel.pack models of the 3D styles.
 /// 6: modes stage (story/, lessons/, eventflow/: Story Mode and Dojo data).
 /// 7: effects stage (effects/: particle effects and their links; effect textures).
-pub const IMPORTER_VERSION: u32 = 7;
+/// 8: env stage (3D styles' backgrounds, lights, fogs, richer materials).
+pub const IMPORTER_VERSION: u32 = 8;
 pub mod smm1;
 pub mod smm1_costumes;
 pub use smm1::{Smm1Config, Smm1Report, run_smm1};
@@ -392,6 +394,8 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
     //    imported styles; meshes and animations of the 3D styles
     let counts = import_models(cfg, &out, progress)?;
     let (texture_count, sprite_count) = (counts.textures, counts.sprites);
+    // the 3D styles' per-theme lights and fogs
+    let env_count = env::export(&cfg.romfs, &out)?;
 
     // 5. sounds of the imported styles
     let sound_count = audio::import_audio(
@@ -418,7 +422,7 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
         "game": "SMM2",
         "build": build,
         "module_id": nso.module_id_hex(),
-        "stages": ["identify", "keys", "tables", "textures", "audio", "sprites", "meshes", "effects", "modes"],
+        "stages": ["identify", "keys", "tables", "textures", "audio", "sprites", "meshes", "env", "effects", "modes"],
         "effect_users": fx.users,
         "effect_sets": fx.sets,
         "texture_styles": STYLES,
@@ -429,6 +433,7 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
         "meshes": counts.meshes.meshes,
         "anims": counts.meshes.anims,
         "mesh_vertices": counts.meshes.vertices,
+        "env": env_count,
         "tables": tables,
         "builtin_courses": courses.len(),
         "story_flows": modes_report.story_flows,
