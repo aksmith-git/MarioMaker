@@ -7,6 +7,7 @@
 //! lives in the user's Application Support folder.
 
 pub mod audio;
+pub mod sound;
 pub mod vfs;
 
 use std::collections::HashMap;
@@ -25,7 +26,8 @@ pub mod meshes;
 pub mod sprites;
 
 /// 5: mesh stage (meshes/, anims/), StaticModel.pack models of the 3D styles.
-pub const IMPORTER_VERSION: u32 = 5;
+/// 6: gameplay sound database (`audio/sound.json`, `audio/se/`, music by the game's names).
+pub const IMPORTER_VERSION: u32 = 6;
 pub mod smm1;
 pub use smm1::{Smm1Config, Smm1Report, run_smm1};
 pub mod smm2_font;
@@ -394,8 +396,8 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
         &audio::all_style_sounds(STYLES),
         progress,
     )?;
-    // each style's theme music, decoded per course by the player
-    audio::export_music(&cfg.romfs, &out, STYLES)?;
+    // the gameplay sound database and every wave it names (effects, music)
+    let sounds = sound::import_sounds(&cfg.romfs, &out, progress)?;
 
     // 6. manifest
     let manifest: Value = json!({
@@ -408,6 +410,9 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
         "mesh_styles": meshes::MESH_STYLES,
         "textures": texture_count,
         "sounds": sound_count,
+        "sound_users": sounds.users,
+        "sound_waves": sounds.waves,
+        "sound_streams": sounds.streams,
         "sprites": sprite_count,
         "meshes": counts.meshes.meshes,
         "anims": counts.meshes.anims,

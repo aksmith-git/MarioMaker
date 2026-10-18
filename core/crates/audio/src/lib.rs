@@ -5,6 +5,7 @@
 //! ([`Bank::load_cache`]) and are decoded to PCM16 once when loaded.
 
 pub mod bank;
+pub mod links;
 pub mod mixer;
 
 pub use bank::{Bank, BankError, Sound};

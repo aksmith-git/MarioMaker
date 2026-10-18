@@ -94,6 +94,15 @@ enum Cmd {
         #[arg(long, default_value = "USen")]
         language: String,
     },
+    /// Import only the gameplay sound database and its waves (`audio/sound.json`, `audio/se/`,
+    /// `audio/music/`) from the user's own extracted RomFS into an asset cache folder (the
+    /// build folder, e.g. ~/smm-work/cache/smm2-3.0.3). `mmk import` runs this stage too.
+    ImportSound {
+        /// Extracted RomFS (update applied).
+        romfs: PathBuf,
+        /// Cache folder of one build.
+        out: PathBuf,
+    },
     /// Decode a BFLYT / BFLAN / BFFNT / MSBT file (Yaz0 removed) and print it as JSON.
     Lyt { file: PathBuf },
     /// Smoke-run courses headlessly with a scripted run-and-jump input: reports crashes, how far
@@ -909,6 +918,35 @@ fn main() -> ExitCode {
                         r.messages,
                         r.skipped.len(),
                         r.out_dir.display()
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("import failed: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Cmd::ImportSound { romfs, out } => {
+            let mut last = String::new();
+            let mut progress = |stage: &str, done: usize, total: usize| {
+                if stage != last || done == total {
+                    eprintln!("{stage}: {done}/{total}");
+                    last = stage.to_string();
+                }
+            };
+            match mmk_import::sound::import_sounds(&romfs, &out, &mut progress) {
+                Ok(r) => {
+                    for m in &r.missing {
+                        eprintln!("missing wave: {m}");
+                    }
+                    println!(
+                        "imported {} sound users, {} waves, {} streams ({} missing) into {}",
+                        r.users,
+                        r.waves,
+                        r.streams,
+                        r.missing.len(),
+                        out.join("audio").display()
                     );
                     ExitCode::SUCCESS
                 }
