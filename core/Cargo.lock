@@ -1410,6 +1410,7 @@ version = "0.1.0"
 dependencies = [
  "crc32fast",
  "mmk-formats",
+ "mmk-modes",
  "serde_json",
 ]
 

@@ -885,3 +885,65 @@ renderers upload a texture when a sprite first uses it. Measured on the same cou
   stand-ins (small Mario, Super Mario, the Super Mushroom).
 - Options are not yet part of replays, rollback sessions or `World::checksum` input: a replay
   or an online session is only valid with all options off (⬜ carry them in both).
+
+## 2026-10-18 — Story Mode and the Dojo run the game's own event flows
+- **The flows are the rules.** SMM2 keeps almost all of Story Mode (which jobs are offered when,
+  build order, givers, crises, ending, post-game) in `Pack/QuestEventFlow.pack`, and the Dojo's
+  lessons in `EventFlow/lesson_*`. The engine reads them at import time from the owner's dump
+  (`eventflow/*.bfevfl` in the asset cache, never in git) and runs them on a small interpreter
+  (`mmk_story::flow`) instead of re-coding them; our code is the `QuestSystemActor` rules the flows
+  call (story-mode.md §2–§6) and a request / answer loop for the screens. Hand-coding the story
+  from the tables was the alternative; it would have meant transcribing 3 900 lines of flow.
+- **Forks run sequentially.** SMM2 uses forks to overlap presentation (a fade with a camera move);
+  running each branch to the join in order keeps the logic and lets a screen without the 3D hub
+  skip presentation entirely.
+- **Every UI and presentation action is a `Request`** (message, job list, build menu, reward
+  window, enter course, staff roll, save, or `Present(call)` for camera / animation / fade / wait /
+  demo). Pure state changes happen at once. A screen answers questions (`answer`), the lists
+  (`order_job`, `order_build`) and calls `step` again; the 2D hub lists `hub_things()` (map
+  objects whose gates hold) as the places to talk.
+- **Story state is our JSON, with quest.dat's meaning** (per-job / per-build bits, days, coins,
+  ordered job, one-time bits, gear, talk words, named flags) plus the two unlocks SMM2 keeps in
+  the main save. Session-only values (selected build, pop-up queue, last result) stay in memory as
+  in the game.
+- **Move flags settle whenever the hub is rebuilt** (after a course, after a load), which is when
+  SMM2 rebuilds the Story scene from its save buffer; that is how NPCs "move on" between visits.
+- **Table columns by CRC32.** The Story / lesson tables have Japanese column names and enum values;
+  the importer matches them by the CRC32 of the name and writes English JSON (`story/*.json`,
+  `lessons/index.json`), so no game text is in the source.
+- **Inferred, to verify in Ryujinx:** Try Again after TOO BAD restarts with 5 lives; the attempt
+  counter behind the "struggling" play type counts misses (its writer was not found);
+  `checkFirstTalked` / `checkFirstTalkedFromPowerOn` are per-NPC "talked this visit / since
+  start"; `checkBuildEndTriggerForBuildChief` is the lowest finished build the Chief has not yet
+  announced; `checkBGMChangeProgress` (manager +0x80) answers 0.
+
+## 2026-10-18 — Endless Challenge on SMM2's rules, server-held runs
+- **Separate from `hundred`, shaped like SMM2.** The run record is authoritative, as Nintendo's
+  server is in SMM2; the offline `Session` applies the same `RunRecord::report` the server does,
+  so a local save mirrors the server.
+- **Starting lives 5** [ext]: the binary has no client default (the server sends it); kept as one
+  constant per difficulty so it can follow a verified value.
+- **Quit restores the client's counters to the snapshot, but the saved record keeps lives already
+  lost.** The binary reloads lives from the server record on a retry, so the server counts each
+  miss; quitting cannot refund lives.
+- **Reports carry what the course gained**, not run totals (coins and score since the snapshot,
+  before the bonus); the record adds the time bonus from `frames_left` and caps pending at 3.
+- **Pick rule.** Bands by clears ÷ attempts with at least 20 attempts: Easy ≥ 34 %, Normal 12–34 %,
+  Expert 3–12 %, Super Expert < 3 % [inf]; uniform within the band; only an empty band widens
+  (±1, ±2, ±3, then unrated), and that is reported. Courses drawn into a run are never drawn again;
+  never the player's own or banned courses; `next` is idempotent and Continue replays the course
+  being played. Endless plays feed the courses' statistics (a play on first report, an attempt per
+  miss or clear, a clear without a record time).
+
+## 2026-10-18 — Coursebot slots and Dojo state
+- **The game's slot indirection is kept**: a 180-entry slot table maps course number → file
+  number, so a drag is a swap of table entries (My Courses only, as in v3.0.3) and files are never
+  renamed. Coursebot metadata (name, description, style, clear check, upload code, Downloaded
+  stats) lives in the Coursebot index keyed by file number; hosts write name / description into the
+  course header when they hand a slot to the editor or the uploader. Files: `course_data_NNN.bcd`
+  (the course bytes as the engine loads them), `course_thumb_NNN.png`, `course_replay_NNN.dat`
+  (our replay format, dropped when the slot is overwritten). Overwriting needs an explicit
+  confirmation from the screen.
+- **Dojo completion** is 128 bits (stored as a hex string); only Maker Lessons set bits, Maker
+  Basics sets its own flag (which also grows the title-course rotation from 8 to 10), power-up
+  lessons set nothing; Nina's introduction is one flag for every lesson kind (save +0x100 bit 10).

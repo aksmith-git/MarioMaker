@@ -492,9 +492,43 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
     containers from the sample · v3 parts' limits (120–132) and per-part flag masks ⬜
   - ✅ shell maker UI (`mmk-play --edit <file>`): engine-drawn area, ghost preview, 40-part palette,
     keys for everything above (README) · SMM2 maker layouts ⬜
-- ⬜ Story Mode (Peach's castle jobs, built-in courses from the owner's dump), Coursebot, Lessons
+- 🔄 Story Mode (Peach's castle): core ✅, screens ⬜
+  - ✅ BFEVFL reader (`mmk_formats::bfevfl`, all 24 Story + 51 lesson flows parse) and a flow
+    interpreter (`mmk_story::flow`: host-implemented actors, waits, sub-flow arguments, forks)
+  - ✅ the game's own flows run the Story (`mmk_story::Story`): jobs activated by the Chief, the
+    givers and the Taskmaster, builds enabled by the flows, NPC chains and moves (move flags
+    settle when the hub is rebuilt), the three crises blocking the Chief, the kidnapping, the
+    ending and staff roll, Builder Mario, post-game jobs 117–119 and the ten 1000-coin statue
+    stages, the all-clear Coursebot gear; the rules behind the flows' queries / actions: payment
+    on a job's first clear, collected coins on every clear, a failure pays nothing and passes no
+    day, builds paid in full when ordered and counted down per cleared job in parallel, pop-up
+    queue, coins / days 0–9999, hub gates, hub coins and daily flags
+  - ✅ a job's course: 5 lives, TOO BAD → Try Again / Call Luigi / Give Up, Luigi's clear stamps
+    the job until Mario clears it, "struggling" play type after two attempts (`JobPlay`)
+  - ✅ `StoryState`: quest.dat's meaning as JSON (jobs, builds, days, coins, ordered job, flags,
+    talk words, gear, Builder / Superball unlocks)
+  - ✅ import stage `modes` (importer v6; also `mmk import-modes <romfs> <cache>`): flows, jobs /
+    builds / flags with English fields, the hub map, the clear-condition copy
+  - ✅ tests: synthetic flows for every rule; the whole Story from the opening to the post-game
+    through the owner's flows (467 courses) when a cache is present
+  - ⬜ screens: hub (2D list of `hub_things()` or the 3D hub), Taskmaster list / job window, Chief
+    build menu, reward / progress pop-ups, TOO BAD window, ending, staff roll; castle progress %
+    (map-part weights not found yet)
+- 🔄 Coursebot: core ✅ (`mmk_modes::coursebot`: 120 + 60 slots behind the game's slot table, drag =
+  swap of My Courses entries, files never renamed; metadata with clear check, upload code, Super
+  World, Downloaded server / local stats; course-number space; scene reasons → list modes; upload
+  gate; JSON; `CoursebotStore` over a pluggable blob store; starts empty) · screens ⬜
+- 🔄 Lessons (Yamamura's Dojo): core ✅ (`mmk_modes::dojo`: catalogue from the imported
+  `lessons/index.json`, 3 levels × 15 Maker Lessons, the 4 power-up lessons, Maker Basics, lesson
+  starts with descriptors, completion bits, Maker Basics → 10 title courses, Nina's flag;
+  `mmk_story::lesson` runs a lesson flow for the screen — all 50 run to `EndLesson` in the test)
+  · Dojo menus, lesson screen (editor puppeteering), `SPRH` demo replays ⬜
 - 🔄 Endless Challenge: its menus and map present the 100 Mario Challenge (above); SMM2's own
-  endless rules ⬜
+  rules ✅ (`mmk_modes::endless`: 5 lives [ext], pending 1-Ups max 3 per course paid at the goal,
+  misses / Start Over cost a life, free unlimited skip rolled back to the course-start snapshot (a
+  skip during a miss demo costs the life), 50 points per second left, quit restores the snapshot,
+  skip hint on the 4th attempt, 48-entry history and map position, clear-rate pick rule, offline
+  `Session`) · screens on the SMM2 rules ⬜
 - ⬜ Ninji speedruns / event courses (offline with local data), records and medals
 
 ### Phase 10 — Online with an open-source server ⬜ (owner request 2026-10-18)
@@ -514,6 +548,10 @@ Not Nintendo's network: the engine talks to an open-source server the owner can 
   ghosts in the Swift app ⬜ · server hardening ✅ (request thread pool, CORS preflight for browsers,
   per-address limits on writes and new accounts → 429, `--trust-proxy`, `/api/health`) ·
   SMMDB import ⬜ · ⏳ owner: keep this or connect to another open-source server
+- ✅ Endless runs held by the server: `/api/endless` status, `/<d>/start|next|result|suspend|
+  finish|history`; batches of 10 by clear-rate band (≥ 20 attempts), no repeats in a run, never
+  the player's own or banned courses, widening reported; best per difficulty feeds the
+  `endless_<d>` rankings; Endless plays count in course statistics; `mmk-online` client calls
 - 🔄 Course World client: browse (SMM2 course list over the server and the library) and play ✅,
   play / clear reports ✅; like/boo, comment, upload from the editor ⬜
 - ✅ Local multiplayer (co-op, up to 4: Mario, Luigi, Toad, Toadette as the models' _2/_3/_4

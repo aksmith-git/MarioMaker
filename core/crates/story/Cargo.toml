@@ -10,3 +10,6 @@ publish.workspace = true
 mmk-formats = { path = "../formats" }
 serde_json.workspace = true
 crc32fast.workspace = true
+
+[dev-dependencies]
+mmk-modes = { path = "../modes" }
