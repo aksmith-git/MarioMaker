@@ -1089,9 +1089,10 @@ impl Level {
                 continue;
             }
             if o.id == 84 {
-                // snake block: path from the snake section (index = extended data & 0xF), head on
-                // the left when extended data bit 0x10 ("start from the other end") is set
-                let idx = (o.extended_data & 0xF) as u8;
+                // snake block: path from the snake section (extended data & 0xF is its index + 1:
+                // every sample course stores it so [obs corpus, 65 areas]), head on the left when
+                // extended data bit 0x10 ("start from the other end") is set
+                let idx = ((o.extended_data & 0xF) as u8).wrapping_sub(1);
                 let codes: Vec<u16> = area
                     .snake_blocks
                     .slots

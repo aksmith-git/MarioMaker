@@ -338,6 +338,14 @@ mod tests {
         e.set_path(s, Right, &[Right, Down, Down, Right]).unwrap();
         assert_eq!(e.path(s), Some(vec![2, 9, 3, 10, 13]));
         let back = round_trip(&e);
+        // the sim finds the path the block names (extended data = slot + 1)
+        let w = mmk_sim::World::from_course(&back);
+        assert_eq!(w.level.snakes.len(), 1);
+        assert_eq!(
+            w.level.snakes[0].5,
+            vec![2, 9, 3, 10, 13],
+            "the block's own path"
+        );
         let raw = back.main.snake_blocks.slots[&0].to_bytes().unwrap();
         assert_eq!(&raw[..4], &[0, 5, 1, 0], "slot, count, in use");
         assert_eq!(&raw[4..12], &[0, 0, 2, 0, 0, 1, 0, 0]);
