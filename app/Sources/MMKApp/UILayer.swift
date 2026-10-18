@@ -1,7 +1,7 @@
 import CMmk
 import Metal
 
-/// Draws layout-player output (`mmk_ui_draw_list`, SMM1 screens) with Metal.
+/// Draws layout-player output (`mmk_ui_draw_list`, `mmk_front_frame`) with Metal.
 ///
 /// Owns the GPU copies of the UI textures (uploaded once each, as `mmk_ui_texture` lists them),
 /// one pipeline per blend mode and one sampler per wrap/filter combination. Shading follows
@@ -10,7 +10,9 @@ import Metal
 @MainActor
 final class UILayer {
     let device: MTLDevice
-    let ui: OpaquePointer
+    /// The import's texture list so far (it only grows) and one entry of it.
+    private let textureCount: () -> Int
+    private let textureInfo: (Int, inout MmkTextureInfo) -> Bool
     private let library: MTLLibrary
     private let pixelFormat: MTLPixelFormat
     private var textures: [MTLTexture?] = []
@@ -72,19 +74,28 @@ final class UILayer {
     }
     """
 
-    init(device: MTLDevice, ui: OpaquePointer, pixelFormat: MTLPixelFormat) throws {
+    /// Textures from a texture list (`mmk_front_texture_count` / `mmk_front_texture`).
+    init(device: MTLDevice, pixelFormat: MTLPixelFormat, textureCount: @escaping () -> Int,
+         textureInfo: @escaping (Int, inout MmkTextureInfo) -> Bool) throws {
         self.device = device
-        self.ui = ui
+        self.textureCount = textureCount
+        self.textureInfo = textureInfo
         self.pixelFormat = pixelFormat
         library = try device.makeLibrary(source: Self.shaderSource, options: nil)
     }
 
+    /// Textures of an `mmk_ui_open` handle.
+    convenience init(device: MTLDevice, ui: OpaquePointer, pixelFormat: MTLPixelFormat) throws {
+        try self.init(device: device, pixelFormat: pixelFormat, textureCount: { mmk_ui_texture_count(ui) },
+                      textureInfo: { i, info in mmk_ui_texture(ui, i, &info) })
+    }
+
     /// Upload textures added since the last call (call after opening a layout).
     func syncTextures() {
-        let count = mmk_ui_texture_count(ui)
+        let count = textureCount()
         while textures.count < count {
             var info = MmkTextureInfo()
-            textures.append(mmk_ui_texture(ui, textures.count, &info) ? Self.makeTexture(device, info) : nil)
+            textures.append(textureInfo(textures.count, &info) ? Self.makeTexture(device, info) : nil)
         }
     }
 

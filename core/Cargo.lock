@@ -1263,9 +1263,11 @@ name = "mmk-ffi"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "libc",
  "mmk-assets",
  "mmk-audio",
  "mmk-formats",
+ "mmk-front",
  "mmk-host",
  "mmk-import",
  "mmk-modes",

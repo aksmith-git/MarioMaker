@@ -303,8 +303,15 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   a library folder and the course server, Endless / SMM1-layout 100 Mario, in-course HUD / card /
   pause / settings / clear / give up / time up / game over, UI sounds) and `mmk-play` runs it by
   default (Windows, Linux, macOS); headless captures (`--front-screen`) match the Swift app's to
-  within rounding on every deterministic screen. Open: the Swift app on `mmk-front` through the
-  FFI, the web build (async UI cache), Settings screens
+  within rounding on every deterministic screen. ✅ the Swift app runs `mmk-front` too, through
+  the `mmk_front_*` C API (DECISIONS.md "The Swift app runs the Rust front end"): its own screen
+  classes (~4 500 lines) are deleted; it keeps its renderer, audio, input, touch controls and the
+  SwiftUI library / Settings. Its DebugCaptures before vs after on the 30 front-end screens of the
+  comparison set (macOS, 1024×640 window): 27 pixel-identical, course-pause 0.11 % and
+  course-settings 0.11 % of pixels (the selection frame's Loop phase), smm1-walk 0.35 % (the
+  random course name on the map's balloon); real-time navigation (hub → list → course page →
+  play) and the `MMK_SCREENSHOT` smoke test run; `scripts/check.sh --ios` builds. Open: the web
+  build (async UI cache), Settings screens, ghosts in the Apple app
 
 ### Phase 9 — SMM2 single-player like-for-like 🔄 (owner request 2026-10-18)
 - 🔄 SMM2 layouts through the same layout player (private map: `research/specs/smm2-layouts.md`):

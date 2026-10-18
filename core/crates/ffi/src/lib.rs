@@ -18,6 +18,7 @@ pub mod challenge;
 pub mod condition;
 pub mod costumes;
 pub mod course_info;
+pub mod front;
 pub mod import;
 pub mod mesh;
 pub mod online;

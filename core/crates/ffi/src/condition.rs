@@ -35,38 +35,8 @@ pub unsafe extern "C" fn mmk_engine_clear_condition(
             return false;
         };
         let c = &e.world.clear;
-        let (kind, target) = match c.goal {
-            Goal::None => return false,
-            Goal::Defeat(t) => (1, t as u32),
-            Goal::OneUps => (2, 0),
-            Goal::Coins(v) => (3, v),
-            Goal::Pow => (4, 0),
-            Goal::PSwitch => (5, 0),
-            Goal::Star => (6, 0),
-            Goal::Super => (7, 0),
-            Goal::Fire => (8, 0),
-            Goal::Shoe => (11, 0),
-            Goal::Raccoon => (13, 0),
-            Goal::Cape => (14, 0),
-            Goal::Propeller => (15, 0),
-            Goal::Cat => (18, 0),
-            Goal::Builder => (20, 0),
-            Goal::Cloud => (21, 0),
-            Goal::HoldingStone => (22, 0),
-            Goal::BellTrees => (23, 0),
-            Goal::NoClaw => (24, 0),
-            Goal::NoWater => (25, 0),
-            Goal::Helmet(h) => (26, h as u32),
-            Goal::DryBonesShell => (27, 0),
-            Goal::Superball => (28, 0),
-            Goal::Mega => (29, 0),
-            Goal::HoldingShell => (16, 0),
-            Goal::Yoshi => (17, 0),
-            Goal::ClownCar => (12, 0),
-            Goal::KoopaCar => (19, 0),
-            Goal::NoDamage => (9, 0),
-            Goal::NoLanding => (10, 0),
-            Goal::Unsupported(i) => (255, i as u32),
+        let Some((kind, target)) = goal_code(c.goal) else {
+            return false;
         };
         let p = &e.world.player;
         *out = MmkCondition {
@@ -79,6 +49,43 @@ pub unsafe extern "C" fn mmk_engine_clear_condition(
             _pad: [0; 2],
         };
         true
+    })
+}
+
+/// The condition's (kind, target) codes as `MmkCondition` gives them; None without one.
+pub(crate) fn goal_code(goal: Goal) -> Option<(u32, u32)> {
+    Some(match goal {
+        Goal::None => return None,
+        Goal::Defeat(t) => (1, t as u32),
+        Goal::OneUps => (2, 0),
+        Goal::Coins(v) => (3, v),
+        Goal::Pow => (4, 0),
+        Goal::PSwitch => (5, 0),
+        Goal::Star => (6, 0),
+        Goal::Super => (7, 0),
+        Goal::Fire => (8, 0),
+        Goal::Shoe => (11, 0),
+        Goal::Raccoon => (13, 0),
+        Goal::Cape => (14, 0),
+        Goal::Propeller => (15, 0),
+        Goal::Cat => (18, 0),
+        Goal::Builder => (20, 0),
+        Goal::Cloud => (21, 0),
+        Goal::HoldingStone => (22, 0),
+        Goal::BellTrees => (23, 0),
+        Goal::NoClaw => (24, 0),
+        Goal::NoWater => (25, 0),
+        Goal::Helmet(h) => (26, h as u32),
+        Goal::DryBonesShell => (27, 0),
+        Goal::Superball => (28, 0),
+        Goal::Mega => (29, 0),
+        Goal::HoldingShell => (16, 0),
+        Goal::Yoshi => (17, 0),
+        Goal::ClownCar => (12, 0),
+        Goal::KoopaCar => (19, 0),
+        Goal::NoDamage => (9, 0),
+        Goal::NoLanding => (10, 0),
+        Goal::Unsupported(i) => (255, i as u32),
     })
 }
 

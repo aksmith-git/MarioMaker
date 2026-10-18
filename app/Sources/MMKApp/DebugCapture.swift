@@ -9,23 +9,18 @@ import UIKit
 ///
 ///     MMK_UI_SCREENSHOT=<png> [MMK_UI_SCREENSHOT_DELAY=<s>, default 2] [MMK_UI_SCREEN=<screen>]
 ///
-/// Screens: import, settings, challenge (difficulty select), challenge-intro / challenge-map (an
-/// Easy New Game: MapIn, Mario's walk, the intro card), challenge-walk (the map after a clear,
-/// MMK_UI_CLEARED=<n> courses done, default 3), challenge-gameover, challenge-ending, and over a
-/// run's first course: challenge-pause, challenge-clear, challenge-skip, challenge-card (the intro
-/// card after a death). MMK_UI_DIFFICULTY=<0-3> picks the difficulty (default 0).
-/// MMK_UI_TICKS=<n>: SMM1 layout screens run straight to tick n and hold there (in-course overlays:
-/// n ticks after they appear), so captures are deterministic.
-/// SMM2 title (at launch; see SMM2Title.swift): title (prompt), title-main (Make / Play),
-/// title-play (Play menu; MMK_UI_SELECT=<n> picks the button); MMK_UI_INPUT=<tick>:<button>,…
-/// presses menu buttons at scene ticks; MMK_TITLE_COURSE=<n> picks the demo course.
-/// SMM2 in-course screens (with MMK_COURSE; SMM2Course.swift): the course card shows first
-/// (MMK_UI_INTRO=0 skips it); MMK_UI_PAUSE_TICKS=<n> pauses; MMK_UI_SCREEN=course-clear,
-/// course-gameover, course-timeup, course-retire, course-death (the card after a death) shows
-/// that screen MMK_UI_COURSE_AT=<s> seconds in (default half the delay).
-/// SMM2 front end: boot (the opening; MMK_BOOT_OPENING=<InDefault…> picks one), courseworld,
-/// courseworld-list; MMK_UI_SCRIPT=<tick>:<button>,… presses menu buttons at global UI ticks
-/// (SMM2Menus.swift).
+/// Screens: import, settings, and the front end's (`mmk-front`, the names of `mmk-play
+/// --front-screen`): boot (MMK_BOOT_OPENING=<InDefault…> picks the opening), title, title-main,
+/// title-play (MMK_UI_SELECT=<n> picks the Play menu button), courseworld, courseworld-list,
+/// storymode, challenge (MMK_UI_DIFFICULTY=<0-3>), challenge-map, challenge-walk
+/// (MMK_UI_CLEARED=<n>, default 3), challenge-gameover, challenge-ending, challenge-pause /
+/// -clear / -skip / -card; with MMK_COURSE: course-intro (default), course-play
+/// (MMK_UI_INTRO=0), course-pause (MMK_UI_PAUSE_TICKS), course-clear, course-gameover,
+/// course-timeup, course-retire, course-settings, course-death.
+/// MMK_UI_TICKS=<n>: run n front-end ticks at once and hold the screen there (course screens:
+/// until the screen has been up n ticks), so captures are deterministic and match mmk-play's.
+/// MMK_UI_INPUT=<tick>:<button>,… presses title buttons at title ticks, MMK_UI_SCRIPT=<tick>:
+/// <button>,… menu buttons at global UI ticks; MMK_TITLE_COURSE=<n> picks the demo course.
 ///
 /// Waits, renders the main window's content (or the Settings window) into a PNG and quits.
 /// Window snapshots can't see Metal layers, so while this is set the renderer keeps a copy of its
@@ -51,53 +46,42 @@ enum DebugCapture {
         return ctx.makeImage()
     }
 
+    /// Run `body` once the library scan is over.
+    private static func afterScan(_ model: AppModel, _ body: @escaping () -> Void) {
+        if model.library.scanning {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { afterScan(model, body) }
+        } else {
+            body()
+        }
+    }
+
     static func scheduleIfRequested(model: AppModel) {
         let env = ProcessInfo.processInfo.environment
         guard let path = env["MMK_UI_SCREENSHOT"] else { return }
         let delay = env["MMK_UI_SCREENSHOT_DELAY"].flatMap(Double.init) ?? 2
         let settings = env["MMK_UI_SCREEN"] == "settings"
         if env["MMK_UI_SCREEN"] == "import" { model.showImporter() }
-        if let screen = env["MMK_UI_SCREEN"], screen.hasPrefix("challenge") {
-            // after the library scan: the difficulty select, or an Easy run's first intro card
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay / 2) {
-                model.showChallenge()
-                guard case .challenge(let flow) = model.screen else { return }
-                let d = env["MMK_UI_DIFFICULTY"].flatMap(Int.init) ?? 0
-                switch screen {
-                case "challenge": flow.debugSelect(d)
-                case "challenge-intro", "challenge-map": flow.start(d, resume: false)
-                case "challenge-walk": flow.debugMap(d, entry: .afterClear, cleared: env["MMK_UI_CLEARED"].flatMap(Int.init) ?? 3)
-                case "challenge-gameover": flow.debugGameOver()
-                case "challenge-ending": flow.debugEnding(d, library: model.library.entries)
-                case "challenge-pause", "challenge-clear", "challenge-skip", "challenge-card":
-                    flow.start(d, resume: false)
-                    flow.play()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        guard case .playing(let s) = flow.stage else { return }
-                        switch screen {
-                        case "challenge-pause": s.pause()
-                        case "challenge-clear": s.debugClear()
-                        case "challenge-skip": s.debugSkipHeld = true
-                        default: s.debugCard()
-                        }
-                    }
-                default: break
+        let screen = env["MMK_UI_SCREEN"] ?? ""
+        if let s = model.frontSession {
+            // the front end's screens, as `mmk-play --front-screen` captures them: MMK_UI_TICKS
+            // runs that many ticks at once and holds the screen there
+            if env["MMK_COURSE"] != nil {
+                let name = screen.hasPrefix("course-") ? screen
+                    : env["MMK_UI_PAUSE_TICKS"] != nil ? "course-pause"
+                    : env["MMK_UI_INTRO"] == "0" ? "course-play" : "course-intro"
+                s.debugCourse(name)
+                if let t = freezeTicks { s.runAndFreeze(t, courseScreen: name != "course-play") }
+            } else if screen.hasPrefix("challenge") || screen.hasPrefix("courseworld") || screen == "storymode" {
+                // over the library: after its scan
+                afterScan(model) {
+                    s.setLibrary(model.library.entries)
+                    s.capture(screen, difficulty: env["MMK_UI_DIFFICULTY"].flatMap(Int.init) ?? 0,
+                              cleared: env["MMK_UI_CLEARED"].flatMap(Int.init) ?? 3)
+                    if let t = freezeTicks { s.runAndFreeze(t, courseScreen: false) }
                 }
-            }
-        }
-        if let screen = env["MMK_UI_SCREEN"], screen.hasPrefix("courseworld") {
-            // SMM2 Course World (after the library scan): courseworld (hub), courseworld-list
-            DispatchQueue.main.asyncAfter(deadline: .now() + min(1, delay / 2)) {
-                model.showCourseWorld()
-                if screen == "courseworld-list", case .courseWorld(let f) = model.screen { f.showList() }
-            }
-        }
-        if let screen = env["MMK_UI_SCREEN"], screen.hasPrefix("course-") {
-            // SMM2 in-course screens over MMK_COURSE (after MMK_UI_COURSE_AT seconds, default
-            // half the delay)
-            let at = env["MMK_UI_COURSE_AT"].flatMap(Double.init) ?? delay / 2
-            DispatchQueue.main.asyncAfter(deadline: .now() + at) {
-                if case .game(let s) = model.screen { s.debugSMM2(screen) }
+            } else {
+                if ["boot", "title", "title-main", "title-play"].contains(screen) { s.capture(screen) }
+                if let t = freezeTicks { s.runAndFreeze(t, courseScreen: false) }
             }
         }
         // (RootView opens the Settings window / sheet for MMK_UI_SCREEN=settings)

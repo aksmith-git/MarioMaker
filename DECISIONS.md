@@ -2,6 +2,44 @@
 
 Newest first. Each entry: what was decided, why, and what would change it.
 
+## 2026-10-18 — The Swift app runs the Rust front end (`mmk_front_*`); its screen classes are gone
+**Decision:** with the SMM2 UI import, the Apple app's screens are `mmk-front`'s, through a C API
+(`core/crates/ffi/src/front.rs`, section "front end" of `mmk.h`):
+- **Create:** `mmk_front_new(options, engine, assets, audio, host)` — the app makes the engine
+  (with its SMM1-extra options and character) and its audio, the front end loads, steps and
+  restarts courses on that engine. The `Host` is implemented in Rust over it (status from the
+  world as `mmk-play`'s host does; title courses from the cache / import; server listing,
+  downloads, reports and the online calls on threads with `mmk-online`; replays recorded for
+  server courses). The app only provides a callback table (`MmkFrontHost`): persistent values
+  (`saves` / `hundred` stay the app's `saves.json` / `hundred.json`, the openings-seen flags and
+  the character stay in UserDefaults, other keys go to UserDefaults `front.<key>`) and the pause
+  volume. The library is pushed as JSON (`mmk_front_set_library`) whenever the Swift scan
+  changes it, so the SwiftUI library and Course World list the same courses.
+- **Per tick:** `mmk_front_tick` (menu buttons, engine buttons, pause, skip, a click in layout
+  units); then `mmk_front_frame` (layout quad lists + a course-view item), `mmk_front_toast`,
+  `mmk_front_sounds` (WAV names, volume, delay), `mmk_front_status` (course shown / playing / a
+  direct play finished), textures through `mmk_front_texture(_count)`.
+- **Swift keeps** its renderer (the course where the frame has the course item, then the layouts
+  through `UILayer`, which now takes a texture-list closure), audio, input (keyboard, pads, touch
+  controls; clicks / taps via a SwiftUI tap on the game view), the SwiftUI library, Settings and
+  importer. `GameSession` is either the front end or plain play (no SMM2 UI import: drawn HUD,
+  SwiftUI pause / clear / game over).
+- **Removed:** `SMM2Boot/Title/CourseWorld/Course/Endless/Menus`, `Challenge`,
+  `ChallengeScreens`, `SMM1UI`, `SceneFade` (~4 500 lines). `UISound` only plays the WAVs the
+  front end names.
+- **Captures:** `MMK_UI_SCREENSHOT` + `MMK_UI_SCREEN` now name `mmk-play --front-screen`'s screens;
+  `MMK_UI_TICKS=n` runs n front-end ticks at once and holds (course screens: until the screen has
+  been up n ticks), as `mmk-play` does. Before / after on the same 30 screens: 27 identical, the
+  rest within an animation phase (numbers in PROGRESS.md Phase 8).
+- **Departures:** without the SMM2 UI import there is no 100 Mario Challenge any more (it was the
+  SwiftUI stand-in or the SMM1 layouts driven by Swift); the library's Story Mode filter is no
+  longer opened by the title (Story Mode lists the built-in courses in the course list, as in
+  `mmk-play`); `MMK_LIVES=on` no longer applies to SMM2-screen play; the demo strip plays plain.
+**Why:** one implementation of every screen for every platform (owner: "same screens
+everywhere"); the Swift copies had started to drift from the Rust port.
+**Would change:** a ghost in the Apple app needs the engine snapshot to draw a second world (the
+`ghost` online action answers "not shown in this app yet"); Settings screens in layouts.
+
 ## 2026-10-18 — SMM2 2.0/3.0 parts: own modules, behaviour from v3.0.3, test courses from the editor
 **Decision:** the 2.0/3.0 enemies, blocks and gizmos (Spike, Pokey, P Block, Dash Block,
 Mechakoopa, ON/OFF Trampoline, the Koopalings) live in `actors/v3.rs`, `actors/koopalings.rs`,
