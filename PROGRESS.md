@@ -328,12 +328,16 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
       title (Settings > Game, `MMK_BOOT`, `MMK_BOOT_OPENING`)
     - ✅ scene fades `Cmn_Fade_00` (black 30 + 30 for scene changes without parameters, black
       circle from the opening; white, blocks available) over every screen (`SceneFade`)
-    - ✅ Course World: hub `Nwk_Title_00` (background loops, Courses / Endless Challenge;
-      Leaderboards, Network Play, Ninji Speedruns, Super Worlds say they need Nintendo's
-      network), course list `Nwk_CourseListGeneral_00` (Hot / Popular / New tabs, rows with
-      style logo, maker, likes, plays, tags, date, clear mark; open row with description, world
-      record, clears / attempts, course ID, Play) over the library (dataset index statistics) and
-      the open-source course server (Settings > Game; `mmk_online_*`)
+    - ✅ Course World: hub `Nwk_Title_00` (background loops, Courses / Leaderboards / Endless
+      Challenge / the player card; Network Play, Ninji Speedruns, Super Worlds say they need
+      Nintendo's network), course list `Nwk_CourseListGeneral_00` (Hot / Popular / New tabs, rows
+      with style logo, maker, likes, plays, tags, date, clear mark; open row with description,
+      world record, clears / attempts, course ID, Play, and for server courses More info / View
+      comments) over the library (dataset index statistics) and the open-source course server
+      (Settings > Game; `mmk_online_*`); the online screens of Phase 10 in `mmk-front`
+    - ✅ clicks / taps (`FrontInput::click`) on the title, the hub, the course list (tabs, rows,
+      an open row's buttons), the online screens, the Endless menu and map, and the SMM1 100
+      Mario screens; text entry (`FrontInput::text`) for names, tokens and comments
     - ✅ 100 Mario Challenge in SMM2's Endless Challenge screens (default; SMM1's kept in
       Settings > Game): `Nwk_EndlessModeMenu_00` difficulty tabs (SMM1 unlocks), New Game /
       Continue, the map `Nwk_WorldMap_00` (ChangeMap, Telop, Mario out of the castle, walks
@@ -515,7 +519,18 @@ Not Nintendo's network: the engine talks to an open-source server the owner can 
   per-address limits on writes and new accounts → 429, `--trust-proxy`, `/api/health`) ·
   SMMDB import ⬜ · ⏳ owner: keep this or connect to another open-source server
 - 🔄 Course World client: browse (SMM2 course list over the server and the library) and play ✅,
-  play / clear reports ✅; like/boo, comment, upload from the editor ⬜
+  play / clear reports ✅; in the Rust front end (`mmk-front`, 2026-10-18) ✅: account (player
+  card → `Nwk_PlayerInfo_00`: create with a typed name, sign in with a token, sign out; token in
+  the host's store), like / boo on a server course's clear screen (the game's judge buttons),
+  comments (`Nwk_CommentViewer_00`) and posting (`Nwk_CommentPosting_00`, typed), course page
+  (`Nwk_CourseListWindow_00` + `Nwk_CourseDetail_00`: likes, plays, first clear, world record),
+  maker profiles (their uploaded courses), leaderboards (`Nwk_CourseListMaker_00`: maker points,
+  clears, first clears, records, Endless per difficulty), clears sent as replays the server
+  verifies (fallback: the time), the record's ghost raced from the course page, Endless runs
+  reported; `mmk-play` host on threads (`--server` / `$MMK_SERVER`), tested against a local
+  `mmk server` with captures `account`, `courseworld-leaderboards`, `courseworld-course-page`,
+  `-comments`, `-post`, `-maker`, `-play`, `-clear` · votes / comments from the pause menu ⬜ ·
+  upload from the editor ⬜ (no Course Maker in the front end yet) · the Swift app's FFI host ⬜
 - ✅ Local multiplayer (co-op, up to 4: Mario, Luigi, Toad, Toadette as the models' _2/_3/_4
   variants): extra players run the same rules, rejoin beside player 1 [inf: bubble], any player
   clears; `mmk-play --players N` (one pad each), FFI `mmk_engine_set_players / step_players`;

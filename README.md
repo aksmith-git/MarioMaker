@@ -156,8 +156,11 @@ Without a course, and with the SMM2 UI import (`mmk import-smm2-ui`; `--ui-cache
 `$MMK_UI_CACHE` or `~/smm-work/cache/smm2-ui-3.0.3`), it starts like the Swift app: the opening,
 the title, Course World over a course folder (`--library`, default `~/smm-work/courses`) and a
 course server (`--server`), 100 Mario (`--hundred smm1` for SMM1's screens), with the SMM2
-in-course screens (`mmk-front`). Menus: arrows/WASD, Return/Z/Space confirm, Esc/P back, − or
-Tab held skips a 100 Mario course. `--no-opening` starts on the title, `--no-menus` plays the
+in-course screens (`mmk-front`). With a server, Course World is online on SMM2's own screens:
+an account from the hub's player card, leaderboards, course pages, comments, likes / boos on
+the clear screen, maker profiles, clears sent as verified replays, the record's ghost. Menus:
+arrows/WASD, Return/Z/Space confirm, Esc/P back, mouse clicks; − or Tab held skips a 100 Mario
+course. `--no-opening` starts on the title, `--no-menus` plays the
 demo strip.
 
 ```sh

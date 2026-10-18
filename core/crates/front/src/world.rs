@@ -1268,10 +1268,11 @@ impl WorldFlow {
             Ok(l) => l,
             Err(e) => {
                 cx.toast(&format!("Couldn't start {}: {e}", c.name));
-                if !matches!(self.stage, Stage::Playing(..)) {
-                    return;
+                match &mut self.stage {
+                    Stage::Playing(..) => self.go(cx, WorldGo::AfterPlay),
+                    Stage::List(s) => s.resume(),
+                    _ => {}
                 }
-                self.go(cx, WorldGo::AfterPlay);
                 return;
             }
         };
