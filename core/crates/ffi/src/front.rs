@@ -1232,6 +1232,62 @@ mod tests {
         assert_eq!(v, ["T1", "t2", "t10"]);
     }
 
+    /// With the owner's SMM2 UI import (skipped without it): the title runs and draws through
+    /// the C API, and Course World opens over a pushed library.
+    #[test]
+    fn title_and_course_world_through_the_c_api() {
+        let Some(dir) = std::env::var_os("HOME")
+            .map(|h| PathBuf::from(h).join("smm-work/cache/smm2-ui-3.0.3"))
+            .filter(|d| d.join("manifest.json").is_file())
+        else {
+            return;
+        };
+        let dir = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+        let opts = MmkFrontOptions {
+            smm2_ui: dir.as_ptr(),
+            smm1_ui: std::ptr::null(),
+            server: std::ptr::null(),
+            downloads: std::ptr::null(),
+            opening: std::ptr::null(),
+            script: std::ptr::null(),
+            title_input: std::ptr::null(),
+            flags: MMK_FRONT_INSTANT_FADES,
+            title_start: 0,
+            title_select: -1,
+            title_course: -1,
+        };
+        unsafe {
+            let a = crate::mmk_assets_placeholder();
+            let e = crate::mmk_engine_new(a);
+            let host = MmkFrontHost {
+                user: std::ptr::null_mut(),
+                load_value: None,
+                store_value: None,
+                set_paused: None,
+            };
+            let f = mmk_front_new(&opts, e, a, std::ptr::null(), host);
+            assert!(!f.is_null());
+            mmk_front_run_ticks(f, 30, false, false);
+            let mut items = std::ptr::null();
+            let n = mmk_front_frame(f, &mut items);
+            assert!(n > 0);
+            let list = std::slice::from_raw_parts(items, n);
+            assert!(list.iter().any(|i| i.kind == 0 && i.quad_count > 0));
+            assert!(mmk_front_texture_count(f, 0) > 0);
+            let mut t = std::mem::zeroed::<MmkTextureInfo>();
+            assert!(mmk_front_texture(f, 0, 0, &mut t) && t.len > 0);
+            mmk_front_set_library(f, c"[]".as_ptr());
+            assert!(mmk_front_capture(f, c"courseworld".as_ptr(), 0, 0));
+            mmk_front_run_ticks(f, 10, false, false);
+            let mut st = MmkFrontStatus::default();
+            mmk_front_status(f, &mut st);
+            assert_eq!(st.flags & (MMK_FRONT_PLAYING | MMK_FRONT_NO_SCREEN), 0);
+            mmk_front_free(f);
+            crate::mmk_engine_free(e);
+            crate::mmk_assets_free(a);
+        }
+    }
+
     #[test]
     fn missing_ui_import_is_an_error() {
         let opts = MmkFrontOptions {
