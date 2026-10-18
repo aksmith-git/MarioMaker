@@ -23,7 +23,7 @@ use std::path::Path;
 
 use mmk_modes::endless::{
     Applied, BATCH, Candidate, Difficulty, EndlessSave, Finished, HistoryEntry, Outcome, Report,
-    RunError, RunStatus, pick,
+    Ruleset, RunError, RunStatus, pick, pick_hundred,
 };
 use serde_json::{Map, Value, json};
 
@@ -67,13 +67,38 @@ pub struct Batch {
     pub run: RunStatus,
 }
 
+/// The leaderboard of a ruleset on `d`: `easy` … (Endless best clears) or `hundred_easy` …
+/// (completed 100 Mario runs).
+pub(crate) fn board(ruleset: Ruleset, d: Difficulty) -> String {
+    match ruleset {
+        Ruleset::Smm2 => d.name().to_string(),
+        Ruleset::Hundred => format!("hundred_{}", d.name()),
+    }
+}
+
 impl Inner {
     fn best(&self, d: Difficulty, who: &str) -> u64 {
+        self.board_score(&board(Ruleset::Smm2, d), who)
+    }
+
+    fn board_score(&self, board: &str, who: &str) -> u64 {
         self.endless
-            .get(d.name())
+            .get(board)
             .and_then(|m| m.get(who))
             .copied()
             .unwrap_or(0)
+    }
+
+    /// One more completed 100 Mario run on `d`; the new count.
+    fn add_completion(&mut self, d: Difficulty, who: &str) -> u64 {
+        let b = self
+            .endless
+            .entry(board(Ruleset::Hundred, d))
+            .or_default()
+            .entry(who.to_string())
+            .or_insert(0);
+        *b += 1;
+        *b
     }
 
     fn raise_best(&mut self, d: Difficulty, who: &str, clears: u64) -> u64 {
@@ -105,13 +130,18 @@ impl Store {
         self.write_json("endless.json", &json!({ "players": players }))
     }
 
-    /// New Game on `d` for `who`: wipes that difficulty's run and starts one with the starting
-    /// lives (5, [ext/inf]).
-    pub fn endless_start(&self, who: &str, d: Difficulty) -> Result<RunStatus, StoreError> {
+    /// New Game on `d` for `who`: wipes that difficulty's run and starts one under `ruleset`
+    /// with its starting lives (SMM2: 5 [ext/inf]; 100 Mario: 100).
+    pub fn endless_start(
+        &self,
+        who: &str,
+        d: Difficulty,
+        ruleset: Ruleset,
+    ) -> Result<RunStatus, StoreError> {
         let mut g = self.inner.lock().unwrap();
-        let best = g.best(d, who).min(u32::MAX as u64) as u32;
+        let best = g.board_score(&board(ruleset, d), who).min(u32::MAX as u64) as u32;
         let save = g.endless_runs.entry(who.to_string()).or_default();
-        let rec = save.new_game(d, now());
+        let rec = save.new_game_with(d, ruleset, now());
         rec.status.best_before = best;
         let out = rec.status;
         self.save_endless(&g)?;
@@ -185,6 +215,10 @@ impl Store {
                     broken: m.owner != 0 && banned.contains(&m.owner),
                 })
                 .collect();
+            let pick = match rec.status.ruleset {
+                Ruleset::Smm2 => pick,
+                Ruleset::Hundred => pick_hundred,
+            };
             let p = pick(
                 &cands,
                 d,
@@ -230,14 +264,19 @@ impl Store {
         let save = g.endless_runs.get_mut(who).ok_or(StoreError::NotFound)?;
         let rec = save.run_mut(d).ok_or(StoreError::NotFound)?;
         let first = rec.current() != Some(r.code.as_str()) || rec.course_reports == 0;
+        let ruleset = rec.status.ruleset;
         let applied = rec.report(r, &style, theme, now()).map_err(run_err)?;
         if outcome == Outcome::Skip {
             save.note_skip();
         }
-        let mut best = g.best(d, who);
-        if outcome == Outcome::Clear || applied.game_over {
-            best = g.raise_best(d, who, applied.clears as u64);
-        }
+        let best = match ruleset {
+            Ruleset::Smm2 if outcome == Outcome::Clear || applied.game_over => {
+                g.raise_best(d, who, applied.clears as u64)
+            }
+            Ruleset::Smm2 => g.best(d, who),
+            Ruleset::Hundred if applied.complete => g.add_completion(d, who),
+            Ruleset::Hundred => g.board_score(&board(ruleset, d), who),
+        };
         if let Some(i) = ix {
             let m = &mut g.courses[i];
             if first && outcome != Outcome::Broken {
@@ -261,7 +300,7 @@ impl Store {
             }
             self.save_index(&g)?;
         }
-        if outcome == Outcome::Clear || applied.game_over {
+        if outcome == Outcome::Clear || applied.game_over || applied.complete {
             self.save_social(&g)?;
         }
         self.save_endless(&g)?;
@@ -286,8 +325,12 @@ impl Store {
     pub fn endless_finish(&self, who: &str, d: Difficulty) -> Result<Finished, StoreError> {
         let mut g = self.inner.lock().unwrap();
         let save = g.endless_runs.get_mut(who).ok_or(StoreError::NotFound)?;
+        let ruleset = save.run(d).map(|r| r.status.ruleset).unwrap_or_default();
         let f = save.finish(d).ok_or(StoreError::NotFound)?;
-        let best = g.raise_best(d, who, f.clears as u64);
+        let best = match ruleset {
+            Ruleset::Smm2 => g.raise_best(d, who, f.clears as u64),
+            Ruleset::Hundred => g.board_score(&board(ruleset, d), who),
+        };
         self.save_social(&g)?;
         self.save_endless(&g)?;
         Ok(Finished {
@@ -364,9 +407,24 @@ pub(crate) fn route(
     };
     let name = d.name();
     let out = match action {
-        "start" => store
-            .endless_start(who, d)
-            .map(|s| json_resp(201, json!({ "difficulty": name, "run": s.to_json() }))),
+        "start" => {
+            let v = serde_json::from_slice::<Value>(body).unwrap_or(Value::Null);
+            let ruleset = match v["ruleset"].as_str() {
+                None => Ruleset::Smm2,
+                Some(n) => match Ruleset::from_name(n) {
+                    Some(r) => r,
+                    None => {
+                        return Some(json_resp(
+                            400,
+                            json!({ "error": "ruleset: smm2 or hundred" }),
+                        ));
+                    }
+                },
+            };
+            store
+                .endless_start(who, d, ruleset)
+                .map(|s| json_resp(201, json!({ "difficulty": name, "run": s.to_json() })))
+        }
         "next" => {
             let count = q.get("count").and_then(|c| c.parse().ok()).unwrap_or(BATCH);
             store.endless_next(who, d, count).map(|b| {
@@ -389,7 +447,7 @@ pub(crate) fn route(
                     json!({
                         "difficulty": name, "lives": a.applied.lives, "clears": a.applied.clears,
                         "passed": a.applied.passed, "game_over": a.applied.game_over,
-                        "best": a.best,
+                        "run_complete": a.applied.complete, "best": a.best,
                     }),
                 )
             })
@@ -728,6 +786,59 @@ mod tests {
         assert_eq!(s["best"]["easy"], 20);
         let (_, v) = call(&store, "POST", "/api/endless/easy/start", me, "");
         assert_eq!(v["run"]["best_before"], 20);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_hundred_mario_run_on_the_server() {
+        let dir = tmp("hundred");
+        let store = Store::open(&dir).unwrap();
+        let (me, my_id) = account(&store, "Pia");
+        let (maker, _) = account(&store, "Mo");
+        let easy: Vec<String> = (0..10).map(|_| course(&store, &maker, 80, 100)).collect();
+        for _ in 0..3 {
+            course(&store, &maker, 40, 100);
+        }
+        let me = Some(me.as_str());
+        let start = |body: &str| call(&store, "POST", "/api/endless/easy/start", me, body);
+        assert_eq!(start(r#"{"ruleset":"silly"}"#).0, 400);
+        let (st, v) = start(r#"{"ruleset":"hundred"}"#);
+        assert_eq!(st, 201);
+        assert_eq!(
+            (v["run"]["lives"].as_u64(), v["run"]["goal"].as_u64()),
+            (Some(100), Some(8))
+        );
+        assert_eq!(v["run"]["ruleset"], "hundred");
+        let (_, b) = call(&store, "GET", "/api/endless/easy/next", me, "");
+        let batch = codes(&b);
+        assert!(batch.iter().all(|c| easy.contains(c)), "fail rate 0–34 %");
+        let post = |code: &str, result: &str, extra: &str| {
+            call(
+                &store,
+                "POST",
+                "/api/endless/easy/result",
+                me,
+                &report(code, result, extra),
+            )
+        };
+        post(&batch[0], "death", "");
+        let (_, a) = post(&batch[0], "skip", r#","during_miss":true"#);
+        assert_eq!(a["lives"].as_u64(), Some(99), "free skip");
+        for (k, c) in batch[1..9].iter().enumerate() {
+            let (st, a) = post(c, "clear", "");
+            assert_eq!(st, 200);
+            assert_eq!(a["run_complete"].as_bool(), Some(k == 7));
+        }
+        let (_, a) = call(&store, "GET", "/api/endless", me, "");
+        assert_eq!(a["runs"]["easy"]["complete"], true);
+        assert_eq!(a["best"]["easy"].as_u64(), Some(0), "not an Endless score");
+        assert_eq!(call(&store, "GET", "/api/endless/easy/next", me, "").0, 400);
+        let (_, r) = call(&store, "GET", "/api/rankings/hundred_easy", me, "");
+        assert_eq!(r["rankings"][0]["score"], 1);
+        assert_eq!(r["me"]["maker_id"], my_id.as_str());
+        assert_eq!(r["me"]["rank"], 1);
+        let (_, r) = call(&store, "GET", "/api/rankings/hundred_easy", None, "");
+        assert!(r["me"].is_null());
         let _ = fs::remove_dir_all(&dir);
     }
 

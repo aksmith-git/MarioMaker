@@ -65,6 +65,58 @@ pub const EASY_MIN_RATE: u64 = 3400;
 pub const NORMAL_MIN_RATE: u64 = 1200;
 pub const EXPERT_MIN_RATE: u64 = 300;
 
+/// The rules a run follows: SMM2's own Endless Challenge, or SMM1's 100 Mario Challenge played
+/// on the Endless screens (the recomp's mod and SMCraft's option): 100 lives (cap 100), a run of
+/// 8 / 16 / 16 / 6 clears that then completes, SMM1's fail-rate bands, skips free even after a
+/// death (`smm1-100mario-code.md`; recomp-mods §2.6).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Ruleset {
+    #[default]
+    Smm2,
+    Hundred,
+}
+
+impl Ruleset {
+    pub fn name(self) -> &'static str {
+        match self {
+            Ruleset::Smm2 => "smm2",
+            Ruleset::Hundred => "hundred",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<Self> {
+        match s {
+            "smm2" | "endless" => Some(Ruleset::Smm2),
+            "hundred" | "100mario" => Some(Ruleset::Hundred),
+            _ => None,
+        }
+    }
+
+    /// Lives of a New Game.
+    pub fn start_lives(self, d: Difficulty) -> u32 {
+        match self {
+            Ruleset::Smm2 => d.start_lives(),
+            Ruleset::Hundred => 100,
+        }
+    }
+
+    /// The most lives a run can hold.
+    pub fn lives_cap(self) -> u32 {
+        match self {
+            Ruleset::Smm2 => LIVES_CAP,
+            Ruleset::Hundred => 100,
+        }
+    }
+
+    /// Clears that complete a run (0: endless).
+    pub fn goal(self, d: Difficulty) -> u32 {
+        match self {
+            Ruleset::Smm2 => 0,
+            Ruleset::Hundred => crate::hundred::Difficulty::ALL[d.index()].run_length() as u32,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Difficulty {
     Easy,
@@ -586,12 +638,17 @@ pub struct RunStatus {
     pub best_before: u32,
     /// The pick rule had to leave the difficulty's band at least once in this run.
     pub widened: bool,
+    /// The rules of this run, and the clears that complete it (0: endless).
+    pub ruleset: Ruleset,
+    pub goal: u32,
+    /// The run reached its goal (a completed 100 Mario run).
+    pub complete: bool,
 }
 
 impl RunStatus {
-    /// Continue is offered while the run has lives (§1.2).
+    /// Continue is offered while the run has lives and isn't complete (§1.2).
     pub fn can_continue(&self) -> bool {
-        self.active && self.lives > 0
+        self.active && self.lives > 0 && !self.complete
     }
 
     pub fn new_high_score(&self) -> bool {
@@ -604,15 +661,23 @@ impl RunStatus {
             "passed": self.passed, "coins": self.coins, "score": self.score,
             "start_lives": self.start_lives, "started_at": self.started_at,
             "updated_at": self.updated_at, "best_before": self.best_before,
-            "widened": self.widened,
+            "widened": self.widened, "ruleset": self.ruleset.name(), "goal": self.goal,
+            "complete": self.complete,
         })
     }
 
     pub fn from_json(v: &Value) -> Self {
         let n = |k: &str| v[k].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32;
+        let ruleset = v["ruleset"]
+            .as_str()
+            .and_then(Ruleset::from_name)
+            .unwrap_or_default();
         Self {
+            ruleset,
+            goal: n("goal"),
+            complete: v["complete"].as_bool().unwrap_or(false),
             active: v["active"].as_bool().unwrap_or(false),
-            lives: n("lives").min(LIVES_CAP),
+            lives: n("lives").min(ruleset.lives_cap()),
             clears: n("clears"),
             passed: n("passed"),
             coins: n("coins"),
@@ -633,6 +698,8 @@ pub struct Applied {
     pub clears: u32,
     pub passed: u32,
     pub game_over: bool,
+    /// This clear completed the run (it reached its goal).
+    pub complete: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -667,6 +734,16 @@ pub struct RunRecord {
 }
 
 impl RunRecord {
+    /// A New Game under `ruleset` on `d`, with the difficulty's best so far and the time.
+    pub fn with_rules(ruleset: Ruleset, d: Difficulty, best_before: u32, now: u64) -> Self {
+        let mut r = Self::new(ruleset.start_lives(d), best_before, now);
+        r.status.ruleset = ruleset;
+        r.status.goal = ruleset.goal(d);
+        r.status.lives = ruleset.start_lives(d).min(ruleset.lives_cap());
+        r.status.start_lives = r.status.lives;
+        r
+    }
+
     /// A New Game with `lives`, the difficulty's best so far and the time.
     pub fn new(lives: u32, best_before: u32, now: u64) -> Self {
         Self {
@@ -754,9 +831,10 @@ impl RunRecord {
         }
         self.course_reports += 1;
         let s = &mut self.status;
+        let cap = s.ruleset.lives_cap();
         match outcome {
             Outcome::Clear => {
-                s.lives = (s.lives + r.pending.min(PENDING_CAP)).min(LIVES_CAP);
+                s.lives = (s.lives + r.pending.min(PENDING_CAP)).min(cap);
                 s.clears = (s.clears + 1).min(COUNT_CAP);
                 s.passed = (s.passed + 1).min(COUNT_CAP);
                 s.coins = s.coins.saturating_add(r.coins);
@@ -770,7 +848,10 @@ impl RunRecord {
             }
             o if o.is_miss() => s.lives = s.lives.saturating_sub(1),
             Outcome::Skip => {
-                s.lives = s.lives.saturating_sub(r.during_miss as u32);
+                // SMM2 charges a skip during the miss demo; SMM1's skips are always free
+                if s.ruleset == Ruleset::Smm2 {
+                    s.lives = s.lives.saturating_sub(r.during_miss as u32);
+                }
                 s.passed = (s.passed + 1).min(COUNT_CAP);
                 self.push_history(&r.code, HistoryResult::Skip, style, theme);
                 self.pass(&r.code);
@@ -779,6 +860,11 @@ impl RunRecord {
         }
         let s = &mut self.status;
         s.updated_at = now;
+        let complete = outcome == Outcome::Clear && s.goal > 0 && s.clears >= s.goal;
+        if complete {
+            s.complete = true;
+            s.active = false;
+        }
         if s.lives == 0 {
             s.active = false;
         }
@@ -787,6 +873,7 @@ impl RunRecord {
             clears: s.clears,
             passed: s.passed,
             game_over: s.lives == 0,
+            complete,
         })
     }
 
@@ -873,8 +960,14 @@ impl EndlessSave {
 
     /// New Game: wipe that difficulty's run and start one with its starting lives.
     pub fn new_game(&mut self, d: Difficulty, now: u64) -> &mut RunRecord {
+        self.new_game_with(d, Ruleset::Smm2, now)
+    }
+
+    /// New Game under `ruleset` (100 Mario: 100 lives and a goal).
+    pub fn new_game_with(&mut self, d: Difficulty, ruleset: Ruleset, now: u64) -> &mut RunRecord {
         self.last = Some(d);
-        self.runs[d.index()].insert(RunRecord::new(d.start_lives(), self.best[d.index()], now))
+        let best = self.best[d.index()];
+        self.runs[d.index()].insert(RunRecord::with_rules(ruleset, d, best, now))
     }
 
     /// Keep the best clears (called after every clear, so a suspended run counts too).
@@ -892,7 +985,12 @@ impl EndlessSave {
     /// Finish the run (game over): update the best and clear the run.
     pub fn finish(&mut self, d: Difficulty) -> Option<Finished> {
         let r = self.runs[d.index()].take()?;
-        let best = self.update_best(d, r.status.clears);
+        // a 100 Mario run isn't an Endless score
+        let best = if r.status.ruleset == Ruleset::Smm2 {
+            self.update_best(d, r.status.clears)
+        } else {
+            self.best[d.index()]
+        };
         Some(Finished {
             clears: r.status.clears,
             best,
@@ -997,6 +1095,58 @@ pub fn pick(
             .iter()
             .copied()
             .filter(|&i| tier.contains(&candidates[i].band()))
+            .collect();
+        if pool.is_empty() {
+            continue;
+        }
+        let n = pool.len();
+        for i in 0..n.min(count) {
+            let j = i + rng.below((n - i) as u32) as usize;
+            pool.swap(i, j);
+        }
+        pool.truncate(count);
+        return Picked {
+            indices: pool,
+            widened: k > 0,
+        };
+    }
+    Picked::default()
+}
+
+/// The 100 Mario pick rule: like [`pick`], but by SMM1's fail-rate bands (`hundred::Difficulty::
+/// band`: Easy 0–34, Normal 0–74, Expert 75–95, Super Expert 96–100) on the courses rated by
+/// their attempts; when the band has none left it widens to any rated course, then unrated ones.
+pub fn pick_hundred(
+    candidates: &[Candidate],
+    d: Difficulty,
+    excluded: &HashSet<&str>,
+    player: &str,
+    count: usize,
+    rng: &mut Rng,
+) -> Picked {
+    let (lo, hi) = crate::hundred::Difficulty::ALL[d.index()].band();
+    let fail = |c: &Candidate| -> Option<u64> {
+        (c.attempts >= MIN_RATED_ATTEMPTS)
+            .then(|| 100 - (c.clears * 100 / c.attempts.max(1)).min(100))
+    };
+    let eligible: Vec<usize> = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| !c.broken && !excluded.contains(c.id.as_str()))
+        .filter(|(_, c)| player.is_empty() || c.owner != player)
+        .map(|(i, _)| i)
+        .collect();
+    type Tier<'a> = Box<dyn Fn(&Candidate) -> bool + 'a>;
+    let tiers: [Tier; 3] = [
+        Box::new(|c| fail(c).is_some_and(|f| f >= lo as u64 && f <= hi as u64)),
+        Box::new(|c| fail(c).is_some()),
+        Box::new(|c| fail(c).is_none()),
+    ];
+    for (k, tier) in tiers.iter().enumerate() {
+        let mut pool: Vec<usize> = eligible
+            .iter()
+            .copied()
+            .filter(|&i| tier(&candidates[i]))
             .collect();
         if pool.is_empty() {
             continue;
@@ -1896,5 +2046,67 @@ mod tests {
         });
         s.new_game(Difficulty::Easy).unwrap();
         assert_eq!(s.record().unwrap().queue, ["theirs"]);
+    }
+
+    #[test]
+    fn a_hundred_mario_run_has_100_lives_free_skips_and_an_end() {
+        let mut save = EndlessSave::default();
+        let rec = save.new_game_with(Difficulty::Easy, Ruleset::Hundred, 10);
+        assert_eq!(
+            (rec.status.lives, rec.status.goal, rec.status.ruleset),
+            (100, 8, Ruleset::Hundred)
+        );
+        let ids: Vec<String> = (0..12).map(|i| format!("c{i}")).collect();
+        rec.enqueue(ids.iter().cloned(), false);
+        rec.report(&rep("c0", Outcome::Death), "M1", 0, 11).unwrap();
+        let skip = Report {
+            during_miss: true,
+            ..rep("c0", Outcome::Skip)
+        };
+        let a = rec.report(&skip, "M1", 0, 12).unwrap();
+        assert_eq!((a.lives, a.passed), (99, 1), "SMM1's skips are free");
+        for (k, id) in ids[1..9].iter().enumerate() {
+            let c = Report {
+                pending: 3,
+                ..rep(id, Outcome::Clear)
+            };
+            let a = rec.report(&c, "M1", 0, 13).unwrap();
+            assert_eq!(a.complete, k == 7);
+            assert!(a.lives <= 100, "capped at 100");
+        }
+        assert!(rec.status.complete && !rec.status.can_continue());
+        let back = RunStatus::from_json(&rec.status.to_json());
+        assert_eq!(back, rec.status);
+        // not an Endless score
+        let f = save.finish(Difficulty::Easy).unwrap();
+        assert_eq!((f.clears, save.best[0]), (8, 0));
+        // SMM2's rules are unchanged
+        assert_eq!(Ruleset::Smm2.goal(Difficulty::SuperExpert), 0);
+        assert_eq!(Ruleset::Hundred.goal(Difficulty::SuperExpert), 6);
+    }
+
+    #[test]
+    fn hundred_draws_by_smm1_fail_rate_bands() {
+        // fail rates: 10 (easy band), 50 (normal), 85 (expert), unrated
+        let cands = vec![
+            cand("easy", 90, 100),
+            cand("normal", 50, 100),
+            cand("expert", 15, 100),
+            cand("new", 0, 3),
+        ];
+        let draw = |d| {
+            let p = pick_hundred(&cands, d, &HashSet::new(), "", 10, &mut Rng::new(1));
+            let mut v: Vec<&str> = p.indices.iter().map(|&i| cands[i].id.as_str()).collect();
+            v.sort();
+            (v, p.widened)
+        };
+        assert_eq!(draw(Difficulty::Easy), (vec!["easy"], false));
+        assert_eq!(draw(Difficulty::Normal), (vec!["easy", "normal"], false));
+        assert_eq!(draw(Difficulty::Expert), (vec!["expert"], false));
+        // nothing at 96–100 %: any rated course
+        assert_eq!(
+            draw(Difficulty::SuperExpert),
+            (vec!["easy", "expert", "normal"], true)
+        );
     }
 }

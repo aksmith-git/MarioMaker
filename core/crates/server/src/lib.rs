@@ -24,12 +24,12 @@
 //! | POST | `/api/admin/ban/<account id>`, `/api/admin/unban/<id>` | moderation (admin token) |
 //! | POST | `/api/endless/<easy\|normal\|expert\|super_expert>` (body `{"cleared"}`) | Endless Challenge run; keeps the best |
 //! | GET | `/api/endless` | Endless: the four runs (`RunStatus`), best clears, lifetime skips, last difficulty |
-//! | POST | `/api/endless/<d>/start` | New Game on `<d>` (5 lives; wipes that run) → `{difficulty, run}` |
+//! | POST | `/api/endless/<d>/start` (body optional `{"ruleset": "smm2"\|"hundred"}`) | New Game on `<d>` (wipes that run): SMM2's rules (5 lives), or SMM1's 100 Mario Challenge (100 lives, done after 8 / 16 / 16 / 6 clears, SMM1's fail-rate bands, free skips) → `{difficulty, run}` |
 //! | GET | `/api/endless/<d>/next?count=` | the run's next courses (≤ 10, by clear-rate band) → `{courses, widened, run}` |
-//! | POST | `/api/endless/<d>/result` (body `Report`: `{code, result, pending, coins, score, frames_left, during_miss}`) | a course result → `{lives, clears, passed, game_over, best}` |
+//! | POST | `/api/endless/<d>/result` (body `Report`: `{code, result, pending, coins, score, frames_left, during_miss}`) | a course result → `{lives, clears, passed, game_over, run_complete, best}` (100 Mario: `best` = completed runs) |
 //! | POST | `/api/endless/<d>/suspend`, `/finish` | quit (run kept) → `{run}`; game over → `{clears, best, new_high_score}` |
 //! | GET | `/api/endless/<d>/history` | the run's last 48 courses |
-//! | GET | `/api/rankings/<maker_points\|clears\|first_clears\|records\|endless_<difficulty>>?limit=` | leaderboards |
+//! | GET | `/api/rankings/<maker_points\|clears\|first_clears\|records\|endless_<difficulty>\|hundred_<difficulty>>?limit=` | leaderboards; `me`: the signed-in caller's row |
 //!
 //! The Endless Challenge routes (`endless` module) need a signed-in account; the server holds
 //! the run as SMM2's does.
@@ -681,7 +681,8 @@ impl Store {
 
     /// Leaderboard `kind`: maker_points (likes − boos on their courses [inf: SMM2 adds points
     /// for likes and takes them for boos; the exact weights weren't decoded]), clears (courses
-    /// cleared), first_clears, records (world records held). Banned accounts are left out.
+    /// cleared), first_clears, records (world records held), endless_<d> (Endless best clears),
+    /// hundred_<d> (completed 100 Mario runs). Banned accounts are left out.
     pub fn rankings(&self, kind: &str, limit: usize) -> Option<Vec<Value>> {
         let g = self.inner.lock().unwrap();
         let score = |a: &accounts::Account| -> i64 {
@@ -704,6 +705,16 @@ impl Store {
                 {
                     g.endless
                         .get(&k["endless_".len()..])
+                        .and_then(|m| m.get(&a.maker_id))
+                        .map_or(0, |&n| n as i64)
+                }
+                // completed 100 Mario runs
+                k if k
+                    .strip_prefix("hundred_")
+                    .is_some_and(|d| ENDLESS.contains(&d)) =>
+                {
+                    g.endless
+                        .get(k)
                         .and_then(|m| m.get(&a.maker_id))
                         .map_or(0, |&n| n as i64)
                 }
@@ -731,6 +742,13 @@ impl Store {
                 })
                 .collect(),
         )
+    }
+
+    /// `maker_id`'s row on leaderboard `kind` (None: not ranked, or no such leaderboard).
+    pub fn rank_of(&self, kind: &str, maker_id: &str) -> Option<Value> {
+        self.rankings(kind, usize::MAX)?
+            .into_iter()
+            .find(|r| r["maker_id"] == maker_id)
     }
 
     /// Record a play / anonymous clear.
@@ -961,7 +979,11 @@ pub fn handle(
                 .unwrap_or(100)
                 .min(500);
             match store.rankings(kind, limit) {
-                Some(rows) => json(200, json!({ "kind": kind, "rankings": rows })),
+                Some(rows) => {
+                    // the caller's own row, wherever it is (null: not ranked)
+                    let me = who.and_then(|w| store.rank_of(kind, w));
+                    json(200, json!({ "kind": kind, "rankings": rows, "me": me }))
+                }
                 None => err(404, "no such ranking"),
             }
         }

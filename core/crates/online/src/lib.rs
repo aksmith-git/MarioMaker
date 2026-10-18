@@ -4,7 +4,7 @@
 //! Never talks to Nintendo's network.
 
 use mmk_modes::Rng;
-use mmk_modes::endless::{Difficulty, Finished, HistoryEntry, Report, RunStatus};
+use mmk_modes::endless::{Difficulty, Finished, HistoryEntry, Report, Ruleset, RunStatus};
 use mmk_modes::pool::{CourseRef, CourseSource};
 use serde_json::Value;
 
@@ -123,7 +123,9 @@ pub struct EndlessAnswer {
     pub clears: u32,
     pub passed: u32,
     pub game_over: bool,
-    /// Best clears on the difficulty (a clear raises it).
+    /// The run reached its goal (a completed 100 Mario run).
+    pub complete: bool,
+    /// Best clears on the difficulty (a clear raises it); 100 Mario: completed runs.
     pub best: u64,
 }
 
@@ -270,7 +272,13 @@ impl Client {
 
     /// Endless New Game on `d` (wipes that difficulty's run): the new run.
     pub fn endless_start(&self, d: Difficulty) -> Result<RunStatus> {
-        let v = self.post_json(&format!("/api/endless/{}/start", d.name()), &Value::Null)?;
+        self.endless_start_with(d, Ruleset::Smm2)
+    }
+
+    /// New Game under `ruleset`: SMM2's Endless rules or SMM1's 100 Mario Challenge.
+    pub fn endless_start_with(&self, d: Difficulty, ruleset: Ruleset) -> Result<RunStatus> {
+        let body = serde_json::json!({ "ruleset": ruleset.name() });
+        let v = self.post_json(&format!("/api/endless/{}/start", d.name()), &body)?;
         Self::run_of(&v)
     }
 
@@ -297,6 +305,7 @@ impl Client {
             clears: n("clears"),
             passed: n("passed"),
             game_over: v["game_over"].as_bool().unwrap_or(false),
+            complete: v["run_complete"].as_bool().unwrap_or(false),
             best: v["best"].as_u64().unwrap_or(0),
         })
     }
