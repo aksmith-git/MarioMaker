@@ -10,6 +10,7 @@
 #include "../hle.h"
 
 #define MAX_TOUCH 16
+#define MOUSE_FINGER_ID ((SDL_FingerID)0x4d4f555345ull)  // ("MOUSE": the desktop mouse as a finger)
 typedef struct {
     SDL_FingerID id;  // 0 = free slot
     int32_t x, y;
@@ -36,8 +37,30 @@ static void to_game(float fx, float fy, int32_t *gx, int32_t *gy) {
     *gy = y < 0 ? 0 : y > 719 ? 719 : (int32_t)y;
 }
 
+// A two-finger tap (both fingers down together, up within 0.4 s): L + R for a few frames. Without a controller (iPad,
+// iPhone) that is what the title screen asks for; the menus after it take touches themselves.
+static int g_fingers, g_max_fingers;
+static uint64_t g_first_down_ns;
+static _Atomic int g_lr_frames;
+uint64_t touch_gesture_buttons(void) {
+    int n = g_lr_frames;
+    if (n <= 0) return 0;
+    g_lr_frames = n - 1;
+    return (1ull << 6) | (1ull << 7);  // L, R
+}
+static void gesture(int kind) {  // (lock held)
+    uint64_t now = SDL_GetTicksNS();
+    if (kind == 0) {
+        if (g_fingers++ == 0) { g_first_down_ns = now; g_max_fingers = 0; }
+        if (g_fingers > g_max_fingers) g_max_fingers = g_fingers;
+    } else if (kind == 2 && g_fingers > 0 && --g_fingers == 0) {
+        if (g_max_fingers == 2 && now - g_first_down_ns < 400000000ull) { g_lr_frames = 8; LOG("[touch] two-finger tap: L + R\n"); }
+    }
+}
+
 static void touch_event(SDL_FingerID id, float fx, float fy, int kind) {  // kind 0 down, 1 move, 2 up
     pthread_mutex_lock(&lock);
+    if (id != MOUSE_FINGER_ID) gesture(kind);
     Touch *t = NULL;
     for (int i = 0; i < MAX_TOUCH && !t; i++)
         if (touches[i].id == id && !touches[i].ended) t = &touches[i];
@@ -66,7 +89,7 @@ void touch_test(int32_t x, int32_t y, bool down) {
     LOG("[touch] test %s at %d,%d\n", down ? "down" : "up", x, y);
 }
 
-#define MOUSE_FINGER ((SDL_FingerID)0x4d4f555345ull)  // ("MOUSE": not an SDL finger id)
+#define MOUSE_FINGER MOUSE_FINGER_ID
 
 bool touch_handle_event(const SDL_Event *e) {
     static int no_mouse = -1;

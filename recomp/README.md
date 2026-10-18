@@ -139,6 +139,9 @@ Input:
 - Touches are the console's touch screen (`nn::hid::GetTouchScreenState`).
 - Game controllers go through SDL (GameController), and an attached keyboard as on the desktop.
 - On the desktop, the left mouse button is a finger on the touch screen (`RECOMP_NO_MOUSE_TOUCH=1` turns it off).
+- A two-finger tap is L + R, which is what the title screen asks for when no controller is attached. The menus after
+  it take touches themselves.
+- [obs] macOS: taps in the Course Maker (`LARECOMP_HOST_INPUT` tap / click) dismiss its dialogs and place blocks.
 
 GPUs without BC textures (the Simulator, older iPhones) get BC1-7 decoded on the CPU at upload (`runtime/nvn/bcsoft.c`,
 bcdec: MIT).
