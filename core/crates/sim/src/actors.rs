@@ -33,6 +33,9 @@ pub const FIREBALL_BOUNCE: f32 = 4.0;
 pub const FIREBALL_LIFE: i32 = 600;
 /// Piranha Plant height (EnemyDB tall_max 24; texture 16×24).
 pub const PIRANHA_H: f32 = 24.0;
+/// How many of a Lakitu's Spinies may be alive at once: EnemyDB Togezo spout_jugem_count,
+/// the limit its spawn limiter checks (0x7100364d80) [obs].
+const LAKITU_CHILDREN: u32 = 10;
 /// Spike Top crawl speed (px/frame; ×1.5 for the alternate form) [obs 0x7100778710 tail].
 const SPIKE_TOP_WALK: f32 = 0.5;
 /// Spike Top corner turn rate, 3°/frame (binary angle 0x2222222) [obs 0x7100779d40].
@@ -666,6 +669,10 @@ pub struct Actor {
     pub smm1_item: u8,
     /// State of the 2.0 / 3.0 parts (actors/v3.rs, actors/koopalings.rs).
     pub v3: V3State,
+    /// The id of the actor that threw this one (a Lakitu's Spiny egg), and, for a thrower, how
+    /// many of its children are alive (set by the world before it steps).
+    pub parent: Option<u32>,
+    pub children: u32,
 }
 
 impl Actor {
@@ -718,6 +725,8 @@ impl Actor {
             assist: None,
             smm1_item: 0,
             v3: V3State::default(),
+            parent: None,
+            children: 0,
         }
     }
 
@@ -870,15 +879,14 @@ impl Actor {
 
     /// Lakitu: anchor x (home_x) follows the player by at most max(|player vx|, 0.05) — the
     /// player's x-speed comes in `speed`; drift toward ±1.5 (accel 0.05), turning 48 px either
-    /// side of the anchor; throw every 60–119 frames (release 30 frames into the throw); after
-    /// 10 throws leave upward at 3.0 [inf budget].
-    fn step_lakitu(&mut self) -> Option<Actor> {
+    /// side of the anchor; throw every 60–119 frames, the countdown running only inside that
+    /// band, with fewer than 10 of its eggs / Spinies alive (the spawn limiter 0x7100364d80:
+    /// Togezo's spout_jugem_count) and the box x ± 40, y + 18…28 clear of terrain; release 30
+    /// frames into the throw (re-checking the limiter) [obs 0x7100684a10]. The limiter has no
+    /// lifetime budget for Spinies — a Lakitu throws for ever (the budget flag is set only for
+    /// a child matching a "defeat N" clear condition, 0x7100364500; not modelled).
+    fn step_lakitu(&mut self, level: &Level) -> Option<Actor> {
         let (px, _) = self.target;
-        if self.chain >= 10 {
-            self.vy = (self.vy + 0.1).min(3.0);
-            self.y += self.vy;
-            return None;
-        }
         let follow = self.speed.abs().max(0.05);
         self.home_x += (px - self.home_x).clamp(-follow, follow);
         if self.x > self.home_x + 48.0 {
@@ -889,21 +897,35 @@ impl Actor {
         let t = 1.5 * self.dir as f32;
         self.vx += (t - self.vx).clamp(-0.05, 0.05);
         self.x += self.vx;
-        if self.timer <= 0 {
+        if self.age <= 1 {
             self.timer = 60 + self.rand(60) as i32;
-            self.pause = 30;
         }
-        self.timer -= 1;
+        let room = self.children < LAKITU_CHILDREN;
         if self.pause > 0 {
+            // the throw animation, `pause` frames to the release
             self.pause -= 1;
             if self.pause == 0 {
-                self.chain += 1;
-                let face = if px < self.x { -1.0 } else { 1.0 };
-                let mut egg = Actor::new(Kind::SpinyEgg, self.x, self.y + 16.8);
-                egg.vx = (self.vx.abs() * 0.9).max(0.5) * face;
-                egg.vy = 2.0;
-                egg.dir = face as i32;
-                return Some(egg);
+                self.timer = 60 + self.rand(60) as i32;
+                if room {
+                    let face = if px < self.x { -1.0 } else { 1.0 };
+                    let mut egg = Actor::new(Kind::SpinyEgg, self.x, self.y + 16.8);
+                    egg.vx = (self.vx.abs() * 0.9).max(0.5) * face;
+                    egg.vy = 2.0;
+                    egg.dir = face as i32;
+                    egg.parent = Some(self.id);
+                    return Some(egg);
+                }
+            }
+        } else if room && (self.x - self.home_x).abs() < 48.0 {
+            if self.timer > 0 {
+                self.timer -= 1;
+            }
+            let blocked = [-40.0, -24.0, -8.0, 8.0, 24.0, 40.0].iter().any(|&dx| {
+                level.cell_at(self.x + dx, self.y + 18.0).is_solid()
+                    || level.cell_at(self.x + dx, self.y + 28.0).is_solid()
+            });
+            if self.timer == 0 && !blocked {
+                self.pause = 30;
             }
         }
         None
@@ -2232,7 +2254,7 @@ impl Actor {
                 self.y += self.vy;
             }
             Kind::Seesaw { width } => self.step_seesaw(width),
-            Kind::Lakitu => return self.step_lakitu(),
+            Kind::Lakitu => return self.step_lakitu(level),
             Kind::SpinyEgg => {
                 self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
                 self.collide(level);
@@ -4217,6 +4239,28 @@ mod tests {
         }
         assert_eq!(t.phase, 0);
         assert_eq!(t.x, x0);
+    }
+
+    #[test]
+    fn lakitu_throws_for_ever_but_holds_at_ten_live_spinies() {
+        let level = Level::flat(60);
+        let mut l = Actor::new(Kind::Lakitu, 200.0, 160.0);
+        l.id = 7;
+        l.target = (200.0, 32.0);
+        let mut thrown = 0;
+        for _ in 0..3000 {
+            if let Some(egg) = l.step_spawning(&level) {
+                assert_eq!(egg.parent, Some(7));
+                thrown += 1;
+            }
+        }
+        assert!(thrown > 10, "no lifetime budget: {thrown}");
+        l.children = 10;
+        for _ in 0..600 {
+            assert!(l.step_spawning(&level).is_none());
+        }
+        l.children = 9;
+        assert!((0..300).any(|_| l.step_spawning(&level).is_some()));
     }
 
     fn bro_on_platform_level() -> Level {

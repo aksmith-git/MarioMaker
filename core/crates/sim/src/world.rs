@@ -1741,12 +1741,22 @@ impl World {
         };
         // SMM1 shell physics: shells kicked by the mid-air wall assist
         self.step_shell_assist();
+        // the throwers' live children (a Lakitu's spawn limiter, actors.rs `step_lakitu`)
+        let parents: Vec<u32> = self
+            .actors
+            .iter()
+            .filter(|a| a.alive())
+            .filter_map(|a| a.parent)
+            .collect();
         for a in &mut self.actors {
             if a.held {
                 continue;
             }
             if a.kind.is_platform() {
                 continue; // already moved before the player
+            }
+            if a.kind == Kind::Lakitu {
+                a.children = parents.iter().filter(|&&p| p == a.id).count() as u32;
             }
             a.target = if a.kind == Kind::EscortToad {
                 escort_target
