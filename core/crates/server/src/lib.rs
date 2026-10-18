@@ -551,7 +551,14 @@ impl Store {
     }
 
     pub fn is_admin(&self, token: &str) -> bool {
-        self.admin.as_deref().is_some_and(|a| a == token)
+        // constant time, so response timing doesn't leak the token
+        self.admin.as_deref().is_some_and(|a| {
+            a.len() == token.len()
+                && a.bytes()
+                    .zip(token.bytes())
+                    .fold(0u8, |d, (x, y)| d | (x ^ y))
+                    == 0
+        })
     }
 
     fn save_index(&self, inner: &Inner) -> Result<(), StoreError> {
@@ -1123,7 +1130,14 @@ fn respond(store: &Store, gate: &limits::Gate, trust_proxy: bool, mut req: tiny_
         _ => req.remote_addr().map(|a| a.ip()),
     };
     let path = url.split('?').next().unwrap_or("");
-    if let (Some(ip), Some(kind)) = (ip, limits::kind_of(&method, path))
+    // the admin (seeding a server, moderating) isn't limited
+    let admin = headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+        .and_then(|(_, v)| v.strip_prefix("Bearer "))
+        .is_some_and(|t| store.is_admin(t.trim()));
+    if !admin
+        && let (Some(ip), Some(kind)) = (ip, limits::kind_of(&method, path))
         && !gate.allow(ip, kind, std::time::Instant::now())
     {
         let body = serde_json::to_vec(&json!({ "error": "too many requests, slow down" })).unwrap();

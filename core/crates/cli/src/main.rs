@@ -172,8 +172,13 @@ enum Cmd {
         trust_proxy: bool,
     },
     /// Upload a course (raw, zlib or .bcd needs decrypting first) to a course server.
+    /// Upload courses (raw, zlib, or .bcd with --keys); several at once seed a new server.
     Upload {
-        file: PathBuf,
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+        /// Course key table for encrypted .bcd files (an asset cache's keys/course_table.bin).
+        #[arg(long)]
+        keys: Option<PathBuf>,
         #[arg(long, default_value = "http://localhost:8640")]
         server: String,
         #[arg(long, default_value = "anonymous")]
@@ -1025,38 +1030,45 @@ fn main() -> ExitCode {
             }
         }
         Cmd::Upload {
-            file,
+            files,
+            keys,
             server,
             maker,
             token,
         } => {
-            let data = match std::fs::read(&file) {
-                Ok(raw) if raw.len() == mmk_formats::smm2::COURSE_SIZE => raw,
-                Ok(raw) => {
-                    let mut out = Vec::new();
-                    if flate2::read::ZlibDecoder::new(&raw[..])
-                        .read_to_end(&mut out)
-                        .is_err()
-                    {
-                        eprintln!("{}: not raw or zlib course data", file.display());
-                        return ExitCode::FAILURE;
+            let table = read_key_table(keys);
+            let client = online(server, token);
+            let (mut ok, mut failed) = (0usize, 0usize);
+            for file in &files {
+                let Some(data) = std::fs::read(file)
+                    .ok()
+                    .and_then(|raw| course_data(raw, table.as_ref()))
+                else {
+                    eprintln!(
+                        "{}: not course data (raw, zlib or .bcd with --keys)",
+                        file.display()
+                    );
+                    failed += 1;
+                    continue;
+                };
+                match client.upload(&data, &maker) {
+                    Ok(l) => {
+                        println!("{} {}", l.code, l.name);
+                        ok += 1;
                     }
-                    out
+                    Err(e) => {
+                        eprintln!("{}: {e}", file.display());
+                        failed += 1;
+                    }
                 }
-                Err(e) => {
-                    eprintln!("{}: {e}", file.display());
-                    return ExitCode::FAILURE;
-                }
-            };
-            match online(server, token).upload(&data, &maker) {
-                Ok(l) => {
-                    println!("{} {}", l.code, l.name);
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("upload: {e}");
-                    ExitCode::FAILURE
-                }
+            }
+            if files.len() > 1 {
+                eprintln!("uploaded {ok}, failed {failed}");
+            }
+            if failed == 0 {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
             }
         }
         Cmd::Register { name, server } => match mmk_online::Client::new(server).register(&name) {

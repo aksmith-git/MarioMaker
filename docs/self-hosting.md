@@ -30,7 +30,9 @@ Other options: `--threads` (request threads, default 8), `--writes-per-minute` (
 comments and clears per client address, default 60), `--accounts-per-hour` (new accounts per
 address, default 5), `--trust-proxy` (behind your own reverse proxy: take the client address from
 `X-Forwarded-For`; never set it on a server reachable directly, or anyone can fake addresses).
-Over a limit the server answers 429. `GET /api/health` reports that the server is up, its course
+Over a limit the server answers 429; requests with the admin token aren't limited, so you can
+seed a new server with `mmk upload --token $MMK_ADMIN_TOKEN courses/*.zlib` (raw, zlib, or `.bcd`
+with `--keys`). `GET /api/health` reports that the server is up, its course
 and account counts, and the engine version its replays need.
 
 ### What's in the data folder
