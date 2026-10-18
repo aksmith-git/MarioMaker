@@ -130,8 +130,12 @@ Earlier (R1, first round):
 
 ## Open issues
 
-- A title course swapped into another slot (all-ten-slots mod, or two slots swapped) crashes the recomp while the
-  title scene loads (a null pointer in the scene setup); Ryujinx runs the all-slots mod.
+- ~~A title course swapped into another slot crashes the recomp; Ryujinx runs the all-slots mod.~~ Not a recomp bug
+  (R2, [obs]): Ryujinx does the same once it is made to pick the same slot. With the game's course 00 in every slot,
+  Ryujinx with every `sead::Random` seeded 4 (slot 00, the course's own) runs, and seeded 1 (slot 02, like the
+  recomp's `SMM2_SEED=1`) exits while the title scene loads, as the recomp crashes there; courses 03 and 06 in slot 00
+  end both runtimes too. SMCraft's test courses load in any slot in both. Ryujinx usually picks slot 00 on its own
+  (its boot tick), which is why the all-slots mod seemed to work there.
 - Geometry shaders with other input primitives, several strips, or textures are not handled (draws skipped).
 
 ## Input replays against Ryujinx (R2, 2026-10-19)
@@ -199,6 +203,6 @@ Per-session tables (each test, frames compared, identical, first divergence): `p
   course (stock_varied) the same player object keeps being updated in its death state to the script's end.
 - [obs] Before R2 the recomp had never been given input, so none of this had been exercised: no lifter, FP/SIMD or
   scheduling bug showed up in 221,189 compared updates, and none needed fixing for R2.
-- [obs] Swapping the title course for another of the game's own (`titlemod.py --course 3` or `6`) crashes on loading
-  in both runtimes alike (recomp: a null read; Ryujinx: the emulator exits at the same point), so the title screen
-  apparently expects each slot's own course [inf]; SMCraft's test courses load in any slot.
+- [obs] A game title course in another slot than its own crashes on loading in both runtimes alike (recomp: a null
+  read; Ryujinx: the emulator exits at the same point; see "Open issues"), so the title screen apparently expects
+  each slot's own course [inf]; SMCraft's test courses load in any slot.
