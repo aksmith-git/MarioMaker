@@ -24,7 +24,9 @@ SEEDALL=1 seeds every sead::Random with 4 in both (recomp SMM2_SEED_ALL=1; Ryuji
 sead::Random::init() into the constant) for courses whose enemies draw random numbers.
 
 Environment: RYU_TRACE_DEV (Ryujinx tooling), RYU_LOCK (a directory taken while Ryujinx runs), WORK (default
-recomp/private/smm2/replay), MMK (default core/target/release/mmk), SMM2_COURSE_TABLE (the course encryption table
+recomp/private/smm2/replay), MMK (an `mmk` that still has `trace-courses`: SMCraft's full CLI, built from the
+`smcraft-archive` branch with `cargo build --release -p mmk-cli`; main's cut-down `mmk` has only the server commands;
+default core/target/release/mmk), SMM2_COURSE_TABLE (the course encryption table
 `mmk trace-courses --table` needs). Traces are game memory: they stay in WORK (git-ignored), never in the repository.
 """
 import gzip

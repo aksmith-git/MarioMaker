@@ -9,7 +9,7 @@
 //                           when the game has such a hook
 //   RECOMP_PAD_CLOCK=frame  each frame the game presents
 // RECOMP_PAD_START=<n> starts the script at tick n (default 0, the first). Nothing is pressed before the start or after
-// the end. While a script is loaded the keyboard, mouse and controllers are left out (the sticks stay at rest; the
+// the end; RECOMP_PAD_EXIT=1 quits when the script is done. While a script is loaded the keyboard, mouse and controllers are left out (the sticks stay at rest; the
 // d-pad is the d-pad).
 #pragma once
 #include <stdbool.h>

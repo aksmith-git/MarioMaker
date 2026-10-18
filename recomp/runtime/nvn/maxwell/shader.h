@@ -45,11 +45,13 @@ typedef struct {
                             // after flip_y: keys without it hash as before - shader caches stay valid.)
     uint32_t vs_out_mask;   // fragment: varyings the vertex shader provides
     uint8_t glsl;           // emit Vulkan GLSL (see the contract above) instead of MSL
-    uint8_t vs_fn;          // vertex (MSL): emit `static VOut vs_main(...)` for a geometry stage to call (see below)
+    uint8_t vs_fn;          // vertex: a geometry stage follows. MSL: emit `static VOut vs_main(...)` for it to call
+                            // (see below); GLSL: no clip-space epilogue (the geometry shader applies it)
     uint32_t gs_out_mask;   // vertex with vs_fn: varyings the geometry stage writes (VOut gets them too)
 } ShaderKey;
 
-// Geometry shaders (MSL only; Metal has none). A program with a geometry stage is drawn as one vertex function:
+// Geometry shaders. GLSL: a real geometry stage (descriptor set 2; point input; key->vs_out_mask = the vertex
+// shader's outputs). MSL (Metal has none): A program with a geometry stage is drawn as one vertex function:
 // the vertex shader is translated with key->vs_fn into `static VOut vs_main(VIn in, uint vid, uint iid, ...)` (no
 // clip-space epilogue), and the geometry shader into a code fragment (ShaderInfo.msl) that runs in the entry point
 // after `VOut vso = vs_main(...)`: attribute loads read vso, stores write `gout`, and the n-th EmitVertex copies

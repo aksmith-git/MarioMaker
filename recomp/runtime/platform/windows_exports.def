@@ -1,0 +1,12 @@
+; The executable's exports for the game code DLL (runtime/platform/windows_exports.c has the same list).
+; LIBRARY is replaced by the Makefile with the executable's name.
+EXPORTS
+rt_dispatch
+rt_svc
+rt_brk
+rt_udf
+rt_ticks
+fnprof_hit
+g_fnprof DATA
+smm2_player_hook
+smm2_mod_after

@@ -6,9 +6,19 @@
 // Metal renderer for the NVN layer: window, textures, command execution, presentation.
 #include <sys/stat.h>
 #include <dlfcn.h>
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#import <UIKit/UIKit.h>
+#import <ImageIO/ImageIO.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#else
 #import <AppKit/AppKit.h>
+#endif
 #import <Metal/Metal.h>
+#if __has_include(<MetalFX/MetalFX.h>)  // (not in the iOS Simulator SDK)
 #import <MetalFX/MetalFX.h>
+#define HAVE_METALFX 1
+#endif
 #include "output_scale.h"
 #import <QuartzCore/CAMetalLayer.h>
 #include <SDL3/SDL.h>
@@ -18,6 +28,7 @@
 #include "nvn.h"
 #include "renderer.h"
 #include "texpatch.h"
+#include "bcsoft.h"
 
 static id<MTLDevice> dev;
 static id<MTLCommandQueue> queue;
@@ -32,7 +43,20 @@ uint64_t g_guest_buffer_base;
 // ================================================================== formats
 typedef struct { MTLPixelFormat pf; uint8_t expand_rgb; uint8_t force_alpha_one; } MtlFormat;
 
+// GPUs without BC textures (the iOS Simulator, older iPhones; RECOMP_BC_SOFT=1 to try it on a Mac): BC1-7 are
+// decoded on the CPU at upload (runtime/nvn/bcsoft.c) into RGBA8 / RGBA8 snorm / RGBA16F textures. Set in backend_init.
+static bool g_bc_soft;
+static MtlFormat mtl_format_hw(uint32_t f);
 static MtlFormat mtl_format(uint32_t f) {
+    int k = g_bc_soft ? bcsoft_kind(f) : 0;
+    if (!k) return mtl_format_hw(f);
+    bool srgb = f == 0x45 || f == 0x46 || f == 0x47 || f == 0x48 || f == 0x4E;
+    if (k == BCSOFT_BC6 || k == BCSOFT_BC6S) return (MtlFormat){MTLPixelFormatRGBA16Float};
+    if (k == BCSOFT_BC4S || k == BCSOFT_BC5S) return (MtlFormat){MTLPixelFormatRGBA8Snorm};
+    return (MtlFormat){srgb ? MTLPixelFormatRGBA8Unorm_sRGB : MTLPixelFormatRGBA8Unorm};
+}
+
+static MtlFormat mtl_format_hw(uint32_t f) {
     switch (f) {
     case 0x01: return (MtlFormat){MTLPixelFormatR8Unorm};
     case 0x02: return (MtlFormat){MTLPixelFormatR8Snorm};
@@ -306,7 +330,11 @@ static MTLTextureType mtl_tex_type(uint32_t target, uint32_t samples) {
     case 5: return MTLTextureType2DMultisample;
     case 6: return MTLTextureType2DMultisampleArray;
     case 8: return MTLTextureTypeCube;
+#if TARGET_OS_SIMULATOR
+    case 9: return MTLTextureType2DArray;  // (no cube arrays in the Simulator: the faces as layers, never sampled)
+#else
     case 9: return MTLTextureTypeCubeArray;
+#endif
     default: return samples > 1 ? MTLTextureType2DMultisample : MTLTextureType2D;
     }
 }
@@ -404,7 +432,7 @@ static void create_backend_texture(NvnTexture *t, TexBackend *b) {
     d.depth = t->target == 2 ? (t->depth ? t->depth : 1) : 1;
     if (t->target == 3) d.arrayLength = t->height ? t->height : 1;
     else if (t->target == 4 || t->target == 6) d.arrayLength = t->depth ? t->depth : 1;
-    else if (t->target == 9) d.arrayLength = (t->depth ? t->depth : 6) / 6;
+    else if (t->target == 9) d.arrayLength = (t->depth ? t->depth : 6) / (d.textureType == MTLTextureTypeCubeArray ? 6 : 1);
     d.mipmapLevelCount = t->levels ? t->levels : 1;
     if (b->scalable) {
         uint32_t m = 1, sz = tw > th ? tw : th;
@@ -540,7 +568,17 @@ static void upload_texture(NvnTexture *t, TexBackend *b, id<MTLBlitCommandEncode
             }
             if (b->tp > 0 && layer == 0) texpatch_apply(b->tp - 1, lv, lin, l.w, l.h, row);
             uint8_t *data = lin;
-            uint32_t out_row = row;
+            uint32_t out_row = row, out_h = l.hb;  // (rows of blocks; of texels once decoded)
+            int bck = g_bc_soft ? bcsoft_kind(t->format) : 0;
+            if (bck) {  // BC on the CPU (see g_bc_soft)
+                int ts = bcsoft_texel_size(bck);
+                data = malloc((uint64_t)l.w * l.h * l.d * ts);
+                bcsoft_decode(bck, lin, l.w, l.h, l.d, data);
+                free(lin);
+                lin = data;
+                out_row = l.w * ts;
+                out_h = l.h;
+            }
             static int bc5log;  // LARECOMP_LOG_BC5: endpoint bytes of BC5 (0x4B/0x4C) textures (unorm ~128 vs snorm ~0)
             if ((t->format == 0x4B || t->format == 0x4C) && lv == 0 && bc5log < 12 && getenv("LARECOMP_LOG_BC5")) {
                 bc5log++;
@@ -560,7 +598,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b, id<MTLBlitCommandEncode
                 free(lin);
                 lin = data;
             }
-            uint64_t out_sz = (uint64_t)out_row * l.hb * l.d;
+            uint64_t out_sz = (uint64_t)out_row * out_h * l.d;
             id<MTLBuffer> staging = [dev newBufferWithBytes:data length:out_sz options:MTLResourceStorageModeShared];
             free(lin);
             // the copy stays inside the texture's level: one allocated at the internal resolution (16:9, render
@@ -570,7 +608,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b, id<MTLBlitCommandEncode
             MTLSize size = MTLSizeMake(MIN((NSUInteger)l.w, lw), MIN((NSUInteger)l.h, lh), MIN((NSUInteger)l.d, ld));
             NSUInteger slice = layer;
             [blit copyFromBuffer:staging sourceOffset:0 sourceBytesPerRow:out_row
-                 sourceBytesPerImage:(NSUInteger)out_row * l.hb sourceSize:size toTexture:b->tex
+                 sourceBytesPerImage:(NSUInteger)out_row * out_h sourceSize:size toTexture:b->tex
                     destinationSlice:slice destinationLevel:lv destinationOrigin:MTLOriginMake(0, 0, 0)];
         }
     }
@@ -732,13 +770,19 @@ static void save_png(id<MTLTexture> tex, const char *path) { renderer_save_textu
 
 // MetalFX spatial upscaling (Video tab "Upscaler" = MetalFX). metalfx_upscale() decides (and sets up the scaler for
 // this input / output size); metalfx_encode() runs it and returns the upscaled image.
+#ifdef HAVE_METALFX
 static id<MTLFXSpatialScaler> g_fx;
 static id<MTLTexture> g_fx_out;
 static NSUInteger g_fx_iw, g_fx_ih, g_fx_ow, g_fx_oh;
 static MTLPixelFormat g_fx_fmt;
+#endif
 static id<MTLTexture> metalfx_upscale(id<MTLCommandBuffer> cb, id<MTLTexture> in, double ow_d, double oh_d) {
     (void)cb;
     if (g_settings.upscaler != UPSCALE_METALFX) return nil;
+#ifndef HAVE_METALFX
+    (void)in, (void)ow_d, (void)oh_d;
+    return nil;
+#else
     static int supported = -1;
     if (supported < 0) {
         supported = [MTLFXSpatialScalerDescriptor supportsDevice:dev] ? 1 : 0;
@@ -766,6 +810,7 @@ static id<MTLTexture> metalfx_upscale(id<MTLCommandBuffer> cb, id<MTLTexture> in
             (unsigned long)oh, g_fx ? "ok" : "FAILED");
     }
     return g_fx && g_fx_out ? g_fx_out : nil;
+#endif
 }
 // SMAA 1x (Video tab "Anti-aliasing"; third_party/smaa, MIT; as runtime/nvn/vulkan/shaders.c / exec.c): luma edges ->
 // blending weights -> neighbourhood blending, at the game image's size, before the present / MetalFX. The reference
@@ -911,12 +956,17 @@ static id<MTLTexture> smaa_encode(id<MTLCommandBuffer> cb, id<MTLTexture> in) {
 }
 
 static id<MTLTexture> metalfx_encode(id<MTLCommandBuffer> cb, id<MTLTexture> in) {
+#ifndef HAVE_METALFX
+    (void)cb;
+    return in;
+#else
     g_fx.colorTexture = in;
     g_fx.inputContentWidth = in.width;
     g_fx.inputContentHeight = in.height;
     g_fx.outputTexture = g_fx_out;
     [g_fx encodeToCommandBuffer:cb];
     return g_fx_out;
+#endif
 }
 
 
@@ -1027,6 +1077,7 @@ void backend_represent(void) {
 
 // Our window's image from the window server (CGWindowListCreateImage, looked up at run time: it is deprecated in
 // favour of ScreenCaptureKit, but a process may still capture its own windows with it) -> PNG.
+#if !TARGET_OS_IPHONE
 static void window_server_shot(const char *path) {
     CFArrayRef list = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID);
     CGWindowID wid = 0;
@@ -1053,6 +1104,9 @@ static void window_server_shot(const char *path) {
     CFRelease(url);
     CGImageRelease(img);
 }
+#else
+static void window_server_shot(const char *path) { LOG("[metal] no window-server capture on iOS (%s)\n", path); }
+#endif
 
 void backend_present(NvnTexture *t) {
     g_last_presented = t;
@@ -1096,6 +1150,7 @@ void backend_present(NvnTexture *t) {
         extern void widescreen_present_crop(uint64_t, double, float *, double *, double *, double *, double *);
         float crop[4];  // uv origin and size
         widescreen_present_crop(total_frames, shape, crop, &vx, &vy, &vw, &vh);
+        { extern void input_set_game_rect(double, double, double, double, double, double); input_set_game_rect(vx, vy, vw, vh, dw, dh); }
         widescreen_set_factor((float)shape);
         {   // (diagnostics) log output scale / drawable changes
             static double psx, psy, pdw, pdh;
@@ -1299,6 +1354,12 @@ void ui_window_init(void) {
     SDL_MetalView view = SDL_Metal_CreateView(window);
     layer = (__bridge CAMetalLayer *)SDL_Metal_GetLayer(view);
     dev = MTLCreateSystemDefaultDevice();
+#if TARGET_OS_IPHONE
+    if (@available(iOS 16.4, *)) g_bc_soft = !dev.supportsBCTextureCompression;
+    else g_bc_soft = true;
+#endif
+    if (getenv("RECOMP_BC_SOFT")) g_bc_soft = atoi(getenv("RECOMP_BC_SOFT")) != 0;
+    if (g_bc_soft) LOG("[metal] no BC texture support on this GPU: BC1-7 decoded on the CPU\n");
     layer.device = dev;
     layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
     layer.framebufferOnly = getenv("LARECOMP_WINDOW_SHOT") ? NO : YES;

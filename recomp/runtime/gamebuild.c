@@ -21,6 +21,12 @@
 #ifndef GAMELIB_SHARED
 #define GAMELIB_SHARED "-shared"
 #endif
+#ifndef GAMEBUILD_HLE
+#define GAMEBUILD_HLE "runtime/hle/hle_symbols.txt"  // (the game's HLE list in a source checkout: Makefile GAME_HLE)
+#endif
+#ifndef GAMEBUILD_PATCHES
+#define GAMEBUILD_PATCHES "games/patches.py"  // (the game's generator patches in a source checkout: Makefile GAME_PATCHES)
+#endif
 
 #ifdef _WIN32
 #define SEP "\\"
@@ -107,6 +113,7 @@ typedef struct {
     char cc[1100];                     // compiler: zig (as `zig cc`), or LARECOMP_CC / clang
     bool zig;
     char inc[1100], entry[1100], hle[1100];  // headers the game code includes, tools/gamelib_entry.c, HLE names
+    char patches[1100];                       // the game's per-instruction patches for main ("" = none)
 #ifdef _WIN32
     char implib[1100];  // the .exe's import library (the runtime functions the game code calls)
     char zig_rt[1100];  // the release's zig: its runtime built ahead of time (zig/rt, tools/zig_slim.sh), "" = none
@@ -123,8 +130,9 @@ static bool find_tools(Tools *t) {
     const char *e = getenv("LARECOMP_GEN");
     if (e && *e) snprintf(t->gen, sizeof t->gen, "%s", e);
     else if (!rt_resource("lasgen" SEP "lasgen" PLAT_EXE_SUFFIX, NULL, t->gen, sizeof t->gen) &&
-             !(rt_resource(NULL, "tools/" PLAT_VENV_PYTHON, t->gen, sizeof t->gen) &&
-               rt_resource(NULL, "tools/gen.py", t->gen_script, sizeof t->gen_script)))
+             !(rt_resource("tools" SEP PLAT_VENV_PYTHON, "tools/" PLAT_VENV_PYTHON, t->gen, sizeof t->gen) &&
+               rt_resource("tools" SEP "gen.py", "tools/gen.py", t->gen_script, sizeof t->gen_script)))
+        // (packages: tools/ next to the program, its venv made by the player - docs/windows.md, recomp/README.md)
         return false;
     e = getenv("LARECOMP_CC");
     if (e && *e) snprintf(t->cc, sizeof t->cc, "%s", e);
@@ -135,8 +143,9 @@ static bool find_tools(Tools *t) {
     else return false;
     if (!rt_resource("gamelib-src" SEP "cpu.h", "runtime/cpu.h", t->inc, sizeof t->inc) ||
         !rt_resource("gamelib-src" SEP "gamelib_entry.c", "tools/gamelib_entry.c", t->entry, sizeof t->entry) ||
-        !rt_resource("gamelib-src" SEP "hle_symbols.txt", "runtime/hle/hle_symbols.txt", t->hle, sizeof t->hle))
+        !rt_resource("gamelib-src" SEP "hle_symbols.txt", GAMEBUILD_HLE, t->hle, sizeof t->hle))
         return false;
+    if (!rt_resource("gamelib-src" SEP "patches.py", GAMEBUILD_PATCHES, t->patches, sizeof t->patches)) t->patches[0] = 0;
     char *s = strrchr(t->inc, '/'), *b = strrchr(t->inc, '\\');
     if (b > s) s = b;
     if (s) *s = 0;
@@ -319,6 +328,7 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         add(&a, base[i]);
         add(&a, g->out);
         if (i == 1) { add(&a, "--hle"); add(&a, t.hle); }
+        if (i == 0 && t.patches[0]) { add(&a, "--patches"); add(&a, t.patches); }  // (as the Makefile's gen)
         g->p = spawn(a.v, g->log);
         args_free(&a);
         if (!g->p) { snprintf(why, why_size, "the game code builder didn't start"); ok = false; }

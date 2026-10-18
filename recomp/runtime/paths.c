@@ -9,6 +9,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -93,6 +96,11 @@ void rt_paths_init(void) {
     else {
 #ifdef _WIN32
         snprintf(root, sizeof root, "%s", g_exe_dir);
+#elif TARGET_OS_IPHONE
+        // iOS / iPadOS: the app's Documents folder (Files app / Finder file sharing): extracted/, fonts/, sysdata/,
+        // saves, settings and caches
+        const char *home = getenv("HOME");
+        snprintf(root, sizeof root, "%s/Documents", home && *home ? home : "/tmp");
 #elif defined(__linux__)
         // (the AppImage is read-only): $XDG_DATA_HOME/lasrecomp, ~/.local/share/lasrecomp by default
         const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
@@ -210,7 +218,11 @@ unsigned long long rt_game_files_size(const char *game_dir) {
 // Window / Dock icon: icon.png shipped next to the exe or in the .app (none for a plain source build).
 void rt_window_icon(SDL_Window *w) {
     char p[1100];
+#if SDL_VERSION_ATLEAST(3, 4, 0)  // (SDL_LoadPNG: SDL 3.4; distributions ship 3.2: no icon there)
     if (!rt_resource("icon.png", NULL, p, sizeof p)) return;
     SDL_Surface *s = SDL_LoadPNG(p);
     if (s) SDL_SetWindowIcon(w, s), SDL_DestroySurface(s);
+#else
+    (void)w, (void)p;
+#endif
 }

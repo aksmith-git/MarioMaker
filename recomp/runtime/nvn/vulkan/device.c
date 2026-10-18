@@ -189,6 +189,8 @@ static void create_device(void) {
     b->largePoints = h->largePoints;
     b->wideLines = h->wideLines;
     b->imageCubeArray = h->imageCubeArray;
+    b->geometryShader = h->geometryShader;  // (NVN geometry stages: SMM2's 2D-style terrain; exec.c)
+    g_vk.geometry = h->geometryShader;
     b->sampleRateShading = h->sampleRateShading;
     b->fragmentStoresAndAtomics = h->fragmentStoresAndAtomics;
     b->vertexPipelineStoresAndAtomics = h->vertexPipelineStoresAndAtomics;
@@ -447,11 +449,70 @@ void vk_frame_end(const char *shot_path) {
     }
 }
 
+#if !SDL_VERSION_ATLEAST(3, 4, 0)
+// (SDL_SavePNG is SDL 3.4; distributions ship 3.2) A plain PNG writer: RGBA8, deflate "stored" blocks.
+static uint32_t png_crc(uint32_t c, const uint8_t *p, size_t n) {
+    c = ~c;
+    for (size_t i = 0; i < n; i++) { c ^= p[i]; for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xEDB88320u & -(c & 1u)); }
+    return ~c;
+}
+static void png_be32(uint8_t *p, uint32_t v) { p[0] = v >> 24; p[1] = v >> 16; p[2] = v >> 8; p[3] = v; }
+static void png_chunk(FILE *f, const char *type, const uint8_t *d, uint32_t n) {
+    uint8_t h[8];
+    png_be32(h, n); memcpy(h + 4, type, 4);
+    fwrite(h, 1, 8, f);
+    if (n) fwrite(d, 1, n, f);
+    uint32_t c = png_crc(png_crc(0, (const uint8_t *)type, 4), d, n);
+    png_be32(h, c);
+    fwrite(h, 1, 4, f);
+}
+static bool save_png_plain(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h) {
+    size_t row = (size_t)w * 4 + 1, raw_n = row * h;
+    uint8_t *raw = malloc(raw_n);
+    if (!raw) return false;
+    for (uint32_t y = 0; y < h; y++) { raw[y * row] = 0; memcpy(raw + y * row + 1, rgba + (size_t)y * w * 4, (size_t)w * 4); }
+    size_t nblk = raw_n / 65535 + 1, z_n = 2 + raw_n + nblk * 5 + 4;
+    uint8_t *z = malloc(z_n), *o = z;
+    if (!z) { free(raw); return false; }
+    *o++ = 0x78; *o++ = 0x01;
+    uint32_t a = 1, b = 0;
+    for (size_t i = 0; i < raw_n; i++) { a = (a + raw[i]) % 65521u; b = (b + a) % 65521u; }
+    for (size_t off = 0; off < raw_n || off == 0;) {
+        size_t n = raw_n - off > 65535 ? 65535 : raw_n - off;
+        *o++ = off + n >= raw_n ? 1 : 0;
+        *o++ = n & 0xFF; *o++ = n >> 8; *o++ = ~n & 0xFF; *o++ = (~n >> 8) & 0xFF;
+        memcpy(o, raw + off, n); o += n; off += n;
+        if (!n) break;
+    }
+    png_be32(o, (b << 16) | a); o += 4;
+    FILE *f = fopen(path, "wb");
+    bool ok = f != NULL;
+    if (f) {
+        static const uint8_t sig[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+        uint8_t ihdr[13];
+        png_be32(ihdr, w); png_be32(ihdr + 4, h);
+        ihdr[8] = 8; ihdr[9] = 6; ihdr[10] = ihdr[11] = ihdr[12] = 0;
+        fwrite(sig, 1, 8, f);
+        png_chunk(f, "IHDR", ihdr, 13);
+        png_chunk(f, "IDAT", z, (uint32_t)(o - z));
+        png_chunk(f, "IEND", NULL, 0);
+        fclose(f);
+    }
+    free(raw); free(z);
+    return ok;
+}
+#endif
+
 void vk_save_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h) {
+#if SDL_VERSION_ATLEAST(3, 4, 0)
     SDL_Surface *s = SDL_CreateSurfaceFrom((int)w, (int)h, SDL_PIXELFORMAT_ABGR8888, (void *)rgba, (int)w * 4);
     if (!s || !SDL_SavePNG(s, path)) LOG("[vk] saving %s failed: %s\n", path, SDL_GetError());
     else LOG("[vk] saved %s (%ux%u)\n", path, w, h);
     SDL_DestroySurface(s);
+#else
+    if (!save_png_plain(path, rgba, w, h)) LOG("[vk] saving %s failed\n", path);
+    else LOG("[vk] saved %s (%ux%u)\n", path, w, h);
+#endif
 }
 
 // ================================================================== game presentation (metal.m backend_present)
@@ -505,6 +566,7 @@ void backend_present(NvnTexture *t) {
         extern void widescreen_present_crop(uint64_t, double, float *, double *, double *, double *, double *);
         float crop[4];  // uv origin and size
         widescreen_present_crop(total_frames, shape, crop, &vx, &vy, &vw, &vh);
+        { extern void input_set_game_rect(double, double, double, double, double, double); input_set_game_rect(vx, vy, vw, vh, dw, dh); }
         widescreen_set_factor((float)shape);
         renderer_set_scale((float)sx, (float)sy);
         VkCommandBuffer cb = vk_cmd();
@@ -515,11 +577,27 @@ void backend_present(NvnTexture *t) {
         if (menu_at < 0) menu_at = getenv("LARECOMP_MENU_AT") ? atol(getenv("LARECOMP_MENU_AT")) : 0;
         if (menu_at && (long)total_frames + 1 == menu_at) { extern void menu_test_open(void); menu_test_open(); }
         menu_render((void *)cb, g_vk.sc_extent.width, g_vk.sc_extent.height);
-        static long win_shot = -1;
-        if (win_shot < 0) win_shot = getenv("LARECOMP_WINDOW_SHOT") ? atol(getenv("LARECOMP_WINDOW_SHOT")) : 0;
-        bool shot = win_shot && (long)total_frames + 1 == win_shot;
-        vk_frame_end(shot ? "build/window.png" : NULL);
-        if (shot && getenv("LARECOMP_EXIT_AFTER_SHOT")) { fflush(stderr); _exit(0); }
+        // LARECOMP_WINDOW_SHOT=<frame> saves the window image at that frame (LARECOMP_SHOT_PATH, default
+        // build/window.png); <first>:<last>[:<step>] every step-th frame in between, LARECOMP_SHOT_PATH then a printf
+        // pattern taking the frame number (build/win_%05d.png) - as metal.m's LARECOMP_CG_SHOT, for comparisons
+        static long win_a = -1, win_b, win_step = 1;
+        if (win_a < 0) {
+            const char *e = getenv("LARECOMP_WINDOW_SHOT");
+            win_a = e ? atol(e) : 0;
+            win_b = win_a;
+            if (e && strchr(e, ':')) sscanf(e, "%ld:%ld:%ld", &win_a, &win_b, &win_step);
+            if (win_step < 1) win_step = 1;
+        }
+        long f1 = (long)total_frames + 1;
+        bool shot = win_a && f1 >= win_a && f1 <= win_b && (f1 - win_a) % win_step == 0;
+        char shot_path[512] = "build/window.png";
+        const char *pat = getenv("LARECOMP_SHOT_PATH");
+        if (shot && pat) {
+            if (strchr(pat, '%')) snprintf(shot_path, sizeof shot_path, pat, (int)f1);
+            else snprintf(shot_path, sizeof shot_path, "%s", pat);
+        }
+        vk_frame_end(shot ? shot_path : NULL);
+        if (shot && f1 + win_step > win_b && getenv("LARECOMP_EXIT_AFTER_SHOT")) { fflush(stderr); _exit(0); }
     } else {
         renderer_submit();
     }

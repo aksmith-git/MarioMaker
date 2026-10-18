@@ -138,6 +138,8 @@ int input_pad_family(void) {
 }
 
 void input_handle_event(const SDL_Event *e) {
+    extern bool touch_handle_event(const SDL_Event *e);  // runtime/hle/touch.c (touches, the mouse as a finger)
+    if (touch_handle_event(e)) return;
     static bool scanned;  // pads present at startup: their ADDED event may have gone to the start screen's loop
     if (!scanned) {
         scanned = true;
@@ -179,6 +181,8 @@ static _Atomic int32_t script_lx, script_ly, script_rx, script_ry;
 //   entry first like a player's typing; "{Escape}" (any SDL key name) presses that key. No ',' or ':' in <text>.
 // "frame:sdlpad:<button>:frames" / "frame:sdlkey:<key>:frames" hold a controller button / key as real events (down
 //   at frame, up `frames` later): they reach menus and the on-screen keyboard first, as a player's would.
+// "frame:click:<x>/<y>:frames" holds the left mouse button at window point x, y (a real event: the mouse as a finger).
+// "frame:tap:<x>/<y>:frames" touches the touch screen at game pixel x, y (1280x720) for that long.
 // "frame:shot:<name>" saves the window (game + menus) to build/<name>.png.
 // LARECOMP_BIND_TEST="frame:pad|key:<input>:<host>,..." starts a rebind capture of <input> (bind_* name: a, zl,
 //   ls_up...) at that frame (the Controls tab shows it waiting) and presses <host> 90 frames later ("esc" cancels,
@@ -197,6 +201,25 @@ static void test_push(uint64_t frame, unsigned long start, unsigned long len, co
     if (!strcmp(dev, "shot")) {
         extern char g_window_shot_request[256];  // runtime/hle/hookshot.c
         if (frame == start) snprintf(g_window_shot_request, sizeof g_window_shot_request, "build/%s.png", arg);
+        return;
+    }
+    if (!strcmp(dev, "click")) {  // "frame:click:<x>/<y>:frames": the left mouse button held at window point x, y
+        float x = 0, y = 0;
+        sscanf(arg, "%f/%f", &x, &y);
+        if (frame != start && frame != start + len) return;
+        e.type = frame == start ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+        e.button.which = 1, e.button.button = SDL_BUTTON_LEFT, e.button.down = frame == start, e.button.x = x, e.button.y = y;
+        SDL_Window *w = SDL_GetMouseFocus() ? SDL_GetMouseFocus() : SDL_GetKeyboardFocus();
+        if (!w) { int n = 0; SDL_Window **ws = SDL_GetWindows(&n); if (n > 0) w = ws[0]; SDL_free(ws); }
+        e.button.windowID = w ? SDL_GetWindowID(w) : 0;
+        SDL_PushEvent(&e);
+        return;
+    }
+    if (!strcmp(dev, "tap")) {  // "frame:tap:<x>/<y>:frames": a finger on the touch screen at game pixel x, y
+        extern void touch_test(int32_t x, int32_t y, bool down);  // runtime/hle/touch.c
+        int x = 0, y = 0;
+        sscanf(arg, "%d/%d", &x, &y);
+        if (frame == start || frame == start + len) touch_test(x, y, frame == start);
         return;
     }
     if (!strcmp(dev, "sdlkey")) {
@@ -252,7 +275,7 @@ static void host_test_frame(uint64_t frame) {
             unsigned long start = 0, len = 10;
             char dev[8] = "", name[400] = "";
             if (sscanf(tok, "%lu:%7[a-z]:%399[^:]:%lu", &start, dev, name, &len) < 3) continue;
-            if (!strcmp(dev, "type") || !strcmp(dev, "sdlpad") || !strcmp(dev, "sdlkey") || !strcmp(dev, "shot")) {
+            if (!strcmp(dev, "type") || !strcmp(dev, "sdlpad") || !strcmp(dev, "sdlkey") || !strcmp(dev, "shot") || !strcmp(dev, "tap") || !strcmp(dev, "click")) {
                 test_push(frame, start, len, dev, name);
                 continue;
             }
@@ -445,6 +468,7 @@ static void fill_state(Cpu *c, uint8_t *s, uint32_t id, bool single) {
             b &= ~(0xfull << 12);
         }
     }
+    { extern uint64_t touch_gesture_buttons(void); b |= touch_gesture_buttons(); }  // (runtime/hle/touch.c: L + R by touch)
     // stick directions also appear as buttons (bits 16-23)
     if (lx < -16000) b |= 1ull << 16;
     if (ly > 16000) b |= 1ull << 17;

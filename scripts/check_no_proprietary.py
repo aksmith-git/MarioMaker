@@ -14,8 +14,9 @@ Usage:
   check_no_proprietary.py --staged   # check files staged for commit (pre-commit hook)
   check_no_proprietary.py FILE...    # check specific files
 
-Placeholder art that is deliberately allowed lives under assets/placeholder/ and must be
-PNG/WAV/OGG/JSON; those files still go through the magic-byte check.
+Images (game art, captures) are blocked everywhere except two places: assets/placeholder/
+(original placeholder art) and docs/screenshots/ (a few captures of our own builds for the
+README, owner's call 2026-10-19: PNG or JPEG, at most 1 MiB each and 12 files).
 """
 
 from __future__ import annotations
@@ -109,6 +110,11 @@ BARE_KEY_LINE = re.compile(
 )
 KEY_FILENAME = re.compile(r"keys?\b|otp|seeprom", re.IGNORECASE)
 MAX_BYTES = 5 * 1024 * 1024
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tga", ".dds", ".tif", ".tiff", ".ktx", ".astc"}
+SCREENSHOT_DIR = "/docs/screenshots/"
+SCREENSHOT_TYPES = {".png", ".jpg", ".jpeg"}
+SCREENSHOT_MAX_BYTES = 1024 * 1024
+SCREENSHOT_MAX_FILES = 12
 ALLOW_LARGE_PREFIXES = ()  # nothing in the repo should be this large
 
 
@@ -130,6 +136,15 @@ def check_file(path: Path) -> list[str]:
         problems.append("file is under a recomp folder for dump-derived output (private/generated/build)")
     if name in BLOCKED_NAMES or path.suffix.lower() in BLOCKED_EXTENSIONS:
         problems.append(f"blocked file type '{path.suffix or name}'")
+    suffix = path.suffix.lower()
+    if suffix in IMAGE_EXTENSIONS:
+        if SCREENSHOT_DIR in posix:
+            if suffix not in SCREENSHOT_TYPES:
+                problems.append(f"screenshots must be PNG or JPEG, not '{suffix}'")
+            elif path.is_file() and path.stat().st_size > SCREENSHOT_MAX_BYTES:
+                problems.append(f"screenshot is over {SCREENSHOT_MAX_BYTES // 1024} KiB")
+        elif "/assets/placeholder/" not in posix:
+            problems.append("images are only allowed in docs/screenshots/ (captures) and assets/placeholder/")
     if not path.is_file():
         return problems
     size = path.stat().st_size
@@ -184,6 +199,15 @@ def main(argv: list[str]) -> int:
         for problem in check_file(f):
             print(f"PROPRIETARY? {f}: {problem}")
             failures += 1
+    shots = {f.as_posix() for f in files if SCREENSHOT_DIR in "/" + f.as_posix().lstrip("/")}
+    try:
+        tracked = subprocess.run(["git", "ls-files", "docs/screenshots"], capture_output=True, text=True).stdout
+        shots |= {ln for ln in tracked.splitlines() if ln and Path(ln).exists()}
+    except OSError:
+        pass
+    if len(shots) > SCREENSHOT_MAX_FILES:
+        print(f"PROPRIETARY? docs/screenshots: {len(shots)} files (limit {SCREENSHOT_MAX_FILES})")
+        failures += 1
     if failures:
         print(f"\n{failures} problem(s). Nintendo assets, binaries, text, audio and keys must never be committed.")
         return 1
