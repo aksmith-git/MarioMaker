@@ -1122,6 +1122,26 @@ renderers upload a texture when a sprite first uses it. Measured on the same cou
   Basics sets its own flag (which also grows the title-course rotation from 8 to 10), power-up
   lessons set nothing; Nina's introduction is one flag for every lesson kind (save +0x100 bit 10).
 
+## 2026-10-19 — Recomp R2: replays keyed to the player's update, compared record for record with Ryujinx
+Input replays run in the recompiled game and in Ryujinx and stay identical (findings: `recomp/docs/smm2-bringup.md`,
+"Input replays"). The choices:
+- **The clock is the game's own player update, at the same instruction in both runtimes.** The Ryujinx trace build
+  turns the first instruction of the player's per-frame update (after the prologue) into an SVC; the recomp patches
+  the same instruction into a host call. Both record the player there and apply one script frame per update, so
+  record k is the same game frame in both and nothing depends on wall time, frame pacing or host speed. Menus, where
+  no player exists, use presented frames instead (`RECOMP_PAD_CLOCK=frame`).
+- **`GetNpadStates` is answered by the runtime**, not by filling hid shared memory for the SDK to read: the HLE layer
+  already answered `GetNpadState`, and one sample per call gives each game read exactly one new state (no host-timer
+  sampling to race with).
+- **One session per course, not one boot per test.** Every test of a course kind plays in one script with resets
+  between tests (run into the course's left edge, then a fixed walk), sized from a recomp pre-run and then identical
+  in both runtimes. Boots are the slow part (Ryujinx ~20 s); the edge makes each test's start state exact.
+- **Randomness is pinned in both runtimes for the game's own courses** (`SMM2_SEED_ALL` / an IPS patch of the tick
+  read in `sead::Random::init()` on Ryujinx). The test courses don't need it.
+- **Comparison is bit for bit** on position, speed, facing, state and frames in state, plus the whole player object
+  with pointers compared by target. A tolerance would hide exactly the lifter / FP bugs this is meant to catch.
+Would change: a game path with no player update (e.g. comparing menus or the editor) needs another shared hook point.
+
 ## 2026-10-19 — Recomp R1: blocking shader compiles, repeatable boots, like-for-like frame captures
 The recompiled game reaches and renders the title screen on macOS (findings: `recomp/docs/smm2-bringup.md`).
 Three choices made on the way, for the ports that follow:

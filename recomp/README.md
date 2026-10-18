@@ -51,6 +51,7 @@ game's, nothing duplicated), `gen` recompiles `sdk` and `main` to C in `generate
 
 Keyboard (LAS Recomp's defaults, remappable in the overlay's Controls tab): WASD left stick, arrows d-pad,
 K/J/L/I = A/B/X/Y, Q/E = L/R, 1/3 = ZL/ZR, Enter / Backspace = Plus / Minus. F1 or Esc opens the overlay menu.
+On the title screen the course is playable straight away; L + R (Q + E) opens the Make / Play menu.
 
 Useful environment variables (inherited from LAS Recomp): `LARECOMP_WINDOW_SHOT=<frame>` saves the window at
 that frame (`LARECOMP_SHOT_PATH=<png>`, `LARECOMP_EXIT_AFTER_SHOT=1`), `LARECOMP_SCREENSHOT_EVERY=<n>`,
@@ -68,5 +69,12 @@ Added for SMM2:
 | `LARECOMP_DEBUG_FRAME=<n>` | log every draw of frame n and save each render pass to `build/pass_NNN.png`; `LARECOMP_DEBUG_EACH_DRAW=1` saves the target after every draw |
 | `LARECOMP_TRACE_CALLS=<n>` | log the first n command-buffer recording / call / submit / render-target / clear calls with their guest return address |
 | `RECOMP_NO_CORES=1` | run guest threads without per-core exclusivity (LAS's behaviour; SMM2 races then) |
+| `SMM2_SEED_ALL=1` | with `SMM2_SEED`: every later `sead::Random` gets the same seed too (what the Ryujinx trace build's seed patch does; replays with enemies) |
+| `RECOMP_PAD_SCRIPT=<file>` | play an input script instead of the keyboard / controllers (which are left out meanwhile): `N BUTTONS` per line, the Ryujinx trace tooling's format (A B X Y L R ZL ZR PLUS MINUS UP DOWN LEFT RIGHT LSTICK RSTICK, and JUMP=A RUN=Y SPIN=ZR; `-` = nothing) |
+| `RECOMP_PAD_CLOCK=game\|frame` | one script frame per update of the player (`game`, the default for SMM2: the same clock as the Ryujinx trace build) or per presented frame (`frame`: menus, where no player exists); `RECOMP_PAD_START=<n>` starts n ticks late; `RECOMP_PAD_EXIT=1` quits at the script's end |
+| `RECOMP_TRACE_OUT=<file>` | one record per player update in the Ryujinx TraceHook format (the player object, `RECOMP_TRACE_LEN` bytes, default 0x3000, and the blocks `RECOMP_TRACE_DEREF="off,len ..."` points to, default the input block 0x550,0x200), from update `RECOMP_TRACE_START` (default 0) until one record after the script ends (`RECOMP_TRACE_FRAMES=<n>` without a script); `RECOMP_TRACE_EXIT=1` quits then. Records are game memory: keep them in `private/` |
+
+Input replays against Ryujinx (both runtimes play the same script from the first player update and are compared
+update for update): `tools/replay_sync.py`, findings in [docs/smm2-bringup.md](docs/smm2-bringup.md) ("Input replays").
 
 Status and evidence: `../PROGRESS.md` ("Recomp"); what the bring-up needed: [docs/smm2-bringup.md](docs/smm2-bringup.md).

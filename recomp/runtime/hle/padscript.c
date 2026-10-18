@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <unistd.h>
 
 #include "../rt.h"
 
@@ -86,7 +87,10 @@ void padscript_tick(void) {
     int64_t t = ticks++;
     int64_t i = t - start_tick;
     current = i >= 0 && i < nframes ? frames[i] : 0;
-    if (i == nframes) LOG("[pad] script done (%lld frames)\n", (long long)nframes);
+    if (i == nframes) {
+        LOG("[pad] script done (%lld frames)\n", (long long)nframes);
+        if (getenv("RECOMP_PAD_EXIT")) { fflush(stderr); _exit(0); }  // (scripted runs that end with the script)
+    }
 }
 
 int64_t padscript_pos(void) {
