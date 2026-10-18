@@ -4533,6 +4533,8 @@ impl World {
     /// Set dotted-line block solidity from the ON/OFF state (red solid when ON).
     fn apply_on_off(&mut self) {
         let on = self.on_off;
+        // track junctions read the same bit (set = ON) [obs 0x7100341a00]
+        self.level.tracks.on = on;
         let cells: Vec<((i32, i32), bool)> = self
             .blocks
             .map
@@ -8752,7 +8754,7 @@ mod tests {
             168.0,
             64.0,
         );
-        s.rail = Some(1);
+        s.rail = Some(0); // start field 0: right on a horizontal track
         lvl.spawns.push(s);
         let mut w = World::with_level(lvl);
         run(&mut w, 0, 2);

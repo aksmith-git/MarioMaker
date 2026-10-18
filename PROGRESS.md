@@ -247,6 +247,10 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
 - ✅ Tracks: graph from track records (lines + quarter arcs), rail follower (0.75 / 1.5 px/f),
   any actor rides (lifts, seesaws, grinders, claws, items, enemies); drawn as lines · junctions,
   open ends, blocks/coins on tracks, exact track tiles ⬜ — SMB1 sample 49 → 52 playable
+  - ✅ Pass 3: the game's rail grid (record templates, end words, cell words) and its follower
+    (cell-centre walk, 2×2 bends at r 24, closed / open ends, start field), junctions 8–15
+    switched by ON/OFF — all 657 corpus riders attach, every fall is at an open end · re-catch
+    of a falling rider onto a lower track (0x7100343680) ⬜
 - ⬜ Measure object/style/theme frequency in real courses
 - ⬜ Add styles, themes, objects in that order (2.0/3.0 items need the update dump)
 

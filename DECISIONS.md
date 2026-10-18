@@ -667,6 +667,9 @@ Riders keep their offset from the track point and move 0.75 px/frame (1.5 winged
 are 32 px long; only free ends reverse. Still guessed: which way curves bulge, the start direction
 field, and open-vs-closed ends (all ends reverse). Junctions aren't built. Tracks are drawn with
 white texels from the field atlas, a placeholder for the real per-cell track tiles.
+**Superseded (pass 3):** the engine now builds the game's own cell grid from the record templates
+in the binary and walks it with the game's follower rules (track.rs header), junctions included;
+the public `Tracks` / `Rail` API is unchanged and world.rs only passes the ON/OFF bit in.
 
 ## 2026-10-18 — Cross-platform shell (owner asked for Windows, macOS, Linux, web and iOS)
 The Rust core has no platform code, so it ports as is. Two ways to reach the platforms the
