@@ -781,11 +781,15 @@ impl World {
         }
     }
 
-    /// Koopa Troopa Car with the player in it (72-koopa-troopa-car.md): a start spin, then it
-    /// runs on its own — at least 2.0 px/f, 3.0 with the direction of travel held [inf] — and
-    /// the player steers only by turning around (a 30-frame turn). Jump hops the car [inf:
-    /// vy 4.0]; Spin gets out. Enemies it runs into are knocked out; hits on the player damage
-    /// the car (the third breaks it).
+    /// Koopa Troopa Car with the player in it (72-koopa-troopa-car.md; KoopaCar states init
+    /// 0x71006c7130) [obs]: a 60-frame start spin standing still (0x71006d0df0), then it runs
+    /// on its own toward 4.0 px/f at 0.05 a frame (0x71006cc280 → 0x71006d0790; ×0.1 in the
+    /// air while below that speed; slopes scale the target by the steepness table 0x7101d02c70),
+    /// whatever the stick does. The player steers only by turning around: the turn brakes by
+    /// 0.06 a frame to a stop while the car swings round 12° a frame, and another can't start
+    /// for 30 frames (0x71006cc6a0 / 0x71006cc720). Jump hops it at vy 4.5 from the ground
+    /// (0x71006d0fb0); Spin gets out. Enemies it runs into are knocked out; hits on the player
+    /// damage the car (the third breaks it).
     fn drive_koopa_car(&mut self, input: Input) {
         let Some(id) = self.player.car else { return };
         let Some(i) = self.actors.iter().position(|a| a.id == id && a.alive()) else {
@@ -819,43 +823,63 @@ impl World {
             return;
         }
         let dir_in = input.dir_x();
+        let slope = self.level.slope_at(self.actors[i].x).and_then(|(sy, s)| {
+            ((self.actors[i].y - sy).abs() < 6.0).then_some((s.steep, s.rising))
+        });
         let car = &mut self.actors[i];
+        // `timer` counts the phase's frames; `hops` keeps the hits taken; `heading` the
+        // frames left of the 30-frame lock against turning again
+        if car.heading > 0.0 {
+            car.heading -= 1.0;
+        }
         match car.phase {
             1 => {
-                // start spin: the wheels spin up in place [inf: 20 frames]
-                car.vx -= car.vx.clamp(-0.05, 0.05);
+                // start spin: the wheels spin up in place for 60 frames
+                car.vx = 0.0;
                 car.timer += 1;
-                if car.timer >= 20 {
+                if car.timer >= 60 {
                     car.phase = 2;
                     car.timer = 0;
                 }
             }
             3 => {
-                // turning: brake, then set off the other way
-                car.vx -= car.vx.clamp(-0.15, 0.15);
+                // turning: brake by 0.06 to a stop; the swing round takes 15 frames
+                car.vx = crate::player::approach(car.vx, 0.0, 0.06);
                 car.timer += 1;
-                if car.timer >= 30 {
+                if car.timer >= 15 && car.vx == 0.0 {
                     car.phase = 2;
                     car.timer = 0;
-                    car.dir = -car.dir;
                 }
             }
             _ => {
-                if dir_in == -car.dir {
+                if dir_in == -car.dir && car.heading <= 0.0 {
                     car.phase = 3;
                     car.timer = 0;
+                    car.dir = -car.dir;
+                    car.heading = 30.0;
                 } else {
-                    let target = if dir_in == car.dir { 3.0 } else { 2.0 } * car.dir as f32;
-                    car.vx += (target - car.vx).clamp(-0.075, 0.075);
-                    if car.vx * car.dir as f32 >= 0.0 && car.vx.abs() < 2.0 && car.timer > 0 {
-                        car.vx = 2.0 * car.dir as f32;
+                    let mut target = 4.0;
+                    if let Some((steep, rising)) = slope {
+                        // slope class by angle (< 20.3° / 35.8° / 54°): the gentle slope is
+                        // class 2 (×1.25 down, ×0.6875 up), the steep one class 3 (×1.44 / ×0.5)
+                        let downhill = (car.dir > 0) != rising;
+                        target *= match (steep, downhill) {
+                            (false, true) => 1.25,
+                            (false, false) => 0.6875,
+                            (true, true) => 1.44,
+                            (true, false) => 0.5,
+                        };
                     }
-                    car.timer = 1;
+                    let mut acc = 0.05;
+                    if !car.on_ground && car.vx.abs() < target {
+                        acc *= 0.1;
+                    }
+                    car.vx = crate::player::approach(car.vx, target * car.dir as f32, acc);
                 }
             }
         }
         if jump_pressed && car.on_ground {
-            car.vy = 4.0;
+            car.vy = 4.5;
             self.events.push(Event::Jump);
         }
         let g = if jump && car.vy > 0.0 { -0.2 } else { -0.4 };
@@ -864,9 +888,10 @@ impl World {
         car.collide(&self.level);
         car.moved = (car.x - before.0, car.y - before.1);
         if car.wall && car.phase == 2 {
-            // bumping a wall turns it around [inf]
+            // bumping a wall turns it around [inf: the car's wall rule wasn't found]
             car.phase = 3;
             car.timer = 0;
+            car.dir = -car.dir;
         }
         let (cx, cy, dir, ground, cb) = (car.x, car.y, car.dir, car.on_ground, car.bbox());
         let p = &mut self.player;
@@ -8268,18 +8293,21 @@ mod tests {
         w.player.y = 80.0;
         run(&mut w, 0, 30);
         assert!(w.player.car.is_some(), "got in");
-        // it runs on its own after the start spin, at least 2.0
+        // a 60-frame start spin, then it runs on its own toward 4.0 at 0.05 a frame
         run(&mut w, 0, 40);
         let car = w.actors.iter().find(|a| a.kind == Kind::KoopaCar).unwrap();
-        assert!(car.vx >= 2.0, "running: {}", car.vx);
+        assert_eq!(car.vx, 0.0, "still spinning up");
+        run(&mut w, 0, 70);
+        let car = w.actors.iter().find(|a| a.kind == Kind::KoopaCar).unwrap();
+        assert!(car.vx >= 2.0 && car.vx < 4.0, "running: {}", car.vx);
         assert_eq!(w.player.x, car.x, "the player rides it");
         // into the Goomba
         run(&mut w, input::RIGHT, 120);
         let g = w.actors.iter().find(|a| a.kind == Kind::Goomba);
         assert!(g.is_none_or(|g| !g.alive()), "ran the Goomba over");
-        // turning around takes 30 frames, then it heads left
-        run(&mut w, input::LEFT, 40);
-        run(&mut w, 0, 20);
+        // turning around brakes it to a stop at 0.06 a frame, then it heads left
+        run(&mut w, input::LEFT, 1);
+        run(&mut w, 0, 150);
         let car = w.actors.iter().find(|a| a.kind == Kind::KoopaCar).unwrap();
         assert!(car.vx <= -2.0, "turned: {}", car.vx);
         assert!(w.player.at_goal().koopa_car);

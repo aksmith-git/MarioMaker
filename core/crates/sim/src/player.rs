@@ -235,7 +235,7 @@ fn band(speed_f: f32, facing: i32, t: &[f32; 4]) -> usize {
 }
 
 /// Move `v` toward `target` by at most `a` (§1.3 step 4).
-fn approach(v: f32, target: f32, a: f32) -> f32 {
+pub(crate) fn approach(v: f32, target: f32, a: f32) -> f32 {
     if v < target {
         (v + a).min(target)
     } else {
@@ -626,7 +626,7 @@ impl Player {
             return false;
         }
         if self.car.is_some() {
-            // the car takes the hit [inf from its Damaged animations]
+            // the car takes the hit (KoopaCar Damage 0x71006cec20) [obs]
             self.car_hit = true;
             self.invuln = INVULN_DAMAGE;
             return true;

@@ -226,8 +226,8 @@ pub enum Kind {
         what: u8,
     },
     /// Koopa Troopa Car (72, 3D World): phases 0 empty (brakes 0.05/frame), 1 start spin,
-    /// 2 run, 3 turn (30 frames) — the world drives it while the player rides; `hops` = damage
-    /// taken (the third hit breaks it) [inf].
+    /// 2 run, 3 turn — the world drives it while the player rides; `hops` = damage taken
+    /// (Damage state 0x71006cec20 counts it to 3; the third hit breaks it) [obs].
     KoopaCar,
     /// Super Hammer (116, 3D World): walks like a mushroom [inf]; makes Builder Mario.
     SuperHammer,
