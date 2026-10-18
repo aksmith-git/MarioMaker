@@ -80,11 +80,21 @@ enum Cmd {
     },
     /// Import the user's own extracted SMM2 RomFS + ExeFS into an engine asset cache.
     Import {
+        /// The base game's extracted RomFS (or one with the update already applied).
         #[arg(long)]
         romfs: PathBuf,
+        /// The base game's extracted ExeFS.
         #[arg(long)]
         exefs: PathBuf,
-        /// Cache root (default: ~/Library/Application Support/mmk/assets)
+        /// A separately extracted update's RomFS, laid over --romfs (update files win).
+        #[arg(long)]
+        update_romfs: Option<PathBuf>,
+        /// The update's ExeFS (used instead of --exefs).
+        #[arg(long)]
+        update_exefs: Option<PathBuf>,
+        /// Cache root (default: the SMCraft data folder's `assets`: %LOCALAPPDATA%\SMCraft on
+        /// Windows, ~/Library/Application Support/SMCraft on macOS, ~/.local/share/smcraft on
+        /// Linux; $MMK_HOME overrides)
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -1620,11 +1630,28 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Cmd::Import { romfs, exefs, out } => {
-            let out_root = out.unwrap_or_else(|| {
-                PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
-                    .join("Library/Application Support/mmk/assets")
-            });
+        Cmd::Import {
+            romfs,
+            exefs,
+            update_romfs,
+            update_exefs,
+            out,
+        } => {
+            let Some(out_root) = out.or_else(mmk_host::paths::assets_root) else {
+                return fail("import", "no data folder: pass --out");
+            };
+            let exefs = update_exefs.unwrap_or(exefs);
+            let merge_dir = out_root.join(".romfs-overlay");
+            let romfs = match &update_romfs {
+                Some(update) => {
+                    eprintln!("merging the update over the base RomFS (links, no copy)");
+                    if let Err(e) = mmk_import::overlay::overlay_romfs(&romfs, update, &merge_dir) {
+                        return fail("merging update RomFS", e);
+                    }
+                    merge_dir.clone()
+                }
+                None => romfs,
+            };
             let cfg = mmk_import::ImportConfig {
                 romfs,
                 exefs,
@@ -1637,7 +1664,11 @@ fn main() -> ExitCode {
                     last = stage.to_string();
                 }
             };
-            match mmk_import::run(&cfg, &mut progress) {
+            let result = mmk_import::run(&cfg, &mut progress);
+            if update_romfs.is_some() {
+                let _ = std::fs::remove_dir_all(&merge_dir);
+            }
+            match result {
                 Ok(r) => {
                     println!(
                         "imported SMM2 {} ({} tables, {} textures, {} sounds, {} sprite quads, {} meshes, {} animations, {} built-in courses verified) into {}",

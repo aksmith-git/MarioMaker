@@ -26,6 +26,7 @@ use serde_json::{Value, json};
 pub mod env;
 pub mod meshes;
 pub mod modes;
+pub mod overlay;
 pub mod sprites;
 
 /// 5: mesh stage (meshes/, anims/), StaticModel.pack models of the 3D styles.

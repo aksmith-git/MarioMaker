@@ -156,6 +156,14 @@ MMK_IOS_SIGN_IDENTITY="Apple Development: …" MMK_IOS_PROFILE=SMCraft.mobilepro
   `ios-install-tailscale build/ios-device/SMCraft.app --device ipad` (the owner's tool; it installs,
   it doesn't sign).
 
+## Windows
+
+SMCraft runs on Windows 10/11 x64 as `mmk-play.exe`, with `mmk.exe` to import your dump.
+[docs/windows.md](docs/windows.md) has the requirements, the native build (`cargo build --release
+-p mmk-shell -p mmk-cli`), the cross-build from macOS/Linux (`scripts/build-windows.sh`), the
+first-launch import into `%LOCALAPPDATA%\SMCraft`, and how to play. The SMM2 Recomp (`recomp/`)
+adds its Windows instructions there once its macOS bring-up is done.
+
 ## Portable shell (`mmk-play`: Windows, Linux, web, macOS)
 
 A second front end written in Rust (winit + wgpu + gilrs + cpal) that plays a course with the

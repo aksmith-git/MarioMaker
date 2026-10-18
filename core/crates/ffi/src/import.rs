@@ -1,7 +1,7 @@
 //! `mmk_import_run`: the first-launch importer (same code as `mmk import`) for the app.
 
 use std::ffi::{CStr, CString, c_char, c_void};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::{guard, set_error};
 
@@ -10,44 +10,7 @@ pub type MmkImportProgress = Option<
     unsafe extern "C" fn(user: *mut c_void, stage: *const c_char, done: usize, total: usize),
 >;
 
-/// Build a RomFS view with `update` laid over `base`: a tree of symlinks under `dir`
-/// (update files win). Cheap: the dump is never copied.
-pub fn overlay_romfs(base: &Path, update: &Path, dir: &Path) -> std::io::Result<()> {
-    fn link_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(dst)?;
-        for entry in std::fs::read_dir(src)? {
-            let entry = entry?;
-            let from = entry.path();
-            let to = dst.join(entry.file_name());
-            // follow symlinks in the source (the owner's RomFS folder may itself be one)
-            if std::fs::metadata(&from)?.is_dir() {
-                if to.symlink_metadata().is_ok_and(|m| !m.is_dir()) {
-                    std::fs::remove_file(&to)?;
-                }
-                link_tree(&from, &to)?;
-            } else {
-                if to.symlink_metadata().is_ok() {
-                    std::fs::remove_file(&to)?;
-                }
-                symlink(&from, &to)?;
-            }
-        }
-        Ok(())
-    }
-    #[cfg(unix)]
-    fn symlink(from: &Path, to: &Path) -> std::io::Result<()> {
-        std::os::unix::fs::symlink(from, to)
-    }
-    #[cfg(not(unix))]
-    fn symlink(from: &Path, to: &Path) -> std::io::Result<()> {
-        std::fs::copy(from, to).map(|_| ())
-    }
-    if dir.exists() {
-        std::fs::remove_dir_all(dir)?;
-    }
-    link_tree(base, dir)?;
-    link_tree(update, dir)
-}
+pub use mmk_import::overlay::overlay_romfs;
 
 fn opt_path(p: *const c_char) -> Option<PathBuf> {
     if p.is_null() {

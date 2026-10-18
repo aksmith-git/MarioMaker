@@ -42,3 +42,4 @@ __pycache__/
 
 # App bundle output (scripts/make-app.sh)
 /build/
+dist/

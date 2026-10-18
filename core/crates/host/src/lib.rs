@@ -14,6 +14,7 @@ pub mod course;
 pub mod effects;
 pub mod frame;
 pub mod mesh;
+pub mod paths;
 pub mod scene3d;
 pub mod sound;
 pub mod sound_map;

@@ -256,8 +256,7 @@ mod native {
         if let Ok(p) = std::env::var("MMK_SMM1_SPRITES") {
             return (!p.is_empty() && p != "none").then(|| PathBuf::from(p));
         }
-        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
-        let p = PathBuf::from(home).join("smm-work/cache/smm1-v208/sprites");
+        let p = mmk_host::paths::smm1_ui()?.join("sprites");
         p.join("manifest.json").is_file().then_some(p)
     }
 
@@ -284,15 +283,7 @@ mod native {
         if let Ok(p) = std::env::var("MMK_ASSETS") {
             return (!p.is_empty() && p != "placeholder").then(|| PathBuf::from(p));
         }
-        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
-        let p = PathBuf::from(home).join("smm-work/cache/smm2-3.0.3");
-        p.join("manifest.json").is_file().then_some(p)
-    }
-
-    fn home() -> Option<PathBuf> {
-        std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .map(PathBuf::from)
+        mmk_host::paths::game_cache()
     }
 
     fn ui_game(dir: &std::path::Path) -> Option<String> {
@@ -309,7 +300,7 @@ mod native {
             args.ui_cache.clone(),
             env("MMK_UI_CACHE"),
             env("MMK_UI2_CACHE"),
-            home().map(|h| h.join("smm-work/cache/smm2-ui-3.0.3")),
+            mmk_host::paths::smm2_ui(),
         ]
         .into_iter()
         .flatten()
@@ -326,7 +317,7 @@ mod native {
             .smm1_ui
             .clone()
             .or_else(|| std::env::var_os("MMK_UI_SMM1").map(PathBuf::from))
-            .or_else(|| home().map(|h| h.join("smm-work/cache/smm1-v208")))
+            .or_else(mmk_host::paths::smm1_ui)
             .filter(|d| ui_game(d).as_deref() == Some("SMM1"));
         let smm1 = smm1_dir.and_then(|d| Ui::open(UiKind::Smm1, &d).ok());
         let source = assets_dir.as_ref().map(|d| DirSource::new(d.clone()));
@@ -343,11 +334,7 @@ mod native {
         } else if let Some(l) = std::env::var_os("MMK_LIBRARY") {
             std::env::split_paths(&l).collect()
         } else {
-            home()
-                .map(|h| h.join("smm-work/courses"))
-                .filter(|d| d.is_dir())
-                .into_iter()
-                .collect()
+            mmk_host::paths::library().into_iter().collect()
         };
         // the library is read on a thread while the opening plays
         data.start_scan();
@@ -358,11 +345,7 @@ mod native {
             args.data_dir
                 .clone()
                 .or_else(|| std::env::var_os("MMK_DATA").map(PathBuf::from))
-                .or_else(|| {
-                    std::env::var_os("APPDATA")
-                        .map(|a| PathBuf::from(a).join("mmk-play"))
-                        .or_else(|| home().map(|h| h.join(".mmk-play")))
-                })
+                .or_else(mmk_host::paths::play_data)
         };
         let opts = Options {
             boot: !args.no_opening && capture.is_none(),
@@ -504,11 +487,7 @@ mod native {
                 .ui_cache
                 .clone()
                 .or_else(|| std::env::var_os("MMK_UI_CACHE").map(PathBuf::from))
-                .or_else(|| {
-                    let d =
-                        PathBuf::from(std::env::var_os("HOME")?).join("smm-work/cache/smm1-v208");
-                    d.is_dir().then_some(d)
-                })
+                .or_else(mmk_host::paths::smm1_ui)
                 .ok_or("--layout needs --ui-cache (an SMM1 or SMM2 UI import)")?;
             let out = args
                 .screenshot
