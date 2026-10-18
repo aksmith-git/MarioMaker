@@ -83,6 +83,8 @@ MAGICS = [
     (0, b"\xca\xfe\xba\xbe", "Mach-O universal binary"),
     (0, b"MZ", "Windows PE binary"),
     (0, b"\x03\x02\x23\x07", "SPIR-V shader"),
+    # per-frame player traces (recomp games/smm2/trace.c, the Ryujinx trace build): snapshots of game memory
+    (0, b"TRC1", "player state trace (game memory)"),
 ]
 # Paths that hold files derived from the dump (recompiled code, translated shaders, extracted data)
 BLOCKED_PATH_PARTS = ("/recomp/private/", "/recomp/generated/", "/recomp/build/")
