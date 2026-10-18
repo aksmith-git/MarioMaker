@@ -21,7 +21,6 @@
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::path::Path;
 
 use mmk_formats::archive::{self, Sarc};
@@ -30,7 +29,7 @@ use mmk_formats::byml;
 use mmk_formats::xlink::{Call, Xlnk};
 use serde_json::{Map, Value, json};
 
-use crate::{Result, write};
+use crate::{Result, read, write};
 
 /// Hashed BYML keys of the layout parameter files.
 const K_ROOT: &str = "799b9ac4";
@@ -52,7 +51,7 @@ pub struct SoundReport {
 
 fn layout_params(romfs: &Path) -> BTreeMap<String, Value> {
     let mut out = BTreeMap::new();
-    let Ok(data) = fs::read(romfs.join("Pack/Static.pack")) else {
+    let Ok(data) = read(&romfs.join("Pack/Static.pack")) else {
         return out;
     };
     let Ok(sarc) = archive::unwrap(data).and_then(Sarc::parse) else {
@@ -226,15 +225,13 @@ pub fn run(romfs: &Path, ui: &Path) -> Result<SoundReport> {
         .collect();
     let mut users_json = Map::new();
     let mut sounds = BTreeSet::new();
-    let slink = fs::read(romfs.join("SLink2/SLink2DB.szs"))
-        .ok()
-        .and_then(|d| {
-            let d = archive::unwrap(d).ok()?;
-            let s = Sarc::parse(d).ok()?;
-            s.files()
-                .find(|(n, _)| n.ends_with(".bslnk"))
-                .map(|(_, b)| b.to_vec())
-        });
+    let slink = read(&romfs.join("SLink2/SLink2DB.szs")).ok().and_then(|d| {
+        let d = archive::unwrap(d).ok()?;
+        let s = Sarc::parse(d).ok()?;
+        s.files()
+            .find(|(n, _)| n.ends_with(".bslnk"))
+            .map(|(_, b)| b.to_vec())
+    });
     match slink.as_deref().map(Xlnk::parse) {
         Some(Ok(x)) => {
             for u in &users {
@@ -256,9 +253,7 @@ pub fn run(romfs: &Path, ui: &Path) -> Result<SoundReport> {
     // (Pack/*_bars.pack: the styles' and the worlds' sounds)
     let mut left = sounds.clone();
     let listing = |dir: &Path, ext: &str| -> Vec<std::path::PathBuf> {
-        let mut v: Vec<_> = fs::read_dir(dir)
-            .map(|r| r.filter_map(|e| e.ok().map(|e| e.path())).collect())
-            .unwrap_or_default();
+        let mut v: Vec<_> = crate::read_dir(dir).unwrap_or_default();
         v.retain(|p: &std::path::PathBuf| p.to_string_lossy().ends_with(ext));
         v.sort();
         v
@@ -267,7 +262,7 @@ pub fn run(romfs: &Path, ui: &Path) -> Result<SoundReport> {
         if left.is_empty() {
             break;
         }
-        if let Ok(data) = fs::read(&path) {
+        if let Ok(data) = read(&path) {
             export_from(&data, ui, &mut left, &mut report)?;
         }
     }
@@ -275,7 +270,7 @@ pub fn run(romfs: &Path, ui: &Path) -> Result<SoundReport> {
         if left.is_empty() {
             break;
         }
-        let Ok(sarc) = fs::read(&path)
+        let Ok(sarc) = read(&path)
             .map_err(|_| ())
             .and_then(|d| archive::unwrap(d).and_then(Sarc::parse).map_err(|_| ()))
         else {

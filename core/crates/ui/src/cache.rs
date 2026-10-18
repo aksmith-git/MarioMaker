@@ -1,10 +1,14 @@
 //! The UI asset cache: layouts (with their animations and textures), fonts and messages,
-//! loaded on demand from an imported SMM1 folder (see `mmk_import::smm1` for the layout), or
-//! registered in memory (tests, tools).
+//! loaded on demand from an import's files (see `mmk_import::smm1` / `smm2_ui` for the layout):
+//! a folder on disk, or files a host hands over ([`crate::files`]), whose textures may arrive
+//! later ([`UiCache::take_requests`] / [`UiCache::provide`]); or registered in memory (tests,
+//! tools).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use crate::files::{DirFiles, Fetch, UiFiles};
 
 use mmk_assets::Mtex;
 use mmk_formats::lyt::{self, Animation, Layout, Pane, PaneKind};
@@ -32,6 +36,9 @@ pub struct TextureEntry {
     /// `<layout>/<texture stem>` or `font:<font>/<sheet>`.
     pub name: String,
     pub texture: Mtex,
+    /// False while the pixels are on their way ([`UiCache::take_requests`]): `texture` is then
+    /// an empty stand-in of the right size (0 × 0 when not known), not to be drawn.
+    pub ready: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,7 +126,7 @@ pub const FALLBACK_FONT: &str = "SpecialFont";
 
 #[derive(Default)]
 pub struct UiCache {
-    root: Option<PathBuf>,
+    files: Option<Box<dyn UiFiles>>,
     pub manifest: Value,
     pub textures: Vec<TextureEntry>,
     texture_ids: HashMap<String, u32>,
@@ -128,19 +135,51 @@ pub struct UiCache {
     fonts: HashMap<String, Option<Arc<FontRes>>>,
     messages: HashMap<String, HashMap<String, String>>,
     templates: HashMap<String, HashMap<String, String>>,
-    message_files: HashMap<String, PathBuf>,
+    message_files: HashMap<String, String>,
+    /// Textures asked for and not yet handed to the host: (id, file).
+    wanted: Vec<(u32, String)>,
+    /// Textures waiting for their pixels (asked for, not provided).
+    waiting: usize,
+    /// Bumped each time a texture's pixels arrive.
+    revision: u64,
 }
 
-fn read(path: &Path) -> Result<Vec<u8>, UiError> {
-    std::fs::read(path).map_err(|source| UiError::Io {
-        path: path.to_path_buf(),
-        source,
-    })
+fn io_error(files: &dyn UiFiles, rel: &str, kind: std::io::ErrorKind) -> UiError {
+    UiError::Io {
+        path: Path::new(&files.describe()).join(rel),
+        source: kind.into(),
+    }
 }
 
-fn read_json(path: &Path) -> Result<Value, UiError> {
-    serde_json::from_slice(&read(path)?)
-        .map_err(|e| UiError::Invalid(format!("{}: {e}", path.display())))
+/// A file that must be there now (layouts, font metrics, message tables, the manifest).
+fn read(files: &dyn UiFiles, rel: &str) -> Result<Vec<u8>, UiError> {
+    match files.read(rel) {
+        Fetch::Ready(b) => Ok(b),
+        Fetch::Later => Err(io_error(files, rel, std::io::ErrorKind::WouldBlock)),
+        Fetch::Missing => Err(io_error(files, rel, std::io::ErrorKind::NotFound)),
+    }
+}
+
+fn read_json(files: &dyn UiFiles, rel: &str) -> Result<Value, UiError> {
+    serde_json::from_slice(&read(files, rel)?)
+        .map_err(|e| UiError::Invalid(format!("{}/{rel}: {e}", files.describe())))
+}
+
+/// An empty stand-in for a texture on its way.
+fn stand_in(width: u32, height: u32) -> Mtex {
+    Mtex {
+        format: mmk_assets::MtexFormat::Rgba8,
+        variant: mmk_assets::MtexVariant::Unorm,
+        width,
+        height,
+        channel_select: [2, 3, 4, 5],
+        data: Vec::new(),
+    }
+}
+
+/// A name that stays inside its folder.
+fn plain_name(s: &str) -> bool {
+    !s.contains(['/', '\\']) && !s.starts_with('.')
 }
 
 impl UiCache {
@@ -152,53 +191,126 @@ impl UiCache {
     /// Open an imported UI folder (the one holding `manifest.json` and `ui/`): an SMM1 import
     /// (`mmk import-smm1`) or an SMM2 one (`mmk import-smm2-ui`); both have the same form.
     pub fn open(dir: impl AsRef<Path>) -> Result<Self, UiError> {
-        let dir = dir.as_ref().to_path_buf();
-        let manifest = read_json(&dir.join("manifest.json"))?;
+        Self::from_files(Box::new(DirFiles::new(dir.as_ref())))
+    }
+
+    /// Open an import from `files` (see [`crate::files`]): the manifest, layouts, fonts'
+    /// metrics and message tables must be readable at once; textures may come later.
+    pub fn from_files(files: Box<dyn UiFiles>) -> Result<Self, UiError> {
+        let manifest = read_json(&*files, "manifest.json")?;
         let game = manifest.get("game").and_then(Value::as_str);
-        if !matches!(game, Some("SMM1" | "SMM2")) || !dir.join("ui/layouts").is_dir() {
+        if !matches!(game, Some("SMM1" | "SMM2")) || !files.is_dir("ui/layouts") {
             return Err(UiError::Invalid(format!(
                 "{} is not an SMM1 or SMM2 UI import",
-                dir.display()
+                files.describe()
             )));
         }
         let mut message_files = HashMap::new();
         // <archive>/<group>/<Layout>.json (SMM1) or <archive>/<Layout>.json (SMM2), keyed by
         // layout name; LayoutMsg wins over CommonMsg over ReferenceMsg (SMM2's shared tables:
         // clear conditions, part names, …)
-        fn add_json(dir: &Path, out: &mut HashMap<String, PathBuf>) {
-            let Ok(files) = std::fs::read_dir(dir) else {
-                return;
-            };
-            for f in files.flatten() {
-                let p = f.path();
-                if p.extension().is_some_and(|e| e == "json") {
-                    let stem = p.file_stem().unwrap().to_string_lossy().to_string();
-                    out.insert(stem, p);
+        fn add_json(files: &dyn UiFiles, dir: &str, out: &mut HashMap<String, String>) {
+            let mut names = files.list(dir);
+            names.sort();
+            for n in names {
+                if let Some(stem) = n.strip_suffix(".json") {
+                    out.insert(stem.to_string(), format!("{dir}/{n}"));
                 }
             }
         }
         for archive in ["ReferenceMsg", "CommonMsg", "LayoutMsg"] {
-            let base = dir.join("ui/messages").join(archive);
-            add_json(&base, &mut message_files);
-            let Ok(groups) = std::fs::read_dir(&base) else {
-                continue;
-            };
-            for g in groups.flatten() {
-                if g.path().is_dir() {
-                    add_json(&g.path(), &mut message_files);
+            let base = format!("ui/messages/{archive}");
+            add_json(&*files, &base, &mut message_files);
+            let mut groups = files.list(&base);
+            groups.sort();
+            for g in groups {
+                let dir = format!("{base}/{g}");
+                if files.is_dir(&dir) {
+                    add_json(&*files, &dir, &mut message_files);
                 }
             }
         }
         Ok(Self {
-            root: Some(dir),
+            files: Some(files),
             manifest,
             message_files,
             ..Default::default()
         })
     }
 
+    /// The import folder, when the cache reads one on disk.
     pub fn root(&self) -> Option<&Path> {
-        self.root.as_deref()
+        self.files.as_ref().and_then(|f| f.dir())
+    }
+
+    /// Textures that were asked for and whose pixels the host must now read: (texture id, file
+    /// relative to the import root), each listed once; hand the bytes back with
+    /// [`UiCache::provide`]. Always empty for a cache on disk.
+    pub fn take_requests(&mut self) -> Vec<(u32, String)> {
+        std::mem::take(&mut self.wanted)
+    }
+
+    /// The pixels of texture `id` (an `.mtex` file's bytes; `None`: unreadable, it stays empty).
+    /// True if they were usable.
+    pub fn provide(&mut self, id: u32, bytes: Option<&[u8]>) -> bool {
+        let Some(e) = self.textures.get_mut(id as usize) else {
+            return false;
+        };
+        if e.ready {
+            return false;
+        }
+        let t = bytes.and_then(|b| Mtex::parse(b).ok());
+        let ok = t.is_some();
+        if let Some(t) = t {
+            e.texture = t;
+        }
+        e.ready = true;
+        self.waiting = self.waiting.saturating_sub(1);
+        self.revision += 1;
+        ok
+    }
+
+    /// How many textures wait for [`UiCache::provide`].
+    pub fn waiting(&self) -> usize {
+        self.waiting
+    }
+
+    /// Changes each time [`UiCache::provide`] hands over pixels (renderers then look again at
+    /// the textures that were not ready).
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Texture `name` from file `rel`, once: read now, or (a file that comes later) an empty
+    /// stand-in of `size` plus a request.
+    fn texture_at(&mut self, name: String, rel: &str, size: (u32, u32)) -> Result<TexRef, UiError> {
+        if let Some(&id) = self.texture_ids.get(&name) {
+            let t = &self.textures[id as usize].texture;
+            return Ok(TexRef {
+                id,
+                width: t.width,
+                height: t.height,
+            });
+        }
+        let files = self
+            .files
+            .as_deref()
+            .ok_or_else(|| UiError::Invalid(format!("texture {name}: no files")))?;
+        match files.read(rel) {
+            Fetch::Ready(b) => {
+                let t = Mtex::parse(&b)
+                    .map_err(|e| UiError::Invalid(format!("{}/{rel}: {e}", files.describe())))?;
+                Ok(self.add_texture(name, t))
+            }
+            Fetch::Later => {
+                let r = self.add_texture(name, stand_in(size.0, size.1));
+                self.textures[r.id as usize].ready = false;
+                self.wanted.push((r.id, rel.to_string()));
+                self.waiting += 1;
+                Ok(r)
+            }
+            Fetch::Missing => Err(io_error(files, rel, std::io::ErrorKind::NotFound)),
+        }
     }
 
     /// Names of all importable layouts.
@@ -231,7 +343,11 @@ impl UiCache {
         let id = self.textures.len() as u32;
         let out = r(id, &texture);
         self.texture_ids.insert(name.clone(), id);
-        self.textures.push(TextureEntry { name, texture });
+        self.textures.push(TextureEntry {
+            name,
+            texture,
+            ready: true,
+        });
         out
     }
 
@@ -280,18 +396,24 @@ impl UiCache {
     }
 
     fn load_font(&mut self, name: &str) -> Result<Arc<FontRes>, UiError> {
-        let root = self
-            .root
-            .clone()
+        if !plain_name(name) {
+            return Err(UiError::Invalid(format!("font {name}")));
+        }
+        let files = self
+            .files
+            .as_deref()
             .ok_or_else(|| UiError::Invalid(format!("font {name} not registered")))?;
-        let v = read_json(&root.join(format!("ui/fonts/{name}.json")))?;
+        let v = read_json(files, &format!("ui/fonts/{name}.json"))?;
         let sheets = v.get("sheets").and_then(Value::as_u64).unwrap_or(0) as usize;
+        let size = |i: usize| v["sheet_size"][i].as_u64().unwrap_or(0) as u32;
+        let (w, h) = (size(0), size(1));
         let mut ids = Vec::with_capacity(sheets);
         for i in 0..sheets {
-            let path = root.join(format!("ui/fonts/{name}/sheet_{i}.mtex"));
-            let t = Mtex::parse(&read(&path)?)
-                .map_err(|e| UiError::Invalid(format!("{}: {e}", path.display())))?;
-            ids.push(self.add_texture(format!("font:{name}/{i}"), t).id);
+            let rel = format!("ui/fonts/{name}/sheet_{i}.mtex");
+            ids.push(
+                self.texture_at(format!("font:{name}/{i}"), &rel, (w, h))?
+                    .id,
+            );
         }
         Ok(Arc::new(FontRes::from_json(name, &v, ids)?))
     }
@@ -308,8 +430,9 @@ impl UiCache {
         }
         let mut out = HashMap::new();
         let mut templates = HashMap::new();
-        if let Some(path) = self.message_files.get(layout)
-            && let Ok(v) = read_json(path)
+        if let Some(rel) = self.message_files.get(layout)
+            && let Some(files) = self.files.as_deref()
+            && let Ok(v) = read_json(files, rel)
             && let Ok(msbt) = mmk_formats::msbt::Msbt::from_json(&v)
         {
             use mmk_formats::msbt::MsgPart;
@@ -352,12 +475,11 @@ impl UiCache {
                 height: t.height,
             });
         }
-        if stem.contains(['/', '\\']) || group.contains(['/', '\\']) || stem.starts_with('.') {
+        if !plain_name(stem) || !plain_name(group) {
             return None;
         }
-        let path = self.root.as_ref()?.join(format!("ui/textures/{name}.mtex"));
-        let tex = Mtex::parse(&read(&path).ok()?).ok()?;
-        Some(self.add_texture(name, tex))
+        let rel = format!("ui/textures/{name}.mtex");
+        self.texture_at(name, &rel, (0, 0)).ok()
     }
 
     /// Register a texture from memory under `<group>/<stem>` (tests, tools).
@@ -453,19 +575,23 @@ impl UiCache {
     }
 
     fn load_source(&mut self, name: &str) -> Result<LayoutSource, UiError> {
-        let root = self
-            .root
-            .clone()
+        let files = self
+            .files
+            .as_deref()
             .ok_or_else(|| UiError::NoLayout(name.to_string()))?;
-        let path = root.join(format!("ui/layouts/{name}.json"));
-        if !path.is_file() {
-            return Err(UiError::NoLayout(name.to_string()));
-        }
-        let doc = read_json(&path)?;
-        let err = |e: mmk_formats::Error| UiError::Invalid(format!("{}: {e}", path.display()));
+        let rel = format!("ui/layouts/{name}.json");
+        let path = format!("{}/{rel}", files.describe());
+        let doc: Value = match files.read(&rel) {
+            Fetch::Ready(b) if plain_name(name) => {
+                serde_json::from_slice(&b).map_err(|e| UiError::Invalid(format!("{path}: {e}")))?
+            }
+            Fetch::Later => return Err(io_error(files, &rel, std::io::ErrorKind::WouldBlock)),
+            _ => return Err(UiError::NoLayout(name.to_string())),
+        };
+        let err = |e: mmk_formats::Error| UiError::Invalid(format!("{path}: {e}"));
         let layout = lyt::json::layout_from_json(
             doc.get("layout")
-                .ok_or_else(|| UiError::Invalid(format!("{}: no layout", path.display())))?,
+                .ok_or_else(|| UiError::Invalid(format!("{path}: no layout")))?,
         )
         .map_err(err)?;
         let mut animations = BTreeMap::new();
@@ -476,11 +602,13 @@ impl UiCache {
         }
         let mut textures = Vec::new();
         if let Some(t) = doc.get("textures").and_then(Value::as_object) {
-            for stem in t.keys() {
-                let p = root.join(format!("ui/textures/{name}/{stem}.mtex"));
-                let tex = Mtex::parse(&read(&p)?)
-                    .map_err(|e| UiError::Invalid(format!("{}: {e}", p.display())))?;
-                textures.push((stem.clone(), tex));
+            for (stem, info) in t {
+                let rel = format!("ui/textures/{name}/{stem}.mtex");
+                let n = |k: &str| info[k].as_u64().unwrap_or(0) as u32;
+                // registered here (a stand-in while the pixels are on their way); the layout's
+                // registration finds it by name, so the source only carries the size
+                let r = self.texture_at(format!("{name}/{stem}"), &rel, (n("w"), n("h")))?;
+                textures.push((stem.clone(), stand_in(r.width, r.height)));
             }
         }
         Ok(LayoutSource {
@@ -488,5 +616,63 @@ impl UiCache {
             animations,
             textures,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::files::MemFiles;
+    use mmk_formats::fixtures::sample_bflyt;
+
+    fn tex(w: u32, h: u32) -> Mtex {
+        Mtex {
+            data: vec![255; (w * h * 4) as usize],
+            ..stand_in(w, h)
+        }
+    }
+
+    #[test]
+    fn textures_that_come_later() {
+        let layout = Layout::parse(&sample_bflyt()).unwrap();
+        let doc = serde_json::json!({
+            "layout": lyt::json::layout_to_json(&layout),
+            "textures": {"Box^s": {"w": 8, "h": 8}, "Tex1": {"w": 4, "h": 4}},
+        });
+        let mut m = MemFiles::new("memory");
+        m.insert("manifest.json", br#"{"game": "SMM2"}"#.to_vec());
+        m.insert("ui/layouts/Sample.json", doc.to_string().into_bytes());
+        m.insert_later("ui/textures/Sample/Box^s.mtex");
+        m.insert("ui/textures/Sample/Tex1.mtex", tex(4, 4).to_bytes());
+        m.insert_later("ui/textures/Icons/A.mtex");
+        let mut c = UiCache::from_files(Box::new(m)).unwrap();
+        assert!(c.root().is_none());
+        let res = c.layout("Sample").unwrap();
+        let boxed = res.textures_by_name["Box^s"];
+        assert_eq!((boxed.width, boxed.height), (8, 8));
+        assert!(!c.textures[boxed.id as usize].ready);
+        assert!(c.textures[res.textures_by_name["Tex1"].id as usize].ready);
+        let icon = c.texture_file("Icons", "A").unwrap();
+        assert!(c.texture_file("Icons", "B").is_none());
+        assert_eq!(c.waiting(), 2);
+        let wanted = c.take_requests();
+        assert_eq!(
+            wanted,
+            [
+                (boxed.id, "ui/textures/Sample/Box^s.mtex".to_string()),
+                (icon.id, "ui/textures/Icons/A.mtex".to_string())
+            ]
+        );
+        assert!(c.take_requests().is_empty());
+        let rev = c.revision();
+        assert!(c.provide(boxed.id, Some(&tex(8, 8).to_bytes())));
+        assert!(!c.provide(boxed.id, Some(&tex(8, 8).to_bytes())));
+        assert!(!c.provide(icon.id, None));
+        assert!(c.textures[boxed.id as usize].ready);
+        assert_eq!(c.textures[boxed.id as usize].texture.data.len(), 8 * 8 * 4);
+        assert_eq!((c.waiting(), c.revision() > rev), (0, true));
+        // opened once: neither the layout nor its textures are asked for again
+        c.layout("Sample").unwrap();
+        assert!(c.take_requests().is_empty());
     }
 }

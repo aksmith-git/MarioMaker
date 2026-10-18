@@ -366,6 +366,16 @@ and on macOS too. No platform code outside this crate; everything below `shell` 
   - *Sound* opens on the first pointer or key event (`unlock_audio`; browsers start WebAudio
     only after a gesture); cpal's WebAudio backend runs the callback on the main thread.
   - *Courses*: the cache's built-in courses (`courses/`) in a list, or any course file.
+  - *SMM2 menus* (`open_front`, host `web_front`): when OPFS `mmk-ui/` holds an SMM2 UI import
+    (copied from a picked folder with a `files.txt` list, or made by the dump import's worker
+    via `import_ui`, its files posted as `@ui/<path>`), the page starts `mmk-front` through the
+    same `FrontApp` as native. `mmk_ui::UiCache::from_files(MemFiles)`: all JSON read up front,
+    textures `Fetch::Later` → `take_requests` / `provide` from `pump_ui` each frame (the front
+    end holds ≤ 30 frames for them; `UiLayer` skips quads whose textures are still missing and
+    re-uploads them on `revision` changes); UI WAVs read up front as bytes (`UiMixer`'s clip
+    reader), mixed into the same WebAudio stream as the game. Library: built-in courses decoded
+    in the background + opened files; `localStorage` for saves; course music read when the
+    front end loads a course. Page-opened courses play through the front end (`play_course`).
   Build: `scripts/build-web.sh` (wasm-bindgen CLI matching `Cargo.lock`), serve the folder.
   Checked in headless Edge (CDP; WebGPU, BC on the GPU) and Firefox (WebDriver BiDi).
 - **Smoke tests:** `mmk-play <course> --screenshot out.png --ticks N [--scale S] [--idle]

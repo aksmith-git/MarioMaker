@@ -13,6 +13,8 @@ use mmk_ui::{
 };
 use winit::keyboard::KeyCode;
 
+// the host: files, threads and the course server natively; the browser's storage on the web
+#[cfg(not(target_arch = "wasm32"))]
 use crate::front_host::{HostData, ShellHost};
 use crate::game::Game;
 use crate::input::Keyboard;
@@ -20,6 +22,8 @@ use crate::render::{Gpu, Renderer};
 use crate::session::FixedStep;
 use crate::ui_layer::UiLayer;
 use crate::ui_sound::UiMixer;
+#[cfg(target_arch = "wasm32")]
+use crate::web_front::{HostData, ShellHost};
 
 pub struct FrontApp {
     pub front: Front,
@@ -108,6 +112,11 @@ impl FrontApp {
             data: &mut self.data,
         };
         self.front.tick(input, &mut host);
+        if self.front.course_done {
+            // a course played on its own (the web page's course picker): back to the menus
+            self.front.course_done = false;
+            self.front.capture(&mut host, "title-play", 0, 0);
+        }
         let sounds = self.front.take_sounds();
         if let Some(m) = &self.ui_audio {
             for s in &sounds {

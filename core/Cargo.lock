@@ -1374,6 +1374,7 @@ dependencies = [
  "clap",
  "console_error_panic_hook",
  "cpal",
+ "flate2",
  "gilrs",
  "js-sys",
  "libc",

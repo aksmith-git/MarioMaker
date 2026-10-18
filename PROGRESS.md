@@ -281,9 +281,16 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   - ✅ WebAudio (cpal) through the shared sound director, started on the first gesture
   - ✅ Gamepad API (gilrs) and keyboard; course picker: built-in courses of the import, or any
     `.bcd` / zlib / raw course file
+  - ✅ SMM2 menus (`mmk-front`) when the SMM2 UI import is in storage: copied from an
+    `mmk import-smm2-ui` folder, or made by the in-page dump import (identical to the desktop
+    import, all 4528 files); the UI cache reads JSON up front (13 MB, ~0.4 s) and textures on
+    request; opening, title over its demo courses, Play menu, Course World (the library: built-in
+    courses + opened files), Story Mode, 100 Mario, course card / HUD / pause / give up; UI sounds,
+    course music, keys, mouse clicks; saves in `localStorage`. No server listing in the browser
   - checked in headless Edge (CDP: import, courses, keys, a scripted Gamepad API pad, non-silent
-    WebAudio) and headless Firefox (WebDriver BiDi). Open: Safari (OPFS `createWritable`),
-    a real controller in a browser, touch controls, mobile memory limits, menus (layout player)
+    WebAudio, the menus) and headless Firefox (WebDriver BiDi; before the menus). Open: Safari
+    (OPFS `createWritable`), a real controller in a browser, touch controls, mobile memory
+    limits, the course server from the browser (HTTP), Firefox with the menus
 - 🔄 iOS/iPadOS: the same Swift package cross-compiled (`swift build --triple`, core linked from
   `core/target/aarch64-apple-ios{,-sim}/release`), bundled by `scripts/make-ios-app.sh`
   (DECISIONS.md "iOS packaging"); `scripts/check.sh --ios` builds it for the Simulator. AppKit
@@ -310,8 +317,9 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   comparison set (macOS, 1024×640 window): 27 pixel-identical, course-pause 0.11 % and
   course-settings 0.11 % of pixels (the selection frame's Loop phase), smm1-walk 0.35 % (the
   random course name on the map's balloon); real-time navigation (hub → list → course page →
-  play) and the `MMK_SCREENSHOT` smoke test run; `scripts/check.sh --ios` builds. Open: the web
-  build (async UI cache), Settings screens, ghosts in the Apple app
+  play) and the `MMK_SCREENSHOT` smoke test run; `scripts/check.sh --ios` builds. ✅ the web build runs
+  it too (UI cache over an in-memory file source filled from OPFS, textures on request). Open:
+  Settings screens, ghosts in the Apple app, a server listing in the browser (HTTP fetch)
 
 ### Phase 9 — SMM2 single-player like-for-like 🔄 (owner request 2026-10-18)
 - 🔄 SMM2 layouts through the same layout player (private map: `research/specs/smm2-layouts.md`):

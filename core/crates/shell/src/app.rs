@@ -182,6 +182,8 @@ pub enum UserEvent {
     Sound(Arc<AudioOut>),
     /// Play the current course online from its start: the link, players, our player (0-based).
     Net(Box<dyn mmk_netplay::Link>, usize, usize),
+    /// Run this on the app (the web page starting or changing the front end).
+    Run(Box<dyn FnOnce(&mut App)>),
 }
 
 pub struct App {
@@ -210,7 +212,6 @@ pub struct App {
     /// Sound output handed to games that arrive later (`UserEvent::Game`).
     sound: Option<Arc<AudioOut>>,
     /// The SMM2 front end (menus, Course World, 100 Mario, in-course screens), when it runs.
-    #[cfg(not(target_arch = "wasm32"))]
     pub front: Option<Box<crate::front_app::FrontApp>>,
 }
 
@@ -243,13 +244,12 @@ impl App {
             #[cfg(not(target_arch = "wasm32"))]
             audio: None,
             sound: None,
-            #[cfg(not(target_arch = "wasm32"))]
             front: None,
         }
     }
 
     /// Switch to `game` (keeping the window, GPU and sound output).
-    fn replace_game(&mut self, mut game: Game) {
+    pub fn replace_game(&mut self, mut game: Game) {
         if self.sound.is_some() {
             game.session.set_audio(self.sound.clone());
         }
@@ -311,10 +311,11 @@ impl App {
         // the browser reads texture files asynchronously: start the reads the last frame asked
         // for, and hold the game (briefly) while they are on their way
         #[cfg(target_arch = "wasm32")]
-        let loading = crate::web::pump_textures(&self.game.cache);
+        let loading = crate::web::pump_textures(&self.game.cache)
+            | crate::web::pump_ui(self.front.as_deref_mut());
         #[cfg(not(target_arch = "wasm32"))]
         let loading = false;
-        if self.front_advance(dt, pads) {
+        if self.front_advance(if loading { 0.0 } else { dt }, pads) {
             // the front end ran its ticks (and the course's)
         } else if self.game.editing {
             // arrows / WASD scroll the maker view
@@ -338,7 +339,6 @@ impl App {
             }
         }
         if let Some(gfx) = &mut self.gfx {
-            #[cfg(not(target_arch = "wasm32"))]
             let drawn = match &mut self.front {
                 Some(f) => {
                     let game = &mut self.game;
@@ -348,8 +348,6 @@ impl App {
                 }
                 None => gfx.draw(&mut self.game),
             };
-            #[cfg(target_arch = "wasm32")]
-            let drawn = gfx.draw(&mut self.game);
             if drawn {
                 // presenting waits for the display, which paces the loop
                 self.frames += 1;
@@ -364,7 +362,6 @@ impl App {
     }
 
     /// Advance the front end when it runs (true: it did).
-    #[cfg(not(target_arch = "wasm32"))]
     fn front_advance(&mut self, dt: f64, pads: u32) -> bool {
         match &mut self.front {
             Some(f) => {
@@ -373,11 +370,6 @@ impl App {
             }
             None => false,
         }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn front_advance(&mut self, _dt: f64, _pads: u32) -> bool {
-        false
     }
 
     /// Maker keys (editing: palette, undo/redo, save, play; playing: E edits again). True when
@@ -573,6 +565,12 @@ impl ApplicationHandler<UserEvent> for App {
                 self.game.session.go_online(link, players, me);
                 log(&format!("online: player {} of {players}", me + 1));
             }
+            UserEvent::Run(f) => {
+                f(self);
+                if let Some(g) = &self.gfx {
+                    g.window.request_redraw();
+                }
+            }
         }
     }
 
@@ -620,7 +618,6 @@ impl ApplicationHandler<UserEvent> for App {
                 self.maker_hover();
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                #[cfg(not(target_arch = "wasm32"))]
                 if state == ElementState::Pressed
                     && let (Some(f), Some(g)) = (&mut self.front, &self.gfx)
                 {
