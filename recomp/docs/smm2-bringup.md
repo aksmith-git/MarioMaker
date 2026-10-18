@@ -58,6 +58,15 @@ title screen was checked against Ryujinx. Names and behaviour only: no game code
   it now first waits for encoded work that reads the same memory in place (vertex, index and storage buffers,
   compute uniforms; tracked in 64 KB pages).
 - Cube-array views of 2D arrays (72-layer character reflection maps).
+- Culling both faces (NVN Face FRONT_AND_BACK) draws no polygons; Metal has no such mode and the renderer had
+  fallen back to no culling. The 3D World background switches a clear pipe's opaque yellow stand-in off that way.
+- A texture rendered to before it was ever sampled first gets its memory's contents, as on the GPU. Each 2D style's
+  tile sheet is loaded from a file and the animated tiles are then drawn into that same texture every frame; only
+  the animated cells existed, so ground, blocks and castles were missing.
+- Geometry shaders (Metal has none). The vertex shader becomes a `vs_main()` function and the geometry shader a
+  code fragment of one combined vertex function; each input point is an instance drawing the emitted triangle
+  strip, the n-th EmitVertex chosen by the vertex id (`maxwell/shader.h`). Point input with one strip per
+  invocation, which is what SMM2's 2D tiles and some effects use.
 
 ## Maxwell shader translator
 
@@ -66,14 +75,46 @@ title screen was checked against Ryujinx. Names and behaviour only: no game code
   first load had just overwritten: the layout vertex shader fetches each corner's texture coordinates that way, and
   the title logo, copyright line and coin icon were invisible).
 - Compute results are flushed before draws that read them; textures sampled with `TLD4` in compute work.
+- `LDC` offsets are signed when added to the register (as in Ryujinx's translator). SMM2's skinning shaders read
+  bone matrix rows at `c[6][Rx - 0x10]`; taken as +0xfff0 that read past the bone palette and threw every skinned
+  mesh off screen (Mario's body, the Koopa Car), leaving only rigid parts.
 
 ## Repeatable boots
 
 The title screen's course comes from the game's global `sead::Random`, which seeds itself from the system tick at
-start-up. `SMM2_SEED=<n>` (`games/smm2/seed.c`) fixes that seed: frame 2400 is then bit-identical from boot to boot.
-Ryujinx showed the same course on every boot; `SMM2_SEED=4` is that course.
+start-up: slot `(n * random) >> 32` of `Course/title_course_data_NN` with n = 8, or 10 once the save unlocks the
+last two. `SMM2_SEED=<n>` (`games/smm2/seed.c`) fixes that seed: frame 2400 is then bit-identical from boot to
+boot. Seed -> slot: 4 -> 00 (3D World), 2 -> 01 (SMB1), 1 -> 02 (SMB1), 6 -> 05 (SMB3), 3 -> 06 (SMB3),
+10 -> 07 (NSMBU); 03, 08 and 09 did not come up in 22 seeds with this save.
+
+For Ryujinx the course is chosen with a LayeredFS mod making all ten slots one course (`titlemod.py --course N`).
+The same mod in the recomp crashes while loading the title scene when the course is not the slot's own (open issue
+below). An exefs patch seeding Ryujinx's generator instead made Ryujinx exit at start-up every time.
 
 ## Title screen against Ryujinx (2026-10-19)
+
+Current numbers (after the second round of fixes; window-server captures of both windows, 1280x720 game area, the
+recomp at render scale 1 like Ryujinx's docked 1080p, the best-matching recomp frame of 2300..2520 against one
+Ryujinx grab; % of pixels differing by more than 24 / 48 / 96 in some channel):
+
+| Course (style) | Recomp frame | > 24 | > 48 | > 96 | at frame 2400 (> 24) |
+|---|---|---|---|---|---|
+| 00 (3D World) | 2376 | 2.50 % | 0.66 % | 0.13 % | 2.72 % |
+| 01 (SMB1) | 2460 | 4.17 % | 2.25 % | 0.99 % | 6.12 % |
+| 02 (SMB1, underground) | 2480 | 4.80 % | 2.47 % | 1.05 % | 5.37 % |
+| 05 (SMB3, desert) | 2488 | 4.71 % | 2.98 % | 1.15 % | 4.79 % |
+| 07 (NSMBU, snow) | 2304 | 2.99 % | 0.94 % | 0.27 % | 3.58 % |
+
+What is left in the difference maps: edges of pixel-art tiles and text (texel-boundary sampling / scaling, a pixel
+here and there), the "Press L+R" button's blink and the moving characters (animation phase). Ryujinx against
+itself, five boots of the same course: 0.3-1.8 %.
+
+Animation phase cannot be lined up exactly: Ryujinx's grabs are timed by the wall clock and its boots differ in
+length (the title timer read 476-481 across five identical boots at the same grab time), and the reference build
+exposes no frame count. The recomp is frame-exact, so the nearest frame is found by searching a window of recomp
+frames for the best match (`LARECOMP_CG_SHOT=<first>:<last>:<step>`).
+
+Earlier (R1, first round):
 
 - Reference: Ryujinx 1.3.2, the same dump (v1.0.0 + v3.0.3 update), private data root, window grabbed 48 s after
   launch on five boots (identical course; boot-to-boot difference 0.3-1.8 % of pixels by more than 24).
@@ -82,10 +123,16 @@ Ryujinx showed the same course on every boot; `SMM2_SEED=4` is that course.
   uniform colour shift: 26.6 % of pixels by more than 24.)
 - Result (1280x720, `imgcmp.py`): 6.96 % of pixels differ by more than 24 in some channel (3.80 % by more than 48,
   1.30 % by more than 96), mean difference 7.6.
-- Remaining differences: Mario's model is drawn wrong (a blue block), the Koopa Car in the middle is missing (a grey
-  pole stands there instead), and the course's animations are at a different phase.
+- Remaining differences then: Mario's model drawn wrong (a blue block), the Koopa Car missing (a grey pole in its
+  place), animation phase; all but the phase fixed since (above).
 - Boot sequence: the yellow "SUPER MARIO MAKER" / "2" logo screen with the running SMB1 Mario, then the title, as on
   Ryujinx.
+
+## Open issues
+
+- A title course swapped into another slot (all-ten-slots mod, or two slots swapped) crashes the recomp while the
+  title scene loads (a null pointer in the scene setup); Ryujinx runs the all-slots mod.
+- Geometry shaders with other input primitives, several strips, or textures are not handled (draws skipped).
 
 ## Input replays against Ryujinx (R2, 2026-10-19)
 

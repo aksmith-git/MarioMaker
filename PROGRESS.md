@@ -765,17 +765,23 @@ framework ideas; Ryujinx as the reference). Nothing counts as done without the e
 - ✅ R1 (macOS): boots to the title screen and renders it (2026-10-19). What it took: `recomp/docs/smm2-bringup.md`
   (per-core scheduling, nifm/friend/mii/fonts/system data, NVN conditional rendering, 3D render targets, blocking
   first-use compiles, narrow vertex strides, in-order uniform updates, translator TLD4/TMML/LDC.64 fix)
-- 🔄 Title screen frame vs Ryujinx: 6.96 % of pixels differ by more than 24 (mean 7.6) on the same course
-  (`SMM2_SEED=4`, frame 2400, both windows grabbed through the window server). Left: Mario's model (drawn as a
-  blue block), the Koopa Car (missing), animation phase. Ryujinx against itself: 0.3-1.8 %.
-  Evidence: `recomp/private/smm2/evidence/r1/` (`side_by_side_window.png`, `recomp_window_cgshot_f2400_720p.png`,
-  `ryujinx_title_seedcourse_48s.png`, `recomp_boot_sequence_5s_steps.png`; private, not in git)
+- 🔄 Title screen frames vs Ryujinx, five courses in four styles (3D World, SMB1 x2, SMB3, NSMBU), same course
+  and nearest frame, both windows grabbed through the window server: 2.50-4.80 % of pixels differ by more than 24,
+  0.66-2.98 % by more than 48, 0.13-1.15 % by more than 96 (table in `recomp/docs/smm2-bringup.md`). Fixed in
+  this round: skinned meshes (Mario, Koopa Car: signed LDC offsets), a culled stand-in mesh, geometry shaders,
+  2D tile sheets (rendered textures keep their memory). Left: texel-edge and text differences, animation phase
+  (not exactly alignable: Ryujinx grabs are wall-clock timed). Ryujinx against itself: 0.3-1.8 %.
+  Evidence: `recomp/private/smm2/evidence/r1/final_*` (`_side_by_side.png`, `_diff.png`, `_recomp.png`; private,
+  not in git)
 - ✅ R2 (macOS): plays courses by input injection, and input replays stay in sync with Ryujinx frame for frame
   (2026-10-19). The game now gets input (`nn::hid::GetNpadStates` answered by the runtime; before, it saw none,
   keyboard included); `RECOMP_PAD_SCRIPT` plays the Ryujinx trace tooling's scripts on the game's own clock (one frame
   per player update); `RECOMP_TRACE_OUT` records the player at the same instruction as the Ryujinx trace build;
   `tools/replay_sync.py` runs both and compares. What it took and how: `recomp/docs/smm2-bringup.md` ("Input replays")
-  - Replays: 31 sessions, 456 tests (flat, wall, slope, water, items and power-up forms in all five styles, plus two runs on the game's own title course with enemies): 221,189 of 221,189 player updates identical in position, speed, facing and state, bit for bit; the whole 12 KB player object identical apart from one word holding a heap address. No divergence, so no recomp bug to fix
+  - Replays: 31 sessions, 456 tests (flat, wall, slope, water, items and power-up forms in all five styles, plus
+    two runs on the game's own title course with enemies): 221,189 of 221,189 player updates identical in position,
+    speed, facing and state, bit for bit; the whole 12 KB player object identical apart from one word holding a heap
+    address. No divergence, so no recomp bug to fix
   - Plays: the game's own title course from the start to the goal (Koopa Car, enemies, coins; 1,911 updates, identical
     in both runtimes); Course Maker test play reached through the menus (L + R, Make, −) on the presented-frame clock
   Evidence: `recomp/private/smm2/evidence/r2/` (per-course tables `results/*.md`, traces of both runtimes, sessions,
@@ -792,7 +798,7 @@ framework ideas; Ryujinx as the reference). Nothing counts as done without the e
 
 | Platform | Builds | Boots to title | Plays courses | Frames match Ryujinx | Input replays in sync |
 |---|---|---|---|---|---|
-| macOS (Apple Silicon, Metal) | ✅ | ✅ title rendered, 60 fps | ✅ title course to the goal, Course Maker test play | 🔄 6.96 % px >24 (title) | ✅ 221,189 / 221,189 updates identical (31 sessions) |
+| macOS (Apple Silicon, Metal) | ✅ | ✅ title rendered, 60 fps | ✅ title course to the goal, Course Maker test play | 🔄 title, 5 courses / 4 styles: 2.5-4.8 % px >24, 0.13-1.15 % >96 | ✅ 221,189 / 221,189 updates identical (31 sessions) |
 | Windows (x64, Vulkan) | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
 | Linux (x64, Vulkan) | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
 | iOS / iPadOS (arm64, Metal, AOT) | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
