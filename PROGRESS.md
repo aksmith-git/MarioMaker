@@ -406,8 +406,9 @@ Not Nintendo's network: the engine talks to an open-source server the owner can 
   fail-rate band; `mmk server`) and client crate `mmk-online` ✅ (`mmk upload/search/download`,
   `RemoteSource` for 100 Mario) · accounts ✅ (name + secret token, SHA-256 stored; maker IDs;
   like/boo, clears with world records and first clears, comments, maker profiles, delete own
-  course; client + `mmk register/like/comment/maker`, `mmk upload --token`) · rankings, SMMDB import
-  ⬜ · ⏳ owner: keep this or connect to another open-source server
+  course; client + `mmk register/like/comment/maker`, `mmk upload --token`) · leaderboards ✅
+  (maker points [inf weights], courses cleared, first clears, world records; `mmk rankings`) ·
+  SMMDB import ⬜ · ⏳ owner: keep this or connect to another open-source server
 - ⬜ Course World client: browse, play, like/boo, comment, upload from the editor
 - ✅ Local multiplayer (co-op, up to 4: Mario, Luigi, Toad, Toadette as the models' _2/_3/_4
   variants): extra players run the same rules, rejoin beside player 1 [inf: bubble], any player

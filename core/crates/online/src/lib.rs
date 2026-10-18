@@ -190,6 +190,27 @@ impl Client {
         Ok((a, Self::list(&v)))
     }
 
+    /// Leaderboard `kind` (maker_points, clears, first_clears, records): (rank, score, maker ID,
+    /// name), best first.
+    pub fn rankings(&self, kind: &str, limit: usize) -> Result<Vec<(u32, i64, String, String)>> {
+        let v = self.get_json(&format!("/api/rankings/{kind}?limit={limit}"))?;
+        Ok(v["rankings"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|r| {
+                        Some((
+                            r["rank"].as_u64()? as u32,
+                            r["score"].as_i64()?,
+                            r["maker_id"].as_str()?.to_string(),
+                            r["name"].as_str().unwrap_or_default().to_string(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     /// Remove a course (yours, or any with the admin token).
     pub fn delete(&self, code: &str) -> Result<()> {
         self.auth(ureq::delete(&format!("{}/api/courses/{code}", self.base)))
@@ -367,6 +388,7 @@ mod tests {
         me.comment(&mine.code, "hi").unwrap();
         assert_eq!(c.comments(&mine.code).unwrap()[0].text, "hi");
         assert_eq!(c.maker(&acc.maker_id).unwrap().1.len(), 1);
+        assert_eq!(c.rankings("records", 10).unwrap()[0].2, acc.maker_id);
         me.delete(&mine.code).unwrap();
         assert!(c.info(&mine.code).is_err());
         let _ = std::fs::remove_dir_all(&dir);

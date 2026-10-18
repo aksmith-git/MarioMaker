@@ -185,6 +185,13 @@ enum Cmd {
         #[arg(long)]
         token: Option<String>,
     },
+    /// Leaderboards: maker_points, clears, first_clears or records.
+    Rankings {
+        #[arg(default_value = "maker_points")]
+        kind: String,
+        #[arg(long, default_value = "http://localhost:8640")]
+        server: String,
+    },
     /// Show a maker's profile and courses.
     Maker {
         maker_id: String,
@@ -1048,6 +1055,17 @@ fn main() -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(e) => fail("comments", e),
+            }
+        }
+        Cmd::Rankings { kind, server } => {
+            match mmk_online::Client::new(server).rankings(&kind, 50) {
+                Ok(rows) => {
+                    for (rank, score, id, name) in rows {
+                        println!("{rank:>3}. {score:>6}  {id}  {name}");
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => fail("rankings", e),
             }
         }
         Cmd::Maker { maker_id, server } => match mmk_online::Client::new(server).maker(&maker_id) {

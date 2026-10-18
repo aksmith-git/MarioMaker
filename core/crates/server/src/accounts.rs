@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 /// Longest display name (SMM2 allows 10 characters for a Mii name).
 pub const MAX_NAME: usize = 10;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Account {
     pub id: u32,
     pub name: String,

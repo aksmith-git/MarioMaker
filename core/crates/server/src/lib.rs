@@ -9,7 +9,7 @@
 //! | GET | `/api/courses?q=&style=&sort=new\|popular\|hard&limit=&offset=` | search |
 //! | GET | `/api/courses/<code>` | metadata |
 //! | GET | `/api/courses/<code>/data` | course data (bytes) |
-//! | POST | `/api/courses/<code>/play`, `/clear`, `/like` | statistics |
+//! | POST | `/api/courses/<code>/play`, `/clear` | statistics |
 //! | GET | `/api/pool?min=&max=&count=` | random courses by difficulty value (fail rate 0–100) |
 //! | POST | `/api/accounts` (body `{"name"}`) | new account → `{account, token}` (token shown once) |
 //! | GET | `/api/me` | the caller's account |
@@ -19,6 +19,7 @@
 //! | GET, POST | `/api/courses/<code>/comments` (POST body `{"text"}`) | comments |
 //! | DELETE | `/api/courses/<code>` | remove (the uploader, or the admin) |
 //! | POST | `/api/admin/ban/<account id>`, `/api/admin/unban/<id>` | moderation (admin token) |
+//! | GET | `/api/rankings/<maker_points\|clears\|first_clears\|records>?limit=` | leaderboards |
 //!
 //! Accounts (`accounts` module) are a name and a secret token sent as `Authorization: Bearer
 //! <token>`; uploads, votes and comments from an account carry its name and maker ID. Anonymous
@@ -134,6 +135,8 @@ struct Inner {
     votes: HashMap<String, HashMap<u32, i8>>,
     /// code → comments.
     comments: HashMap<String, Vec<Comment>>,
+    /// maker ID → codes of the courses they cleared.
+    cleared: HashMap<String, Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -235,6 +238,24 @@ impl Store {
                     .collect()
             })
             .unwrap_or_default();
+        let cleared = social["cleared"]
+            .as_object()
+            .map(|o| {
+                o.iter()
+                    .map(|(who, v)| {
+                        let codes = v
+                            .as_array()
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|c| Some(c.as_str()?.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        (who.clone(), codes)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         Ok(Self {
             dir,
             inner: Mutex::new(Inner {
@@ -245,6 +266,7 @@ impl Store {
                 accounts,
                 votes,
                 comments,
+                cleared,
             }),
             admin: None,
         })
@@ -285,7 +307,7 @@ impl Store {
             .collect();
         self.write_json(
             "social.json",
-            &json!({ "votes": votes, "comments": comments }),
+            &json!({ "votes": votes, "comments": comments, "cleared": g.cleared }),
         )
     }
 
@@ -348,6 +370,11 @@ impl Store {
         let m = &mut g.courses[i];
         m.clears += 1;
         if let Some(who) = who {
+            let mine = g.cleared.entry(who.to_string()).or_default();
+            if !mine.iter().any(|c| c == code) {
+                mine.push(code.to_string());
+            }
+            let m = &mut g.courses[i];
             if m.first_clear.is_empty() {
                 m.first_clear = who.to_string();
             }
@@ -356,8 +383,11 @@ impl Store {
                 m.record_holder = who.to_string();
             }
         }
-        let out = m.clone();
+        let out = g.courses[i].clone();
         self.save_index(&g)?;
+        if who.is_some() {
+            self.save_social(&g)?;
+        }
         Ok(out)
     }
 
@@ -512,7 +542,52 @@ impl Store {
             .map_err(|e| StoreError::Io(e.to_string()))
     }
 
-    /// Record a play / attempt result / like.
+    /// Leaderboard `kind`: maker_points (likes − boos on their courses [inf: SMM2 adds points
+    /// for likes and takes them for boos; the exact weights weren't decoded]), clears (courses
+    /// cleared), first_clears, records (world records held). Banned accounts are left out.
+    pub fn rankings(&self, kind: &str, limit: usize) -> Option<Vec<Value>> {
+        let g = self.inner.lock().unwrap();
+        let score = |a: &accounts::Account| -> i64 {
+            let count =
+                |f: &dyn Fn(&Meta) -> bool| g.courses.iter().filter(|m| f(m)).count() as i64;
+            match kind {
+                "maker_points" => g
+                    .courses
+                    .iter()
+                    .filter(|m| m.owner == a.id)
+                    .map(|m| m.likes as i64 - m.boos as i64)
+                    .sum::<i64>()
+                    .max(0),
+                "clears" => g.cleared.get(&a.maker_id).map_or(0, |c| c.len() as i64),
+                "first_clears" => count(&|m| m.first_clear == a.maker_id),
+                "records" => count(&|m| m.record_holder == a.maker_id),
+                _ => -1,
+            }
+        };
+        if score(&accounts::Account::default()) < 0 {
+            return None;
+        }
+        let mut rows: Vec<(i64, &accounts::Account)> = g
+            .accounts
+            .list
+            .iter()
+            .filter(|a| !a.banned)
+            .map(|a| (score(a), a))
+            .filter(|(s, _)| *s > 0)
+            .collect();
+        rows.sort_by_key(|(s, a)| (std::cmp::Reverse(*s), a.id));
+        Some(
+            rows.iter()
+                .take(limit)
+                .enumerate()
+                .map(|(i, (s, a))| {
+                    json!({ "rank": i + 1, "score": s, "maker_id": a.maker_id, "name": a.name })
+                })
+                .collect(),
+        )
+    }
+
+    /// Record a play / anonymous clear.
     pub fn record(&self, code: &str, what: &str) -> Result<Meta, StoreError> {
         let mut g = self.inner.lock().unwrap();
         let i = *g.by_code.get(code).ok_or(StoreError::NotFound)?;
@@ -523,7 +598,6 @@ impl Store {
                 m.attempts += 1;
             }
             "clear" => m.clears += 1,
-            "like" => m.likes += 1,
             _ => return Err(StoreError::NotFound),
         }
         let out = m.clone();
@@ -706,6 +780,17 @@ pub fn handle(
             {
                 Ok(()) => json(200, json!({ "ok": true })),
                 Err(e) => store_err(e),
+            }
+        }
+        ("GET", ["api", "rankings", kind]) => {
+            let limit = q
+                .get("limit")
+                .and_then(|l| l.parse().ok())
+                .unwrap_or(100)
+                .min(500);
+            match store.rankings(kind, limit) {
+                Some(rows) => json(200, json!({ "kind": kind, "rankings": rows })),
+                None => err(404, "no such ranking"),
             }
         }
         ("GET", ["api"]) | ("GET", [""]) => {
@@ -966,6 +1051,19 @@ mod tests {
         // profile
         let (_, p) = call("GET", &format!("/api/makers/{maker_id}"), None, b"");
         assert_eq!(p["courses"][0]["code"].as_str(), Some(code.as_str()));
+        // leaderboards (the course was booed, so no maker points)
+        for kind in ["clears", "first_clears", "records"] {
+            let (st, r) = call("GET", &format!("/api/rankings/{kind}"), None, b"");
+            assert_eq!(st, 200);
+            assert_eq!(
+                r["rankings"][0]["maker_id"].as_str(),
+                Some(maker_id.as_str())
+            );
+            assert_eq!(r["rankings"][0]["score"], 1, "{kind}");
+        }
+        let (_, r) = call("GET", "/api/rankings/maker_points", None, b"");
+        assert_eq!(r["rankings"].as_array().map(Vec::len), Some(0));
+        assert_eq!(call("GET", "/api/rankings/nope", None, b"").0, 404);
         // persisted across a restart
         let store2 = Store::open(&dir).unwrap();
         assert!(
@@ -974,6 +1072,7 @@ mod tests {
             fs::read_to_string(dir.join("accounts.json"))
         );
         assert_eq!(store2.comments(&code).len(), 1);
+        assert_eq!(store2.rankings("clears", 10).unwrap().len(), 1);
         // moderation: a ban blocks votes; the admin can delete
         let id = me["id"].as_u64().unwrap();
         assert_eq!(
