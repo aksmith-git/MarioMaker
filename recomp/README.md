@@ -62,7 +62,7 @@ Added for SMM2:
 | Variable | Effect |
 |---|---|
 | `SMM2_SEED=<n>` | fixed seed for the game's global random generator: every boot shows the same title course and frames repeat exactly (`4`: the course Ryujinx shows) |
-| `LARECOMP_CG_SHOT=<frame>` | capture the window through the window server at that frame (colour-managed, like the Ryujinx reference grabs); with `LARECOMP_WINDOW=1280x720` for comparisons |
+| `LARECOMP_CG_SHOT=<frame>` or `<first>:<last>:<step>` | capture the window through the window server (colour-managed, like the Ryujinx reference grabs); with a range, `LARECOMP_SHOT_PATH` is a printf pattern (`shot_%05d.png`). For comparisons: `LARECOMP_WINDOW=1280x720 LARECOMP_SCALE=1` |
 | `LARECOMP_ASYNC_SHADERS=1` | compile shaders in the background and skip their draws meanwhile (LAS's behaviour; SMM2 then misses one-shot renders) |
 | `RECOMP_USER_NAME=<name>` | the account nickname (default "Player") |
 | `LARECOMP_DEBUG_FRAME=<n>` | log every draw of frame n and save each render pass to `build/pass_NNN.png`; `LARECOMP_DEBUG_EACH_DRAW=1` saves the target after every draw |

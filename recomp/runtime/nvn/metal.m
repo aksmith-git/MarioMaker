@@ -1166,12 +1166,24 @@ void backend_present(NvnTexture *t) {
         {   // LARECOMP_CG_SHOT=<frame> (+ LARECOMP_SHOT_PATH): capture our window as the window server composites it,
             // colour-managed into the display's space - the way the Ryujinx reference grabs its window, so the two
             // compare like for like
-            static long cg_shot = -1;
-            if (cg_shot < 0) cg_shot = getenv("LARECOMP_CG_SHOT") ? atol(getenv("LARECOMP_CG_SHOT")) : 0;
-            if (cg_shot && (long)total_frames == cg_shot) {
+            // (LARECOMP_CG_SHOT=<first>:<last>[:<step>]: every step-th frame in between, LARECOMP_SHOT_PATH a printf
+            // pattern taking the frame number, e.g. build/cg_%05d.png)
+            static long cg_a = -1, cg_b, cg_step = 1;
+            if (cg_a < 0) {
+                const char *e = getenv("LARECOMP_CG_SHOT");
+                cg_a = e ? atol(e) : 0;
+                cg_b = cg_a;
+                if (e && strchr(e, ':')) sscanf(e, "%ld:%ld:%ld", &cg_a, &cg_b, &cg_step);
+                if (cg_step < 1) cg_step = 1;
+            }
+            long f = (long)total_frames;
+            if (cg_a && f >= cg_a && f <= cg_b && (f - cg_a) % cg_step == 0) {
                 [cb waitUntilScheduled];
                 usleep(100000);  // (let the window server show this frame)
-                window_server_shot(getenv("LARECOMP_SHOT_PATH") ? getenv("LARECOMP_SHOT_PATH") : "build/cg_window.png");
+                char path[512];
+                const char *pat = getenv("LARECOMP_SHOT_PATH") ? getenv("LARECOMP_SHOT_PATH") : "build/cg_window.png";
+                if (strchr(pat, '%')) snprintf(path, sizeof path, pat, (int)f); else snprintf(path, sizeof path, "%s", pat);
+                window_server_shot(path);
             }
         }
         if (shot_tex) {
