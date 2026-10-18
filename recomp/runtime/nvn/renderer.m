@@ -3,6 +3,12 @@
 #include <dirent.h>
 #include <unistd.h>
 #import <Metal/Metal.h>
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#define DEPTH24_STENCIL8_FORMAT MTLPixelFormatInvalid  // (macOS only)
+#else
+#define DEPTH24_STENCIL8_FORMAT MTLPixelFormatDepth24Unorm_Stencil8
+#endif
 #include <mach/mach_time.h>
 #include <stdlib.h>
 #include <string.h>
@@ -431,6 +437,33 @@ static id<MTLTexture> view_texture(NvnTexture *t, const NvnTextureView *v, bool 
 // ------------------------------------------------------------------ render passes
 static __unsafe_unretained id last_bias_enc;  // encoder the depth bias was last set on
 
+// The iOS Simulator's Metal allows 32 bytes of colour targets per sample (devices: 64): there, targets past that
+// budget are left out of the pass and the pipelines (their writes are lost: the Simulator shows a little less).
+static bool rt_dropped(int index) {
+#if TARGET_OS_SIMULATOR
+    uint32_t bytes = 0;
+    for (int i = 0; i <= index && i < st.rt.ncolor; i++) {
+        if (!st.rt.color[i]) continue;
+        MTLPixelFormat pf = renderer_pixel_format(st.rt.color[i]->format);
+        uint32_t b = pf == MTLPixelFormatRGBA32Float || pf == MTLPixelFormatRGBA32Uint || pf == MTLPixelFormatRGBA32Sint ? 16
+                   : pf == MTLPixelFormatRGBA16Float || pf == MTLPixelFormatRG32Float || pf == MTLPixelFormatRGBA16Unorm ||
+                     pf == MTLPixelFormatRGBA16Uint || pf == MTLPixelFormatRGBA16Sint || pf == MTLPixelFormatRG32Uint ||
+                     pf == MTLPixelFormatRGBA8Unorm_sRGB || pf == MTLPixelFormatBGRA8Unorm_sRGB || pf == MTLPixelFormatRG11B10Float ||
+                     pf == MTLPixelFormatRGB10A2Unorm || pf == MTLPixelFormatRGB10A2Uint || pf == MTLPixelFormatRGB9E5Float ? 8 : 4;
+        // (Apple GPU tile storage: sRGB 8-bit, packed float and 10-bit formats take 8 bytes)
+        bytes = (bytes + b - 1) / b * b + b;  // (each target aligned to its own size)
+    }
+    if (bytes > 32) {
+        static int nlog;
+        if (nlog++ < 3) LOG("[metal] Simulator: colour target %d dropped (%u bytes per sample)\n", index, bytes);
+        return true;
+    }
+#else
+    (void)index;
+#endif
+    return false;
+}
+
 static void begin_pass(void) {
     if (enc && !st.rt_dirty) return;
     end_pass();
@@ -441,6 +474,7 @@ static void begin_pass(void) {
         NvnTexture *t = st.rt.color[i];
         if (!t) continue;
         renderer_mark_gpu_owned(t);
+        if (rt_dropped(i)) continue;
         id<MTLTexture> tex = view_texture(t, &st.rt.cview[i], st.rt.has_cview[i], true, nil);
         rp.colorAttachments[i].texture = tex;
         // 3D target: the view's layer is a depth slice (SMM2 fills its colour-correction LUT one slice per target)
@@ -556,7 +590,7 @@ static id<MTLLibrary> clear_lib(int index) {
 
 static void attachment_formats(MTLRenderPipelineDescriptor *pd) {
     for (int i = 0; i < st.rt.ncolor; i++)
-        if (st.rt.color[i]) pd.colorAttachments[i].pixelFormat = view_texture(st.rt.color[i], &st.rt.cview[i], st.rt.has_cview[i], true, nil).pixelFormat;
+        if (st.rt.color[i] && !rt_dropped(i)) pd.colorAttachments[i].pixelFormat = view_texture(st.rt.color[i], &st.rt.cview[i], st.rt.has_cview[i], true, nil).pixelFormat;
     if (st.rt.depth) {
         MTLPixelFormat pf = renderer_pixel_format(st.rt.depth->format);
         if (renderer_format_is_depth(st.rt.depth->format) && st.rt.depth->format != 0x31) pd.depthAttachmentPixelFormat = pf;
@@ -1029,6 +1063,19 @@ static Prog *get_program(NvnProgram *p, ShaderKey *vkey, ShaderKey *fkey) {
         snprintf(path, sizeof path, "build/msl/%llx_fs.metal", p->stages[1].code_addr);
         f = fopen(path, "w"); fputs(pr->fi->msl, f); fclose(f);
     }
+    if (getenv("LARECOMP_SAVE_GLSL") && !pr->gi) {  // (debug) the same programs as the Vulkan backend translates them
+        ShaderKey gv = *vkey, gf = *fkey;
+        gv.glsl = gf.glsl = 1;
+        ShaderInfo *a = maxwell_translate((const uint8_t *)(uintptr_t)p->stages[0].code_addr, vmax, STAGE_VERTEX, &gv);
+        gf.vs_out_mask = a->out_mask;
+        ShaderInfo *b = a->msl ? maxwell_translate((const uint8_t *)(uintptr_t)p->stages[1].code_addr, fmax, STAGE_FRAGMENT, &gf) : NULL;
+        mkdir("build/glsl", 0755);
+        char path[256];
+        snprintf(path, sizeof path, "build/glsl/%llx_vs.glsl", p->stages[0].code_addr);
+        FILE *f = fopen(path, "w"); if (f) { fputs(a->msl ? a->msl : a->error, f); fclose(f); }
+        snprintf(path, sizeof path, "build/glsl/%llx_fs.glsl", p->stages[1].code_addr);
+        f = fopen(path, "w"); if (f) { fputs(b && b->msl ? b->msl : b ? b->error : "", f); fclose(f); }
+    }
     shader_cache_note(pr->vi->msl, pr->fi->msl);
     if (sync_shaders()) {
         compile_program(pr);
@@ -1146,6 +1193,9 @@ static id<MTLTexture> sampled_texture(NvnTexture *t, const NvnTextureView *v, bo
     id<MTLTexture> tex = view_texture(t, v, has_view, false, nil);
     tex = apply_swizzle(tex, t, v, has_view);
     MTLTextureType want = mtl_type_for(want_type);
+#if TARGET_OS_SIMULATOR
+    if (want == MTLTextureTypeCubeArray) return nil;  // (the Simulator has no cube arrays: those lookups read zero there)
+#endif
     if (tex.textureType != want && tex.textureType != MTLTextureType2DMultisample) {
         id<MTLTexture> src = tex;
         if (want == MTLTextureType2D && (tex.textureType == MTLTextureType2DArray || tex.textureType == MTLTextureTypeCube))
@@ -1875,7 +1925,7 @@ static void draw(CmdRec *r, bool indexed) {
     }
     pd.vertexDescriptor = vd;
     for (int i = 0; i < st.rt.ncolor && i < 8; i++) {
-        if (!st.rt.color[i]) continue;
+        if (!st.rt.color[i] || rt_dropped(i)) continue;
         MTLRenderPipelineColorAttachmentDescriptor *ca = pd.colorAttachments[i];
         uint32_t m = (st.channel_mask >> (i * 4)) & 0xF;
         ca.writeMask = (m & 1 ? MTLColorWriteMaskRed : 0) | (m & 2 ? MTLColorWriteMaskGreen : 0) |
@@ -2579,7 +2629,7 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
         static id<MTLSamplerState> dnear;
         if (!dnear) dnear = [dev newSamplerStateWithDescriptor:[MTLSamplerDescriptor new]];
         id<MTLTexture> sdepth = s;
-        if (s.pixelFormat == MTLPixelFormatDepth32Float_Stencil8 || s.pixelFormat == MTLPixelFormatDepth24Unorm_Stencil8)
+        if (s.pixelFormat == MTLPixelFormatDepth32Float_Stencil8 || s.pixelFormat == DEPTH24_STENCIL8_FORMAT)
             sdepth = [s newTextureViewWithPixelFormat:s.pixelFormat];
         float r[4] = {(float)sx0 / s.width, (float)sy0 / s.height, (float)sw / s.width, (float)sh / s.height};
         [e setRenderPipelineState:pipe];

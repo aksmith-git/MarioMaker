@@ -16,6 +16,23 @@
 static const GameLibTables *g_tables;
 static char g_error[256];
 
+#ifdef GAMELIB_STATIC
+// iOS: the game code is part of the executable (tools/gamelib_entry.c linked in; nothing is loaded at run time)
+const GameLibTables *recomp_game_tables(void);
+bool gamelib_present(const char *game_dir) { (void)game_dir; return true; }
+bool gamelib_load(const char *game_dir, char *why, size_t why_size) {
+    (void)game_dir;
+    if (!g_tables) {
+        g_tables = recomp_game_tables();
+        if (g_tables && (g_tables->abi != GAMELIB_ABI || strcmp(g_tables->id, GAMELIB_ID))) g_tables = NULL;
+        if (g_tables) LOG("[gamelib] linked in (%llu + %llu functions)\n", (unsigned long long)*g_tables->main_count,
+                          (unsigned long long)*g_tables->sdk_count);
+    }
+    if (!g_tables && why) snprintf(why, why_size, "the game code linked into this app was built for another version");
+    return g_tables != NULL;
+}
+#else
+
 // The library's id file (<library>.id, written next to it by the build): its GAMELIB_ID, read without loading it.
 static bool id_matches(const char *lib) {
     char path[1100], id[128] = {0};
@@ -74,6 +91,7 @@ static const GameLibTables *open_lib(const char *path) {
     return t;
 }
 
+
 bool gamelib_load(const char *game_dir, char *why, size_t why_size) {
     static bool tried;
     if (!tried) {
@@ -98,5 +116,7 @@ bool gamelib_load(const char *game_dir, char *why, size_t why_size) {
     if (!g_tables && why) snprintf(why, why_size, "%s", g_error);
     return g_tables != NULL;
 }
+
+#endif  // GAMELIB_STATIC
 
 const GameLibTables *gamelib_tables(void) { return g_tables; }

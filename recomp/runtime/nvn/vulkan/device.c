@@ -566,6 +566,7 @@ void backend_present(NvnTexture *t) {
         extern void widescreen_present_crop(uint64_t, double, float *, double *, double *, double *, double *);
         float crop[4];  // uv origin and size
         widescreen_present_crop(total_frames, shape, crop, &vx, &vy, &vw, &vh);
+        { extern void input_set_game_rect(double, double, double, double, double, double); input_set_game_rect(vx, vy, vw, vh, dw, dh); }
         widescreen_set_factor((float)shape);
         renderer_set_scale((float)sx, (float)sy);
         VkCommandBuffer cb = vk_cmd();

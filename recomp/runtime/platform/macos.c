@@ -1,17 +1,21 @@
-// macOS host layer (runtime/platform.h).
+// macOS host layer (runtime/platform.h), also iOS / iPadOS (TARGET_OS_IPHONE: no mach_vm.h, no child processes).
+#include <TargetConditionals.h>
 #include <crt_externs.h>
 #include <dlfcn.h>
 #include <execinfo.h>
 #include <mach-o/dyld.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
+#if !TARGET_OS_IPHONE
 #include <mach/mach_vm.h>
+#endif
 #include <mach/thread_policy.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/ucontext.h>
 #include <unistd.h>
 
@@ -32,6 +36,16 @@ static void on_term(int sig, siginfo_t *si, void *uc) {
 }
 
 void plat_init(void) {
+#if TARGET_OS_IPHONE
+    {   // iOS: no terminal - the log goes to Documents/smm2recomp.log (Files app / Finder)
+        const char *home = getenv("HOME");
+        char path[1024];
+        snprintf(path, sizeof path, "%s/Documents", home ? home : "/tmp");
+        mkdir(path, 0755);
+        snprintf(path, sizeof path, "%s/Documents/smm2recomp.log", home ? home : "/tmp");
+        if (freopen(path, "w", stderr)) { setvbuf(stderr, NULL, _IOLBF, 0); dup2(fileno(stderr), 1); }
+    }
+#endif
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = on_term;
@@ -42,11 +56,21 @@ void plat_init(void) {
     sigaction(SIGUSR1, &sa, NULL);  // (thread dump, keeps running)
 }
 
+#if TARGET_OS_IPHONE
+// iOS: vm_allocate (64-bit vm_address_t). The guest window is far above iOS's default address space limit: the app
+// needs com.apple.developer.kernel.extended-virtual-addressing (tools/make_ios_app.sh).
+#define mach_vm_address_t vm_address_t
+#define mach_vm_allocate vm_allocate
+#endif
+
 bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
     // Everything readable/writable: macOS pages are 16K but the guest maps at 4K granularity.
     // Untouched pages cost nothing.
     mach_vm_address_t a = lo;
-    return mach_vm_allocate(mach_task_self(), &a, hi - lo, VM_FLAGS_FIXED) == KERN_SUCCESS;
+    kern_return_t r = mach_vm_allocate(mach_task_self(), &a, hi - lo, VM_FLAGS_FIXED);
+    if (r != KERN_SUCCESS) fprintf(stderr, "[platform] guest memory %#llx..%#llx not reserved (kern %d)\n", (unsigned long long)lo,
+                                   (unsigned long long)hi, r);
+    return r == KERN_SUCCESS;
 }
 
 // Fresh zero pages over the whole window (the old ones are released at once).
@@ -151,6 +175,14 @@ void plat_crash_handler_install(void) {
 #include <sys/wait.h>
 extern char **environ;
 
+#if TARGET_OS_IPHONE
+PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_log) {  // (iOS starts no processes)
+    (void)argv, (void)log_path, (void)append_log;
+    return 0;
+}
+void plat_proc_kill(PlatProc p) { (void)p; }
+int plat_proc_wait(PlatProc p, bool block) { (void)p, (void)block; return 255; }
+#else
 PlatProc plat_spawn(const char *const argv[], const char *log_path, bool append_log) {
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
@@ -180,6 +212,7 @@ int plat_proc_wait(PlatProc p, bool block) {
     if (r < 0) return 255;
     return WIFEXITED(st) ? WEXITSTATUS(st) : 255;
 }
+#endif
 
 static int rm_entry(const char *path, const struct stat *sb, int flag, struct FTW *ftw) {
     (void)sb, (void)flag, (void)ftw;

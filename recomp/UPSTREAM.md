@@ -10,7 +10,9 @@ reorganised toward a shared runtime plus per-game glue. Ideas (and, where noted,
 | SuperMarioWonderRecomp ("SwitchGamesRecomp") | https://github.com/BelmanteGu/SuperMarioWonderRecomp | `010ed7a596a621c15d3a8dfa5795ca8c3668b066` (main, 2026-10) | MIT; no files taken yet (layout ideas only) |
 
 Third-party code that came with the LAS fork keeps its own license: `third_party/imgui` (MIT, trimmed to the core and
-the SDL3 / Metal / Vulkan backends) and `third_party/smaa` (MIT-style, `third_party/smaa/LICENSE.txt`).
+the SDL3 / Metal / Vulkan backends) and `third_party/smaa` (MIT-style, `third_party/smaa/LICENSE.txt`). Added here:
+`third_party/bcdec` (bcdec by Sergii Kudlai, MIT or Unlicense, `third_party/bcdec/LICENSE`): BC texture decoding on
+the CPU for GPUs without BC support (the iOS Simulator).
 
 ## What was taken from LAS Recomp
 

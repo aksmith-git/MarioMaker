@@ -1,5 +1,11 @@
 // LAS Recomp entry: load modules, set up the kernel, run nn::init::Start on the main thread.
 #include <SDL3/SDL.h>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+#include <SDL3/SDL_main.h>  // (iOS: SDL starts the app and calls main() inside it)
+#endif
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,8 +43,13 @@ static void rtld_init_main(Cpu *c) { module_init(c, &g_modules[0]); }
 
 // Claim the guest address range before anything else can map there. The host allocator places
 // regions at random addresses in the same window; on a collision, re-exec for a fresh layout.
+static bool g_guest_unreserved;  // (iOS: no re-exec - main() says why and stops)
 __attribute__((constructor(101))) static void reserve_guest_space(void) {
     if (plat_reserve_guest(GUEST_LO, GUEST_HI)) return;
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+    g_guest_unreserved = true;
+    return;
+#endif
     const char *tries = getenv("LARECOMP_REEXEC");
     int n = tries ? atoi(tries) : 0;
     if (n >= 20) {
@@ -161,7 +172,9 @@ static void boot(const char *root) {
     if (!g_romfs_dir) g_romfs_dir = strdup(romfs);
 
     char why[512];
+#ifndef GAMELIB_STATIC
     if (!gamelib_present(root)) first_launch_build(root);
+#endif
     if (!gamelib_load(root, why, sizeof why)) FATAL("%s\n", why);
     loader_load(exefs);
     mods_boot();
@@ -192,6 +205,13 @@ static void boot(const char *root) {
 
 int main(int argc, char **argv) {
     plat_init();
+    if (g_guest_unreserved) {  // iOS without the extended virtual addressing entitlement (tools/make_ios_app.sh)
+        const char *msg = "This copy of " GAME_TITLE " can't reserve the game's memory window (0x7000000000-0x7320000000): "
+                          "it must be signed with the Extended Virtual Addressing and Increased Memory Limit entitlements.";
+        fprintf(stderr, "FATAL: %s\n", msg);
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, GAME_TITLE, msg, NULL);
+        return 1;
+    }
 #ifdef _WIN32
     setvbuf(stderr, NULL, _IONBF, 0);  // the Windows CRT treats _IOLBF as full buffering
 #else

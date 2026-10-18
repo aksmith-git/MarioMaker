@@ -80,6 +80,7 @@ framework ideas; Ryujinx as the reference). Nothing counts as done without the e
   uploads, storage aliases, cube-array views, in-order uniform updates, compute result flush, blocking compiles, real
   geometry shaders, TLD4 / TMML); player packages recompile the dump on first launch. Evidence in the table;
   `recomp/private/smm2/evidence/linux/` (private). Left: Mario's model on Vulkan; Windows and x64 untested
+- 🔄 iOS / iPadOS (2026-10-19): `make -C recomp TARGET=ios-arm64 | iossim-arm64 GAME=smm2 app` (AOT: the game code is compiled on the Mac and linked into the app; no JIT, no game code library); Documents holds the game files and the log; touches are the console touch screen (macOS: the left mouse button), controllers through SDL; BC textures decoded on the CPU where the GPU lacks them. Evidence: the Simulator boots to the title (`recomp/private/smm2/evidence/ios/`, private). Left: install on a device (offline today; signing needs an App ID with extended virtual addressing + increased memory limit)
 - ✅ R2 (macOS): plays courses by input injection, and input replays stay in sync with Ryujinx frame for frame
   (2026-10-19). The game now gets input (`nn::hid::GetNpadStates` answered by the runtime; before, it saw none,
   keyboard included); `RECOMP_PAD_SCRIPT` plays the Ryujinx trace tooling's scripts on the game's own clock (one frame
@@ -108,7 +109,7 @@ framework ideas; Ryujinx as the reference). Nothing counts as done without the e
 | Windows (x64, Vulkan) | ✅ cross-built with zig: exe 2.4 MB + game DLL 186 MB, needs SDL3.dll, libiconv-2.dll, libshaderc_shared.dll, vulkan-1.dll (driver); player zip 85 MB | ⬜ not run (no Windows machine) | ⬜ | ⬜ | ⬜ |
 | Linux arm64 (Vulkan) | ✅ cross-built with zig: exe 11.9 MB + game .so 688 MB, needs libSDL3.so.0, libvulkan.so.1, libshaderc.so.1, glibc 2.36; player zip 71 MB | ✅ title rendered (Debian 13 VM, Mesa lavapipe, ~7 fps); package first launch recompiled the game code from the dump (29 min) and booted | ⬜ | 🔄 seed 4 frame 2386 vs macOS same frame: 0.6 % px >24, 0.17 % >96 (Mario model missing on Vulkan); colour-managed vs Ryujinx 2.99 % >24, 0.24 % >96 (macOS 2.35 / 0.11) | ⬜ |
 | Linux x64 (Vulkan) | ✅ cross-built with zig: exe 11.3 MB + game .so 856 MB (generated/smm2-c, x86-64-v3), same libraries; player zip 74 MB | ⬜ not run | ⬜ | ⬜ | ⬜ |
-| iOS / iPadOS (arm64, Metal, AOT) | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| iOS / iPadOS (arm64, Metal, AOT) | ✅ game code built on the Mac from the dump and linked into the app (exe 141 MB; SDL3 static); device app signed (wildcard profile: lacks the extended-virtual-addressing / increased-memory-limit entitlements the memory window needs) | ✅ Simulator (iPad Pro 13 M4): title screen at 60 fps; lighting wrong there (the Simulator's Metal limits: 32-byte colour targets, no cube arrays); ⬜ device: not installed (devices offline; needs an explicit App ID with both entitlements) | ⬜ | ⬜ | ⬜ |
 | Web (wasm + WebGPU) | ⬜ feasibility decided after the native ports | | | | |
 
 ---
