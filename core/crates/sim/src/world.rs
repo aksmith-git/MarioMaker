@@ -3695,8 +3695,13 @@ impl World {
     /// bumps the block it touches.
     fn tail_attack(&mut self) {
         let p = &self.player;
-        // the cat's scratch hits from its first frame (it lunges into what it hits) [inf]
-        let window = if p.form == Form::Cat { 2..=15 } else { 4..=12 };
+        // the raccoon's tail hits through its whole 18-frame swing [obs]; the cat's scratch from
+        // its first frame (it lunges into what it hits) [inf]
+        let window = match p.form {
+            Form::Raccoon => 0..=17,
+            Form::Cat => 2..=15,
+            _ => 4..=12,
+        };
         if !window.contains(&p.attack)
             || !matches!(
                 p.form,
@@ -3706,14 +3711,23 @@ impl World {
             return;
         }
         let both = p.form == Form::Cape;
+        // the tail box (centre ±9, 10 up, half 9 × 8) swings behind on animation frames 0–3 and
+        // 15–17 (TailAttack exec 0x7100a034e0) [obs]
+        let frame = 17 - p.attack;
+        let side = if p.form == Form::Raccoon && !(4..=14).contains(&frame) {
+            -p.facing
+        } else {
+            p.facing
+        };
         let (x0, x1) = if both {
             (p.x - 18.0, p.x + 18.0)
-        } else if p.facing > 0 {
+        } else if side > 0 {
             (p.x, p.x + 18.0)
         } else {
             (p.x - 18.0, p.x)
         };
-        let reach = (x0, p.y + 2.0, x1, p.y + 14.0);
+        let top = if p.form == Form::Raccoon { 18.0 } else { 14.0 };
+        let reach = (x0, p.y + 2.0, x1, p.y + top);
         let px = p.x;
         let mut hits = 0;
         for a in &mut self.actors {
@@ -3738,8 +3752,14 @@ impl World {
         for _ in 0..hits {
             self.events.push(Event::EnemyDown);
         }
-        // blocks at the swing's tip (once, at the start of the window)
-        if self.player.attack == 12 {
+        // blocks at the swing's tip: the raccoon probes 16 px ahead, 8 up, on animation frames
+        // 6–10 [obs]; the others once, at the start of their window
+        let probe = if self.player.form == Form::Raccoon {
+            (6..=10).contains(&frame)
+        } else {
+            self.player.attack == 12
+        };
+        if probe {
             let ty = ((self.player.y + 8.0) / TILE).floor() as i32;
             let sides: &[f32] = if both { &[-1.0, 1.0] } else { &[0.0] };
             for &side in sides {
@@ -3748,8 +3768,13 @@ impl World {
                 } else {
                     side
                 };
-                let tx = ((self.player.x + dir * 14.0) / TILE).floor() as i32;
-                if self.blocks.get(tx, ty).is_some() {
+                let reach = if self.player.form == Form::Raccoon {
+                    16.0
+                } else {
+                    14.0
+                };
+                let tx = ((self.player.x + dir * reach) / TILE).floor() as i32;
+                if self.blocks.get(tx, ty).is_some_and(|b| b.bump.is_none()) {
                     self.hit_block(tx, ty, true, HitPower::Break);
                 }
             }

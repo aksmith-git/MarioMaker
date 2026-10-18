@@ -950,7 +950,9 @@ impl Player {
             && !self.dive
             && self.cat_climb == 0
         {
-            self.attack = 16;
+            // the raccoon's tail_attack animation is 18 frames (TailAttack 0x7100a034e0 ends
+            // with it) [obs]
+            self.attack = if self.form == Form::Raccoon { 18 } else { 16 };
             if self.form == Form::Cat {
                 if self.on_ground {
                     // slide attack: 2.5 px/f forward for 12 frames, then the normal decel
