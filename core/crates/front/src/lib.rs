@@ -300,6 +300,8 @@ impl Front {
     }
 
     fn show_world(&mut self, host: &mut dyn Host, kind: ListKind, selection: usize) {
+        // (the title's demo course stops with the title)
+        host.unload_course();
         let lib = host.library();
         let smm2 = self.smm2.clone();
         let script = self.opts.script.clone();
@@ -319,6 +321,7 @@ impl Front {
         presentation: Option<Presentation>,
         back: Back,
     ) {
+        host.unload_course();
         let lib = host.library();
         let (smm2, smm1) = (self.smm2.clone(), self.smm1.clone());
         let wanted = presentation.unwrap_or(self.opts.hundred);

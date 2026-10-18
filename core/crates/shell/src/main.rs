@@ -176,7 +176,7 @@ mod native {
         /// challenge-walk, challenge-gameover, challenge-ending, challenge-pause,
         /// challenge-clear, challenge-skip, challenge-card; with --front-course: course-intro,
         /// course-pause, course-clear, course-gameover, course-timeup, course-retire,
-        /// course-settings, course-death.
+        /// course-settings, course-death, course-play (--ticks of play with the HUD).
         #[arg(long, value_name = "NAME")]
         front_screen: Option<String>,
         /// Capture size.
@@ -356,14 +356,15 @@ mod native {
                 // course-pause: straight into play, paused after one tick (the Swift app's
                 // MMK_UI_INTRO=0 MMK_UI_PAUSE_TICKS=1); the others over the course card
                 let pause = screen == "course-pause";
+                let play = screen == "course-play";
                 app.front
-                    .play_course(&mut host, &name, loaded.key.clone(), !pause);
+                    .play_course(&mut host, &name, loaded.key.clone(), !pause && !play);
                 let what = screen.clone();
                 app.front.with_cx(&mut host, |cx, s| {
                     if let mmk_front::Screen::Course(p) = s {
                         if pause {
                             p.auto_pause_tick = Some(1);
-                        } else {
+                        } else if !play {
                             p.debug(&what, cx, None);
                         }
                     }
@@ -386,7 +387,8 @@ mod native {
                 &mut app,
                 &mut game,
                 args.ticks,
-                course_screen,
+                course_screen && screen != "course-play",
+                args.scripted,
                 (w, h),
                 out,
                 !args.cpu_textures,
