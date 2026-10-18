@@ -141,6 +141,9 @@ enum Cmd {
         dir: PathBuf,
         #[arg(long, default_value = "0.0.0.0:8640")]
         addr: String,
+        /// Moderation token (ban accounts, delete courses); default $MMK_ADMIN_TOKEN.
+        #[arg(long)]
+        admin_token: Option<String>,
     },
     /// Upload a course (raw, zlib or .bcd needs decrypting first) to a course server.
     Upload {
@@ -887,9 +890,14 @@ fn main() -> ExitCode {
             }
         },
 
-        Cmd::Server { dir, addr } => {
+        Cmd::Server {
+            dir,
+            addr,
+            admin_token,
+        } => {
+            let admin = admin_token.or_else(|| std::env::var("MMK_ADMIN_TOKEN").ok());
             let store = match mmk_server::Store::open(&dir) {
-                Ok(s) => s,
+                Ok(s) => s.with_admin(admin),
                 Err(e) => {
                     eprintln!("{}: {e:?}", dir.display());
                     return ExitCode::FAILURE;

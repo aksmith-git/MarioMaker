@@ -10,3 +10,5 @@ publish.workspace = true
 mmk-formats = { path = "../formats" }
 serde_json.workspace = true
 tiny_http = "0.12.0"
+getrandom = "0.3"
+ring = "0.17"
