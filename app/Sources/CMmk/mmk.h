@@ -140,6 +140,13 @@ size_t mmk_online_search(const char *server, const char *query, const char *sort
                          uint32_t limit, char *buf, size_t cap);
 bool mmk_online_download(const char *server, const char *code, const char *path);
 bool mmk_online_report(const char *server, const char *code, const char *what); // play / clear / like
+// Accounts and the rest (JSON in and out; token NULL = anonymous). action: register {name} →
+// {account, token}; me; vote {code, like}; clear {code, time_ms}; comments {code}; comment
+// {code, text}; maker {maker_id}; rankings {kind, limit}; endless {difficulty, cleared};
+// delete {code}; submit_replay {code, path}; record_replay {code, path}. Returns the result's
+// length (cap 0 sizes it), 0 on error (mmk_last_error).
+size_t mmk_online_call(const char *server, const char *token, const char *action, const char *args,
+                       char *buf, size_t cap);
 
 // Blocks until done; run off the main thread. update_* may be NULL. Writes <out_root>/smm2-<build>/.
 bool mmk_import_run(const char *romfs, const char *exefs, const char *update_romfs,
