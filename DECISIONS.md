@@ -2,6 +2,63 @@
 
 Newest first. Each entry: what was decided, why, and what would change it.
 
+## 2026-10-18 — SMM2 front end driven by the game's scene code; what is inferred
+The opening, the title, the scene fades, Course World and the Endless Challenge menus follow the
+owner's v3.0.3 binary, read as prose in the private `research/specs/smm2-frontend.md` (states,
+their order, the fade types, the opening's odds, which button the cursor starts on) [obs]; the
+layouts, animations, texts and sounds are the game's own data from the owner's import.
+- **Opening** (`Boot_BootScene_00`): the boot page's choice — the newest update opening not seen
+  yet (Koopalings, Link, co-op; seen flags in UserDefaults `boot.openingsSeen`), else 66 % default,
+  8 % characters, 8 % Goombas, 2 % co-op, 8 % Link, 4 % Koopalings, 4 % Bowser; InMain; then the
+  title under the black circle fade. Not skippable, as in the game; Settings > Game turns it off.
+- **Fades:** `Cmn_Fade_00` drawn over every screen by both Metal renderers (a black veil over
+  SwiftUI screens). Scene changes without parameters use the black fade (30 + 30); the opening
+  hands over with the black circle. How long the screen stays covered while the next one loads
+  is 2 ticks here [inf].
+- **Inferred [inf]:** how long a button's Decide plays before its action (the title's 24 ticks
+  kept), the Course World cursor start (Courses), the course list's tab meanings over our sources,
+  the death iris in Course World play (the circle closes on the player 60 frames before the
+  restart), the Endless map's order (Telop with Mario out of the castle, then the walk), the dots
+  hidden until reached, which container child a context picks for sounds.
+- **Departures:** Make says "coming soon" (no editor in the app); the network-only Course World
+  buttons say so; the player card, ID search, Miis, flags, badges, thumbnails, comments are
+  hidden; no ending for an Endless-styled run (back to the menu with the result).
+What would change it: reading the Course World / Endless sequences' Disp states and the
+course-in / death sequence in full; footage of the game.
+
+## 2026-10-18 — Course World without lives (owner's decision)
+SMM2's Course World and Story Mode have no lives, so library / Course World / Story Mode play
+has unlimited retries: HUD `Type` 0, course card `AnimDefault` at the start only, no game over;
+after a death the black circle closes on the player and opens on the restart [inf: the iris].
+100 Mario (either presentation) and the Endless-styled menus keep lives: HUD `Type` 1, card
+`AnimEndlessMode` after each death, `Play_GameOver_00`. Supersedes "Lives stay" below.
+
+## 2026-10-18 — 100 Mario Challenge presented with SMM2's Endless Challenge screens
+Default presentation (Settings > Game `hundred.presentation` = smm2; smm1 keeps SMM1's own
+layouts). Rules stay SMM1's (`core/crates/modes`). `Nwk_EndlessModeMenu_00` + `Nwk_WorldMap_00`
+for the menu and the map between courses; SMM2's in-course screens with lives for the courses.
+The menu's New Game / Continue buttons are drawn from a second instance of the layout over the
+first: in the layout they sit under the map frame's opaque bottom band (drawn after them), where
+the game shows them [inf]. Locked tiers (SMM1's unlock rule; SMM2 has none) are greyed.
+
+## 2026-10-18 — Course World over the library and the open-source server
+The course list shows library courses (statistics, tags and dates from the dataset's
+`index.json` when present, else this player's own) and the courses of the server set in
+Settings > Game (`online.server`; none by default). The FFI links `mmk-online` (`ureq`, rustls)
+for `mmk_online_search / download / report`; Swift runs them off the main thread. Server
+courses are downloaded into `courses/Course World/` before playing; plays and clears are
+reported. Never Nintendo's network.
+
+## 2026-10-18 — Menu sounds from the game's SLink2 data, as WAV in the UI import
+Which sound a button or animation plays is the game's data: `Pack/Static.pack`
+`Param/Layout/<Layout>.byml` (SLink user, button → sound type, animations with sounds) and
+`SLink2/SLink2DB.szs` (XLNK: user → event key → sound, volume, delay; containers by condition or
+in sequence). `mmk import-smm2-ui` v4 writes `ui/sound/sounds.json` and the referenced sounds as
+16-bit WAV (`formats::xlink`, `import::smm2_ui_sound`); the app plays them with AVAudioPlayer
+(`UISound`, master × effects volume). The conditions themselves are not evaluated: the
+controller variant, the title's "back", the course style's pause jingle are chosen by context
+[inf]. Missing: sounds not in `Sound/Resource/*.bars` or the bars packs (the pause jingles).
+
 ## 2026-10-18 — iOS packaging: one Swift package, cross-compiled, bundled by a script
 The iOS / iPadOS app is the macOS Swift package built for iOS, not a second project.
 - **Build:** `swift build -c release --triple arm64-apple-ios17.0[-simulator] --sdk <sdk>`. The
@@ -137,7 +194,8 @@ Library courses (not 100 Mario runs, not the title demo) get SMM2's in-course la
 SMM2 UI import is there (`SMM2Course.swift`, `CourseScreens`); otherwise the drawn HUD strip and
 the SwiftUI menus as before (`MMK_UI_SMM2=off`). Layouts, animations, texts and icons are the
 game's, read at run time; the flow between them is not in the data:
-- **Lives stay.** SMM2's Course World and Story Mode have no lives; the engine has 5 and a game
+- **Lives stay** (superseded 2026-10-18 by "Course World without lives" for library play; still
+  how 100 Mario runs show lives). SMM2's Course World and Story Mode have no lives; the engine has 5 and a game
   over. We keep the engine's rule and show it the way SMM2 shows lives elsewhere: HUD `Type`
   frame 1 (the Endless Challenge variant: lives counter with the character icon; its 1-Up
   progress hidden) and the course card `Play_CourseIn_00` `AnimEndlessMode` (× lives) at the
@@ -292,6 +350,12 @@ Jr. Wait table, the Clown contexts and the Pom Pom constants.
 - **Crate split:** parsers in `formats`, import in `import`, evaluation in a new `ui` crate (no
   file I/O in the player itself; tests build layouts in memory), C ABI in `ffi/src/ui.rs`, Swift
   in `UILayer.swift` / `UIPreview.swift` — kept out of the files other work is changing.
+
+## 2026-10-18 — Layout player: shared window colours win over texture-only materials [inf]
+A window with "one material for all frames" gives its frames the first frame's colours even when
+a frame's own material is texture-only (the Endless map frame's dark red corners), and a
+texture-only content takes them too (SMM2's dark name balloons with white text). Layouts have no
+scissor clipping yet: lists hide the rows outside their scissor instead.
 
 ## 2026-10-18 — Layout player semantics where the format leaves room (verify against the game)
 Chosen from how the SMM1 data is authored and checked visually on the owner's dump:

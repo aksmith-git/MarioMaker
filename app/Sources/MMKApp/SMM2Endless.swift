@@ -302,6 +302,8 @@ final class EndlessMapScene: UIScene {
         b.setDifficulty(difficulty)
         b.setCounters(lives: lives, cleared: cleared)
         l.visible("\(EndlessBoard.map)/L_EndBtn_00", nil)
+        // the key glyph: B, the back button here (the layout shows X) [departure]
+        l.text("\(EndlessBoard.map)/L_EndBtn_00/T_KeyBtn_00", "\u{E0E1}")
         if let s = l.message("L_WorldMap_00-L_EndBtn_00-T_Btn_00") { l.text("\(EndlessBoard.map)/L_EndBtn_00/T_Btn_00", s) }
         if let s = l.message("L_WorldMap_00-L_WorldMapMario_00-T_Challenge_00") { l.text("\(EndlessBoard.mario)/T_Challenge_00", s) }
         if let s = l.message("L_WorldMap_00-T_Telop_00") { l.text("\(EndlessBoard.map)/T_Telop_00", s) }

@@ -305,8 +305,39 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
     rectangles, "one material for all frames" windows, colour-only part material overrides [inf]
   - ✅ title screen at app launch (when the import exists) over a scripted demo of the playable
     title courses: prompt → Make (coming soon) / Play → Story Mode (library, Built-in filter),
-    Course World / Coursebot (library), 100 Mario Challenge (extra button, SMM1 flow); game
-    cursor, logo colour by course; keyboard + controller; screenshots `MMK_UI_SCREEN=title*`
+    Course World (SMM2 screens, below), Coursebot (library), 100 Mario Challenge (extra button);
+    game cursor, logo colour by course; keyboard + controller; screenshots `MMK_UI_SCREEN=title*`.
+    From the binary (private `research/specs/smm2-frontend.md`): the layout graph, the cursor on
+    Make at the prompt, on Story Mode when the Play menu opens, on Play after going back
+  - ✅ SMM2 front end from the game's scene code (v3.0.3, private notes above):
+    - ✅ opening `Boot_BootScene_00` at launch: the boot page's choice of opening (update
+      openings first, then 66 / 8 / 8 / 2 / 8 / 4 / 4 %), InMain, then the black circle into the
+      title (Settings > Game, `MMK_BOOT`, `MMK_BOOT_OPENING`)
+    - ✅ scene fades `Cmn_Fade_00` (black 30 + 30 for scene changes without parameters, black
+      circle from the opening; white, blocks available) over every screen (`SceneFade`)
+    - ✅ Course World: hub `Nwk_Title_00` (background loops, Courses / Endless Challenge;
+      Leaderboards, Network Play, Ninji Speedruns, Super Worlds say they need Nintendo's
+      network), course list `Nwk_CourseListGeneral_00` (Hot / Popular / New tabs, rows with
+      style logo, maker, likes, plays, tags, date, clear mark; open row with description, world
+      record, clears / attempts, course ID, Play) over the library (dataset index statistics) and
+      the open-source course server (Settings > Game; `mmk_online_*`)
+    - ✅ 100 Mario Challenge in SMM2's Endless Challenge screens (default; SMM1's kept in
+      Settings > Game): `Nwk_EndlessModeMenu_00` difficulty tabs (SMM1 unlocks), New Game /
+      Continue, the map `Nwk_WorldMap_00` (ChangeMap, Telop, Mario out of the castle, walks
+      between dots, InClear, theme icons, Play balloon, his jump), course card and HUD with lives,
+      pause Start Over / Quit, clear Quit / Next, game over, the skip countdown
+      `Play_SlidePassIconKey_00`
+    - ✅ library / Course World / Story Mode play without lives (owner's decision): no game over,
+      the death iris, HUD Type 0, card AnimDefault
+    - ✅ pause Settings `Cmn_OptionWindow_00` (offline variant): character Mario / Luigi / Toad /
+      Toadette (`mmk_engine_set_character`)
+    - ✅ menu sounds from the game's data (import v4: SLink2 users + `Param/Layout` sound types →
+      `ui/sound/`): buttons, animations (the opening's sound sequence and title call, the course
+      card jingle, the pause jingle per style, the Endless map's Telop / dots / Mario)
+    - ⬜ Coursebot (`Lcl_*`), Story Mode map (`Qst_*`), Make, the main menu `Cmn_MainMenu_00`
+      (the editor's), SMM2's own Endless Challenge rules (endless run, SMM2 lives), Leaderboards /
+      Ninji / Super Worlds over the course server, layout scissor clipping, CJK glyphs in course
+      names, the pause blur / clear capture effects, menus in `mmk-play`
   - ✅ in-course screens over library courses (`SMM2Course.swift`, DECISIONS.md "SMM2 in-course
     screens"): HUD `Play_PlayScene_00` per style skin (lives + character icon, coins, score,
     timer with the 100 s pulse, clear-condition icon + counter / failed mark, pink-coin slots;
@@ -326,8 +357,7 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   - ⬜ capture-based effects (the clear / give-up wipes, pause blur: PF_* panes), the 3D player
     figure on the course card, P-meter / coin pop / 1-Up animations, checkpoint-flag and
     condition-met pop-ups in the course, likes / comments (network)
-  - ⬜ boot scene, fades, FLCT per-character text, glyph borders; Course World (`Nwk_Title_00`),
-    Story Mode map (`Qst_*`); title and in-course screens in `mmk-play`
+  - ⬜ FLCT per-character text, glyph borders; title and in-course screens in `mmk-play`
 - 🔄 All five styles (SMB1, SMB3, SMW, NSMBU, 3D World) and all themes (day/night) — all five
   playable — sample 3D World 100/100
 - ✅ Warp Box (97-warp-box.md): pairs 2k ↔ 2k+1 in the same area, entered by touch (no button),
@@ -392,7 +422,8 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   (`mmk-play --edit <file>`): engine-drawn course, ghost preview, 24-part palette, place/erase with
   the mouse, scroll, undo/redo, save, Enter test-play / E back · SMM2 maker layouts ⬜
 - ⬜ Story Mode (Peach's castle jobs, built-in courses from the owner's dump), Coursebot, Lessons
-- ⬜ Endless Challenge (SMM2's successor to 100 Mario) alongside the SMM1-style 100 Mario Challenge
+- 🔄 Endless Challenge: its menus and map present the 100 Mario Challenge (above); SMM2's own
+  endless rules ⬜
 - ⬜ Ninji speedruns / event courses (offline with local data), records and medals
 
 ### Phase 10 — Online with an open-source server ⬜ (owner request 2026-10-18)
@@ -402,7 +433,8 @@ Not Nintendo's network: the engine talks to an open-source server the owner can 
   fail-rate band; `mmk server`) and client crate `mmk-online` ✅ (`mmk upload/search/download`,
   `RemoteSource` for 100 Mario) · accounts, makers, rankings, SMMDB import ⬜ · ⏳ owner: keep this or
   connect to another open-source server
-- ⬜ Course World client: browse, play, like/boo, comment, upload from the editor
+- 🔄 Course World client: browse (SMM2 course list over the server and the library) and play ✅,
+  play / clear reports ✅; like/boo, comment, upload from the editor ⬜
 - ✅ Local multiplayer (co-op, up to 4: Mario, Luigi, Toad, Toadette as the models' _2/_3/_4
   variants): extra players run the same rules, rejoin beside player 1 [inf: bubble], any player
   clears; `mmk-play --players N` (one pad each), FFI `mmk_engine_set_players / step_players`;
