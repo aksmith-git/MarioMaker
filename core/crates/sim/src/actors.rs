@@ -199,6 +199,11 @@ pub enum Kind {
     EscortToad,
     /// Story Mode Toadette waiting at the goal (115): scenery.
     GoalToadette,
+    /// A placed empty shell (Buzzy 1 / Spiny 2 / Dry Bones 3): becomes a still `Shell` with
+    /// `shell_of` set on its first frame.
+    EmptyShell {
+        what: u8,
+    },
     /// Koopa Troopa Car (72, 3D World): phases 0 empty (brakes 0.05/frame), 1 start spin,
     /// 2 run, 3 turn (30 frames) — the world drives it while the player rides; `hops` = damage
     /// taken (the third hit breaks it) [inf].
@@ -512,6 +517,10 @@ pub struct Actor {
     pub moved: (f32, f32),
     /// This shell belongs to a Buzzy Beetle (fire-proof; wakes as a Buzzy).
     pub buzzy: bool,
+    /// An empty shell placed as such (the 0x4 forms): 1 Buzzy shell, 2 Spiny shell, 3 Dry
+    /// Bones shell (0 = a shell with its owner inside). Empty shells never wake; the Buzzy and
+    /// Spiny ones are worn as helmets, the Dry Bones one is ridden.
+    pub shell_of: u8,
     /// Floating movers (Boo): speed along `heading` (degrees).
     pub speed: f32,
     pub heading: f32,
@@ -566,6 +575,7 @@ impl Actor {
             ridden: false,
             moved: (0.0, 0.0),
             buzzy: false,
+            shell_of: 0,
             speed: 0.0,
             heading: 0.0,
             target_facing: 1,
@@ -650,6 +660,11 @@ impl Actor {
                 let hw = width as f32 * 8.0;
                 Some((self.x - hw, self.y + 8.0, self.x + hw, self.y + 16.0, true))
             }
+            // a hidden block is no solid until it's bumped from below
+            Kind::MovingBlock {
+                block: crate::blocks::BlockKind::Hidden,
+                ..
+            } => None,
             Kind::MovingBlock { block, .. } => {
                 use crate::blocks::BlockKind as B;
                 let top_only = matches!(block, B::Cloud | B::Donut);
@@ -1386,6 +1401,9 @@ impl Actor {
                 self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
                 self.collide(level);
                 self.timer -= 1;
+                if self.shell_of != 0 {
+                    self.timer = SHELL_WAKE; // nobody inside
+                }
                 if self.timer <= 0
                     && let Kind::Shell { red } = self.kind
                 {
@@ -1766,6 +1784,12 @@ impl Actor {
                 }
             }
             Kind::TrackMount { .. } => {} // moved by its rail only
+            Kind::EmptyShell { what } => {
+                self.kind = Kind::Shell { red: false };
+                self.shell_of = what;
+                self.buzzy = what != 3; // Buzzy and Spiny shells are fire-proof
+                self.enter_shell_wait();
+            }
             Kind::GoalToadette => {
                 self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
                 self.collide(level);

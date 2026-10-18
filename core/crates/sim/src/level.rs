@@ -453,8 +453,8 @@ pub fn unsupported_features(course: &Course) -> Vec<String> {
             } else if o.flags & 0x400 != 0 && !RIDES_TRACKS.contains(&o.id) {
                 // blocks, coins and fixed objects on tracks need moving versions: not yet
                 out.insert(format!("part {} on a track", o.id));
-            } else if o.flags & 0x2 != 0 && matches!(o.id, 13 | 29) {
-                // winged Bill Blasters and hidden blocks fly as actors: not yet
+            } else if o.flags & 0x2 != 0 && o.id == 13 {
+                // winged Bill Blasters fly as actors: not yet
                 out.insert(format!("wings on part {}", o.id));
             }
         }
@@ -773,6 +773,10 @@ impl Level {
                 }),
                 10 => Some(Kind::Spring),
                 18 => Some(Kind::PSwitch),
+                // the 0x4 forms are empty shells (MetShell / TogezoShell / KaronShell rows)
+                25 if o.flags & 0x4 != 0 => Some(Kind::EmptyShell { what: 2 }),
+                28 if o.flags & 0x4 != 0 => Some(Kind::EmptyShell { what: 1 }),
+                46 if o.flags & 0x4 != 0 => Some(Kind::EmptyShell { what: 3 }),
                 25 => Some(Kind::Spiny),
                 28 => Some(Kind::Buzzy),
                 40 => Some(Kind::SpikeTop),
@@ -1177,7 +1181,7 @@ impl Level {
                 });
                 continue;
             }
-            if actorish && matches!(o.id, 4 | 5 | 6 | 22 | 23 | 63) {
+            if actorish && matches!(o.id, 4 | 5 | 6 | 22 | 23 | 29 | 63) {
                 // a winged or tracked block becomes a moving solid actor (4-brick.md B12)
                 let block = block_kind(o.id).unwrap();
                 lvl.spawns.push(Spawn {

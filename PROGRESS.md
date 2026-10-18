@@ -321,6 +321,11 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   Toad (73, follows 32 px back along the player's path; losing him fails the run [inf]), Toadette
   at the goal (115, scenery); conditions: shake N trees, goal holding the stone, goal on a Lakitu's
   Cloud, no swinging claw, no water — built-in courses 159 → 177/180
+- ✅ Empty shells (the 0x4 forms of Buzzy Beetle, Spiny, Dry Bones): never wake; Buzzy / Spiny
+  shells met with the head become helmets (take one hit; the Spiny one knocks out what it rises
+  into), the Dry Bones Shell is ridden like a shoe [inf: mechanics not decoded]; Buzzy shells now
+  drawn with their own art; helmet / Dry Bones Shell goal conditions
+- ✅ Winged Hidden Blocks: invisible flying blocks revealed by a bump — built-ins 180/180
 - ✅ Super Hammer / Builder Mario (116): item walks like a mushroom [inf]; Run swings the hammer
   (hits enemies and breaks blocks in front), air swing falls ≤ 1.5 and |vx| ≤ 1.125; "goal as
   Builder" condition; drawn with the builder outfit + hammer meshes. Crate building ⬜

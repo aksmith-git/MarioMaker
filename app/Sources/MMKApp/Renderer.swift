@@ -442,6 +442,8 @@ enum ClearConditionText {
         case 23: return "\(mark) trees" + progress
         case 24: return "\(mark) no claw"
         case 25: return "\(mark) no water"
+        case 26: return "\(mark) goal in a " + (c.target == 2 ? "Spiny" : "Buzzy") + " helmet"
+        case 27: return "\(mark) goal in a Dry Bones Shell"
         default: return "⚑ condition not supported"
         }
     }

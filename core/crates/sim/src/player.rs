@@ -291,6 +291,11 @@ pub struct Player {
     /// Wearing a Goomba's Shoe (Some(stiletto)): spikes and Munchers underfoot are safe, stomps
     /// defeat most enemies; a hit knocks the shoe off instead of costing a form.
     pub shoe: Option<bool>,
+    /// The "shoe" is a Dry Bones Shell (rides like the shoe [inf]).
+    pub shoe_karon: bool,
+    /// Wearing a shell as a helmet: 1 Buzzy, 2 Spiny. It takes one hit [inf]; a Spiny helmet
+    /// also knocks out what the player jumps into from below.
+    pub helmet: Option<u8>,
     /// Flying a Koopa Clown Car (its actor id).
     pub clown: Option<u32>,
     /// Driving a Koopa Troopa Car (its actor id); `car_hit`: a hit landed on the car this frame
@@ -390,6 +395,8 @@ impl Player {
             climbing: None,
             climb_lock: 0,
             shoe: None,
+            shoe_karon: false,
+            helmet: None,
             clown: None,
             car: None,
             car_hit: false,
@@ -515,6 +522,12 @@ impl Player {
         }
         if self.shoe.take().is_some() {
             // [ext] a hit in the shoe only knocks the shoe off
+            self.shoe_karon = false;
+            self.invuln = INVULN_DAMAGE;
+            return true;
+        }
+        if self.helmet.take().is_some() {
+            // the helmet takes the hit [inf]
             self.invuln = INVULN_DAMAGE;
             return true;
         }
@@ -1118,7 +1131,9 @@ impl Player {
                 Form::Cat => 6,
                 Form::Builder => 7,
             },
-            shoe: self.shoe.is_some(),
+            shoe: self.shoe.is_some() && !self.shoe_karon,
+            karon_shell: self.shoe.is_some() && self.shoe_karon,
+            helmet: self.helmet.unwrap_or(0),
             clown_car: self.clown.is_some(),
             koopa_car: self.car.is_some(),
             cloud: false,

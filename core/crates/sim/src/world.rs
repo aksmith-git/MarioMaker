@@ -2591,6 +2591,54 @@ impl World {
             }
             let p = &self.player;
             let (ax, ay, ah) = (a.x, a.y, a.height());
+            let head = p.y + p.sensors().head_y;
+            // empty shells (the 0x4 forms): a Buzzy or Spiny shell met with the head becomes a
+            // helmet, a Dry Bones Shell landed on is ridden like a shoe [inf: mechanics not
+            // decoded]
+            if matches!(a.kind, Kind::Shell { .. })
+                && a.shell_of != 0
+                && a.mode == Mode::ShellWait
+                && !a.held
+            {
+                let what = a.shell_of;
+                let from_below =
+                    (p.vy > 0.0 && head <= ay + 6.0) || (a.vy < 0.0 && ay >= head - 6.0);
+                let from_above = p.vy < 0.0 && p.y >= ay + ah * 0.5;
+                let free = p.yoshi.is_none() && p.clown.is_none() && p.car.is_none();
+                if what != 3 && from_below && p.helmet.is_none() {
+                    self.actors[i].mode = Mode::Dead;
+                    self.player.helmet = Some(what);
+                    self.events.push(Event::PowerUp);
+                    i += 1;
+                    continue;
+                }
+                if what == 3 && from_above && free && p.shoe.is_none() {
+                    self.actors[i].mode = Mode::Dead;
+                    self.player.shoe = Some(false);
+                    self.player.shoe_karon = true;
+                    self.player.vy = 0.0;
+                    self.events.push(Event::PowerUp);
+                    i += 1;
+                    continue;
+                }
+            }
+            // a helmet shields the head; a Spiny helmet knocks out what it rises into [inf]
+            if let Some(h) = p.helmet
+                && a.kind.is_enemy()
+                && ay >= head - 6.0
+                && !matches!(
+                    a.kind,
+                    Kind::Bowser { .. } | Kind::BoomBoom { .. } | Kind::BowserJr { .. }
+                )
+            {
+                if h == 2 && p.vy > 0.0 && !matches!(a.kind, Kind::Thwomp { .. } | Kind::Boo) {
+                    let px = p.x;
+                    self.actors[i].die_fall(px);
+                    self.events.push(Event::EnemyDown);
+                }
+                i += 1;
+                continue;
+            }
             // a slide knocks out enemies it runs into (not bosses or the indestructible)
             let slide_hit = self.player.sliding
                 && !matches!(
@@ -2617,7 +2665,11 @@ impl World {
                 continue;
             }
             // stomp: falling with the feet in the enemy's upper half [inf: window not traced]
-            let stomp = p.vy < 0.0 && p.y >= ay + ah * 0.5 && !a.kind.unstompable();
+            // (a Spiny shell's spikes can't be stomped [inf])
+            let stomp = p.vy < 0.0
+                && p.y >= ay + ah * 0.5
+                && !a.kind.unstompable()
+                && !(a.shell_of == 2 && self.player.shoe.is_none());
             // a shoe stomp defeats most enemies, spiny or not (stamp_shoe in EnemyDB)
             let shoe_stomp = self.player.shoe.is_some()
                 && p.vy < 0.0
@@ -3481,6 +3533,36 @@ impl World {
 
     /// A moving block (wings / track) hit from below releases its contents once and is used up.
     fn bump_moving_block(&mut self) {
+        // a flying hidden block: revealed by the head coming up into it
+        if self.player.vy > 0.0 || self.player.head_hit.is_some() {
+            let p = &self.player;
+            let head_y = p.sensors().head_y;
+            let head = p.y + head_y;
+            let (px0, _, px1, _) = p.hurt_box();
+            if let Some(i) = self.actors.iter().position(|a| {
+                matches!(
+                    a.kind,
+                    Kind::MovingBlock {
+                        block: BlockKind::Hidden,
+                        ..
+                    }
+                ) && px1 > a.x - 8.0
+                    && px0 < a.x + 8.0
+                    && head >= a.y - 1.0
+                    && head <= a.y + 8.0
+            }) {
+                let Kind::MovingBlock { contents, .. } = self.actors[i].kind else {
+                    return;
+                };
+                self.actors[i].kind = Kind::MovingBlock {
+                    block: BlockKind::Question,
+                    contents: contents.or(Some(Contents::Coin)),
+                };
+                self.player.vy = self.player.vy.min(0.0);
+                self.player.y = self.player.y.min(self.actors[i].y - head_y);
+                self.player.head_solid = Some(self.actors[i].id);
+            }
+        }
         let Some(id) = self.player.head_solid else {
             return;
         };
@@ -5158,25 +5240,58 @@ impl World {
                 s.y += 14.0;
                 s.image.texture = "yoshi_wait.0";
             }
+            if let Some(h) = self.player.helmet {
+                // the helmet on the head [inf: offset]
+                let p = &self.player;
+                out.push(Self::model_sprite(
+                    if h == 2 {
+                        "M1_Enemy_togezo"
+                    } else {
+                        "M1_Enemy_met"
+                    },
+                    "shellkara.0",
+                    p.x - 8.0,
+                    p.y + p.sensors().head_y - 6.0,
+                    16.0,
+                    16.0,
+                    false,
+                    s.layer + 1,
+                ));
+            }
             if let Some(heels) = self.player.shoe {
                 // the player stands in the shoe: shoe at the feet, the player drawn 8 px higher
                 let p = &self.player;
-                let model = if heels {
-                    "M1_Enemy_kutsu_kuriboB"
+                let mut sh = if p.shoe_karon {
+                    Self::model_sprite(
+                        "M1_Enemy_karon",
+                        "shellkara.0",
+                        p.x - 8.0,
+                        p.y,
+                        16.0,
+                        16.0,
+                        p.facing > 0,
+                        s.layer + 1,
+                    )
                 } else {
-                    "M1_Enemy_kutsu_kuriboA"
+                    let model = if heels {
+                        "M1_Enemy_kutsu_kuriboB"
+                    } else {
+                        "M1_Enemy_kutsu_kuriboA"
+                    };
+                    let mut sh = Self::model_sprite(
+                        model,
+                        "wait.0",
+                        p.x - 8.0,
+                        p.y,
+                        16.0,
+                        16.0,
+                        p.facing > 0,
+                        s.layer + 1,
+                    );
+                    sh.image.rect = Some((0.0, 16.0, 16.0, 16.0));
+                    sh
                 };
-                let mut sh = Self::model_sprite(
-                    model,
-                    "wait.0",
-                    p.x - 8.0,
-                    p.y,
-                    16.0,
-                    16.0,
-                    p.facing > 0,
-                    s.layer + 1,
-                );
-                sh.image.rect = Some((0.0, 16.0, 16.0, 16.0));
+                sh.layer = s.layer + 1;
                 s.y += 8.0;
                 out.push(s);
                 out.push(sh);
@@ -5343,18 +5458,28 @@ impl World {
                 a.dir > 0,
             ),
             Kind::Shell { red } => {
+                let spin = (a.age as usize / 2) % 4;
+                let empty = a.shell_of != 0;
                 let t = if a.mode == Mode::ShellSlide {
-                    ["shell.0", "shell.1", "shell.2", "shell.3"][(a.age as usize / 2) % 4]
+                    if empty {
+                        ["shellkara.0", "shellkara.1", "shellkara.2", "shellkara.3"][spin]
+                    } else {
+                        ["shell.0", "shell.1", "shell.2", "shell.3"][spin]
+                    }
+                } else if empty {
+                    "shellkara.0"
                 } else if a.timer < crate::actors::SHELL_SHAKE && (a.timer / 4) % 2 == 0 {
                     "revival.0"
                 } else {
                     "shell.0"
                 };
                 (
-                    if red {
-                        "M1_Enemy_nokonokoB"
-                    } else {
-                        "M1_Enemy_nokonokoA"
+                    match (a.shell_of, a.buzzy, red) {
+                        (2, _, _) => "M1_Enemy_togezo",
+                        (3, _, _) => "M1_Enemy_karon",
+                        (_, true, _) => "M1_Enemy_met",
+                        (_, _, true) => "M1_Enemy_nokonokoB",
+                        _ => "M1_Enemy_nokonokoA",
                     },
                     t,
                     16.0,
@@ -5578,6 +5703,10 @@ impl World {
                 16.0,
                 a.dir > 0,
             ),
+            Kind::MovingBlock {
+                block: BlockKind::Hidden,
+                ..
+            } => return None,
             Kind::MovingBlock { block, .. } => {
                 let i = crate::level::block_atlas(block);
                 let field = self.field_model;
@@ -5627,7 +5756,9 @@ impl World {
                 }
                 ("M1_Object_block_orbit", "wait.0", 16.0, 16.0, false)
             }
-            Kind::Trampoline { .. } | Kind::TrackMount { .. } => return None,
+            Kind::Trampoline { .. } | Kind::TrackMount { .. } | Kind::EmptyShell { .. } => {
+                return None;
+            }
             // 3D World only: the mesh is drawn at its own size (16 = no scaling)
             Kind::KoopaCar => (
                 "M1_Enemy_koopacar",
@@ -7919,6 +8050,86 @@ mod tests {
             holding_stone: true,
             ..w.player.at_goal()
         }));
+    }
+
+    #[test]
+    fn empty_shells_become_helmets_or_a_ride() {
+        // a Buzzy shell on a block above: jump into it from below
+        let mut lvl = Level::flat(60);
+        lvl.set(6, 5, Cell::Solid);
+        lvl.spawns.push(spawn(
+            Kind::EmptyShell { what: 1 },
+            6.0 * TILE + 8.0,
+            6.0 * TILE,
+        ));
+        lvl.spawns
+            .push(spawn(Kind::EmptyShell { what: 3 }, 300.0, 32.0));
+        let mut w = World::with_level(lvl);
+        run(&mut w, 0, 2);
+        let s = w.actors.iter().find(|a| a.shell_of == 1).unwrap();
+        assert!(matches!(s.kind, Kind::Shell { .. }) && s.mode == Mode::ShellWait);
+        // it never wakes up
+        run(&mut w, 0, 600);
+        assert!(
+            w.actors
+                .iter()
+                .any(|a| a.shell_of == 1 && a.mode == Mode::ShellWait)
+        );
+        // the shell knocked off the block falls on the player's head
+        let i = w.actors.iter().position(|a| a.shell_of == 1).unwrap();
+        w.actors[i].y = 3.0 * TILE;
+        w.actors[i].vy = -2.0;
+        w.player.x = w.actors[i].x;
+        run(&mut w, 0, 20);
+        assert_eq!(w.player.helmet, Some(1), "worn as a helmet");
+        // a hit costs the helmet, not the form
+        w.player.form = Form::Super;
+        assert!(w.player.hurt());
+        assert_eq!(w.player.helmet, None);
+        assert_eq!(w.player.form, Form::Super);
+        // the Dry Bones Shell: land on it to ride
+        w.player.invuln = 0;
+        w.player.x = 300.0;
+        w.player.y = 80.0;
+        run(&mut w, 0, 30);
+        assert!(
+            w.player.shoe.is_some() && w.player.shoe_karon,
+            "riding the shell"
+        );
+        assert!(w.player.at_goal().karon_shell);
+    }
+
+    #[test]
+    fn flying_hidden_block_appears_when_bumped() {
+        let mut lvl = Level::flat(60);
+        lvl.spawns.push(spawn(
+            Kind::MovingBlock {
+                block: BlockKind::Hidden,
+                contents: Some(Contents::Mushroom),
+            },
+            5.0 * TILE + 8.0,
+            4.0 * TILE,
+        ));
+        let mut w = World::with_level(lvl);
+        w.player.x = 5.0 * TILE + 8.0;
+        run(&mut w, 0, 2);
+        assert!(w.level.solids.is_empty(), "not solid while hidden");
+        run(&mut w, input::JUMP, 30);
+        let b = w
+            .actors
+            .iter()
+            .find(|a| matches!(a.kind, Kind::MovingBlock { .. }))
+            .unwrap();
+        assert!(matches!(
+            b.kind,
+            Kind::MovingBlock {
+                block: BlockKind::Empty,
+                ..
+            }
+        ));
+        run(&mut w, 0, 2);
+        assert!(!w.level.solids.is_empty(), "solid once found");
+        assert!(w.actors.iter().any(|a| a.kind == Kind::Mushroom) || w.player.big());
     }
 
     #[test]

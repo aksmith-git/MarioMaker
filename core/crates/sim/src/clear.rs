@@ -70,6 +70,9 @@ pub struct AtGoal {
     pub koopa_car: bool,
     /// Standing on a Lakitu's Cloud.
     pub cloud: bool,
+    /// In a Dry Bones Shell; wearing a helmet (0 none, 1 Buzzy, 2 Spiny).
+    pub karon_shell: bool,
+    pub helmet: u8,
     /// Carrying the Story Mode stone.
     pub holding_stone: bool,
     /// Carrying a Koopa shell.
@@ -106,6 +109,9 @@ pub enum Goal {
     KoopaCar,
     Cloud,
     HoldingStone,
+    /// Reach the goal wearing a Buzzy (1) / Spiny (2) helmet; in a Dry Bones Shell.
+    Helmet(u8),
+    DryBonesShell,
     /// Shake N trees (bell-tree actions, count kind 8).
     BellTrees,
     /// Reach the goal without being held by a swinging claw / without entering water.
@@ -177,6 +183,9 @@ impl ClearCondition {
                 72 => Goal::HoldingShell,
                 59 => Goal::Yoshi,
                 63 => Goal::Cloud,
+                60 => Goal::Helmet(1),
+                61 => Goal::Helmet(2),
+                65 => Goal::DryBonesShell,
                 77 => Goal::HoldingStone,
                 _ => Goal::Unsupported(i),
             },
@@ -279,6 +288,8 @@ impl ClearCondition {
             clown_car,
             koopa_car,
             cloud,
+            karon_shell,
+            helmet,
             holding_stone,
             holding_shell,
             yoshi,
@@ -303,6 +314,8 @@ impl ClearCondition {
             Goal::ClownCar => clown_car,
             Goal::KoopaCar => koopa_car,
             Goal::Cloud => cloud,
+            Goal::Helmet(h) => helmet == h,
+            Goal::DryBonesShell => karon_shell,
             Goal::HoldingStone => holding_stone,
             Goal::HoldingShell => holding_shell,
             Goal::Yoshi => yoshi,
@@ -340,7 +353,10 @@ mod tests {
             Goal::Fire
         );
         assert!(
-            !ClearCondition::from_header(2, 0xb4fa3d4b, 0).supported(),
+            matches!(
+                ClearCondition::from_header(2, 0xb4fa3d4b, 0).goal,
+                Goal::Helmet(_)
+            ),
             "helmet"
         );
         assert_eq!(ClearCondition::none().goal, Goal::None);
