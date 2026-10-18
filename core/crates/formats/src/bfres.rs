@@ -250,6 +250,66 @@ pub struct Material {
     /// Texture bound to each sampler slot (same order as `samplers`).
     pub textures: Vec<String>,
     pub samplers: Vec<Sampler>,
+    /// Render info (`gsys_render_state_mode`, `gsys_alpha_test_value`, …).
+    pub render_info: Vec<(String, RenderInfo)>,
+    /// Shader parameters (uniform values) by name.
+    pub params: Vec<ShaderParam>,
+    /// Shader archive and shading model the material is drawn with.
+    pub shader: (String, String),
+    /// Static shader options (`option name → value`).
+    pub options: Vec<(String, String)>,
+    /// Sampler assignment: shader sampler name → material sampler name.
+    pub sampler_assign: Vec<(String, String)>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RenderInfo {
+    Int(Vec<i32>),
+    Float(Vec<f32>),
+    Str(Vec<String>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShaderParam {
+    pub name: String,
+    /// Parameter type as stored (0–11 bool / int vectors, 12–15 float1–4, 28–30 texture SRTs…).
+    pub kind: u8,
+    /// The raw value as 32-bit words read as floats (ints and bools keep their bits).
+    pub values: Vec<f32>,
+}
+
+impl Material {
+    pub fn render_str(&self, name: &str) -> Option<&str> {
+        self.render_info
+            .iter()
+            .find(|(n, _)| n == name)
+            .and_then(|(_, v)| match v {
+                RenderInfo::Str(s) => s.first().map(String::as_str),
+                _ => None,
+            })
+    }
+    pub fn render_f32(&self, name: &str) -> Option<f32> {
+        self.render_info
+            .iter()
+            .find(|(n, _)| n == name)
+            .and_then(|(_, v)| match v {
+                RenderInfo::Float(f) => f.first().copied(),
+                RenderInfo::Int(i) => i.first().map(|&x| x as f32),
+                _ => None,
+            })
+    }
+    pub fn param(&self, name: &str) -> Option<&[f32]> {
+        self.params
+            .iter()
+            .find(|p| p.name == name)
+            .map(|p| p.values.as_slice())
+    }
+    pub fn option(&self, name: &str) -> Option<&str> {
+        self.options
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.as_str())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -681,6 +741,8 @@ const MODEL_SIZE: usize = 0x78;
 const BONE_SIZE: usize = 0x60;
 const MATERIAL_SIZE: usize = 0xA8;
 const SAMPLER_SIZE: usize = 0x20;
+const RENDER_INFO_SIZE: usize = 0x18;
+const SHADER_PARAM_SIZE: usize = 0x20;
 const SHAPE_SIZE: usize = 0x60;
 const VERTEX_BUFFER_SIZE: usize = 0x58;
 const ATTRIBUTE_SIZE: usize = 0x10;
@@ -938,10 +1000,90 @@ fn parse_material(r: &R, m: usize) -> Result<Material> {
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    // render info: values at 0x10, count at 0x9A
+    let ri_at = r.off(m + 0x10)?;
+    let ri_count = r.u16(m + 0x9A)? as usize;
+    let mut render_info = Vec::with_capacity(ri_count);
+    for i in 0..ri_count {
+        let e = ri_at + i * RENDER_INFO_SIZE;
+        let name = r.name(e)?;
+        let data = r.off(e + 0x08)?;
+        let count = r.u16(e + 0x10)? as usize;
+        let value = match r.u8(e + 0x12)? {
+            0 => RenderInfo::Int(
+                (0..count)
+                    .map(|k| r.i32(data + 4 * k))
+                    .collect::<Result<_>>()?,
+            ),
+            1 => RenderInfo::Float(
+                (0..count)
+                    .map(|k| r.f32(data + 4 * k))
+                    .collect::<Result<_>>()?,
+            ),
+            _ => RenderInfo::Str(
+                (0..count)
+                    .map(|k| r.name(data + 8 * k))
+                    .collect::<Result<_>>()?,
+            ),
+        };
+        render_info.push((name, value));
+    }
+    // shader parameters: values at 0x50, raw data at 0x60, count at 0x9E
+    let sp_at = r.off(m + 0x50)?;
+    let src = r.off(m + 0x60)?;
+    let sp_count = r.u16(m + 0x9E)? as usize;
+    let mut params = Vec::with_capacity(sp_count);
+    for i in 0..sp_count {
+        let e = sp_at + i * SHADER_PARAM_SIZE;
+        let kind = r.u8(e + 0x10)?;
+        let size = r.u8(e + 0x11)? as usize;
+        let at = src + r.u16(e + 0x12)? as usize;
+        let values = (0..size / 4)
+            .map(|k| r.f32(at + 4 * k))
+            .collect::<Result<Vec<_>>>()?;
+        params.push(ShaderParam {
+            name: r.name(e + 0x08)?,
+            kind,
+            values,
+        });
+    }
+    // shader assign: archive, model, attribute / sampler / option assignments
+    let (mut shader, mut options, mut sampler_assign) =
+        (Default::default(), Vec::new(), Vec::new());
+    let sa = r.off(m + 0x20)?;
+    if sa != 0 {
+        shader = (r.name(sa)?, r.name(sa + 0x08)?);
+        let pairs = |values: usize, dict: usize, count: usize| -> Result<Vec<(String, String)>> {
+            let names = r.dict_names(dict)?;
+            (0..count)
+                .map(|k| {
+                    Ok((
+                        names.get(k).cloned().unwrap_or_default(),
+                        r.name(values + 8 * k)?,
+                    ))
+                })
+                .collect()
+        };
+        sampler_assign = pairs(
+            r.off(sa + 0x20)?,
+            r.off(sa + 0x28)?,
+            r.u8(sa + 0x45)? as usize,
+        )?;
+        options = pairs(
+            r.off(sa + 0x30)?,
+            r.off(sa + 0x38)?,
+            r.u16(sa + 0x46)? as usize,
+        )?;
+    }
     Ok(Material {
         name: r.name(m + 0x08)?,
         textures,
         samplers,
+        render_info,
+        params,
+        shader,
+        options,
+        sampler_assign,
     })
 }
 

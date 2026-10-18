@@ -76,7 +76,7 @@ impl MeshBone {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct MeshMaterial {
     pub name: String,
     /// Albedo texture (sampler `_a0`, else the first texture), in the same model file's
@@ -86,6 +86,45 @@ pub struct MeshMaterial {
     pub wrap: [u8; 2],
     /// Flat cards (pre-rendered sprites on a quad): drawn without lighting.
     pub unlit: bool,
+    /// The other textures by the shader sampler they feed (`_n0` normal, `_s0` specular /
+    /// sky, `_e0` emission, `_b0` bake, `_a1` second albedo, …), from the material's sampler
+    /// assignment.
+    pub textures: Vec<(String, String)>,
+    /// Render mode: 0 opaque, 1 alpha-tested ("mask"), 2 translucent, 3 additive.
+    pub blend: u8,
+    /// Alpha-test reference (with `blend` 1).
+    pub alpha_ref: f32,
+    /// Faces drawn: 0 front only (back faces culled), 1 back only, 2 both.
+    pub cull: u8,
+    /// Selected shader parameters (`const_color0`, `tex_srt0`, `albedo_ratio`, …).
+    pub params: Vec<(String, Vec<f32>)>,
+    /// Shader options that differ from the defaults (`enable_fog`, `enable_sky`, …).
+    pub options: Vec<(String, String)>,
+}
+
+impl MeshMaterial {
+    pub fn param(&self, name: &str) -> Option<&[f32]> {
+        self.params
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.as_slice())
+    }
+    pub fn option(&self, name: &str) -> Option<&str> {
+        self.options
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.as_str())
+    }
+    /// Texture fed to shader sampler `sampler` (`_a0` is the albedo).
+    pub fn texture(&self, sampler: &str) -> Option<&str> {
+        if sampler == "_a0" {
+            return self.albedo.as_deref();
+        }
+        self.textures
+            .iter()
+            .find(|(n, _)| n == sampler)
+            .map(|(_, t)| t.as_str())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -109,6 +148,10 @@ pub struct MeshModel {
     pub indices: Vec<u32>,
     /// Rest-pose bounds: min x, y, z, max x, y, z.
     pub bounds: [f32; 6],
+    /// Vertex colours (RGBA8, one per vertex) if the model has them, else empty.
+    pub colors: Vec<[u8; 4]>,
+    /// Second texture-coordinate set (bake maps) if the model has one, else empty.
+    pub uv1: Vec<[f32; 2]>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -569,9 +612,28 @@ impl MeshFile {
                         "euler": b.euler, "t": b.translation, "ssc": b.ssc, "visible": b.visible,
                         "inv": affine_to_vec(&b.inverse_bind),
                     })).collect::<Vec<_>>(),
-                    "materials": m.materials.iter().map(|x| json!({
-                        "name": x.name, "albedo": x.albedo, "wrap": x.wrap, "unlit": x.unlit,
-                    })).collect::<Vec<_>>(),
+                    "materials": m.materials.iter().map(|x| {
+                        let mut j = json!({
+                            "name": x.name, "albedo": x.albedo, "wrap": x.wrap, "unlit": x.unlit,
+                        });
+                        if !x.textures.is_empty() {
+                            j["textures"] = json!(x.textures);
+                        }
+                        if x.blend != 0 {
+                            j["blend"] = json!(x.blend);
+                            j["alpha_ref"] = json!(x.alpha_ref);
+                        }
+                        if x.cull != 0 {
+                            j["cull"] = json!(x.cull);
+                        }
+                        if !x.params.is_empty() {
+                            j["params"] = json!(x.params);
+                        }
+                        if !x.options.is_empty() {
+                            j["options"] = json!(x.options);
+                        }
+                        j
+                    }).collect::<Vec<_>>(),
                     "shapes": m.shapes.iter().map(|x| json!({
                         "name": x.name, "material": x.material, "bone": x.bone,
                         "first": x.first_index, "count": x.index_count,
@@ -579,6 +641,10 @@ impl MeshFile {
                     "bounds": m.bounds,
                     "vertices": blob.vertices(&m.vertices),
                     "indices": blob.u32s(&m.indices),
+                    "colors": (!m.colors.is_empty()).then(|| blob.u32s(
+                        &m.colors.iter().map(|c| u32::from_le_bytes(*c)).collect::<Vec<_>>())),
+                    "uv1": (!m.uv1.is_empty()).then(|| blob.f32s(
+                        &m.uv1.iter().flatten().copied().collect::<Vec<_>>())),
                 })
             })
             .collect();
@@ -625,11 +691,45 @@ impl MeshFile {
                 .iter()
                 .map(|x| {
                     let w = fa::<2>(&x["wrap"]);
+                    let pairs = |k: &str| -> Vec<(String, String)> {
+                        x.get(k)
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|p| {
+                                Some((
+                                    p.get(0)?.as_str()?.to_string(),
+                                    p.get(1)?.as_str()?.to_string(),
+                                ))
+                            })
+                            .collect()
+                    };
                     MeshMaterial {
                         name: s(x, "name"),
                         albedo: x.get("albedo").and_then(Value::as_str).map(String::from),
                         wrap: [w[0] as u8, w[1] as u8],
                         unlit: b(x, "unlit"),
+                        textures: pairs("textures"),
+                        blend: u(x, "blend") as u8,
+                        alpha_ref: x.get("alpha_ref").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+                        cull: u(x, "cull") as u8,
+                        params: x
+                            .get("params")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|p| {
+                                let name = p.get(0)?.as_str()?.to_string();
+                                let vals = p
+                                    .get(1)?
+                                    .as_array()?
+                                    .iter()
+                                    .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+                                    .collect();
+                                Some((name, vals))
+                            })
+                            .collect(),
+                        options: pairs("options"),
                     }
                 })
                 .collect::<Vec<_>>();
@@ -662,6 +762,22 @@ impl MeshFile {
                     s(m, "name")
                 )));
             }
+            let colors = match m.get("colors").filter(|v| !v.is_null()) {
+                Some(v) => r.u32s(v)?.into_iter().map(u32::to_le_bytes).collect(),
+                None => Vec::new(),
+            };
+            let uv1 = match m.get("uv1").filter(|v| !v.is_null()) {
+                Some(v) => r.f32s(v)?.as_chunks::<2>().0.to_vec(),
+                None => Vec::new(),
+            };
+            if (!colors.is_empty() && colors.len() != vertices.len())
+                || (!uv1.is_empty() && uv1.len() != vertices.len())
+            {
+                return Err(corrupt(format!(
+                    "model {}: colour / uv1 count",
+                    s(m, "name")
+                )));
+            }
             models.push(MeshModel {
                 name: s(m, "name"),
                 bones,
@@ -670,6 +786,8 @@ impl MeshFile {
                 vertices,
                 indices,
                 bounds: fa(&m["bounds"]),
+                colors,
+                uv1,
             });
         }
         Ok(Self { models })
@@ -982,6 +1100,7 @@ mod tests {
                 albedo: Some("skin_Alb".into()),
                 wrap: [0, 2],
                 unlit: false,
+                ..Default::default()
             }],
             shapes: vec![MeshShape {
                 name: "s".into(),
@@ -1008,6 +1127,8 @@ mod tests {
             ],
             indices: vec![0, 1, 2],
             bounds: [0.0, 0.0, 0.0, 1.0, 10.0, 0.0],
+            colors: Vec::new(),
+            uv1: Vec::new(),
         };
         let rest = m.rest_world();
         for (b, w) in m.bones.iter_mut().zip(&rest) {

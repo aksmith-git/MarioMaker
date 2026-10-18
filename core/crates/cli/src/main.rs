@@ -9,6 +9,8 @@ use mmk_formats::smm1;
 use mmk_formats::smm2::{self, crypto};
 use serde_json::{Value, json};
 
+mod refcourses;
+
 #[derive(Parser)]
 #[command(name = "mmk", version, about = "Course tools for the engine")]
 struct Cli {
@@ -32,6 +34,24 @@ enum Cmd {
     },
     /// Decode a BYML file (Yaz0/zstd wrappers are removed) and print it as JSON.
     Byml { file: PathBuf },
+    /// Write the renderer reference courses (one per style × theme × night, the same first
+    /// screen each) as raw course files; with --romfs, also the last one selected as replacement
+    /// built-in title courses for an emulator mod folder (needs --table).
+    RefCourses {
+        out: PathBuf,
+        /// Course key table (an asset cache's keys/course_table.bin).
+        #[arg(long)]
+        table: Option<PathBuf>,
+        /// Only courses whose name equals or contains this.
+        #[arg(long)]
+        only: Option<String>,
+        /// Mod RomFS folder to write `Course/title_course_data_NN.szs` into.
+        #[arg(long)]
+        romfs: Option<PathBuf>,
+        /// Wrap this course file (raw, zlib or .bcd) for --romfs instead of a reference course.
+        #[arg(long)]
+        course: Option<PathBuf>,
+    },
     /// List a SARC archive (Yaz0/zstd wrappers are removed): one JSON line per entry with name,
     /// size and CRC32 of the contents.
     Sarc { file: PathBuf },
@@ -573,7 +593,20 @@ fn dump_bfres(file: &PathBuf, member: Option<&str>, curves: bool) -> Result<Valu
                 "bones": m.bones.iter().map(|b| json!([b.name, b.parent, format!("{:#x}", b.flags),
                     b.smooth_index, b.rigid_index, b.scale, b.rotation, b.translation])).collect::<Vec<_>>(),
                 "materials": m.materials.iter().map(|x| json!({"name": x.name, "textures": x.textures,
-                    "samplers": x.samplers.iter().map(|s| s.name.clone()).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+                    "samplers": x.samplers.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
+                    "shader": [x.shader.0, x.shader.1],
+                    "render_info": x.render_info.iter().map(|(n, v)| (n.clone(), match v {
+                        mmk_formats::bfres::RenderInfo::Int(i) => json!(i),
+                        mmk_formats::bfres::RenderInfo::Float(f) => json!(f),
+                        mmk_formats::bfres::RenderInfo::Str(s) => json!(s),
+                    })).collect::<serde_json::Map<_, _>>(),
+                    "params": x.params.iter().map(|p| (p.name.clone(), json!([p.kind, p.values])))
+                        .collect::<serde_json::Map<_, _>>(),
+                    "options": x.options.iter().map(|(a, b)| (a.clone(), json!(b)))
+                        .collect::<serde_json::Map<_, _>>(),
+                    "sampler_assign": x.sampler_assign.iter().map(|(a, b)| (a.clone(), json!(b)))
+                        .collect::<serde_json::Map<_, _>>(),
+                })).collect::<Vec<_>>(),
                 "shapes": m.shapes.iter().map(|s| json!({
                     "name": s.name, "material": s.material, "bone": s.bone, "skin": s.skin_count,
                     "vertices": s.vertex_count,
@@ -664,6 +697,58 @@ fn dump_one(path: &PathBuf, table: Option<&crypto::KeyTable>) -> Result<Value, S
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::RefCourses {
+            out,
+            table,
+            only,
+            romfs,
+            course,
+        } => {
+            let table = match table.map(|p| {
+                std::fs::read(&p)
+                    .map_err(|e| e.to_string())
+                    .and_then(|b| crypto::table_from_bytes(&b).map_err(|e| e.to_string()))
+            }) {
+                Some(Ok(t)) => Some(t),
+                Some(Err(e)) => {
+                    eprintln!("table: {e}");
+                    return ExitCode::FAILURE;
+                }
+                None => None,
+            };
+            let course = match course.map(|p| std::fs::read(&p).map(|b| (p, b))) {
+                Some(Ok((p, b))) => match course_data(b, table.as_ref()) {
+                    Some(c) => Some(c),
+                    None => {
+                        eprintln!("{}: not course data", p.display());
+                        return ExitCode::FAILURE;
+                    }
+                },
+                Some(Err(e)) => {
+                    eprintln!("course: {e}");
+                    return ExitCode::FAILURE;
+                }
+                None => None,
+            };
+            let only = if course.is_some() && only.is_none() {
+                Some("-".to_string())
+            } else {
+                only
+            };
+            match refcourses::run(
+                &out,
+                table.as_ref(),
+                only.as_deref(),
+                romfs.as_deref(),
+                course,
+            ) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("ref-courses: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Cmd::Dump {
             files,
             table,

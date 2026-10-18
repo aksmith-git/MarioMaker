@@ -28,6 +28,9 @@ pub struct Game {
     planner: mmk_host::mesh::MeshPlanner,
     mesh_draws: Vec<mmk_host::mesh::MmkMeshDraw>,
     mesh_frame: crate::mesh::MeshFrame,
+    background_frame: crate::mesh::MeshFrame,
+    field_camera: Option<mmk_host::scene3d::Mat4>,
+    lights: [[[f32; 4]; mmk_host::scene3d::LIGHT_ROWS]; 2],
     /// Called with the replay of each clear (`Session::record_replays`), e.g. to send it to the
     /// course server as a verified time.
     pub on_clear: Option<Box<dyn FnMut(mmk_modes::replay::Replay)>>,
@@ -67,6 +70,9 @@ impl Game {
             planner: Default::default(),
             mesh_draws: Vec::new(),
             mesh_frame: Default::default(),
+            background_frame: Default::default(),
+            field_camera: None,
+            lights: [[[0.0; 4]; mmk_host::scene3d::LIGHT_ROWS]; 2],
             resolver: SpriteResolver::default(),
             sprites: Vec::new(),
             hud: HudText::default(),
@@ -100,6 +106,54 @@ impl Game {
         }
     }
 
+    /// Skin this frame's play-field and background meshes through their cameras (after
+    /// `planner.frame`). `edit`: the Course Maker's flat view (3D World's perspective only comes
+    /// in when playing).
+    fn build_meshes(&mut self, cam: (f32, f32), upside_down: bool, edit: bool) {
+        let scene = self.planner.scene.clone();
+        self.field_camera = None;
+        let Some(store) = self.meshes.as_mut() else {
+            self.mesh_frame.clear();
+            self.background_frame.clear();
+            return;
+        };
+        let field = match &scene {
+            Some(s) if !edit => s.field,
+            _ => mmk_host::scene3d::field_camera("", cam),
+        };
+        if scene.is_some() {
+            self.field_camera = Some(field.view_proj);
+        }
+        crate::mesh::build(
+            store,
+            &self.cache,
+            &self.mesh_draws,
+            &mut self.mesh_frame,
+            &crate::mesh::Projection {
+                view_proj: &field.view_proj,
+                layered: true,
+                flip_y: upside_down,
+            },
+        );
+        match scene.as_ref().and_then(|s| s.background) {
+            Some(bg) => crate::mesh::build(
+                store,
+                &self.cache,
+                &self.planner.background,
+                &mut self.background_frame,
+                &crate::mesh::Projection {
+                    view_proj: &bg.view_proj,
+                    layered: false,
+                    flip_y: upside_down,
+                },
+            ),
+            None => self.background_frame.clear(),
+        }
+        if let Some(s) = &scene {
+            self.lights = [s.field_light, s.background_light];
+        }
+    }
+
     pub fn scene(&mut self) -> Scene<'_> {
         if self.editing
             && let Some(m) = self.maker.as_mut()
@@ -114,12 +168,9 @@ impl Game {
                 &mut self.sprites,
                 &mut self.mesh_draws,
             );
-            match self.meshes.as_mut() {
-                Some(store) => {
-                    crate::mesh::build(store, &self.cache, &self.mesh_draws, &mut self.mesh_frame)
-                }
-                None => self.mesh_frame.clear(),
-            }
+            let cam = (w.camera_x, w.camera_y);
+            self.build_meshes(cam, false, true);
+            let w = self.maker.as_mut().expect("editing").world();
             self.hud = HudText {
                 strip: status,
                 banner: None,
@@ -131,6 +182,9 @@ impl Game {
                 clear: mmk_host::clear_color(w, &self.cache),
                 hud: &self.hud,
                 meshes: &self.mesh_frame,
+                background: &self.background_frame,
+                field_camera: self.field_camera,
+                lights: &self.lights,
                 ghost: &[],
             };
         }
@@ -143,12 +197,9 @@ impl Game {
             &mut self.sprites,
             &mut self.mesh_draws,
         );
-        match self.meshes.as_mut() {
-            Some(store) => {
-                crate::mesh::build(store, &self.cache, &self.mesh_draws, &mut self.mesh_frame)
-            }
-            None => self.mesh_frame.clear(),
-        }
+        let (cam, upside_down) = ((w.camera_x, w.camera_y), w.upside_down());
+        self.build_meshes(cam, upside_down, false);
+        let w = &self.session.world;
         self.ghost_sprites.clear();
         if let Some(g) = &self.session.ghost
             && let Some(sp) = g.world.player_sprite()
@@ -165,6 +216,9 @@ impl Game {
             clear: mmk_host::clear_color(w, &self.cache),
             hud: &self.hud,
             meshes: &self.mesh_frame,
+            background: &self.background_frame,
+            field_camera: self.field_camera,
+            lights: &self.lights,
             ghost: &self.ghost_sprites,
         }
     }

@@ -21,11 +21,12 @@ use mmk_formats::smm2::crypto::{KeyTable, decrypt_bcd};
 use mmk_formats::smm2::keyfind;
 use serde_json::{Value, json};
 
+pub mod env;
 pub mod meshes;
 pub mod sprites;
 
 /// 5: mesh stage (meshes/, anims/), StaticModel.pack models of the 3D styles.
-pub const IMPORTER_VERSION: u32 = 5;
+pub const IMPORTER_VERSION: u32 = 6;
 pub mod smm1;
 pub use smm1::{Smm1Config, Smm1Report, run_smm1};
 pub mod smm2_font;
@@ -385,6 +386,8 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
     //    imported styles; meshes and animations of the 3D styles
     let counts = import_models(cfg, &out, progress)?;
     let (texture_count, sprite_count) = (counts.textures, counts.sprites);
+    // the 3D styles' per-theme lights and fogs
+    let env_count = env::export(&cfg.romfs, &out)?;
 
     // 5. sounds of the imported styles
     let sound_count = audio::import_audio(
@@ -403,7 +406,7 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
         "game": "SMM2",
         "build": build,
         "module_id": nso.module_id_hex(),
-        "stages": ["identify", "keys", "tables", "textures", "audio", "sprites", "meshes"],
+        "stages": ["identify", "keys", "tables", "textures", "audio", "sprites", "meshes", "env"],
         "texture_styles": STYLES,
         "mesh_styles": meshes::MESH_STYLES,
         "textures": texture_count,
@@ -412,6 +415,7 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
         "meshes": counts.meshes.meshes,
         "anims": counts.meshes.anims,
         "mesh_vertices": counts.meshes.vertices,
+        "env": env_count,
         "tables": tables,
         "builtin_courses": courses.len(),
     });

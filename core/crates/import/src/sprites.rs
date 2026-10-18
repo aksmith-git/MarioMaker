@@ -360,6 +360,7 @@ mod tests {
                 name: "_a0".into(),
                 wrap: [wrap, wrap, Wrap::Clamp],
             }],
+            ..Default::default()
         }
     }
 

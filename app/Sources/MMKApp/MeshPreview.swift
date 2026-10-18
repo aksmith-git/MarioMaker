@@ -192,7 +192,9 @@ final class MeshPreviewRenderer: NSObject, MTKViewDelegate {
         pass.colorAttachments[0].loadAction = .clear
         guard let cmd = queue.makeCommandBuffer(), let enc = cmd.makeRenderCommandEncoder(descriptor: pass) else { return }
         let frame = draws.withUnsafeBufferPointer { meshes.prepare($0) }
-        meshes.encode(enc, frame: frame, range: 0..<frame.posed.count, view: xform)
+        let cam = MeshRenderer.Camera(viewProj: Renderer.orthoMatrix(xform), layered: true, flipY: false,
+                                      light: MeshRenderer.neutralLight)
+        meshes.encode(enc, frame: frame, range: 0..<frame.posed.count, camera: cam)
         enc.endEncoding()
         if let path = screenshot, tick >= screenshotTicks {
             cmd.commit()

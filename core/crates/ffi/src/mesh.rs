@@ -86,6 +86,11 @@ pub unsafe extern "C" fn mmk_mesh_model(
             bone_count: m.bones.len() as u32,
             shape_count: m.shapes.len() as u32,
             bounds: m.bounds,
+            colors: if m.colors.is_empty() {
+                std::ptr::null()
+            } else {
+                m.colors.as_ptr() as *const u8
+            },
         };
         true
     })
@@ -133,16 +138,16 @@ pub unsafe extern "C" fn mmk_mesh_shape(
         let Some(sh) = m.shapes.get(shape) else {
             return false;
         };
-        let mat = m.materials.get(sh.material);
-        let wrap = mat.map(|x| x.wrap).unwrap_or([0, 0]);
+        let look = shape_look(m.materials.get(sh.material));
         *out = MmkMeshShape {
             first_index: sh.first_index,
             index_count: sh.index_count,
             material: sh.material as u32,
             bone: sh.bone as u32,
-            flags: (mat.is_some_and(|x| x.unlit) as u32 * MMK_MESH_UNLIT)
-                | (wrap[0] as u32 & 3) << 8
-                | (wrap[1] as u32 & 3) << 10,
+            flags: look.flags,
+            alpha_ref: look.alpha_ref,
+            srt: look.srt,
+            vertex_color_ratio: look.vertex_color_ratio,
         };
         true
     })
@@ -295,6 +300,71 @@ pub unsafe extern "C" fn mmk_engine_meshes(
         };
         *out = e.meshes.as_ptr();
         e.meshes.len()
+    })
+}
+
+/// The 3D scene of the current frame (filled by `mmk_engine_snapshot`): matrices column-major,
+/// world px → clip with depth 0 … 1; light uniforms as `mmk_host::scene3d::Env::uniform`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct MmkScene3d {
+    pub field_view_proj: [f32; 16],
+    pub background_view_proj: [f32; 16],
+    pub field_light: [f32; 96],
+    pub background_light: [f32; 96],
+    pub has_background: bool,
+}
+
+/// This frame's 3D scene; false for the 2D styles (and without meshes).
+///
+/// # Safety
+/// `engine` must be a live handle and `out` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_engine_scene3d(
+    engine: *const crate::MmkEngine,
+    out: *mut MmkScene3d,
+) -> bool {
+    guard(false, || {
+        let (Some(e), Some(out)) = (unsafe { engine.as_ref() }, unsafe { out.as_mut() }) else {
+            return false;
+        };
+        let Some(sc) = &e.planner.scene else {
+            return false;
+        };
+        let flat = |rows: &[[f32; 4]; mmk_host::scene3d::LIGHT_ROWS]| {
+            let mut v = [0.0f32; 96];
+            for (i, r) in rows.iter().enumerate() {
+                v[i * 4..i * 4 + 4].copy_from_slice(r);
+            }
+            v
+        };
+        *out = MmkScene3d {
+            field_view_proj: sc.field.view_proj,
+            background_view_proj: sc.background.map_or([0.0; 16], |c| c.view_proj),
+            field_light: flat(&sc.field_light),
+            background_light: flat(&sc.background_light),
+            has_background: sc.background.is_some() && !e.planner.background.is_empty(),
+        };
+        true
+    })
+}
+
+/// This frame's background-scene draws (3D styles; drawn with the scene's background camera,
+/// behind everything). Valid until the next snapshot.
+///
+/// # Safety
+/// `engine` must be a live handle and `out` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_engine_background(
+    engine: *const crate::MmkEngine,
+    out: *mut *const MmkMeshDraw,
+) -> usize {
+    guard(0, || {
+        let (Some(e), Some(out)) = (unsafe { engine.as_ref() }, unsafe { out.as_mut() }) else {
+            return 0;
+        };
+        *out = e.planner.background.as_ptr();
+        e.planner.background.len()
     })
 }
 
@@ -474,8 +544,9 @@ mod tests {
     #[test]
     fn layout_matches_header() {
         assert_eq!(size_of::<MmkMeshVertex>(), 56);
-        assert_eq!(size_of::<MmkMeshModel>(), 72);
-        assert_eq!(size_of::<MmkMeshShape>(), 20);
+        assert_eq!(size_of::<MmkMeshModel>(), 80);
+        assert_eq!(size_of::<MmkMeshShape>(), 48);
+        assert_eq!(size_of::<MmkScene3d>(), 900);
         assert_eq!(size_of::<MmkMeshPose>(), 32);
         assert_eq!(size_of::<MmkMeshDraw>(), 80);
     }

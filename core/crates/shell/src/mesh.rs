@@ -2,34 +2,57 @@
 //! posed and skinned on the CPU into one vertex / index list, so every wgpu backend can draw them
 //! (WebGL2 has no storage buffers in vertex shaders for GPU skinning).
 //!
-//! Depth works as in the Swift app's `MeshRenderer`: consecutive draws of one layer form a depth
-//! group with real depth inside it, and each later group sits entirely in front of the earlier
-//! ones, so meshes and sprites still stack in layer order. Sprites never write depth.
+//! Vertices leave here in clip space through the camera they are drawn with
+//! (`mmk_host::scene3d`): the play field's (orthographic, or 3D World's slight perspective) or
+//! the background scene's. Play-field depth works as in the Swift app's `MeshRenderer`:
+//! consecutive draws of one layer form a depth group with real depth inside it, and each later
+//! group sits entirely in front of the earlier ones, so meshes and sprites still stack in layer
+//! order. Sprites never write depth. The background scene keeps its own depth (it is drawn in a
+//! pass of its own before everything else).
 
 use std::ops::Range;
 
 use mmk_assets::Cache;
-use mmk_host::mesh::{MeshStore, MmkMeshDraw, TEXTURE_NONE};
+use mmk_host::mesh::{
+    MMK_MESH_ALPHA_TEST, MMK_MESH_FOG, MMK_MESH_SELF_LIT, MMK_MESH_UNLIT, MeshStore, MmkMeshDraw,
+    TEXTURE_NONE, apply_srt, shape_look,
+};
+use mmk_host::scene3d::{Mat4, project};
 
-/// One skinned vertex in world pixels: x, y, depth (0 near … 1 far), uv, normal, flags (1 = unlit
-/// card: cut out by alpha, no lighting).
+/// Vertex flags.
+pub const FLAG_UNLIT: u32 = 1;
+pub const FLAG_FOG: u32 = 2;
+/// Pre-rendered sprite card: cut out by alpha, no lighting.
+pub const FLAG_CARD: u32 = 4;
+/// Alpha-tested material (`alpha_ref`).
+pub const FLAG_ALPHA_TEST: u32 = 8;
+
+/// One skinned vertex: clip position, world position (lighting, fog), normal, texture
+/// coordinates (texture SRT applied), vertex colour, flags and alpha-test reference.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct MeshVertex {
-    pub pos: [f32; 3],
-    pub uv: [f32; 2],
-    pub normal: [f32; 3],
+    pub clip: [f32; 4],
+    pub world: [f32; 3],
     pub flags: f32,
+    pub normal: [f32; 3],
+    pub alpha_ref: f32,
+    pub uv: [f32; 2],
+    pub pad: [f32; 2],
+    pub color: [f32; 4],
 }
 
-/// Indices `first..first + count` drawn with one texture (None: plain grey) and wrap mode
-/// (bits 0–1 u, 2–3 v: 0 repeat, 1 mirror, 2 clamp).
+/// Indices `first..first + count` drawn with one texture (None: plain grey), wrap mode (bits
+/// 0–1 u, 2–3 v: 0 repeat, 1 mirror, 2 clamp), blending (0 opaque / alpha-tested, 2 alpha
+/// blended, 3 additive) and face culling (0 back faces culled, 1 front, 2 none).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Piece {
     pub first: u32,
     pub count: u32,
     pub texture: Option<u32>,
     pub wrap: u32,
+    pub blend: u8,
+    pub cull: u8,
 }
 
 /// One frame's meshes: pieces grouped by the sprite index they're drawn before.
@@ -51,6 +74,16 @@ impl MeshFrame {
     }
 }
 
+/// How the draws are projected.
+#[derive(Clone, Copy, Debug)]
+pub struct Projection<'a> {
+    pub view_proj: &'a Mat4,
+    /// Play field: depth squeezed into per-layer slices (see the module docs).
+    pub layered: bool,
+    /// Underground night: the course is drawn upside down.
+    pub flip_y: bool,
+}
+
 fn apply(m: &[f32], p: [f32; 3], w: f32) -> [f32; 3] {
     [
         m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3] * w,
@@ -59,8 +92,14 @@ fn apply(m: &[f32], p: [f32; 3], w: f32) -> [f32; 3] {
     ]
 }
 
-/// Pose and skin `draws` into `out`.
-pub fn build(store: &mut MeshStore, cache: &Cache, draws: &[MmkMeshDraw], out: &mut MeshFrame) {
+/// Pose and skin `draws` into `out`, projected through `proj`.
+pub fn build(
+    store: &mut MeshStore,
+    cache: &Cache,
+    draws: &[MmkMeshDraw],
+    out: &mut MeshFrame,
+    proj: &Projection,
+) {
     out.clear();
     // depth groups: a new one whenever the layer changes
     let mut group_of = Vec::with_capacity(draws.len());
@@ -74,6 +113,7 @@ pub fn build(store: &mut MeshStore, cache: &Cache, draws: &[MmkMeshDraw], out: &
         group_of.push(groups - 1);
     }
     let slice = 1.0 / (groups as f32 + 1.0);
+    let flip = if proj.flip_y { -1.0 } else { 1.0 };
     let mut remap: Vec<u32> = Vec::new();
     for (d, &g) in draws.iter().zip(&group_of) {
         let Some((bones, shapes)) =
@@ -94,15 +134,29 @@ pub fn build(store: &mut MeshStore, cache: &Cache, draws: &[MmkMeshDraw], out: &
             continue;
         }
         let t = &d.transform;
+        // a mirroring transform turns the faces' winding around
+        let det = t[0] * (t[5] * t[10] - t[6] * t[9]) - t[1] * (t[4] * t[10] - t[6] * t[8])
+            + t[2] * (t[4] * t[9] - t[5] * t[8]);
+        let mirrored = (det < 0.0) != proj.flip_y;
         let center = 1.0 - (g as f32 + 1.0) * slice;
         let first_piece = out.pieces.len();
         for (si, sh) in m.shapes.iter().enumerate().take(shapes) {
             if visible.get(si) != Some(&1) || sh.index_count == 0 {
                 continue;
             }
-            let mat = m.materials.get(sh.material);
-            let unlit = mat.is_some_and(|x| x.unlit);
-            let wrap = mat.map(|x| x.wrap).unwrap_or([0, 0]);
+            let look = shape_look(m.materials.get(sh.material));
+            if look.faces() == 3 {
+                continue; // drawn with no faces (helper geometry)
+            }
+            let card = look.flags & MMK_MESH_UNLIT != 0
+                || d.flags & mmk_host::mesh::MMK_MESH_DRAW_CARD != 0;
+            let unlit = card || look.flags & MMK_MESH_SELF_LIT != 0;
+            let flags = (unlit as u32 * FLAG_UNLIT)
+                | ((look.flags & MMK_MESH_FOG != 0) as u32 * FLAG_FOG)
+                | (card as u32 * FLAG_CARD)
+                | ((look.flags & MMK_MESH_ALPHA_TEST != 0) as u32 * FLAG_ALPHA_TEST);
+            let alpha_ref = look.alpha_ref;
+            let vc_ratio = look.vertex_color_ratio;
             remap.clear();
             remap.resize(m.vertices.len(), u32::MAX);
             let first = out.indices.len() as u32;
@@ -135,22 +189,47 @@ pub fn build(store: &mut MeshStore, cache: &Cache, draws: &[MmkMeshDraw], out: &
                     }
                     let wp = apply(t, p, 1.0);
                     let wn = apply(t, n, 0.0);
+                    let mut clip = project(proj.view_proj, wp);
+                    if proj.layered && clip[3].abs() > 1e-6 {
+                        let zn = (clip[2] / clip[3]).clamp(0.0, 1.0);
+                        clip[2] = (center + (zn - 0.5) * slice * 0.98) * clip[3];
+                    }
+                    clip[1] *= flip;
+                    let c = m.colors.get(i).copied().unwrap_or([255; 4]);
+                    let lerp = |x: u8| 1.0 + (x as f32 / 255.0 - 1.0) * vc_ratio;
                     remap[i] = out.vertices.len() as u32;
                     out.vertices.push(MeshVertex {
-                        pos: [wp[0], wp[1], center - wp[2] * slice / 400.0],
-                        uv: v.uv,
+                        clip,
+                        world: wp,
+                        flags: flags as f32,
                         normal: wn,
-                        flags: unlit as u32 as f32,
+                        alpha_ref,
+                        uv: apply_srt(v.uv, &look.srt),
+                        pad: [0.0; 2],
+                        color: [lerp(c[0]), lerp(c[1]), lerp(c[2]), c[3] as f32 / 255.0],
                     });
                 }
                 out.indices.push(remap[i]);
             }
             let tex = textures.get(si).copied().unwrap_or(TEXTURE_NONE);
+            // mirrored models / courses (upside down) see the other side of every face
+            let cull = match (look.faces(), mirrored) {
+                (0, false) | (1, true) => 0,
+                (1, false) | (0, true) => 1,
+                _ => 2,
+            };
             out.pieces.push(Piece {
                 first,
                 count: out.indices.len() as u32 - first,
                 texture: (tex != TEXTURE_NONE).then_some(tex),
-                wrap: (wrap[0] as u32 & 3) | (wrap[1] as u32 & 3) << 2,
+                wrap: (look.flags >> 8) & 0xF,
+                blend: match look.blend() {
+                    1 => 2,
+                    2 => 3,
+                    _ => 0,
+                },
+                // cards are drawn from both sides
+                cull: if card { 2 } else { cull },
             });
         }
         if out.pieces.len() > first_piece {

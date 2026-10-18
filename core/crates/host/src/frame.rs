@@ -73,6 +73,23 @@ pub fn place(s: &Sprite, tex_w: f32, tex_h: f32, quad: Option<Quad>) -> [f32; 8]
     out
 }
 
+/// Size, in the sim's atlas pixels, of a texture a tile sprite cuts its `rect` from. The sim
+/// addresses every field atlas in SMB1 pixels (16 × 48 cells of 16 px, 256 × 768); NSMBU's atlas
+/// has the same grid at 64 px a cell (1024 × 3072), so its rects scale with it.
+pub fn atlas_units(s: &Sprite, tex_w: u32, tex_h: u32) -> (f32, f32) {
+    const SIM_ATLAS_W: u32 = 256;
+    if s.image.rect.is_some()
+        && s.image.model.contains("_Field_")
+        && tex_w > SIM_ATLAS_W
+        && tex_w.is_multiple_of(SIM_ATLAS_W)
+    {
+        let k = (tex_w / SIM_ATLAS_W) as f32;
+        (tex_w as f32 / k, tex_h as f32 / k)
+    } else {
+        (tex_w as f32, tex_h as f32)
+    }
+}
+
 /// Texture index and BFRES quad of a (model, texture) name; None if the cache lacks the texture.
 type Resolved = Option<(u32, Option<Quad>)>;
 
@@ -138,10 +155,8 @@ impl SpriteResolver {
         let (texture, p) = match found {
             Some((texture, quad)) => {
                 let t = &cache.textures[texture as usize];
-                (
-                    Some(texture),
-                    place(s, t.width as f32, t.height as f32, quad),
-                )
+                let (w, h) = atlas_units(s, t.width, t.height);
+                (Some(texture), place(s, w, h, quad))
             }
             None => (None, place(s, s.w.max(1.0), s.h.max(1.0), None)),
         };

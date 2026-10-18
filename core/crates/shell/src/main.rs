@@ -75,6 +75,10 @@ mod native {
         /// Screenshot size as a multiple of the 384×216 view.
         #[arg(long, default_value_t = 3)]
         scale: u32,
+        /// Screenshot size in pixels, WxH (overrides --scale; the view is fitted, e.g. 1280x720
+        /// to compare with the console's frames).
+        #[arg(long)]
+        size: Option<String>,
         /// Decode BC textures on the CPU even if the GPU samples them (tests the fallback).
         #[arg(long)]
         cpu_textures: bool,
@@ -374,11 +378,20 @@ mod native {
             if args.record_replay.is_some() {
                 game.session.record_replays();
             }
+            let size = match args.size.as_deref().map(|s| {
+                s.split_once('x')
+                    .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))
+            }) {
+                Some(None) => return Err("--size: expected WxH, e.g. 1280x720".into()),
+                Some(Some(wh)) => Some(wh),
+                None => None,
+            };
             let msg = mmk_shell::headless::screenshot(
                 &mut game,
                 path,
                 args.ticks,
                 args.scale,
+                size,
                 !args.idle,
                 !args.cpu_textures,
             )?;

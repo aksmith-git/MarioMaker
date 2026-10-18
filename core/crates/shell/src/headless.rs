@@ -97,12 +97,13 @@ pub fn write_png(path: &str, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> 
 }
 
 /// Run `ticks` ticks of the smoke-test script (or idle input), then save the frame as a PNG of
-/// the view at `scale`×.
+/// the view at `scale`× (or fitted into `size` pixels).
 pub fn screenshot(
     game: &mut Game,
     path: &str,
     ticks: u64,
     scale: u32,
+    size: Option<(u32, u32)>,
     scripted: bool,
     allow_bc: bool,
 ) -> Result<String, String> {
@@ -119,7 +120,8 @@ pub fn screenshot(
     let gpu = pollster::block_on(Gpu::new(&instance(), None, allow_bc))?;
     let mut renderer = Renderer::new(&gpu, FORMAT, &game.cache);
     renderer.draw_missing = game.placeholder;
-    let (w, h) = (VIEW.0 * scale.max(1), VIEW.1 * scale.max(1));
+    let (w, h) = size.unwrap_or((VIEW.0 * scale.max(1), VIEW.1 * scale.max(1)));
+    renderer.integer_scale = size.is_none();
     let tex = target(&gpu, w, h);
     let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
     let mut enc = gpu

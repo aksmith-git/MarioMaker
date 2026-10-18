@@ -294,14 +294,25 @@ typedef struct {
     size_t index_count;
     uint32_t bone_count, shape_count;
     float bounds[6];                       // rest pose: min xyz, max xyz
-} MmkMeshModel;                                                        // 72 bytes
+    const uint8_t *colors;                 // vertex colours RGBA8, NULL if none
+} MmkMeshModel;                                                        // 80 bytes
 
-enum { MMK_MESH_UNLIT = 1 };
+enum {
+    MMK_MESH_UNLIT = 1,         // pre-rendered card: cut out by alpha, no lighting
+    MMK_MESH_SELF_LIT = 2,      // no lighting (sky, clouds, glowing parts)
+    MMK_MESH_FOG = 4,           // the environment's fogs apply
+    MMK_MESH_ALPHA_TEST = 8,    // discard below alpha_ref
+    MMK_MESH_BLEND_SHIFT = 4,   // bits 4-5: 0 opaque, 1 alpha blended, 2 additive
+    MMK_MESH_FACES_SHIFT = 6,   // bits 6-7: faces drawn 0 front, 1 back, 2 both, 3 none
+};
 typedef struct {
     uint32_t first_index, index_count, material, bone;
-    uint32_t flags;             // bit 0 unlit (pre-rendered card); bits 8-9 wrap u, 10-11 wrap v
+    uint32_t flags;             // MMK_MESH_* bits 0-7; bits 8-9 wrap u, 10-11 wrap v
                                 // (0 repeat, 1 mirror, 2 clamp)
-} MmkMeshShape;                                                        // 20 bytes
+    float alpha_ref;
+    float srt[5];               // albedo uv: scale u, scale v, rotate, translate u, translate v
+    float vertex_color_ratio;   // vertex colour tint strength (albedo * mix(1, colour, ratio))
+} MmkMeshShape;                                                        // 48 bytes
 
 typedef struct {
     const float *skin;          // bone_count x 12 floats (row-major 3x4)
@@ -337,6 +348,18 @@ bool mmk_mesh_pose(const MmkAssets *assets, int32_t mesh, size_t model, int32_t 
                    uint32_t variant, MmkMeshPose *out);
 // This frame's mesh draws (3D styles; filled by mmk_engine_snapshot), valid until the next snapshot
 size_t mmk_engine_meshes(const MmkEngine *engine, const MmkMeshDraw **out);
+// The 3D styles' scene this frame: cameras (column-major 4x4, world px -> clip, depth 0..1) and
+// light uniforms (24 x float4: eye; 3 directional lights; hemisphere; ambient; 3 fogs; exposure)
+typedef struct {
+    float field_view_proj[16];
+    float background_view_proj[16];
+    float field_light[96];
+    float background_light[96];
+    bool has_background;
+} MmkScene3d;                                                          // 900 bytes
+bool mmk_engine_scene3d(const MmkEngine *engine, MmkScene3d *out);    // false: 2D style
+// The background scene's draws (drawn first, with background_view_proj and its own depth)
+size_t mmk_engine_background(const MmkEngine *engine, const MmkMeshDraw **out);
 void mmk_engine_set_meshes(MmkEngine *engine, bool enabled);          // default on
 // Model viewer: the draws the engine makes for a sim sprite (model "M1_…", frame "walk.0") in
 // style "WU"/"3W", origin (x, y) px, scale x SMB1 size, facing right unless flip_x. 0 = a sprite.
