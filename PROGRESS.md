@@ -557,6 +557,8 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   skip hint on the 4th attempt, 48-entry history and map position, clear-rate pick rule, offline
   `Session`) · screens on the SMM2 rules ⬜
 - ⬜ Ninji speedruns / event courses (offline with local data), records and medals
+- ✅ Pass 3 (world.rs, from the binary): blast box, Clown Car exit, cape/hammer boxes, Burner
+  collider, helmet hits, Bill Blaster generator, spawn profiles, escort Toad comeback, goal pole
 
 ### Phase 10 — Online with an open-source server ⬜ (owner request 2026-10-18)
 Not Nintendo's network: the engine talks to an open-source server the owner can run or join.
