@@ -124,6 +124,8 @@ enum Cmd {
         #[arg(long)]
         keys: Option<PathBuf>,
     },
+    /// Convert SMM2 course data IDs to course codes (XXX-XXX-XXX) and back.
+    Code { ids: Vec<String> },
     Simulate {
         files: Vec<PathBuf>,
         #[arg(long)]
@@ -649,6 +651,23 @@ fn main() -> ExitCode {
             assets,
             keys,
         } => missing_art(&files, &assets, keys),
+        Cmd::Code { ids } => {
+            for id in ids {
+                match id.parse::<u32>() {
+                    Ok(n) => println!(
+                        "{id}\t{}",
+                        mmk_formats::course_id::smm2_data_id_to_code(n, false)
+                    ),
+                    Err(_) => match mmk_formats::course_id::smm2_code_to_data_id(&id) {
+                        Ok((n, maker)) => {
+                            println!("{id}\t{n}{}", if maker { " (maker)" } else { "" })
+                        }
+                        Err(e) => println!("{id}\t{e:?}"),
+                    },
+                }
+            }
+            ExitCode::SUCCESS
+        }
         Cmd::Gallery {
             style,
             alt,
