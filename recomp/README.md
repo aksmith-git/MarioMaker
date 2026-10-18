@@ -70,3 +70,6 @@ Added for SMM2:
 | `RECOMP_NO_CORES=1` | run guest threads without per-core exclusivity (LAS's behaviour; SMM2 races then) |
 
 Status and evidence: `../PROGRESS.md` ("Recomp"); what the bring-up needed: [docs/smm2-bringup.md](docs/smm2-bringup.md).
+
+Mods (SMM1's 100 Mario Challenge on SMM2's Endless Challenge, against our own course server): how to turn them on,
+server setup and how they work in [docs/mods.md](docs/mods.md).

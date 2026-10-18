@@ -6,11 +6,13 @@ GAME_TITLE_ID  := 0x01009B90006DC000
 GAME_DISPLAY_VERSION := 3.0.3
 
 # The game's glue, built into the executable with the shared runtime
-GAME_SRC       := $(wildcard games/smm2/*.c)
+GAME_SRC       := $(wildcard games/smm2/*.c) $(wildcard games/smm2/mods/*.c)
 # Guest symbols replaced by host code before recompiling (one mangled name per line; empty: none)
 GAME_HLE       := games/smm2/hle_symbols.txt
 # Per-instruction patches for the generator (none yet)
 GAME_PATCHES   := games/smm2/patches.py
+# Files the patches import (part of what the game code library is built from)
+GAME_PATCH_DEPS := $(wildcard games/smm2/mods/*.py)
 
 # Your own dump, extracted: the base game (v1.0.0) and the v3.0.3 update. `make smm2` reads them from here unless you
 # pass other paths, e.g. make smm2 DUMP_BASE_ROMFS=/path/to/romfs. Only the update's exefs is used (an update ships

@@ -4,6 +4,7 @@
 
 #include "../hle.h"
 #include "../ipc.h"
+#include "../net/online.h"
 
 const uint8_t g_user_id[16] = {0x4c, 0x41, 0x52, 0x65, 0x63, 0x6f, 0x6d, 0x70, 0x01, 0, 0, 0, 0, 0, 0, 0x01};
 
@@ -32,8 +33,59 @@ static void profile(Service *s, IpcReq *req, IpcResp *resp) {
     }
 }
 
+// Pretend online (runtime/net/online.h): the user has a network service account whose ID token is ready. The token
+// is a local placeholder (no Nintendo service is asked; mods answer the game's online calls themselves).
+static void async_context(Service *s, IpcReq *req, IpcResp *resp) {
+    (void)s;
+    switch (req->cmd) {
+    case 0: {  // GetSystemEvent: already signalled (done)
+        uint32_t w, r;
+        KEvent *e = kernel_create_event_pair(&w, &r);
+        e->signaled = true;
+        resp->copy_handles[resp->ncopy++] = r;
+        break;
+    }
+    case 2: OUT(uint8_t, 0) = 1; resp_size(resp, 1); break;  // HasDone
+    default: break;                                          // Cancel, GetResult: success
+    }
+}
+
+static bool online_manager(IpcReq *req, IpcResp *resp) {
+    static const char token[] = "recomp-local-placeholder-token";
+    switch (req->cmd) {
+    case 2: case 141:  // EnsureIdTokenCacheAsync, EnsureNetworkServiceAccountIdTokenCacheAsync...
+        ipc_return_object(resp, service_new("IAsyncContext", async_context, NULL));
+        return true;
+    case 3: case 142: {  // LoadIdTokenCache -> buffer, u32 size
+        IpcBuf *b = out_buf(req, 0);
+        uint32_t n = sizeof token - 1;
+        if (b && b->size) {
+            if (n > b->size) n = (uint32_t)b->size;
+            memset((void *)(uintptr_t)b->addr, 0, b->size);
+            memcpy((void *)(uintptr_t)b->addr, token, n);
+        }
+        OUT(uint32_t, 0) = n;
+        resp_size(resp, 4);
+        return true;
+    }
+    case 130:  // GetNintendoAccountUserResourceCacheForApplication: u64 id, buffers left empty
+        for (int i = 0; i < 2; i++) {
+            IpcBuf *b = out_buf(req, i);
+            if (b && b->size) memset((void *)(uintptr_t)b->addr, 0, b->size);
+        }
+        OUT(uint64_t, 0) = 0x1234567890abcdefull;
+        resp_size(resp, 8);
+        return true;
+    case 150:  // CreateAuthorizationRequest
+        ipc_return_object(resp, service_new("IAsyncContext", async_context, NULL));
+        return true;
+    default: return false;
+    }
+}
+
 static void manager(Service *s, IpcReq *req, IpcResp *resp) {
     (void)s;
+    if (net_pretend_online() && online_manager(req, resp)) return;
     switch (req->cmd) {
     case 0: break;  // CheckAvailability
     case 1: OUT(uint64_t, 0) = 0x1234567890abcdefull; resp_size(resp, 8); break;  // GetAccountId
