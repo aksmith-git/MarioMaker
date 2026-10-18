@@ -42,6 +42,13 @@ fn line_width(font: &FontRes, line: &str, size: [f32; 2], char_space: f32) -> f3
     w
 }
 
+/// Width of the widest line of `s` (pane units).
+pub(crate) fn text_width(font: &FontRes, s: &str, size: [f32; 2], char_space: f32) -> f32 {
+    s.split('\n')
+        .map(|l| line_width(font, l, size, char_space))
+        .fold(0.0, f32::max)
+}
+
 /// Append the glyph quads of `s` laid out in the pane rectangle `rect` (local space).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit(

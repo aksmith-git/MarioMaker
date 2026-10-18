@@ -13,7 +13,7 @@ pub mod font;
 pub mod player;
 mod text;
 
-pub use cache::{ARG_PLACEHOLDER, LayoutRes, TextureEntry, UiCache, UiError};
+pub use cache::{ARG_PLACEHOLDER, LayoutRes, TexRef, TextureEntry, UiCache, UiError};
 pub use font::FontRes;
 pub use player::{LayoutPlayer, PaneGlobal, PaneInfo, PaneOverride};
 
