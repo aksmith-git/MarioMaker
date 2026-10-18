@@ -258,12 +258,13 @@ final class Renderer: NSObject, MTKViewDelegate {
         if mmk_engine_clear_condition(engine, &cond) { text += "    " + ClearConditionText.describe(cond) }
         let stripH = 18.0
         let tw = Int(vw), th = Int(stripH * scale)
-        if !session.hideHud && (text != hudText || hudSize != (tw, th)) {
+        let drawnHud = !session.hideHud && session.smm2 == nil   // the SMM2 HUD layout replaces it
+        if drawnHud && (text != hudText || hudSize != (tw, th)) {
             hudText = text
             hudSize = (tw, th)
             hudTexture = makeTextTexture(text, width: tw, height: th)
         }
-        if !session.hideHud, let tex = hudTexture {
+        if drawnHud, let tex = hudTexture {
             var ident = SIMD4<Float>(1, 1, 0, 0)
             enc.setVertexBytes(&ident, length: 16, index: 1)
             let y0 = Float(1 - 2 * stripH / Double(snap.view_h))
@@ -276,11 +277,15 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         enc.endEncoding()
 
-        // 100 Mario overlays (SMM1 layouts: pause, course clear, skip countdown, intro card), in a
-        // pass of their own: the layout pipelines have no depth attachment
-        if let o = session.overlay, let ui = SMM1UI.shared {
-            let layers = o.layers
-            for l in layers { l.apply(tick: o.tick) }
+        // layouts over the course in a pass of their own (the layout pipelines have no depth
+        // attachment): the 100 Mario overlays (SMM1: pause, course clear, skip countdown, intro
+        // card) or the SMM2 in-course screens (HUD, course card, pause, clear, …)
+        let course: (layers: [UILayout], tick: Int, ui: LayoutUI)? =
+            if let o = session.overlay, let ui = SMM1UI.shared { (o.layers, o.tick, ui) }
+            else if let s = session.smm2 { (s.layers, s.tick, s.ui) }
+            else { nil }
+        if let (layers, tick, ui) = course {
+            for l in layers { l.apply(tick: tick) }
             let pass2 = MTLRenderPassDescriptor()
             pass2.colorAttachments[0].texture = drawable.texture
             pass2.colorAttachments[0].loadAction = .load

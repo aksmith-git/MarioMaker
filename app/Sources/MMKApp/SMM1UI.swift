@@ -40,6 +40,21 @@ final class LayoutUI {
 
     func layout(_ name: String) -> UILayout? { UILayout(ui: self, name: name) }
 
+    /// Message `label` of text table `table` (a layout's, or a shared SMM2 one such as
+    /// `GoalCondition`); value tags become U+FFFC.
+    func message(table: String, _ label: String) -> String? {
+        let n = mmk_ui_table_message(handle, table, label, nil, 0)
+        guard n > 0 else { return nil }
+        var buf = [CChar](repeating: 0, count: n + 1)
+        _ = mmk_ui_table_message(handle, table, label, &buf, buf.count)
+        return String(cString: buf)
+    }
+
+    /// Message `label` of `table` with its value tags filled in order from `args`.
+    func format(table: String, _ label: String, _ args: [String]) -> String? {
+        message(table: table, label).map { UILayout.fill($0, args) }
+    }
+
     /// Draw `layers` (1280×720 layouts, back to front) into the current viewport.
     func encode(_ enc: MTLRenderCommandEncoder, layers: [UILayout]) {
         for l in layers {
@@ -59,6 +74,8 @@ typealias SMM1UI = LayoutUI
 final class UILayout {
     let handle: OpaquePointer
     let name: String
+    /// The import this layout came from (the `LayoutUI`s live as long as the app).
+    private let uiHandle: OpaquePointer
     private(set) var size = SIMD2<Float>(1280, 720)
 
     private struct Track {
@@ -75,6 +92,7 @@ final class UILayout {
         guard let h = mmk_ui_layout(ui.handle, name) else { return nil }
         handle = h
         self.name = name
+        uiHandle = ui.handle
         var w: Float = 0, hgt: Float = 0
         mmk_ui_layout_size(h, &w, &hgt)
         if w > 0 && hgt > 0 { size = SIMD2(w, hgt) }
@@ -140,6 +158,25 @@ final class UILayout {
 
     func text(_ pane: String, _ s: String) { _ = mmk_ui_set_text(handle, pane, s) }
 
+    /// Force picture / window `pane`'s material white colour (RGBA 0–255) over its animations;
+    /// `nil` gives it back to them.
+    func materialWhite(_ pane: String, _ rgba: [UInt8]?) {
+        if let rgba { _ = mmk_ui_set_material_color(handle, pane, 1, rgba) } else { _ = mmk_ui_set_material_color(handle, pane, 1, nil) }
+    }
+
+    /// Width (pane units) of text pane `pane`'s widest line (nil: no such pane).
+    func textWidth(_ pane: String) -> Float? {
+        let w = mmk_ui_text_width(handle, pane)
+        return w >= 0 ? w : nil
+    }
+
+    /// Draw picture `pane` with the import's texture `ui/textures/<group>/<name>.mtex` (`nil`:
+    /// its own texture again). False when the texture or the picture is missing.
+    @discardableResult
+    func picture(_ pane: String, group: String, _ name: String?) -> Bool {
+        mmk_ui_set_picture(uiHandle, handle, pane, group, name)
+    }
+
     /// Force a pane shown / hidden (`nil`: back to its animations).
     func visible(_ pane: String, _ v: Bool?) { _ = mmk_ui_set_visible(handle, pane, v.map { $0 ? 1 : 0 } ?? -1) }
 
@@ -190,7 +227,11 @@ final class UILayout {
 
     /// Message `label` with its value tags filled in order from `args` (nil if there is none).
     func format(_ label: String, _ args: [String]) -> String? {
-        guard let m = message(label) else { return nil }
+        message(label).map { Self.fill($0, args) }
+    }
+
+    /// A message template with its U+FFFC value slots filled in order from `args`.
+    nonisolated static func fill(_ m: String, _ args: [String]) -> String {
         var out = "", i = 0
         for ch in m {
             if ch == "\u{FFFC}" {

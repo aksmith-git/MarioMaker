@@ -287,8 +287,27 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
     title courses: prompt → Make (coming soon) / Play → Story Mode (library, Built-in filter),
     Course World / Coursebot (library), 100 Mario Challenge (extra button, SMM1 flow); game
     cursor, logo colour by course; keyboard + controller; screenshots `MMK_UI_SCREEN=title*`
+  - ✅ in-course screens over library courses (`SMM2Course.swift`, DECISIONS.md "SMM2 in-course
+    screens"): HUD `Play_PlayScene_00` per style skin (lives + character icon, coins, score,
+    timer with the 100 s pulse, clear-condition icon + counter / failed mark, pink-coin slots;
+    keys as `Play_KeyIcon_00` under the score [departure]), course card `Play_CourseIn_00` on
+    black (name, maker, condition sentence + icon, lives) at the start and after each death,
+    pause `Cmn_PauseMenu_00` (close = Continue, Start Over / Retry after a checkpoint, Exit
+    Course; course info, condition, best time; game cursor), clear `Play_CourseClear_00` +
+    `Play_ClearInfo_00` (banner, clear time, Start Over / Quit), give up `Play_CourseRetire_00`
+    (Exit / Keep playing), "TIME'S UP!" `Play_TimeUp_00`, `Play_GameOver_00`; the drawn HUD and
+    SwiftUI menus stay as the fallback (`MMK_UI_SMM2=off`, no import); captures
+    `MMK_UI_SCREEN=course-*`
+  - ✅ import v2: ReferenceMsg tables (clear-condition sentences, part names), the five styles'
+    clear-condition icons (`ui/textures/MissionIcon/`); Switch bitmap-font sheets flipped
+    (stored bottom row first) and read as luminance; player: caller picture textures, material
+    colours, text width; FFI `mmk_ui_table_message`, `mmk_ui_set_picture`,
+    `mmk_ui_set_material_color`, `mmk_ui_text_width`, `mmk_engine_play_status`
+  - ⬜ capture-based effects (the clear / give-up wipes, pause blur: PF_* panes), the 3D player
+    figure on the course card, P-meter / coin pop / 1-Up animations, checkpoint-flag and
+    condition-met pop-ups in the course, likes / comments (network)
   - ⬜ boot scene, fades, FLCT per-character text, glyph borders; Course World (`Nwk_Title_00`),
-    Story Mode map (`Qst_*`), pause, clear / death screens, HUD; title in `mmk-play`
+    Story Mode map (`Qst_*`); title and in-course screens in `mmk-play`
 - 🔄 All five styles (SMB1, SMB3, SMW, NSMBU, 3D World) and all themes (day/night) — all five
   playable — sample 3D World 100/100
 - ✅ Warp Box (97-warp-box.md): pairs 2k ↔ 2k+1 in the same area, entered by touch (no button),

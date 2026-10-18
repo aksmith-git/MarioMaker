@@ -171,7 +171,9 @@ final class AppModel: ObservableObject {
         guard let assets else { return }
         do {
             let data = try Data(contentsOf: entry.url)
-            start(try GameSession(assets: assets, course: data, title: entry.name, courseKey: entry.info.key, saves: saves))
+            let session = try GameSession(assets: assets, course: data, title: entry.name, courseKey: entry.info.key, saves: saves)
+            attachSMM2(session, maker: entry.meta.maker, builtIn: entry.collection == "Story Mode", intro: true)
+            start(session)
         } catch {
             errorMessage = "Couldn't start \(entry.name): \(error)"
         }
@@ -184,6 +186,18 @@ final class AppModel: ObservableObject {
         } catch {
             errorMessage = "\(error)"
         }
+    }
+
+    /// The SMM2 in-course screens over a library course, when the SMM2 UI import is there
+    /// (`MMK_UI_SMM2=off`: the drawn HUD and the SwiftUI menus).
+    private func attachSMM2(_ session: GameSession, maker: String?, builtIn: Bool, intro: Bool) {
+        guard let ui = LayoutUI.smm2, let screens = CourseScreens(ui: ui) else { return }
+        var info = CourseCardInfo()
+        info.name = session.title
+        info.maker = maker
+        info.builtIn = builtIn
+        if let key = session.courseKey { info.bestTicks = saves.record(key).bestTicks }
+        session.attachSMM2(screens, info: info, intro: intro)
     }
 
     private func start(_ session: GameSession) {
@@ -220,6 +234,10 @@ final class AppModel: ObservableObject {
                 mmk_engine_debug_teleport(session.engine, x, env["MMK_START_Y"].flatMap(Float.init) ?? 32)
             }
             if let t = env["MMK_UI_PAUSE_TICKS"].flatMap(UInt64.init) { session.autoPauseTick = t }
+            // the SMM2 screens (the smoke test's MMK_SCREENSHOT runs straight into play; UI
+            // captures start with the course card unless MMK_UI_INTRO=0)
+            let intro = env["MMK_SCREENSHOT"] == nil && env["MMK_UI_INTRO"] != "0"
+            attachSMM2(session, maker: nil, builtIn: false, intro: intro)
             // MMK_UI_SCRIPTED=1: the smoke test's scripted run, with the menus live (UI captures)
             if env["MMK_UI_SCRIPTED"] == "1" { session.scriptedInput = Renderer.scriptedInput }
             start(session)

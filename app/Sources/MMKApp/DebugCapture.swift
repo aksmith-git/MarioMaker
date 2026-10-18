@@ -15,6 +15,10 @@ import Metal
 /// SMM2 title (at launch; see SMM2Title.swift): title (prompt), title-main (Make / Play),
 /// title-play (Play menu; MMK_UI_SELECT=<n> picks the button); MMK_UI_INPUT=<tick>:<button>,…
 /// presses menu buttons at scene ticks; MMK_TITLE_COURSE=<n> picks the demo course.
+/// SMM2 in-course screens (with MMK_COURSE; SMM2Course.swift): the course card shows first
+/// (MMK_UI_INTRO=0 skips it); MMK_UI_PAUSE_TICKS=<n> pauses; MMK_UI_SCREEN=course-clear,
+/// course-gameover, course-timeup, course-retire, course-death (the card after a death) shows
+/// that screen MMK_UI_COURSE_AT=<s> seconds in (default half the delay).
 ///
 /// Waits, renders the main window's content (or the Settings window) into a PNG and quits.
 /// Window snapshots can't see Metal layers, so while this is set the renderer keeps a copy of its
@@ -71,6 +75,14 @@ enum DebugCapture {
                     }
                 default: break
                 }
+            }
+        }
+        if let screen = env["MMK_UI_SCREEN"], screen.hasPrefix("course-") {
+            // SMM2 in-course screens over MMK_COURSE (after MMK_UI_COURSE_AT seconds, default
+            // half the delay)
+            let at = env["MMK_UI_COURSE_AT"].flatMap(Double.init) ?? delay / 2
+            DispatchQueue.main.asyncAfter(deadline: .now() + at) {
+                if case .game(let s) = model.screen { s.debugSMM2(screen) }
             }
         }
         // (RootView opens the Settings window for MMK_UI_SCREEN=settings)
