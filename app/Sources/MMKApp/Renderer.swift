@@ -259,7 +259,9 @@ final class Renderer: NSObject, MTKViewDelegate {
         var hud = MmkHud()
         mmk_engine_hud(engine, &hud)
         let time = hud.time < 0 ? "---" : String(format: "%03d", hud.time)
-        var text = String(format: "LIVES ×%02d    ⦿×%02d    %09d    TIME %@", hud.lives, hud.coins, hud.score, time)
+        var text = session.unlimitedLives
+            ? String(format: "⦿×%02d    %09d    TIME %@", hud.coins, hud.score, time)
+            : String(format: "LIVES ×%02d    ⦿×%02d    %09d    TIME %@", hud.lives, hud.coins, hud.score, time)
         if hud.flags & 1 != 0 { text += "    COURSE CLEAR!" }
         var cond = MmkCondition()
         if mmk_engine_clear_condition(engine, &cond) { text += "    " + ClearConditionText.describe(cond) }
@@ -286,28 +288,35 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         // layouts over the course in a pass of their own (the layout pipelines have no depth
         // attachment): the 100 Mario overlays (SMM1: pause, course clear, skip countdown, intro
-        // card) or the SMM2 in-course screens (HUD, course card, pause, clear, …)
-        let course: (layers: [UILayout], tick: Int, ui: LayoutUI)? =
-            if let o = session.overlay, let ui = SMM1UI.shared { (o.layers, o.tick, ui) }
-            else if let s = session.smm2 { (s.layers, s.tick, s.ui) }
-            else { nil }
-        if let (layers, tick, ui) = course {
-            for l in layers { l.apply(tick: tick) }
+        // card) or the SMM2 in-course screens (HUD, course card, pause, clear, …), a layout
+        // screen over the course (the SMM2 title over its demo course), then a scene fade
+        var groups: [(layers: [UILayout], ui: LayoutUI)] = []
+        if let o = session.overlay, let ui = SMM1UI.shared {
+            for l in o.layers { l.apply(tick: o.tick) }
+            groups.append((o.layers, ui))
+        } else if let s = session.smm2 {
+            for l in s.layers { l.apply(tick: s.tick) }
+            groups.append((s.layers, s.ui))
+        }
+        if let (scene, ui) = session.sceneOverlay {
+            let layers = scene.layers
+            for l in layers { l.apply(tick: scene.tick) }
+            groups.append((layers, ui))
+        }
+        if let fui = LayoutUI.smm2 {
+            let f = SceneFade.shared.layers
+            if !f.isEmpty { groups.append((f, fui)) }
+        }
+        if !groups.isEmpty {
             let pass2 = MTLRenderPassDescriptor()
             pass2.colorAttachments[0].texture = drawable.texture
             pass2.colorAttachments[0].loadAction = .load
             pass2.colorAttachments[0].storeAction = .store
             if let enc2 = cmd.makeRenderCommandEncoder(descriptor: pass2) {
                 enc2.setViewport(MTLViewport(originX: (dw - vw) / 2, originY: (dh - vh) / 2, width: vw, height: vh, znear: 0, zfar: 1))
-                ui.encode(enc2, layers: layers)
+                for g in groups { g.ui.encode(enc2, layers: g.layers) }
                 enc2.endEncoding()
             }
-        }
-        // a layout screen over the course (SMM2 title over its demo course)
-        if let (scene, ui) = session.sceneOverlay {
-            let layers = scene.layers
-            for l in layers { l.apply(tick: scene.tick) }
-            ui.encode(enc, layers: layers)
         }
 
         if let path = screenshot, snap.tick >= screenshotTicks {
