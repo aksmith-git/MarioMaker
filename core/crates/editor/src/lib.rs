@@ -33,6 +33,10 @@ pub fn default_size(part: i16) -> (u8, u8) {
         107 | 110 => (2, 2),     // Piranha Creeper, spike block
         113 => (3, 1),           // Mushroom Trampoline
         106 => (4, 6),           // tree
+        78 => (1, 4),            // Pokey: head + 3 (EditSambo BaseUnitSizeY 4)
+        80 => (3, 1),            // Dash Block
+        120..=126 => (2, 2),     // Koopalings
+        132 => (4, 1),           // ON/OFF Trampoline
         _ => (1, 1),
     }
 }

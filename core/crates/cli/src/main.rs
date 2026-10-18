@@ -1365,13 +1365,16 @@ fn gallery(
     const SKIP: &[i16] = &[26, 27, 37, 38, 59, 89, 109];
     // the editor offers these in 3D World only
     const W3_ONLY: &[i16] = &[
-        50, 51, 65, 72, 85, 86, 96, 97, 106, 107, 112, 113, 114, 116, 117, 119,
+        50, 51, 65, 72, 79, 80, 85, 86, 96, 97, 106, 107, 112, 113, 114, 116, 117, 119, 132,
     ];
+    // and these in the 2D styles and NSMBU only (no 3D World models)
+    const NOT_3W: &[i16] = &[111, 120, 121, 122, 123, 124, 125, 126];
     const PAGE: i32 = 220;
     let parts: Vec<i16> = mmk_sim::level::SUPPORTED_PARTS
         .iter()
         .copied()
         .filter(|p| !SKIP.contains(p) && (style == "3W" || !W3_ONLY.contains(p)))
+        .filter(|p| style != "3W" || !NOT_3W.contains(p))
         .collect();
     std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
     let mut written = Vec::new();

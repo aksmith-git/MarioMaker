@@ -431,6 +431,8 @@ pub const SUPPORTED_PARTS: &[i16] = &[
     52, 53, 54, 55, 56, 57, 58, 60, 61, 62, 63, 64, 65, 66, 67, 68, 70, 71, 72, 73, 75, 76, 77, 82,
     83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 94, 95, 96, 97, 98, 99, 100, 102, 103, 104, 105, 106,
     107, 108, 109, 110, 112, 113, 114, 115, 116, 117, 119,
+    // 2.0 / 3.0 parts (level/v3.rs)
+    74, 78, 79, 80, 111, 120, 121, 122, 123, 124, 125, 126, 132,
 ];
 
 /// Parts whose alternate form (flag 0x4) the engine implements (or where the flag only picks a
@@ -439,6 +441,9 @@ pub const SUPPORTED_PARTS: &[i16] = &[
 const ALT_FORMS: &[i16] = &[
     0, 1, 2, 3, 10, 11, 12, 13, 15, 19, 23, 25, 28, 32, 34, 36, 40, 41, 42, 45, 46, 47, 48, 51, 52,
     54, 56, 61, 77, 84, 85, 96, 97, 100, 103, 104, 107, 108, 113,
+    // 2.0 / 3.0: the spike ball, the P Block that appears, the blue ON/OFF Trampoline; on a
+    // Mechakoopa the bit does nothing [obs]
+    74, 79, 111, 132,
 ];
 
 /// Game styles the engine plays.
@@ -448,7 +453,7 @@ pub const PLAYABLE_STYLES: &[&str] = &["M1", "M3", "MW", "WU", "3W"];
 const RIDES_TRACKS: &[i16] = &[
     0, 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 13, 15, 24, 47, 54, 18, 19, 20, 22, 23, 25, 28, 30, 31, 32,
     33, 34, 35, 36, 39, 40, 41, 42, 44, 45, 46, 48, 50, 51, 52, 56, 57, 58, 60, 61, 62, 63, 65, 68,
-    70, 76, 77, 82, 83, 91, 95, 96, 98, 102, 103, 105, 114, 117,
+    70, 76, 77, 82, 83, 91, 95, 96, 98, 102, 103, 105, 114, 117, 74, 111,
 ];
 
 /// Why a course is not fully playable yet: one entry per missing feature (empty = playable).
@@ -475,6 +480,8 @@ pub fn unsupported_features(course: &Course) -> Vec<String> {
                 out.insert(format!("part {} on a track", o.id));
             } else if o.flags & 0x4 != 0 && !ALT_FORMS.contains(&o.id) {
                 out.insert(format!("alternate form of part {}", o.id));
+            } else if let Some(why) = v3::unsupported(o) {
+                out.insert(why);
             } else if o.flags & 0x2 != 0 && o.id == 13 {
                 // winged Bill Blasters fly as actors: not yet
                 out.insert(format!("wings on part {}", o.id));

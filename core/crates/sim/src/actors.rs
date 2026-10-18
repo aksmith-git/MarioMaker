@@ -10,9 +10,11 @@ use crate::level::{Cell, Level, PipeDir, TILE};
 
 mod bosses;
 mod koopalings;
+pub use koopalings::{shot as koopaling_shot, who as koopaling_who};
 mod v3;
 mod w3;
 pub use bosses::{BossAttack, BossHit};
+pub use v3::{LASER_SIGN, MECHA_DOWN, MISSILE_LIFE, Seg, V3State};
 pub use w3::{CREEP_CELL, W3Look, W3State, creeper_corner, push as bully_push};
 
 pub const WALK_SPEED: f32 = 0.5;
@@ -321,9 +323,10 @@ pub enum Kind {
     SpikeBall {
         snow: bool,
     },
-    /// Pokey (78; `snow` = Snow Pokey): a walking cactus stack.
+    /// Pokey (78; `snow` = Snow Pokey): a walking cactus stack of `height` segments.
     Pokey {
         snow: bool,
+        height: u8,
     },
     /// Mechakoopa (111): `weapon` 0 plain, 1 Blasta (missiles), 2 Zappa (laser).
     Mechakoopa {
@@ -336,6 +339,7 @@ pub enum Kind {
     /// ON/OFF Trampoline (132, 3D World; `blue` = the alternate colour).
     OnOffTrampoline {
         blue: bool,
+        width: u8,
     },
     /// A Koopaling (120–126; `who` 0 Lemmy, 1 Morton, 2 Larry, 3 Wendy, 4 Iggy, 5 Roy, 6 Ludwig)
     /// (actors/koopalings.rs). `key`: holds a Key; `clown`: rides a Koopa Clown Car.
@@ -386,6 +390,7 @@ impl Kind {
                 | Kind::ShoeGoomba { .. }
                 | Kind::FishBone
         ) || self.w3_enemy()
+            || self.v3_enemy()
     }
     /// Clear-condition enemy class (clear.rs) of a defeated actor of this kind.
     pub fn defeat_class(self, buzzy: bool) -> Option<u8> {
@@ -478,6 +483,7 @@ impl Kind {
             Kind::Thwomp { .. }
                 | Kind::Lift { .. }
                 | Kind::Trampoline { .. }
+                | Kind::OnOffTrampoline { .. }
                 | Kind::TrackBlock { .. }
                 | Kind::TrackMount { .. }
                 | Kind::Crate { .. }
@@ -613,6 +619,8 @@ pub struct Actor {
     pub floor_ref: f32,
     /// 3D World enemy state and what the world senses for them (actors/w3.rs).
     pub w3: W3State,
+    /// State of the 2.0 / 3.0 parts (actors/v3.rs, actors/koopalings.rs).
+    pub v3: V3State,
 }
 
 impl Actor {
@@ -661,6 +669,7 @@ impl Actor {
             camera: (0.0, 0.0),
             floor_ref: 0.0,
             w3: W3State::default(),
+            v3: V3State::default(),
         }
     }
 
@@ -758,6 +767,7 @@ impl Actor {
                 let top = self.y + 12.5 - self.aux_compression();
                 Some((self.x - 8.0, top - 4.0, self.x + 8.0, top, true))
             }
+            k if k.is_v3() => self.v3_solid_box(),
             _ => None,
         }
     }

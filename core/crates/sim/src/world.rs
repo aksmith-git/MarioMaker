@@ -27,7 +27,9 @@ use crate::warp::{self, SideHold, Transit};
 
 mod bosses;
 mod debug;
+mod koopalings;
 mod v3;
+pub use v3::v3_dash_frames;
 mod w3;
 
 /// SMM2 shows 24 × 13.5 tiles.
@@ -88,8 +90,9 @@ pub enum Event {
     ConditionMet,
 }
 
-/// P-switch duration: [ext] about 10 s (not found in the binary).
-pub const P_FRAMES: i32 = 600;
+/// P-switch duration: 540 frames, reloaded by every press (the course switch state's P timer,
+/// 0x71016c4a48 in v3.0.3) [obs].
+pub const P_FRAMES: i32 = 540;
 
 /// Pipe generator timing by pipe colour 0–3 (green, red, blue, yellow), frames.
 const GEN_INTERVAL: [i32; 4] = [180, 60, 240, 120];
@@ -274,6 +277,8 @@ pub struct World {
     pub wind: f32,
     wind_n: i32,
     prev_jump_claw: bool,
+    /// World state of the 2.0 / 3.0 parts (world/v3.rs).
+    pub v3: v3::V3World,
 }
 
 impl Default for World {
@@ -466,6 +471,7 @@ impl World {
             exclamations: Vec::new(),
             held_by: None,
             prev_jump_claw: false,
+            v3: v3::V3World::default(),
             wind: 0.0,
             wind_n: 0,
         };
@@ -507,6 +513,7 @@ impl World {
         self.player_trail.clear();
         self.trees_shaken.clear();
         self.p_timer = 0;
+        self.v3 = v3::V3World::default();
         self.p_bricks.clear();
         self.p_coins.clear();
         self.donut_ride = None;
@@ -987,6 +994,10 @@ impl World {
             self.player.held = None;
             return;
         };
+        if self.actors[i].kind.is_v3() {
+            self.v3_carry(i);
+            return;
+        }
         let p = &self.player;
         let (x, y, facing, pvx) = (p.x + p.facing as f32 * 11.0, p.y + 2.0, p.facing, p.vx);
         let crate_held = matches!(self.actors[i].kind, Kind::Crate { .. } | Kind::Stone);
@@ -1080,6 +1091,11 @@ impl World {
             .iter()
             .filter_map(|a| match a.kind {
                 Kind::Trampoline { width, .. } => Some((
+                    a.x - width as f32 * 8.0,
+                    a.x + width as f32 * 8.0,
+                    a.y + 16.0,
+                )),
+                Kind::OnOffTrampoline { width, .. } if a.v3_bouncy(self.on_off) => Some((
                     a.x - width as f32 * 8.0,
                     a.x + width as f32 * 8.0,
                     a.y + 16.0,
@@ -1510,6 +1526,7 @@ impl World {
         } else {
             self.player.step(input, &self.level);
         }
+        self.v3_dash(prev_x);
         let shoe_safe = self.player.shoe.is_some() && self.player.on_ground;
         if self.player.spiked && !shoe_safe && self.player.hurt() {
             self.events.push(if self.player.alive() {
@@ -2493,9 +2510,10 @@ impl World {
                         && e.kind.is_enemy()
                         && f.mode != Mode::Dead
                     {
-                        let fx = f.x;
+                        let (fx, fy) = (f.x, f.y);
                         f.mode = Mode::Dead;
-                        if let Some(down) = w3::fire_hit(e, fx).or_else(|| v3::fire_hit(e, fx)) {
+                        if let Some(down) = w3::fire_hit(e, fx).or_else(|| v3::fire_hit(e, fx, fy))
+                        {
                             if down {
                                 scores.push((Self::chain_score(0), e.x, e.y + 24.0));
                             }
@@ -2518,6 +2536,12 @@ impl World {
                     continue;
                 }
                 if w3::shell_hit(a, b) {
+                    continue;
+                }
+                if let Some(hit) = v3::shell_hit(a, b) {
+                    if let Some((x, y)) = hit {
+                        scores.push((Self::chain_score(0), x, y + 24.0));
+                    }
                     continue;
                 }
                 let walkers = a.kind.is_walker() && b.kind.is_walker();
@@ -3934,7 +3958,11 @@ impl World {
                 )
                 && overlap(reach, a.bbox())
             {
-                a.die_fall(px);
+                if a.kind.is_v3() {
+                    a.v3_tail_hit(px, reach.1);
+                } else {
+                    a.die_fall(px);
+                }
                 hits += 1;
             }
         }
@@ -4337,10 +4365,10 @@ impl World {
             }
             // Mushroom Trampoline: landing launches at once — 6.0, or 4.43 with jump held; jump
             // pressed within 6 frames of a plain bounce re-launches at 4.43 − 0.1·frames
-            let tramp = self
-                .actors
-                .iter()
-                .any(|a| a.id == id && matches!(a.kind, Kind::Trampoline { .. }));
+            let on = self.on_off;
+            let tramp = self.actors.iter().any(|a| {
+                a.id == id && (matches!(a.kind, Kind::Trampoline { .. }) || a.v3_bouncy(on))
+            });
             if tramp {
                 self.player.vy = if jump_held { 4.43 } else { 6.0 };
                 self.tramp_late = if jump_held { 0 } else { 1 };
@@ -5227,6 +5255,7 @@ impl World {
         self.clown_sprites(&mut out);
         self.w3_sprites(&mut out);
         self.v3_sprites(&mut out);
+        self.koopaling_sprites(&mut out);
         // Chain Chomp stakes and chains (the chain is cosmetic: 4 links, stake to Chomp)
         for a in &self.actors {
             if a.kind != (Kind::ChainChomp { chained: true }) || !visible(a.home_x, a.home_y) {
@@ -6479,6 +6508,9 @@ impl World {
         let mut s = Self::model_sprite(model, tex, a.x - w / 2.0, a.y, w, h, flip_x, layer);
         if matches!(a.kind, Kind::Fireball | Kind::EnemyFire) || a.kind.w3_centred() {
             s.y = a.y + a.height() / 2.0;
+        }
+        if a.kind.is_v3() {
+            s.y = a.y + a.v3_draw_dy();
         }
         if matches!(a.kind, Kind::Piranha { .. }) {
             // in a pipe: behind the pipe; a down-facing pipe hangs the plant upside down
