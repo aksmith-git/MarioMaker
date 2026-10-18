@@ -530,12 +530,13 @@ them:
   fixed platforms). Verify in Ryujinx.
 - Spring launch: 6.0 px/frame, or 4.43 with jump held (the held-jump gravity bands then give
   the high bounce) — the binary pairs the speeds with "jump profile" ids whose meaning is [inf].
-- Side Thwomp charge trigger: player within 2 × its half-width vertically and 256 px horizontally
-  [inf]; the normal Thwomp uses the spec's |dx| < W + 32 zone.
+- Side Thwomp (pass 3, from the binary): flag bits 0x18 not both set; looks one way ((flags >> 3)
+  & 3 == 2 right, else left), charges at a player in its 136 px attack box on that side only.
 - P-switch duration 600 frames ([ext] ~10 s; not found in the binary). Dotted-line block colour
   from the alternate flag [?]. Conveyor art uses a placeholder tile until the belt model is found.
-- Simplified for now: Spike Top walks floors only (turns at ledges) instead of crawling around
-  blocks; Hammer Bro alternates a 5.5 jump with a 2.5 hop (no drop-through); Bob-omb blast radius
+- Spike Top crawls round blocks (pass 3): placed side from the facing field, 30-frame corner
+  turns; an outside corner swings on a quarter circle round the block corner (grid stand-in).
+- Simplified for now: Hammer Bro alternates a 5.5 jump with a 2.5 hop (no drop-through); Bob-omb blast radius
   1 tile (plus) for terrain and 32 px for actors/player [inf].
 - Fire Bar rotation 2.8125°/frame (the shared counter's step was not located); Burner flame
   12 px wide × 48 px (texture length); one-way walls are drawn nowhere yet (no M1 texture found).

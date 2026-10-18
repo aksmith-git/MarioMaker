@@ -1289,7 +1289,7 @@ impl World {
             | Kind::BulletBill
             | Kind::MontyMole
             | Kind::BobOmb
-            | Kind::SpikeTop
+            | Kind::SpikeTop { .. }
             | Kind::Lakitu
             | Kind::Magikoopa
             | Kind::Blooper
@@ -6245,7 +6245,7 @@ impl World {
             Kind::Donut => ("M1_Object_block_chikuwa", "fall.0", 16.0, 16.0, false),
             Kind::Spiny => ("M1_Enemy_togezo", walk2(8), 16.0, 16.0, a.dir > 0),
             Kind::Buzzy => ("M1_Enemy_met", walk2(8), 16.0, 16.0, a.dir > 0),
-            Kind::SpikeTop => ("M1_Enemy_togemetA", walk2(8), 16.0, 16.0, a.dir > 0),
+            Kind::SpikeTop { .. } => ("M1_Enemy_togemetA", walk2(8), 16.0, 16.0, a.dir > 0),
             Kind::HammerBro if a.alt => (
                 "M1_Enemy_bros_mega",
                 if a.timer < 12 { "throw.0" } else { walk2(8) },
@@ -7272,8 +7272,14 @@ mod tests {
     #[test]
     fn thwomp_slams_and_returns() {
         let mut lvl = Level::flat(40);
-        lvl.spawns
-            .push(spawn(Kind::Thwomp { side: false }, 200.0, 120.0));
+        lvl.spawns.push(spawn(
+            Kind::Thwomp {
+                side: false,
+                right: false,
+            },
+            200.0,
+            120.0,
+        ));
         let mut w = World::with_level(lvl);
         w.player.x = 60.0;
         run(&mut w, 0, 10);
