@@ -1,8 +1,7 @@
 name: tests
 
-# Actions minutes are limited (macOS bills 10x, Windows 2x): pushes run the Linux jobs only;
-# the macOS, Windows and web jobs run when started by hand (Actions → tests → Run workflow).
-# scripts/check.sh runs every gate locally before each commit.
+# Actions minutes are limited: pushes run Linux jobs only. scripts/check.sh runs every gate
+# locally (including the recomp's macOS compile check) before each commit.
 on:
   push:
   pull_request:
@@ -13,82 +12,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  rust:
-    strategy:
-      matrix:
-        os: ${{ github.event_name == 'workflow_dispatch' && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
-    runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        working-directory: core
-    steps:
-      - uses: actions/checkout@v4
-      # the portable shell (mmk-shell) links ALSA (cpal) and libudev (gilrs) on Linux
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config
-      # rustup reads core/rust-toolchain.toml and installs the pinned toolchain
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
-      - run: cargo build
-      - if: matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@v4
-        with:
-          name: mmk-linux
-          path: core/target/debug/mmk
-
-  # Portable shell (mmk-play) on the platforms the Swift app doesn't cover. macOS builds it in
-  # the rust job above (whole workspace).
-  shell:
-    if: github.event_name == 'workflow_dispatch'
-    strategy:
-      matrix:
-        os: [windows-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        working-directory: core
-    steps:
-      - uses: actions/checkout@v4
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev pkg-config
-      - run: cargo clippy -p mmk-shell --all-targets -- -D warnings
-      - run: cargo test -p mmk-shell -p mmk-host
-      - run: cargo build --release -p mmk-shell
-      - uses: actions/upload-artifact@v4
-        with:
-          name: mmk-play-${{ runner.os }}
-          path: |
-            core/target/release/mmk-play
-            core/target/release/mmk-play.exe
-          if-no-files-found: error
-
-  # The shell for the browser (WebGPU / WebGL2): the wasm32 build must compile and pass clippy.
-  shell-web:
-    if: github.event_name == 'workflow_dispatch'
+  # The open-source course server (core/): accounts, courses, Endless / 100 Mario runs, relay.
+  server:
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: core
     steps:
       - uses: actions/checkout@v4
-      - run: rustup target add wasm32-unknown-unknown
-      - run: cargo clippy -p mmk-shell --target wasm32-unknown-unknown -- -D warnings
-      - run: cargo build --release -p mmk-shell --target wasm32-unknown-unknown
+      # rustup reads core/rust-toolchain.toml and installs the pinned toolchain
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo build --release -p mmk-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mmk-linux
+          path: core/target/release/mmk
 
-  app:
-    if: github.event_name == 'workflow_dispatch'
-    needs: rust
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: cargo build --release -p mmk-ffi
-        working-directory: core
-      - run: swift build
-        working-directory: app
-
+  # Python course-format reference (smmfmt) and the proprietary-content guard's own tests.
   python:
-    needs: rust
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -96,12 +39,6 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      - uses: actions/download-artifact@v4
-        with:
-          name: mmk-linux
-          path: bin
-      - run: chmod +x bin/mmk
       # Corpus tests skip automatically: CI has no game data or key table.
       - run: python -m unittest discover -s tests -t . -v
-        env:
-          MMK_BIN: bin/mmk
+      - run: python scripts/test_check_no_proprietary.py -v
