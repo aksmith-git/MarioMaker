@@ -145,6 +145,12 @@ struct CourseCardInfo {
     /// "Story Mode" for the built-in courses, else "Course World" (`Cmn_PauseMenu_00` T_Mode_*).
     var builtIn = false
     var bestTicks: Int?
+    /// The play has lives (100 Mario / Endless Challenge): the HUD's lives counter and the
+    /// course card with "× lives". Library / Course World / Story Mode play has none: unlimited
+    /// retries, no game over (DECISIONS.md "Course World without lives").
+    var lives = false
+    /// `Cmn_PauseMenu_00` mode label (`T_Mode_*`); nil: Story Mode / Course World by `builtIn`.
+    var modeLabel: String?
 }
 
 /// The SMM2 layouts over a library course. Hosts step it at 60 Hz (`step`) and feed it the
@@ -187,6 +193,15 @@ final class CourseScreens: UIScene {
     private var closing: (UILayout, Int)?
     private var timeUpUntil = 0
     private var fadeInUntil = 0
+    /// The death iris (`Cmn_Fade_00` black circle on the player): its own instance, apart from
+    /// the course card's black.
+    private lazy var iris: UILayout? = {
+        let f = ui.layout("Cmn_Fade_00")
+        for p in ["P_FadeB_00", "P_FadeW_00", "W_CircleW_00", "N_Block_00", "N_CaptureFade_00"] { f?.visible(p, false) }
+        return f
+    }()
+    private var irisUntil = 0
+    private var irisClosed = false
 
     var style: Int { Int(min(snap.status.style, 4)) }
     private var skin: String { SMM2Condition.styles[style] }
@@ -200,6 +215,7 @@ final class CourseScreens: UIScene {
         switch mode {
         case .play:
             if tick < fadeInUntil, let f = fade { l.append(f) }
+            if irisClosed || tick < irisUntil, let i = iris { l.append(i) }
         case .intro: l += [fade, intro].compactMap { $0 }
         case .pause: l += [fade, pauseL].compactMap { $0 }
         case .clear: if let c = clearL { l.append(c) }
@@ -395,10 +411,54 @@ final class CourseScreens: UIScene {
         hud.play("Out", at: tick)
     }
 
+    /// HUD and card variants for the play's rules: Type 1 with the lives counter when the play
+    /// has lives, Type 0 (coins, score, time) when it hasn't.
+    func applyRules() {
+        hud.hold("Type", info.lives ? 1 : 0)
+    }
+
+    // MARK: death iris
+
+    /// Layout position of a point of the 384 × 216 view (px from its bottom-left).
+    static func layoutPoint(viewX x: Float, viewY y: Float) -> SIMD2<Float> {
+        let cx = max(0, min(384, x)), cy = max(0, min(216, y))
+        return SIMD2((cx - 192) * 1280 / 384, (cy - 108) * 720 / 216)
+    }
+
+    /// The black circle closes on `center` (layout units) [inf: the circle and its timing are
+    /// read from the fade layout; that a death ends with it is inferred].
+    func irisOut(at center: SIMD2<Float>) {
+        guard let i = iris else { return }
+        i.visible("N_Pos_00", true)
+        i.visible("W_CircleB_00", true)
+        i.setPane("N_Pos_00", translate: center)
+        i.stop("InCircleB")
+        i.play("OutCircleB", at: tick)
+        irisUntil = tick + Int(max(1, i.length("OutCircleB")))
+        irisClosed = true
+    }
+
+    /// The course restarted: the circle opens on the player.
+    func irisIn(at center: SIMD2<Float>) {
+        guard let i = iris else { return }
+        i.visible("N_Pos_00", true)
+        i.visible("W_CircleB_00", true)
+        i.setPane("N_Pos_00", translate: center)
+        i.stop("OutCircleB")
+        i.play("InCircleB", at: tick)
+        irisUntil = tick + Int(max(1, i.length("InCircleB")))
+        irisClosed = false
+    }
+
     // MARK: course card
 
-    /// The course card on black: name, maker, condition, lives (`AnimEndlessMode`), at the
-    /// start and after each death [inf]. `lives` is the count the attempt starts with.
+    /// The card's animation: `AnimEndlessMode` ("× lives") when the play has lives, else
+    /// `AnimDefault`.
+    private var introAnim: String { info.lives ? "AnimEndlessMode" : "AnimDefault" }
+
+    /// The course card on black: name, maker, condition, and lives when the play has them, at
+    /// the start (and after each death in a play with lives) [inf]. `lives` is the count the
+    /// attempt starts with.
     func showIntro(lives: Int) {
         guard let c = intro, fade != nil else { return }
         hudOut()
@@ -431,12 +491,14 @@ final class CourseScreens: UIScene {
             c.hold("Mission", 0)
         }
         c.text("T_Zanki_00", ui.format(table: "Play_CourseIn_00", "T_Zanki_Number", ["\(lives)"]) ?? "\(lives)")
-        c.stop("AnimEndlessMode")
-        c.play("AnimEndlessMode", at: tick)
+        for a in ["AnimEndlessMode", "AnimDefault"] { c.stop(a) }
+        c.play(introAnim, at: tick)
+        irisClosed = false
+        irisUntil = 0
         setMode(.intro)
     }
 
-    var introLength: Int { Int(max(1, intro?.length("AnimEndlessMode") ?? 1)) }
+    var introLength: Int { Int(max(1, intro?.length(introAnim) ?? 1)) }
 
     /// The card is gone: fade the black away, bring the HUD in.
     func endIntro() {
@@ -468,7 +530,7 @@ final class CourseScreens: UIScene {
         // Course World information block [inf]
         p.hold("Type", 3)
         p.hold("TypeCourseInfo", 1)
-        let modeLabel = info.builtIn ? "T_Mode_Quest" : "T_Mode_Network"
+        let modeLabel = info.modeLabel ?? (info.builtIn ? "T_Mode_Quest" : "T_Mode_Network")
         if let m = p.message(modeLabel) { p.text("T_Mode_00", m) }
         p.text("T_CourseTitle_00", info.name)
         for n in ["L_MiiIcon_00", "P_GoodIcon_00", "L_GoodCount_00", "N_TagAll_00", "L_KeyBtn_00",

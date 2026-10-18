@@ -77,6 +77,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 final class AppModel: ObservableObject {
     enum Screen {
         case importer, library, game(GameSession), challenge(ChallengeFlow), title(TitleFlow)
+        /// SMM2's opening before the title (`Boot_BootScene_00`).
+        case boot(BootScene)
     }
 
     @Published var screen: Screen = .library
@@ -116,14 +118,24 @@ final class AppModel: ObservableObject {
         if assets == nil {
             screen = .importer
         } else if LayoutUI.smm2 != nil && env["MMK_TITLE"] != "off" {
-            // the SMM2 title screen first (MMK_UI_SCREEN=title-main / title-play: captures)
+            // SMM2's opening, then the title. MMK_UI_SCREEN=title / title-main / title-play
+            // captures start on the title; MMK_UI_SCREEN=boot or MMK_BOOT=on force the opening,
+            // MMK_BOOT=off (or Settings) leaves it out
             let start: TitleScene.State = switch env["MMK_UI_SCREEN"] {
             case "title-main": .main
             case "title-play": .category
             default: .top
             }
             library.scan(assets: assets)
-            showTitle(start: start)
+            let forced = env["MMK_BOOT"] == "on" || env["MMK_UI_SCREEN"] == "boot"
+            let boot = forced || (env["MMK_BOOT"] != "off" && !DebugCapture.requested
+                                  && UserDefaults.standard.bool(forKey: SettingsKey.bootOpening))
+            if boot, let ui = LayoutUI.smm2, let scene = BootScene(ui: ui, opening: env["MMK_BOOT_OPENING"]) {
+                scene.onFinished = { [weak self] in self?.bootFinished() }
+                screen = .boot(scene)
+            } else {
+                showTitle(start: start)
+            }
             if case .title(let flow) = screen, let i = env["MMK_UI_SELECT"].flatMap(Int.init) {
                 flow.scene.debugSelectCategory(i)
             }
@@ -150,17 +162,36 @@ final class AppModel: ObservableObject {
         screen = .title(flow)
     }
 
+    /// The opening is over: the boot sequence changes to the title course with the black
+    /// circle [obs].
+    private func bootFinished() {
+        SceneFade.shared.run(.circleBlack) { [weak self] in self?.showTitle(start: .top) }
+    }
+
+    /// The title's Play menu: the game requests the next scene without fade parameters, which
+    /// means the 30-frame black fade [obs].
     private func titleChoice(_ choice: TitleChoice) {
+        SceneFade.shared.run(.black) { [weak self] in self?.enter(choice) }
+    }
+
+    private func enter(_ choice: TitleChoice) {
         switch choice {
         case .storyMode:
             // Story Mode's courses are the built-in ones (the jobs map isn't there yet)
             libraryStartFilter = .builtIn
             showLibrary()
-        case .courseWorld, .coursebot:
+        case .courseWorld:
+            showCourseWorld()
+        case .coursebot:
             showLibrary()
         case .hundredMario:
             showChallenge()
         }
+    }
+
+    /// Course World (the library until its SMM2 screens are there).
+    func showCourseWorld() {
+        showLibrary()
     }
 
     func showImporter() { screen = .importer }
@@ -203,6 +234,8 @@ final class AppModel: ObservableObject {
         do {
             let data = try Data(contentsOf: entry.url)
             let session = try GameSession(assets: assets, course: data, title: entry.name, courseKey: entry.info.key, saves: saves)
+            // library play follows Course World / Story Mode: no lives, unlimited retries
+            session.unlimitedLives = true
             attachSMM2(session, maker: entry.meta.maker, builtIn: entry.collection == "Story Mode", intro: true)
             start(session)
         } catch {
@@ -227,6 +260,7 @@ final class AppModel: ObservableObject {
         info.name = session.title
         info.maker = maker
         info.builtIn = builtIn
+        info.lives = !session.unlimitedLives
         if let key = session.courseKey { info.bestTicks = saves.record(key).bestTicks }
         session.attachSMM2(screens, info: info, intro: intro)
     }
@@ -265,6 +299,7 @@ final class AppModel: ObservableObject {
                 mmk_engine_debug_teleport(session.engine, x, env["MMK_START_Y"].flatMap(Float.init) ?? 32)
             }
             if let t = env["MMK_UI_PAUSE_TICKS"].flatMap(UInt64.init) { session.autoPauseTick = t }
+            session.unlimitedLives = env["MMK_LIVES"] != "on"
             // the SMM2 screens (the smoke test's MMK_SCREENSHOT runs straight into play; UI
             // captures start with the course card unless MMK_UI_INTRO=0)
             let intro = env["MMK_SCREENSHOT"] == nil && env["MMK_UI_INTRO"] != "0"
@@ -295,8 +330,11 @@ struct RootView: View {
             case .game(let session): GameView(session: session).id(session.id)
             case .challenge(let flow): ChallengeView(flow: flow).id(flow.id)
             case .title(let flow): TitleView(flow: flow).id(flow.id)
+            case .boot(let scene): UIScreenView(scene: scene, ui: LayoutUI.smm2).id(ObjectIdentifier(scene))
             }
         }
+        // the scene fade over SwiftUI screens (Metal screens draw the fade layout themselves)
+        .overlay { if model.showsSwiftUIScreen { SceneFadeVeil() } }
         .alert("Error", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -334,12 +372,22 @@ struct RootView: View {
     }
 }
 
+extension AppModel {
+    /// Screens drawn by SwiftUI alone (no Metal view to draw a scene fade into).
+    var showsSwiftUIScreen: Bool {
+        switch screen {
+        case .importer, .library: true
+        default: false
+        }
+    }
+}
+
 #if os(iOS)
 extension AppModel {
     /// The game, a 100 Mario run or the title: full screen, touch controls shown.
     var showsGameScreen: Bool {
         switch screen {
-        case .game, .challenge, .title: true
+        case .game, .challenge, .title, .boot: true
         case .importer, .library: false
         }
     }

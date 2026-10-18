@@ -84,6 +84,12 @@ final class GameSession: ObservableObject, Identifiable {
     /// An SMM2 button's Decide animation runs, then this happens (at the screens' tick).
     private var smm2Pending: (at: Int, action: () -> Void)?
     private var timeUpShown = false
+    /// No lives: deaths restart the course without a game over (library, Course World, Story
+    /// Mode — SMM2 has no lives there; DECISIONS.md "Course World without lives").
+    var unlimitedLives = false
+    /// Where the player died (layout units), for the death iris.
+    private var deathCenter: SIMD2<Float>?
+    private var irisShown = false
 
     private weak var saves: SaveStore?
     private static let tick = 1.0 / 60.0
@@ -153,6 +159,7 @@ final class GameSession: ObservableObject, Identifiable {
     func attachSMM2(_ screens: CourseScreens, info: CourseCardInfo, intro: Bool) {
         smm2 = screens
         screens.info = info
+        screens.applyRules()
         screens.update(smm2Snapshot())
         if intro {
             screens.showIntro(lives: Int(hud.lives))
@@ -371,6 +378,28 @@ final class GameSession: ObservableObject, Identifiable {
                 timeUpShown = true
                 s.showTimeUp()
             }
+            if unlimitedLives && dying {
+                // the death iris: the circle closes on where the player died, ending as the
+                // course restarts (the death sequence is 45 + 140 frames) [inf]
+                if deathCenter == nil {
+                    deathCenter = CourseScreens.layoutPoint(viewX: st.player_x, viewY: st.player_y + 12)
+                }
+                if !irisShown, st.restart_in >= 0, st.restart_in <= 60, let c = deathCenter {
+                    irisShown = true
+                    s.irisOut(at: c)
+                }
+            }
+            if wasDying && !dying && unlimitedLives {
+                // restarted (at the checkpoint when one was reached): no lives, no card; the
+                // circle opens on the player
+                timeUpShown = false
+                wasDying = dying
+                deathCenter = nil
+                irisShown = false
+                newAttempt()
+                s.irisIn(at: CourseScreens.layoutPoint(viewX: st.player_x, viewY: st.player_y + 12))
+                return
+            }
             if wasDying && !dying {
                 // the engine restarted the course after the death sequence
                 timeUpShown = false
@@ -400,7 +429,7 @@ final class GameSession: ObservableObject, Identifiable {
             if run.died() { newAttempt(); showRetryCard() } else { setPhase(.gameOver) }
         } else if wasDying && !dying {
             // death sequence over, the course restarted
-            if h.lives == 0 {
+            if h.lives == 0 && !unlimitedLives {
                 setPhase(.gameOver)
             } else {
                 newAttempt()

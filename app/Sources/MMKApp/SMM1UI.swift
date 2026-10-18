@@ -335,6 +335,9 @@ final class UIScreenRenderer: NSObject, MTKViewDelegate {
         let layers = scene.layers
         for l in layers { l.apply(tick: scene.tick) }
         ui.encode(enc, layers: layers)
+        // a scene fade over the screen (SMM2's Cmn_Fade_00, its own import)
+        let fade = SceneFade.shared.layers
+        if !fade.isEmpty, let fui = LayoutUI.smm2 { fui.encode(enc, layers: fade) }
         enc.endEncoding()
         cmd.present(drawable)
         cmd.commit()

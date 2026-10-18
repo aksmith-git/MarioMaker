@@ -114,7 +114,10 @@ typedef struct {
     uint32_t flags;             // bit 0 checkpoint reached, bit 1 dying because time ran out,
                                 // bit 2 goal sequence running
     uint32_t area;              // 0 main, 1 sub
-} MmkPlayStatus;                                                       // 32 bytes
+    float player_x, player_y;   // player 1 in the view (px from its bottom-left; feet)
+    int32_t restart_in;         // frames until the death sequence restarts the course, -1 alive
+    uint32_t _pad;
+} MmkPlayStatus;                                                       // 48 bytes
 void mmk_engine_play_status(const MmkEngine *engine, MmkPlayStatus *out);
 // Background clear colour 0xRRGGBBAA (theme sky; black when the theme has no background art)
 uint32_t mmk_engine_clear_color(const MmkEngine *engine);
