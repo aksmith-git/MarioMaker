@@ -172,7 +172,12 @@ pub fn build_course(name: &str) -> Result<Vec<u8>, String> {
     // rows above the floor
     let up = |y: i32| y + base - 1;
     match kind {
-        "flat" | "water" => floor(&mut e, 0, len - 1)?,
+        "flat" => {
+            // a 3-wide pit far to the right (x 90..92) for running off a ledge
+            floor(&mut e, 0, 89)?;
+            floor(&mut e, 93, len - 1)?;
+        }
+        "water" => floor(&mut e, 0, len - 1)?,
         "items" => {
             // a Super Mushroom on the floor just ahead of the start (walk into it to grow)
             floor(&mut e, 0, len - 1)?;

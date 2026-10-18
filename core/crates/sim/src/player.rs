@@ -460,6 +460,16 @@ pub struct Player {
     /// Airborne from a jump made while ducking (CrouchJump): its landing (CrouchJumpEnd) moves
     /// with crouch friction at once instead of the air routine [obs: Ryujinx trace].
     crouch_jump: bool,
+    /// Frames of CrouchJumpEnd left (crouch friction whatever Down does): pixel styles 1,
+    /// NSMBU 10, 3D World lands straight in Crouch [obs: Ryujinx traces].
+    cje: u8,
+    /// A jump press that didn't start a jump is tried once more 3 frames later (then the
+    /// player can be on the ground: a press just before or on landing jumps 3 frames on)
+    /// [obs: Ryujinx traces of presses around a landing, all styles].
+    jump_retry: u8,
+    /// This frame's ground move keeps the old facing (bands and no skid): the state change
+    /// that led here ran before the facing check [obs: Ryujinx trace, a long jump landing].
+    keep_facing: bool,
     /// 3D World long jump (BroadJump, state 14: begin 0x71009d3020, exec 0x71009d3330) and the
     /// frames left of its landing (BroadJumpLand, 0x71009d3470), which stops the player dead.
     broad: bool,
@@ -565,6 +575,9 @@ impl Player {
             duck: false,
             duck_end: 0,
             crouch_jump: false,
+            cje: 0,
+            jump_retry: 0,
+            keep_facing: false,
             broad: false,
             broad_land: 0,
         }
@@ -877,6 +890,7 @@ impl Player {
             SKID_ENTER
         };
         if self.skid == SkidPhase::None
+            && !self.keep_facing
             && dir != 0
             && dir != self.facing
             && self.vx.abs() >= skid_from
@@ -983,7 +997,9 @@ impl Player {
             };
             (0.0, table)
         } else {
-            self.facing = dir;
+            if !self.keep_facing {
+                self.facing = dir;
+            }
             let table = match (run, star, ice) {
                 (false, false, false) => &GROUND_WALK,
                 (false, true, false) => &GROUND_WALK_STAR,
@@ -1074,6 +1090,11 @@ impl Player {
         let jump = inp.held(input::JUMP);
         let pressed = jump && !self.prev_jump;
         self.prev_jump = jump;
+        let retry = self.jump_retry == 1;
+        self.jump_retry = self.jump_retry.saturating_sub(1);
+        // the frame after touchdown still belongs to the airborne state: no jump yet
+        let jump_now = (pressed || retry) && !self.landed;
+        let mut jumped = false;
         let spin = inp.held(input::SPIN);
         let mut spin_pressed = spin && !self.prev_spin;
         self.prev_spin = spin;
@@ -1192,19 +1213,30 @@ impl Player {
                 && self.cat_slide == 0
                 && self.held.is_none()
                 && (self.crouch || !self.big());
-            if self.duck && !want {
-                // CrouchEnd runs its crouch-friction move until its animation ends, plus the
-                // frame it hands over to Walk: pixel styles 1 + 1, NSMBU 2 + 1, 3D World
-                // 15 + 1 [obs: Ryujinx traces]
-                self.duck_end = match self.style {
-                    Style::WU => 3,
-                    Style::W3 => 16,
-                    _ => 2,
-                };
-            } else if want {
-                self.duck_end = 0;
+            // CrouchEnd runs its crouch-friction move until its animation ends, plus the
+            // frame it hands over to Walk: pixel styles 1 + 1, NSMBU 2 + 1, 3D World 15 + 1
+            // [obs: Ryujinx traces]
+            let crouch_end = match self.style {
+                Style::WU => 3,
+                Style::W3 => 16,
+                _ => 2,
+            };
+            if self.cje > 0 {
+                self.cje -= 1;
+                let ending = self.cje == 0 && !want;
+                if ending {
+                    // this frame, then (except 3D World) a Crouch frame, then CrouchEnd
+                    self.duck_end = crouch_end + if self.style == Style::W3 { 1 } else { 2 };
+                }
+                self.duck = !ending;
+            } else {
+                if self.duck && !want {
+                    self.duck_end = crouch_end;
+                } else if want {
+                    self.duck_end = 0;
+                }
+                self.duck = want;
             }
-            self.duck = want;
         } else {
             self.duck = false;
             self.duck_end = 0;
@@ -1240,9 +1272,17 @@ impl Player {
                 } else if self.cape == CapeState::Slide {
                     self.cape_slide(level);
                 } else if self.landed && self.broad {
+                    // with a direction held the long jump lands straight into Walk (which
+                    // moves this frame); without, BroadJumpLand stops the player dead
                     self.broad = false;
-                    self.vx = 0.0;
-                    self.broad_land = BROAD_LAND_FRAMES;
+                    if inp.dir_x() != 0 {
+                        self.keep_facing = true;
+                        self.ground(inp);
+                        self.keep_facing = false;
+                    } else {
+                        self.vx = 0.0;
+                        self.broad_land = BROAD_LAND_FRAMES;
+                    }
                 } else if self.broad_land > 0 {
                     self.broad_land -= 1;
                     self.vx = 0.0;
@@ -1300,7 +1340,8 @@ impl Player {
                     self.crouch = false;
                     self.on_ground = false;
                     self.skid = SkidPhase::None;
-                } else if pressed {
+                } else if jump_now {
+                    jumped = true;
                     if walking {
                         (self.vx, self.facing) = before;
                         self.air(inp);
@@ -1367,6 +1408,9 @@ impl Player {
                 self.vy = (self.vy + g).max(FALL_CAP);
             }
             self.step_cape(inp, jump, vy_before, vx_before, face_before);
+        }
+        if pressed && !jumped {
+            self.jump_retry = 3;
         }
         if self.chain_window > 0 {
             self.chain_window -= 1;
@@ -1435,6 +1479,12 @@ impl Player {
         let airborne = !self.on_ground;
         self.move_and_collide(level, sensors);
         self.landed = airborne && self.on_ground;
+        if self.landed && self.crouch_jump {
+            self.cje = match self.style {
+                Style::WU => 10,
+                _ => 1,
+            };
+        }
         if self.in_water {
             self.broad = false;
         }
@@ -1537,14 +1587,19 @@ impl Player {
     /// 0x7101d09700: gentle, class 2, 0.05; steep, class 3, 0.07) [obs]; on flat ground it
     /// slows by 0.09 and ends at rest.
     fn slide(&mut self, level: &Level) {
+        // slide rates by steepness (0x7101d09700 / 0x7101d09714): one row while moving
+        // downhill, the other while still moving uphill [obs: Ryujinx trace, 0.045 uphill on
+        // the gentle slope]
+        const SLIDE_DOWN: [f32; 5] = [0.03, 0.04, 0.05, 0.07, 0.17];
+        const SLIDE_UP: [f32; 5] = [0.03, 0.03, 0.045, 0.12, 0.17];
         let slope = level
             .slope_at(self.x)
-            .filter(|(sy, _)| (self.y - sy).abs() < 6.0)
+            .filter(|(sy, s)| (self.y - sy).abs() < 6.0 && s.on_diagonal(self.x))
             .map(|(_, s)| {
-                (
-                    if s.rising { -1.0 } else { 1.0 },
-                    if s.steep { 0.07 } else { 0.05 },
-                )
+                let down = if s.rising { -1.0 } else { 1.0 };
+                let uphill = self.vx * down < 0.0;
+                let row = if uphill { &SLIDE_UP } else { &SLIDE_DOWN };
+                (down, row[s.steepness()])
             });
         match slope {
             Some((down, acc)) => self.vx = approach(self.vx, 4.0 * down, acc),
@@ -1698,7 +1753,7 @@ impl Player {
     /// Wall slide / wall jump (§3.3, NSMBU and 3D World): falling against a wall with the stick toward
     /// it slides at ≥ −2.0; jump → vy 3.5 and 2.25 px/f away; 15 frames of stick held away let go.
     /// Ground pound (NSMBU / 3DW, HipAttack): Down held 5 frames in the air → a wind-up with no
-    /// speed or gravity for the `hip_start` animation plus 5 frames (NSMBU 9 + 5, 3D World 17 + 5
+    /// speed or gravity for the `hip_start` animation plus 5 frames (NSMBU 10 + 5, 3D World 17 + 5
     /// [obs: Ryujinx trace]), then a dive that starts at −6.0 (fall cap −6.0) until landing.
     fn step_wall_and_pound(&mut self, inp: Input, pressed: bool, level: &Level, vy_before: f32) {
         let down = inp.held(input::DOWN);
@@ -1744,7 +1799,7 @@ impl Player {
                 self.pound = if self.style == Style::W3 {
                     17 + 5
                 } else {
-                    9 + 5
+                    10 + 5
                 };
             }
             self.wall_slide = 0;
@@ -2570,13 +2625,14 @@ mod tests {
         level.slopes.push(Slope {
             left: 10,
             bottom: 2,
-            width: 4,
+            width: 5,
             height: 4,
             rising: false,
             steep: true,
         });
         for style in [Style::M3, Style::M1] {
-            let mut p = Player::new(10.0 * TILE + 8.0, 6.0 * TILE);
+            // on the diagonal (the first column is the flat top)
+            let mut p = Player::new(11.0 * TILE + 8.0, 88.0);
             p.style = style;
             for _ in 0..10 {
                 p.step(Input { buttons: 0 }, &level);

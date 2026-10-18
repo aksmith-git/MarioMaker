@@ -620,7 +620,8 @@ impl Level {
         if area_index == 0 {
             let start_h = course.header.start_y as i32;
             lvl.fill_ground(-3, 10, start_h);
-            lvl.start = (56.0, start_h as f32 * TILE); // x = 56 px: [inf] from the battle-start marker
+            // x = 72 px [obs: Ryujinx trace, the player position in courses the game loads]
+            lvl.start = (72.0, start_h as f32 * TILE);
             let goal_left = ((right - 152.0 - 8.0) / TILE).round() as i32;
             let goal_h = course.header.goal_y as i32;
             lvl.fill_ground(goal_left, 11, goal_h);
