@@ -154,6 +154,39 @@ Decisions:
 What would change it: the game's per-actor animation state and blend rules, the camera angle
 and actor turn from Ryujinx captures, material render info (translucency, emission), and the
 3D World neighbour-variant rules.
+
+## 2026-10-18 — 3D styles: the game's cameras, background scenes, environment and materials
+Measured against reference frames of the owner's SMM2 in Ryujinx (pipeline outside git; findings
+with addresses in research/specs/render-3d.md).
+- **Cameras** (`mmk_host::scene3d`, from the layer-camera update FUN_7100aced20): NSMBU field
+  orthographic; 3D World field perspective, fovy 12.5° in play, distance keeping z = 0 exactly
+  216 px tall, eye 35 px above the view centre looking 5 px above it; the Course Maker view stays
+  flat. Background scene: perspective from the style's SceneDB row (`DV_Play_Fovy`, near 100,
+  far 80000, eye at (view centre x, view centre y + CamMoveY·view bottom, 1000), frustum offset
+  ProjOffsetY + (ProjMoveY − CamMoveY)·view bottom / 1080). Matrices are column-major,
+  world px → clip with depth 0…1; both renderers use the same ones.
+- **Background**: the `_DV_` model (importer v6 meshes them) is drawn first in a pass with its own
+  depth; the sim's 2D backdrop sprites (`*_DV_*`) are dropped when one is drawn. Its skeletal
+  animation (clouds) runs on the world tick.
+- **Lighting** (our model, [inf]): per pixel ambient + hemisphere + up to three directional
+  lights (Lambert, back-side colour on faces turned away) from `env/<name>.json`, times an
+  exposure (1.0); fogs as the materials switch them (`enable_fog`, `enable_fog1`,
+  `enable_fog_y`). The game builds cube-map light maps from the same lights; a wrap-around
+  (half-Lambert) variant measured worse.
+- **Materials**: one shared decision per shape (`mmk_host::mesh::shape_look`, also behind
+  `mmk_mesh_shape`): render mode, alpha test, faces, self-lit, fog switches, one extra texture
+  (emission added / alpha mask / sky mask), world-space texture coordinates (span 64 px,
+  measured), TEV-0 tint, texture SRT, vertex-colour ratio. Sky: a gradient between its constant
+  colours 5 and 4 by the mask under clouds shaded between colours 1 and 0 [inf].
+- **Cache**: importer v6 (materials keep textures by shader sampler, render state, selected
+  parameters and options; vertex colours and UV1; `env/`). Older caches still load (lit, opaque,
+  no backgrounds) — re-run `mmk import` for the new look.
+- **C API**: `MmkMeshShape` (68 bytes) and `MmkMeshModel` (80) grew; `mmk_engine_scene3d`,
+  `mmk_engine_background`.
+
+What would change it: the game's light-map and fog shader math (the translated shaders can be
+logged through MoltenVK, see the pipeline README), the remaining uber-shader features (normal,
+specular and bake maps, env maps), bloom / colour correction.
 ## 2026-10-18 — SMM2 UI: same cache form as SMM1, scalable fonts rasterised at import
 - **One cache form for both games.** `mmk import-smm2-ui` writes `<out>/manifest.json`
   (`"game": "SMM2"`) and `ui/{layouts,textures,fonts,messages}` exactly like the SMM1 UI import,

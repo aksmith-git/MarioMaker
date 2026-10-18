@@ -53,6 +53,19 @@ pub const MMK_MESH_ALPHA_TEST: u32 = 8;
 pub const MMK_MESH_BLEND_SHIFT: u32 = 4;
 /// Shape flags bits 6–7: faces drawn (0 front, 1 back, 2 both, 3 none).
 pub const MMK_MESH_FACES_SHIFT: u32 = 6;
+/// Shape flags bits 12–13: what the extra texture is (0 none, 1 emission added, 2 alpha mask,
+/// 3 sky base under the albedo's cloud layer).
+pub const MMK_MESH_EXTRA_SHIFT: u32 = 12;
+/// Shape flag: the second distance fog applies (`enable_fog1`).
+pub const MMK_MESH_FOG1: u32 = 1 << 14;
+/// Shape flag: the height fog applies (`enable_fog_y`).
+pub const MMK_MESH_FOG_Y: u32 = 1 << 15;
+/// Shape flag: texture coordinates from the world position (u = x / 64, v = −y / 64, then the
+/// SRT) instead of the model's (`tex_coord0_calc` 5 with `enable_tex_coord0_mtx_cancel`).
+pub const MMK_MESH_WORLD_UV: u32 = 1 << 16;
+/// World pixels one repeat of a world-mapped texture covers [inf: measured on the castle walls'
+/// bricks in a reference frame, 8 rows of ~8.1 px].
+pub const WORLD_UV_SPAN: f32 = 64.0;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -72,16 +85,27 @@ pub struct MmkMeshShape {
     pub srt: [f32; 5],
     /// How much the vertex colours tint the albedo (0 none … 1 fully).
     pub vertex_color_ratio: f32,
+    /// The extra texture (`MMK_MESH_EXTRA_SHIFT`): texture index or `TEXTURE_NONE`.
+    pub extra_texture: u32,
+    /// Emission strength (extra mode 1).
+    pub emission: f32,
+    /// Colour the albedo is multiplied by (TEV stage 0's constant colour).
+    pub tint: [f32; 3],
 }
 
 /// How a shape's material is drawn, worked out once for both renderers.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ShapeLook {
-    /// `MMK_MESH_*` bits 0–7 and the wrap bits 8–11 of [`MmkMeshShape::flags`].
+    /// `MMK_MESH_*` bits 0–7 and 12–15, and the wrap bits 8–11 of [`MmkMeshShape::flags`].
     pub flags: u32,
     pub alpha_ref: f32,
     pub srt: [f32; 5],
     pub vertex_color_ratio: f32,
+    /// Name of the extra texture (in the model file's texture folder), if any.
+    pub extra: Option<String>,
+    pub emission: f32,
+    /// Colour the albedo is multiplied by.
+    pub tint: [f32; 3],
 }
 
 impl ShapeLook {
@@ -90,6 +114,9 @@ impl ShapeLook {
     }
     pub fn faces(&self) -> u32 {
         (self.flags >> MMK_MESH_FACES_SHIFT) & 3
+    }
+    pub fn extra_mode(&self) -> u32 {
+        (self.flags >> MMK_MESH_EXTRA_SHIFT) & 3
     }
 }
 
@@ -103,10 +130,25 @@ pub fn shape_look(mat: Option<&mmk_assets::mesh::MeshMaterial>) -> ShapeLook {
             alpha_ref: 0.5,
             srt: [1.0, 1.0, 0.0, 0.0, 0.0],
             vertex_color_ratio: 1.0,
+            extra: None,
+            emission: 0.0,
+            tint: [1.0; 3],
         };
     };
     let self_lit = !m.unlit && !m.options.is_empty() && m.option("enable_diffuse") != Some("1");
     let fog = m.option("enable_fog") == Some("1");
+    let on = |k: &str| m.option(k) == Some("1");
+    // the extra texture: the sky's base (HDRI) under its cloud layer, an emission map, or the
+    // alpha mask the uber shader reads through `gsys_user0`
+    let (extra_mode, extra) = if on("enable_sky") && m.texture("_s0").is_some() {
+        (3, m.texture("_s0"))
+    } else if on("enable_emission") && m.texture("_e0").is_some() {
+        (1, m.texture("_e0"))
+    } else if m.texture("gsys_user0").is_some() {
+        (2, m.texture("gsys_user0"))
+    } else {
+        (0, None)
+    };
     let blend = match m.blend {
         2 => 1,
         3 => 2,
@@ -119,7 +161,12 @@ pub fn shape_look(mat: Option<&mmk_assets::mesh::MeshMaterial>) -> ShapeLook {
         | blend << MMK_MESH_BLEND_SHIFT
         | (m.cull as u32 & 3) << MMK_MESH_FACES_SHIFT
         | (m.wrap[0] as u32 & 3) << 8
-        | (m.wrap[1] as u32 & 3) << 10;
+        | (m.wrap[1] as u32 & 3) << 10
+        | extra_mode << MMK_MESH_EXTRA_SHIFT
+        | (on("enable_fog1") as u32 * MMK_MESH_FOG1)
+        | (on("enable_fog_y") as u32 * MMK_MESH_FOG_Y)
+        | ((m.option("tex_coord0_calc") == Some("5") && on("enable_tex_coord0_mtx_cancel")) as u32
+            * MMK_MESH_WORLD_UV);
     if m.unlit {
         // cards are seen from both sides (mirrored for the walking direction)
         flags = (flags & !(3 << MMK_MESH_FACES_SHIFT)) | 2 << MMK_MESH_FACES_SHIFT;
@@ -137,6 +184,24 @@ pub fn shape_look(mat: Option<&mmk_assets::mesh::MeshMaterial>) -> ShapeLook {
             .param("vertex_color_ratio")
             .and_then(|v| v.first().copied())
             .unwrap_or(1.0),
+        extra: extra.map(String::from),
+        emission: m
+            .param("emission_intensity")
+            .and_then(|v| v.first().copied())
+            .unwrap_or(1.0),
+        // TEV stage 0 with colour source 200 multiplies the albedo by constant colour 0 [inf:
+        // from the options of the materials that use it, e.g. the castle walls' warm tint;
+        // characters enable the stage with source 0 and a black constant]
+        tint: match m.param("const_color0") {
+            Some(c)
+                if on("enable_tev0_color")
+                    && m.option("tev_tev0_color_color") == Some("200")
+                    && c.len() >= 3 =>
+            {
+                [c[0], c[1], c[2]]
+            }
+            _ => [1.0; 3],
+        },
     }
 }
 
@@ -437,6 +502,16 @@ impl MeshStore {
         Some((bones, self.shape_texture.len()))
     }
 
+    /// Texture index of a shape look's extra texture in mesh file `mesh` (`TEXTURE_NONE` if
+    /// none).
+    pub fn extra_texture(&mut self, cache: &Cache, mesh: i32, look: &ShapeLook) -> u32 {
+        let (Some(name), Some(lm)) = (look.extra.as_deref(), self.mesh(mesh)) else {
+            return TEXTURE_NONE;
+        };
+        let file = lm.name.clone();
+        self.texture(cache, &file, name, 0)
+    }
+
     /// Model-space world matrix of `bone` after the last `pose` call.
     pub fn posed_bone(&self, bone: usize) -> Option<Affine> {
         self.pose.world.get(bone).copied()
@@ -686,11 +761,18 @@ impl MeshStore {
         frame: &str,
     ) -> Option<MeshPlan> {
         let stem = frame.split('.').next().unwrap_or(frame);
+        // the SMB1 texture the sim sized the sprite by: this frame's, else another frame of the
+        // same animation, else any texture of the model (frames of an actor share a size)
+        let size = |t: &mmk_assets::cache::TextureEntry| (t.width as f32, t.height as f32);
         let ref_size = cache
             .texture_index(model, frame)
-            .map(|i| {
-                let t = &cache.textures[i];
-                (t.width as f32, t.height as f32)
+            .map(|i| size(&cache.textures[i]))
+            .or_else(|| {
+                let of_model = || cache.textures.iter().filter(|t| t.model == model);
+                of_model()
+                    .find(|t| t.name.split('.').next() == Some(stem))
+                    .or_else(|| of_model().next())
+                    .map(size)
             })
             .unwrap_or((16.0, 16.0));
         let candidates = anim_candidates(frame);
@@ -836,7 +918,10 @@ impl MeshStore {
         let (scale, ox, oy) = if tile {
             (1.0, s.x + s.w / 2.0, s.y)
         } else {
-            (s.w / plan.ref_size.0.max(1.0), s.x + s.w / 2.0, s.y)
+            // the sim's box over the SMB1 picture's size; the smaller ratio, since some boxes
+            // are wider than the picture (a big Sledge Bro: 64 × 64 for a 24 × 32 picture)
+            let k = (s.w / plan.ref_size.0.max(1.0)).min(s.h / plan.ref_size.1.max(1.0));
+            (k, s.x + s.w / 2.0, s.y)
         };
         let facing_right = if plan.art_faces_right {
             !s.flip_x
@@ -977,6 +1062,23 @@ impl MeshPlanner {
                 name.and_then(|n| crate::scene3d::load_env(&cache.root, n))
                     .unwrap_or_default()
             };
+            // the background model's sky material: its constant colours colour the sky
+            let sky = row.as_ref().and_then(|r| {
+                let id = store.find(&r.dv_model);
+                let lm = store.mesh(id)?;
+                let mat = lm
+                    .file
+                    .models
+                    .iter()
+                    .flat_map(|m| &m.materials)
+                    .find(|m| m.option("enable_sky") == Some("1"))?;
+                let mut c = [[1.0f32; 4]; 6];
+                for (i, slot) in c.iter_mut().enumerate() {
+                    let v = mat.param(&format!("const_color{i}"))?;
+                    slot[..v.len().min(4)].copy_from_slice(&v[..v.len().min(4)]);
+                }
+                Some(c)
+            });
             let background = row.as_ref().and_then(|r| {
                 let mesh = store.find(&r.dv_model);
                 let lm = store.mesh(mesh)?;
@@ -996,7 +1098,10 @@ impl MeshPlanner {
             self.theme = Some(ThemeScene {
                 key,
                 field_env: env(row.as_ref().map(|r| r.env_model.as_str())),
-                background_env: env(row.as_ref().map(|r| r.env_dv.as_str())),
+                background_env: crate::scene3d::Env {
+                    sky,
+                    ..env(row.as_ref().map(|r| r.env_dv.as_str()))
+                },
                 row,
                 background,
             });

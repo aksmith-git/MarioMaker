@@ -79,6 +79,10 @@ mod native {
         /// to compare with the console's frames).
         #[arg(long)]
         size: Option<String>,
+        /// Screenshot: draw the view with its bottom-left at X,Y world px instead of where the
+        /// camera is (to line frames up with reference captures; nothing else changes).
+        #[arg(long, value_name = "X,Y")]
+        view_at: Option<String>,
         /// Decode BC textures on the CPU even if the GPU samples them (tests the fallback).
         #[arg(long)]
         cpu_textures: bool,
@@ -386,12 +390,21 @@ mod native {
                 Some(Some(wh)) => Some(wh),
                 None => None,
             };
+            let view_at = match args.view_at.as_deref().map(|s| {
+                s.split_once(',')
+                    .and_then(|(x, y)| Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?)))
+            }) {
+                Some(None) => return Err("--view-at: expected X,Y, e.g. 0,0".into()),
+                Some(Some(p)) => Some(p),
+                None => None,
+            };
             let msg = mmk_shell::headless::screenshot(
                 &mut game,
                 path,
                 args.ticks,
                 args.scale,
                 size,
+                view_at,
                 !args.idle,
                 !args.cpu_textures,
             )?;

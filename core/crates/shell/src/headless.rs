@@ -98,12 +98,14 @@ pub fn write_png(path: &str, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> 
 
 /// Run `ticks` ticks of the smoke-test script (or idle input), then save the frame as a PNG of
 /// the view at `scale`× (or fitted into `size` pixels).
+#[allow(clippy::too_many_arguments)]
 pub fn screenshot(
     game: &mut Game,
     path: &str,
     ticks: u64,
     scale: u32,
     size: Option<(u32, u32)>,
+    view_at: Option<(f32, f32)>,
     scripted: bool,
     allow_bc: bool,
 ) -> Result<String, String> {
@@ -116,6 +118,11 @@ pub fn screenshot(
             mmk_sim::Input::default()
         };
         game.session.tick(input);
+    }
+    if let Some((x, y)) = view_at {
+        let world = &mut game.session.world;
+        world.camera_x = x;
+        world.camera_y = y;
     }
     let gpu = pollster::block_on(Gpu::new(&instance(), None, allow_bc))?;
     let mut renderer = Renderer::new(&gpu, FORMAT, &game.cache);

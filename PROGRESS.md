@@ -192,9 +192,23 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   - ✅ Drawn: 3D World Goomba, Koopa (+ shell), Mario (body, face, eyes, hands; small, super,
     Fire), blocks, coins, items, terrain as per-cell meshes; NSMBU Mario (body + head) and the
     pre-rendered enemy / item / object cards; NSMBU terrain stays the atlas
+  - ✅ Reference frames from the owner's SMM2 in Ryujinx (private root, LayeredFS title-course
+    replacement, in-process key / grab dylib; scripts outside git) and `mmk-play --size
+    --view-at` diffs: 24 dataset courses (WU all themes but water + nights, 3W all themes),
+    mean MAE 61.1 → 49.4 (8× blurred 58.2 → 45.2)
+  - ✅ Game cameras from the binary: 3D World field perspective (fovy 12.5°, raised 35 px,
+    looking 5 px up), NSMBU orthographic; background scenes (`_DV_` models) with the DV camera
+    from SceneDB (`DV_Play_Fovy`, ProjOffsetY / ProjMoveY / CamMoveY), own depth pass; the 2D
+    backdrop gives way to them
+  - ✅ Environment lighting / fog per theme (`env/*.json` from Env/Cmn(_DV).szs, AAMP reader),
+    materials: blend / alpha test / faces, self-lit, emission, alpha masks, sky palette,
+    world-space texture coordinates (castle walls), TEV tint, texture SRT, vertex colours;
+    WU tiles use whole atlas cells (UVs were a quarter cell); big actors' scale
   - ⬜ Per-actor animation clocks and transitions (time = world tick), 3D World neighbour variants
-    for terrain edges, pipes / note blocks as models, small 3D World Mario's cap, material render
-    state (translucency, emission), the 3D styles' backgrounds, camera angle vs the game
+    for terrain edges, pipes / note blocks as models, small 3D World Mario's cap; the game's
+    light maps (runtime cube maps) and distance-fog formula (3W snow / airship too foggy), WU
+    background tints, liquids (lava / water as the 2D sprite), normal / specular / bake maps,
+    bloom and colour correction, the sim's start camera in normal-boundary courses (~30 px high)
 - ✅ Super Leaf (Raccoon: tail swing hits enemies/blocks, P-meter 63 frames → 240-frame flight,
   flaps vy 1.5 × 18 f, slow fall ≥ −1 × 15 f) and Cape Feather (cape spin both sides, glide ≥ −1,
   simplified meter launch); goal-as-Raccoon / Cape conditions

@@ -504,7 +504,9 @@ fn tex_png(
             mmk_formats::bcn::decode(code, &img.data, img.width, img.height)
         }
     };
-    // apply the channel mapping and composite over a grey checkerboard
+    // apply the channel mapping and composite over a grey checkerboard (MMK_TEXPNG_RAW=1: the
+    // channels as they are)
+    let raw = std::env::var_os("MMK_TEXPNG_RAW").is_some();
     let w = img.width as usize;
     for (i, px) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let src = *px;
@@ -517,6 +519,12 @@ fn tex_png(
             _ => src[3],
         };
         let m = img.channel_select.map(pick);
+        if raw {
+            // the decoded channels as they are (BC4 / BC5 masks: R, G), opaque
+            px[..3].copy_from_slice(&src[..3]);
+            px[3] = 255;
+            continue;
+        }
         let a = m[3] as u32;
         let bg = if ((i % w) / 8 + (i / w) / 8).is_multiple_of(2) {
             40

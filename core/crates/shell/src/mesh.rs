@@ -14,8 +14,8 @@ use std::ops::Range;
 
 use mmk_assets::Cache;
 use mmk_host::mesh::{
-    MMK_MESH_ALPHA_TEST, MMK_MESH_FOG, MMK_MESH_SELF_LIT, MMK_MESH_UNLIT, MeshStore, MmkMeshDraw,
-    TEXTURE_NONE, apply_srt, shape_look,
+    MMK_MESH_ALPHA_TEST, MMK_MESH_FOG, MMK_MESH_FOG_Y, MMK_MESH_FOG1, MMK_MESH_SELF_LIT,
+    MMK_MESH_UNLIT, MeshStore, MmkMeshDraw, TEXTURE_NONE, apply_srt, shape_look,
 };
 use mmk_host::scene3d::{Mat4, project};
 
@@ -26,9 +26,14 @@ pub const FLAG_FOG: u32 = 2;
 pub const FLAG_CARD: u32 = 4;
 /// Alpha-tested material (`alpha_ref`).
 pub const FLAG_ALPHA_TEST: u32 = 8;
+pub const FLAG_FOG1: u32 = 16;
+pub const FLAG_FOG_Y: u32 = 32;
+/// Bits 6–7: the piece's extra texture (1 emission, 2 alpha mask, 3 sky base).
+pub const FLAG_EXTRA_SHIFT: u32 = 6;
 
 /// One skinned vertex: clip position, world position (lighting, fog), normal, texture
-/// coordinates (texture SRT applied), vertex colour, flags and alpha-test reference.
+/// coordinates (texture SRT applied), vertex colour, flags, alpha-test reference and emission
+/// strength (`pad[0]`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct MeshVertex {
@@ -50,6 +55,8 @@ pub struct Piece {
     pub first: u32,
     pub count: u32,
     pub texture: Option<u32>,
+    /// The extra texture (emission, mask or sky base; see `FLAG_EXTRA_SHIFT`).
+    pub extra: Option<u32>,
     pub wrap: u32,
     pub blend: u8,
     pub cull: u8,
@@ -124,6 +131,22 @@ pub fn build(
         let skin = store.skin.clone();
         let textures = store.shape_texture.clone();
         let visible = store.shape_visible.clone();
+        let mut extras = std::collections::HashMap::new();
+        if let Some(m) = store
+            .mesh(d.mesh)
+            .and_then(|lm| lm.file.models.get(d.model as usize))
+        {
+            let looks: Vec<(usize, mmk_host::mesh::ShapeLook)> = m
+                .materials
+                .iter()
+                .enumerate()
+                .map(|(i, mat)| (i, shape_look(Some(mat))))
+                .filter(|(_, l)| l.extra.is_some())
+                .collect();
+            for (i, l) in looks {
+                extras.insert(i, store.extra_texture(cache, d.mesh, &l));
+            }
+        }
         let Some(m) = store
             .mesh(d.mesh)
             .and_then(|lm| lm.file.models.get(d.model as usize))
@@ -145,6 +168,10 @@ pub fn build(
                 continue;
             }
             let look = shape_look(m.materials.get(sh.material));
+            let extra = match look.extra {
+                Some(_) => extras.get(&sh.material).copied().unwrap_or(TEXTURE_NONE),
+                None => TEXTURE_NONE,
+            };
             if look.faces() == 3 {
                 continue; // drawn with no faces (helper geometry)
             }
@@ -154,7 +181,14 @@ pub fn build(
             let flags = (unlit as u32 * FLAG_UNLIT)
                 | ((look.flags & MMK_MESH_FOG != 0) as u32 * FLAG_FOG)
                 | (card as u32 * FLAG_CARD)
-                | ((look.flags & MMK_MESH_ALPHA_TEST != 0) as u32 * FLAG_ALPHA_TEST);
+                | ((look.flags & MMK_MESH_ALPHA_TEST != 0) as u32 * FLAG_ALPHA_TEST)
+                | ((look.flags & MMK_MESH_FOG1 != 0) as u32 * FLAG_FOG1)
+                | ((look.flags & MMK_MESH_FOG_Y != 0) as u32 * FLAG_FOG_Y)
+                | if extra != TEXTURE_NONE {
+                    look.extra_mode() << FLAG_EXTRA_SHIFT
+                } else {
+                    0
+                };
             let alpha_ref = look.alpha_ref;
             let vc_ratio = look.vertex_color_ratio;
             remap.clear();
@@ -204,9 +238,22 @@ pub fn build(
                         flags: flags as f32,
                         normal: wn,
                         alpha_ref,
-                        uv: apply_srt(v.uv, &look.srt),
-                        pad: [0.0; 2],
-                        color: [lerp(c[0]), lerp(c[1]), lerp(c[2]), c[3] as f32 / 255.0],
+                        uv: apply_srt(
+                            if look.flags & mmk_host::mesh::MMK_MESH_WORLD_UV != 0 {
+                                let k = 1.0 / mmk_host::mesh::WORLD_UV_SPAN;
+                                [wp[0] * k, -wp[1] * k]
+                            } else {
+                                v.uv
+                            },
+                            &look.srt,
+                        ),
+                        pad: [look.emission, 0.0],
+                        color: [
+                            lerp(c[0]) * look.tint[0],
+                            lerp(c[1]) * look.tint[1],
+                            lerp(c[2]) * look.tint[2],
+                            c[3] as f32 / 255.0,
+                        ],
                     });
                 }
                 out.indices.push(remap[i]);
@@ -222,6 +269,7 @@ pub fn build(
                 first,
                 count: out.indices.len() as u32 - first,
                 texture: (tex != TEXTURE_NONE).then_some(tex),
+                extra: (extra != TEXTURE_NONE).then_some(extra),
                 wrap: (look.flags >> 8) & 0xF,
                 blend: match look.blend() {
                     1 => 2,

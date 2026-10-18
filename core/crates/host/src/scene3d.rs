@@ -128,6 +128,8 @@ pub struct Env {
     pub hemi: Option<Hemi>,
     pub ambient: [f32; 3],
     pub fogs: Vec<Fog>,
+    /// The sky material's six constant colours (background scenes with a sky).
+    pub sky: Option<[[f32; 4]; 6]>,
 }
 
 fn v3(v: &Value) -> [f32; 3] {
@@ -211,11 +213,12 @@ pub fn load_env(root: &Path, name: &str) -> Option<Env> {
         hemi,
         ambient,
         fogs,
+        sky: None,
     })
 }
 
 /// Rows of 4 floats in [`Env::uniform`].
-pub const LIGHT_ROWS: usize = 24;
+pub const LIGHT_ROWS: usize = 30;
 
 /// Scale of the lit colour (row 23) [inf: calibrated against reference frames].
 pub const EXPOSURE: f32 = 1.0;
@@ -224,8 +227,9 @@ impl Env {
     /// The environment as the shaders' uniform block (`LIGHT_ROWS` × vec4):
     /// 0 eye xyz, w = 1 if lit at all; 1–9 three directional lights (direction xyz, –;
     /// diffuse rgb, –; backside rgb, –); 10 hemisphere sky rgb, w = 1 if present; 11 ground;
-    /// 12 hemisphere direction; 13 ambient; 14–22 three fogs (start, end, damp, 1 = height
-    /// fog; colour rgba; direction xyz, w = 1 if enabled); 23 spare.
+    /// 12 hemisphere direction; 13 ambient; 14–22 three fogs — the distance fog, the second
+    /// distance fog, the height fog — (start, end, damp, 1 = height fog; colour rgba; direction
+    /// xyz, w = 1 if enabled); 23 exposure; 24–29 the sky's constant colours (w = 1 if set).
     pub fn uniform(&self, eye: [f32; 3]) -> [[f32; 4]; LIGHT_ROWS] {
         let mut u = [[0.0f32; 4]; LIGHT_ROWS];
         u[0] = [eye[0], eye[1], eye[2], 1.0];
@@ -245,7 +249,28 @@ impl Env {
             u[13] = [1.0, 1.0, 1.0, 0.0];
         }
         u[23] = [EXPOSURE, 0.0, 0.0, 0.0];
-        for (i, f) in self.fogs.iter().take(3).enumerate() {
+        if let Some(sky) = &self.sky {
+            for (i, c) in sky.iter().enumerate() {
+                u[24 + i] = [c[0], c[1], c[2], 1.0];
+            }
+        }
+        // fog slots as the materials switch them: 0 the distance fog (`enable_fog`), 1 the second
+        // distance fog (`enable_fog1`), 2 the height fog (`enable_fog_y`)
+        let mut slots: [Option<&Fog>; 3] = [None; 3];
+        for f in &self.fogs {
+            let slot = if f.height {
+                2
+            } else if slots[0].is_none() {
+                0
+            } else {
+                1
+            };
+            if slots[slot].is_none() {
+                slots[slot] = Some(f);
+            }
+        }
+        for (i, f) in slots.iter().enumerate() {
+            let Some(f) = f else { continue };
             u[14 + 3 * i] = [f.start, f.end, f.damp, f.height as u32 as f32];
             u[15 + 3 * i] = f.color;
             u[16 + 3 * i] = [f.dir[0], f.dir[1], f.dir[2], 1.0];

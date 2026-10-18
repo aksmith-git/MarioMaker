@@ -176,7 +176,7 @@ type MeshKey = (u8, u8, bool);
 /// reference frames]. Cards (pre-rendered sprites) and self-lit materials skip the lighting.
 pub const MESH_SHADER: &str = r#"
 struct Light {
-    rows: array<vec4<f32>, 24>,
+    rows: array<vec4<f32>, 30>,
 };
 @group(1) @binding(0) var<uniform> light: Light;
 
@@ -188,6 +188,7 @@ struct VOut {
     @location(3) color: vec4<f32>,
     @location(4) flags: f32,
     @location(5) aref: f32,
+    @location(6) emission: f32,
 };
 
 @vertex
@@ -202,11 +203,13 @@ fn vs(@location(0) clip: vec4<f32>, @location(1) world: vec3<f32>, @location(2) 
     o.color = color;
     o.flags = flags;
     o.aref = aref;
+    o.emission = pad.x;
     return o;
 }
 
 @group(0) @binding(0) var tex: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
+@group(0) @binding(2) var extra: texture_2d<f32>;
 
 fn has(flags: f32, bit: u32) -> bool {
     return (u32(flags + 0.5) & bit) != 0u;
@@ -221,6 +224,8 @@ fn lighting(n: vec3<f32>) -> vec3<f32> {
     for (var i = 0; i < 3; i = i + 1) {
         let d = light.rows[1 + 3 * i];
         if (d.w > 0.5) {
+            // light-map LUT indexed by n·l * 0.5 + 0.5 (identity "Lambert" curve): the light
+            // wraps around; the back-side colour fills the rest [inf]
             let ndl = dot(n, -d.xyz);
             c = c + light.rows[2 + 3 * i].xyz * max(ndl, 0.0)
                   + light.rows[3 + 3 * i].xyz * max(-ndl, 0.0);
@@ -229,14 +234,15 @@ fn lighting(n: vec3<f32>) -> vec3<f32> {
     return c;
 }
 
-fn fogged(c: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
+fn fogged(c: vec3<f32>, world: vec3<f32>, flags: f32) -> vec3<f32> {
     var r = c;
     let eye = light.rows[0].xyz;
+    let on = array<bool, 3>(has(flags, 2u), has(flags, 16u), has(flags, 32u));
     for (var i = 0; i < 3; i = i + 1) {
         let p = light.rows[14 + 3 * i];
         let col = light.rows[15 + 3 * i];
         let dir = light.rows[16 + 3 * i];
-        if (dir.w > 0.5) {
+        if (dir.w > 0.5 && on[i]) {
             var d: f32;
             if (p.w > 0.5) {
                 d = -dot(world, dir.xyz);
@@ -258,6 +264,23 @@ fn fogged(c: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fs(i: VOut) -> @location(0) vec4<f32> {
     var c = textureSample(tex, samp, i.uv) * i.color;
+    let x = textureSample(extra, samp, i.uv);
+    let mode = (u32(i.flags + 0.5) >> 6u) & 3u;
+    if (mode == 2u) {
+        c.a = c.a * x.a;
+    }
+    if (mode == 3u) {
+        // sky [inf: our model of the sky material]: a gradient from constant colour 5 (horizon)
+        // to 4 (zenith) by the base mask, under clouds shaded from colour 1 to 0 by their red
+        // channel and blended by their alpha
+        if (light.rows[24].w > 0.5) {
+            let sky = mix(light.rows[29].rgb, light.rows[28].rgb, x.r);
+            let cloud = mix(light.rows[25].rgb, light.rows[24].rgb, c.r);
+            c = vec4<f32>(mix(sky, cloud, c.a) * i.color.rgb, 1.0);
+        } else {
+            c = vec4<f32>(mix(x.rgb, c.rgb, c.a) * i.color.rgb, 1.0);
+        }
+    }
     if (has(i.flags, 4u)) {
         // cards (pre-rendered sprites) are cut out by alpha
         if (c.a < 0.1) {
@@ -273,9 +296,10 @@ fn fs(i: VOut) -> @location(0) vec4<f32> {
         var n = normalize(i.n);
         rgb = rgb * lighting(n) * light.rows[23].x;
     }
-    if (has(i.flags, 2u)) {
-        rgb = fogged(rgb, i.world);
+    if (mode == 1u) {
+        rgb = rgb + x.rgb * i.emission;
     }
+    rgb = fogged(rgb, i.world, i.flags);
     return vec4<f32>(rgb, c.a);
 }
 "#;
@@ -357,6 +381,7 @@ pub struct Renderer {
     /// Textures the GPU couldn't take (count, for the log).
     pub skipped_textures: usize,
     mesh_pipelines: std::collections::HashMap<MeshKey, wgpu::RenderPipeline>,
+    mesh_tex_layout: wgpu::BindGroupLayout,
     mesh_module: wgpu::ShaderModule,
     mesh_layout: wgpu::PipelineLayout,
     format: wgpu::TextureFormat,
@@ -367,8 +392,8 @@ pub struct Renderer {
     bg_ibuf: wgpu::Buffer,
     /// Linear samplers by wrap mode (bits 0–1 u, 2–3 v).
     mesh_samplers: std::collections::HashMap<u32, wgpu::Sampler>,
-    /// (texture or u32::MAX for plain grey, wrap) → bind group.
-    mesh_binds: std::collections::HashMap<(u32, u32), wgpu::BindGroup>,
+    /// (texture or u32::MAX for plain grey, extra texture or u32::MAX, wrap) → bind group.
+    mesh_binds: std::collections::HashMap<(u32, u32, u32), wgpu::BindGroup>,
     grey: wgpu::TextureView,
     mesh_vbuf: wgpu::Buffer,
     mesh_ibuf: wgpu::Buffer,
@@ -486,6 +511,29 @@ impl Renderer {
             true,
             Some(Self::depth_state(false)),
         );
+        let tex_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let mesh_tex_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("mesh textures"),
+            entries: &[
+                tex_entry(0),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                tex_entry(2),
+            ],
+        });
         let light_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("light"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -523,7 +571,7 @@ impl Renderer {
         });
         let mesh_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("mesh"),
-            bind_group_layouts: &[Some(&layout), Some(&light_layout)],
+            bind_group_layouts: &[Some(&mesh_tex_layout), Some(&light_layout)],
             immediate_size: 0,
         });
         // nearest sampling, clamped (SMB1 style is pixel-exact)
@@ -592,6 +640,7 @@ impl Renderer {
         );
         Self {
             mesh_pipelines: Default::default(),
+            mesh_tex_layout,
             mesh_module,
             mesh_layout,
             format,
@@ -720,19 +769,25 @@ impl Renderer {
 
     /// Bind group for a mesh piece: its texture (uploaded on first use) with a linear sampler of
     /// its wrap mode.
-    fn mesh_bind(&mut self, gpu: &Gpu, texture: Option<u32>, wrap: u32) -> Option<()> {
-        let key = (texture.unwrap_or(u32::MAX), wrap);
+    fn mesh_bind(
+        &mut self,
+        gpu: &Gpu,
+        texture: Option<u32>,
+        extra: Option<u32>,
+        wrap: u32,
+    ) -> Option<()> {
+        let key = (texture.unwrap_or(u32::MAX), extra.unwrap_or(u32::MAX), wrap);
         if self.mesh_binds.contains_key(&key) {
             return Some(());
         }
-        if let Some(t) = texture {
+        for t in [texture, extra].into_iter().flatten() {
             self.ensure(gpu, t as usize);
         }
-        let view = match texture.map(|t| self.textures.get(t as usize)) {
-            None => &self.grey,
+        let view_of = |t: Option<u32>| match t.map(|t| self.textures.get(t as usize)) {
             Some(Some(TexState::Ready(_, v))) => v,
-            Some(_) => &self.grey,
+            _ => &self.grey,
         };
+        let (view, extra_view) = (view_of(texture), view_of(extra));
         let mode = |w: u32| match w {
             1 => wgpu::AddressMode::MirrorRepeat,
             2 => wgpu::AddressMode::ClampToEdge,
@@ -750,7 +805,7 @@ impl Renderer {
         });
         let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
-            layout: &self.layout,
+            layout: &self.mesh_tex_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -759,6 +814,10 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(extra_view),
                 },
             ],
         });
@@ -964,7 +1023,11 @@ impl Renderer {
     ) {
         for blended in [false, true] {
             for p in pieces.iter().filter(|p| (p.blend >= 2) == blended) {
-                let key = (p.texture.unwrap_or(u32::MAX), p.wrap);
+                let key = (
+                    p.texture.unwrap_or(u32::MAX),
+                    p.extra.unwrap_or(u32::MAX),
+                    p.wrap,
+                );
                 let Some(b) = self.mesh_binds.get(&key).cloned() else {
                     continue;
                 };
@@ -1026,7 +1089,7 @@ impl Renderer {
         }
         let meshes = scene.meshes;
         for p in meshes.pieces.iter().chain(&scene.background.pieces) {
-            self.mesh_bind(gpu, p.texture, p.wrap);
+            self.mesh_bind(gpu, p.texture, p.extra, p.wrap);
         }
         let mut next_group = 0;
         for (k, s) in scene.sprites.iter().enumerate() {

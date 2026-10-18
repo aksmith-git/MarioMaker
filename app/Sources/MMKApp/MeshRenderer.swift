@@ -68,7 +68,7 @@ final class MeshRenderer {
         var layered: Bool
         /// Underground night: drawn upside down.
         var flipY: Bool
-        /// 24 rows (mmk.h MmkScene3d light uniforms).
+        /// 30 rows (mmk.h MmkScene3d light uniforms).
         var light: [SIMD4<Float>]
     }
 
@@ -79,7 +79,8 @@ final class MeshRenderer {
         var depth: SIMD4<Float>     // group centre, slice, layered, y flip
         var srt: SIMD4<Float>       // scale u, scale v, rotate, translate u
         var misc: SIMD4<Float>      // translate v, vertex-colour ratio, alpha ref, has colours
-        var flags: UInt32
+        var tint: SIMD4<Float>      // albedo tint rgb, emission strength
+        var flags: UInt32           // MMK_MESH_* bits (bit 0 = card) as in MmkMeshShape.flags
         var pad0: UInt32 = 0, pad1: UInt32 = 0, pad2: UInt32 = 0
     }
 
@@ -87,7 +88,7 @@ final class MeshRenderer {
     #include <metal_stdlib>
     using namespace metal;
     struct V { packed_float3 pos; packed_float3 nrm; float2 uv; ushort4 joints; packed_float4 weights; };
-    struct U { float4x4 vp; float4 m0, m1, m2; float4 depth; float4 srt; float4 misc; uint flags; uint p0, p1, p2; };
+    struct U { float4x4 vp; float4 m0, m1, m2; float4 depth; float4 srt; float4 misc; float4 tint; uint flags; uint p0, p1, p2; };
     struct O { float4 pos [[position]]; float2 uv; float3 n; float3 world; float4 color; };
     vertex O mesh_vertex(const device V* v [[buffer(0)]], const device float4* skin [[buffer(1)]],
                          constant U& u [[buffer(2)]], const device uchar4* colors [[buffer(3)]],
@@ -117,13 +118,14 @@ final class MeshRenderer {
         clip.y *= u.depth.w;
         O o;
         o.pos = clip;
-        float2 uv = x.uv * u.srt.xy;
+        // world-mapped textures: (x, -y) / 64 (MMK_MESH_WORLD_UV)
+        float2 uv = ((u.flags & (1u << 16)) != 0 ? float2(wp.x, -wp.y) / 64.0 : x.uv) * u.srt.xy;
         float s = sin(u.srt.z), c = cos(u.srt.z);
         o.uv = float2(c * uv.x - s * uv.y + u.srt.w, s * uv.x + c * uv.y + u.misc.x);
         o.n = float3(dot(u.m0.xyz, n), dot(u.m1.xyz, n), dot(u.m2.xyz, n));
         o.world = wp;
         float4 vc = u.misc.w > 0.5 ? float4(colors[vid]) / 255.0 : float4(1);
-        o.color = float4(mix(float3(1), vc.rgb, u.misc.y), vc.a);
+        o.color = float4(mix(float3(1), vc.rgb, u.misc.y) * u.tint.rgb, vc.a);
         return o;
     }
     float3 lighting(float3 n, constant float4* L) {
@@ -141,12 +143,14 @@ final class MeshRenderer {
         }
         return c;
     }
-    float3 fogged(float3 c, float3 world, constant float4* L) {
+    float3 fogged(float3 c, float3 world, uint flags, constant float4* L) {
         float3 r = c;
         float3 eye = L[0].xyz;
+        // slots: the distance fog (MMK_MESH_FOG), the second distance fog, the height fog
+        bool on[3] = { (flags & 4) != 0, (flags & (1u << 14)) != 0, (flags & (1u << 15)) != 0 };
         for (int i = 0; i < 3; i++) {
             float4 p = L[14 + 3 * i], col = L[15 + 3 * i], dir = L[16 + 3 * i];
-            if (dir.w > 0.5) {
+            if (dir.w > 0.5 && on[i]) {
                 float d = p.w > 0.5 ? -dot(world, dir.xyz) : dot(world - eye, dir.xyz);
                 float span = p.y - p.x;
                 float t = abs(span) > 1e-4 ? clamp((d - p.x) / span, 0.0, 1.0) : 0.0;
@@ -157,9 +161,23 @@ final class MeshRenderer {
         return r;
     }
     fragment float4 mesh_fragment(O in [[stage_in]], texture2d<float> t [[texture(0)]],
+                                  texture2d<float> extra [[texture(1)]],
                                   sampler s [[sampler(0)]], constant U& u [[buffer(0)]],
                                   constant float4* L [[buffer(1)]]) {
         float4 c = t.sample(s, in.uv) * in.color;
+        float4 x = extra.sample(s, in.uv);
+        uint mode = (u.flags >> 12) & 3;
+        if (mode == 2) c.a *= x.a;
+        // sky: the base gradient under the albedo's cloud layer
+        if (mode == 3) {
+            if (L[24].w > 0.5) {
+                float3 sky = mix(L[29].rgb, L[28].rgb, x.r);
+                float3 cloud = mix(L[25].rgb, L[24].rgb, c.r);
+                c = float4(mix(sky, cloud, c.a) * in.color.rgb, 1);
+            } else {
+                c = float4(mix(x.rgb, c.rgb, c.a) * in.color.rgb, 1);
+            }
+        }
         // cards (pre-rendered sprites) are cut out by alpha
         if ((u.flags & 1) != 0) {
             if (c.a < 0.1) discard_fragment();
@@ -168,7 +186,8 @@ final class MeshRenderer {
         if ((u.flags & 8) != 0 && c.a < u.misc.z) discard_fragment();
         float3 rgb = c.rgb;
         if ((u.flags & 2) == 0) rgb *= lighting(normalize(in.n), L) * L[23].x;
-        if ((u.flags & 4) != 0) rgb = fogged(rgb, in.world, L);
+        if (mode == 1) rgb += x.rgb * u.tint.w;
+        rgb = fogged(rgb, in.world, u.flags, L);
         return float4(rgb, c.a);
     }
     """
@@ -290,8 +309,8 @@ final class MeshRenderer {
         guard let skin = frame.skin, !range.isEmpty else { return }
         enc.setFrontFacing(.counterClockwise)
         var light = camera.light
-        if light.count < 24 { light += Array(repeating: SIMD4<Float>(0, 0, 0, 0), count: 24 - light.count) }
-        enc.setFragmentBytes(&light, length: 24 * 16, index: 1)
+        if light.count < 30 { light += Array(repeating: SIMD4<Float>(0, 0, 0, 0), count: 30 - light.count) }
+        enc.setFragmentBytes(&light, length: 30 * 16, index: 1)
         let slice = 1 / Float(frame.groups + 1)
         for blended in [false, true] {
             for p in frame.posed[range] {
@@ -305,7 +324,7 @@ final class MeshRenderer {
                 var u = Uniforms(vp: camera.viewProj,
                                  m0: SIMD4(t.0, t.1, t.2, t.3), m1: SIMD4(t.4, t.5, t.6, t.7), m2: SIMD4(t.8, t.9, t.10, t.11),
                                  depth: SIMD4(center, slice, camera.layered ? 1 : 0, camera.flipY ? -1 : 1),
-                                 srt: .zero, misc: .zero, flags: 0)
+                                 srt: .zero, misc: .zero, tint: .one, flags: 0)
                 enc.setVertexBuffer(m.vertices, offset: 0, index: 0)
                 enc.setVertexBuffer(skin, offset: p.skinOffset, index: 1)
                 enc.setVertexBuffer(m.colors ?? noColors, offset: 0, index: 3)
@@ -314,7 +333,12 @@ final class MeshRenderer {
                     let faces = (sh.flags >> UInt32(MMK_MESH_FACES_SHIFT)) & 3
                     if (blend != 0) != blended || faces == 3 { continue }
                     let unlit = card || sh.flags & UInt32(MMK_MESH_UNLIT) != 0
-                    u.flags = (unlit ? 1 : 0) | (sh.flags & UInt32(MMK_MESH_SELF_LIT | MMK_MESH_FOG | MMK_MESH_ALPHA_TEST))
+                    let extraTex = sh.extra_texture == MMK_TEXTURE_NONE ? nil : texture(sh.extra_texture)
+                    let keep = UInt32(MMK_MESH_SELF_LIT | MMK_MESH_FOG | MMK_MESH_ALPHA_TEST) | UInt32(MMK_MESH_FOG1)
+                        | UInt32(MMK_MESH_FOG_Y) | UInt32(MMK_MESH_WORLD_UV) | (extraTex != nil ? 3 << 12 : 0)
+                    u.flags = (unlit ? 1 : 0) | (sh.flags & keep)
+                    u.tint = SIMD4(sh.tint.0, sh.tint.1, sh.tint.2, sh.emission)
+                    enc.setFragmentTexture(extraTex ?? white, index: 1)
                     u.srt = SIMD4(sh.srt.0, sh.srt.1, sh.srt.2, sh.srt.3)
                     u.misc = SIMD4(sh.srt.4, sh.vertex_color_ratio, sh.alpha_ref, m.colors == nil ? 0 : 1)
                     enc.setRenderPipelineState(pipelines[blend])
@@ -339,7 +363,7 @@ final class MeshRenderer {
 
     /// A plain key light plus ambient (model viewer; scenes without an environment).
     static let neutralLight: [SIMD4<Float>] = {
-        var l = Array(repeating: SIMD4<Float>(0, 0, 0, 0), count: 24)
+        var l = Array(repeating: SIMD4<Float>(0, 0, 0, 0), count: 30)
         l[0] = SIMD4(0, 0, 500, 1)
         l[1] = SIMD4(simd_normalize(SIMD3<Float>(0.35, -0.6, -0.75)), 1)
         l[2] = SIMD4(0.6, 0.6, 0.6, 0)
@@ -352,7 +376,7 @@ final class MeshRenderer {
     static func lightRows<T>(_ tuple: T) -> [SIMD4<Float>] {
         withUnsafeBytes(of: tuple) { raw in
             let f = raw.bindMemory(to: Float.self)
-            return (0..<24).map { SIMD4(f[$0 * 4], f[$0 * 4 + 1], f[$0 * 4 + 2], f[$0 * 4 + 3]) }
+            return (0..<30).map { SIMD4(f[$0 * 4], f[$0 * 4 + 1], f[$0 * 4 + 2], f[$0 * 4 + 3]) }
         }
     }
 

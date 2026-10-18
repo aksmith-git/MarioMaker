@@ -148,7 +148,17 @@ pub unsafe extern "C" fn mmk_mesh_shape(
             alpha_ref: look.alpha_ref,
             srt: look.srt,
             vertex_color_ratio: look.vertex_color_ratio,
+            extra_texture: TEXTURE_NONE,
+            emission: look.emission,
+            tint: look.tint,
         };
+        // the extra texture is resolved against the cache (named in the model file's folder)
+        drop(s);
+        if look.extra.is_some()
+            && let (Some(a), Some(mut s)) = (unsafe { assets.as_ref() }, store(assets))
+        {
+            out.extra_texture = s.extra_texture(&a.cache, mesh, &look);
+        }
         true
     })
 }
@@ -310,8 +320,8 @@ pub unsafe extern "C" fn mmk_engine_meshes(
 pub struct MmkScene3d {
     pub field_view_proj: [f32; 16],
     pub background_view_proj: [f32; 16],
-    pub field_light: [f32; 96],
-    pub background_light: [f32; 96],
+    pub field_light: [f32; 120],
+    pub background_light: [f32; 120],
     pub has_background: bool,
 }
 
@@ -332,7 +342,7 @@ pub unsafe extern "C" fn mmk_engine_scene3d(
             return false;
         };
         let flat = |rows: &[[f32; 4]; mmk_host::scene3d::LIGHT_ROWS]| {
-            let mut v = [0.0f32; 96];
+            let mut v = [0.0f32; 120];
             for (i, r) in rows.iter().enumerate() {
                 v[i * 4..i * 4 + 4].copy_from_slice(r);
             }
@@ -545,8 +555,8 @@ mod tests {
     fn layout_matches_header() {
         assert_eq!(size_of::<MmkMeshVertex>(), 56);
         assert_eq!(size_of::<MmkMeshModel>(), 80);
-        assert_eq!(size_of::<MmkMeshShape>(), 48);
-        assert_eq!(size_of::<MmkScene3d>(), 900);
+        assert_eq!(size_of::<MmkMeshShape>(), 68);
+        assert_eq!(size_of::<MmkScene3d>(), 1092);
         assert_eq!(size_of::<MmkMeshPose>(), 32);
         assert_eq!(size_of::<MmkMeshDraw>(), 80);
     }
