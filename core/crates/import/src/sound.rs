@@ -149,6 +149,7 @@ fn num(p: &Param) -> Option<Value> {
         Param::Num(v) => json!(v),
         Param::Int(v) => json!(v),
         Param::Range(a, b) => json!({"min": a, "max": b}),
+        Param::RangePow(a, b, p) => json!({"min": a, "max": b, "pow": p}),
         Param::Curve(c) => json!({
             "curve": c.property,
             "global": c.global,

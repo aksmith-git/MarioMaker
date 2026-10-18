@@ -66,8 +66,12 @@ fn db() -> serde_json::Value {
                 {"key": "jump_0", "parent": 0, "if": ["==", "Normal"], "wave": "JumpSmall"},
                 {"key": "jump_1", "parent": 0, "if": ["==", "Super"], "wave": "JumpBig"},
                 asset("pole", "Pole"),
-                asset("swim", "Swim")
+                asset("swim", "Swim"),
+                asset("kabekick", "WallKick")
             ]},
+            "M1_JumpStep": {"calls": [asset("jump", "Spring"), asset("high_jump", "SpringHigh")]},
+            "M1_PowBlock": {"calls": [asset("pow", "Pow")]},
+            "M1_Bombhei": {"calls": [asset("ignite", "Fuse"), asset("explode", "Boom")]},
             "M1_ObjectCommon": {"calls": [asset("playCoin", "Coin"), asset("block_hit", "Bump")]},
             "M1_Kuribo": {"calls": [
                 {"key": "r_damage_stamp", "kind": "switch", "watch": "ScaleLevel", "children": [1, 2]},
@@ -299,4 +303,43 @@ fn death_goal_fanfares_and_yoshi_layer() {
     w.player.kill();
     r.s.after_step(&w);
     assert_eq!(r.played(), ["music:Down"]);
+}
+
+#[test]
+fn springs_wall_kicks_pow_and_bob_ombs() {
+    let mut r = rig();
+    let mut w = world();
+    let mut spring = Actor::new(Kind::Spring, 100.0, 32.0);
+    spring.id = 1;
+    let mut pow = Actor::new(Kind::Pow, 200.0, 32.0);
+    pow.id = 2;
+    let mut bomb = Actor::new(Kind::BobOmb, 300.0, 32.0);
+    bomb.id = 3;
+    w.actors = vec![spring, pow, bomb];
+    w.player.ride = Some(1);
+    r.s.start_course(&w);
+    r.played();
+    // launched off the spring: its sound, not the jump
+    w.player.ride = None;
+    w.player.vy = 6.0;
+    w.events = vec![Event::Jump];
+    r.s.after_step(&w);
+    assert_eq!(r.played(), ["sfx:SpringHigh"]);
+    // off a wall: the wall kick
+    w.player.wall_slide = 5;
+    w.events.clear();
+    r.s.after_step(&w);
+    w.player.wall_slide = 0;
+    w.events = vec![Event::Jump];
+    r.s.after_step(&w);
+    assert_eq!(r.played(), ["sfx:WallKick"]);
+    // the POW goes off; the Bob-omb is lit, then explodes
+    w.events.clear();
+    w.actors[1].mode = Mode::Dead;
+    w.actors[2].phase = 1;
+    r.s.after_step(&w);
+    assert_eq!(r.played(), ["sfx:Pow", "sfx:Fuse"]);
+    w.actors[2].phase = 9;
+    r.s.after_step(&w);
+    assert_eq!(r.played(), ["sfx:Boom"]);
 }

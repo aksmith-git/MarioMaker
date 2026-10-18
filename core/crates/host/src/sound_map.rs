@@ -187,6 +187,12 @@ pub const PLAYER_KEYS: &[&str] = &[
     "footstep_L",
     "footstep_R",
     "DoorIn",
+    "water_in",
+    "water_out",
+    "r_get_star",
+    "voice_triple_jump1",
+    "voice_triple_jump2",
+    "voice_jump_high",
 ];
 
 /// Keys of the shared object user (`<style>_ObjectCommon`).
@@ -220,6 +226,16 @@ pub const ACTOR_KEYS: &[&str] = &[
     "pow",
     "jump",
     "high_jump",
+    "ignite",
+    "shot_fire",
+    "fire",
+    "fly",
+    "castspell",
+    "eggcrack",
+    "r_hit",
+    "marioRideOn",
+    "marioRideOff",
+    "tongue",
 ];
 
 /// Keys of the course music user (`CourseSceneBGM_<style>`), besides the theme tracks.

@@ -27,6 +27,7 @@ use mmk_audio::mixer::{GroupDef, MusicClock, NO_GROUP, SET_BASE, SharedSet, Soun
 use mmk_audio::{Bus, Command, Play, Sound};
 use mmk_sim::World;
 use mmk_sim::actors::{Kind, Mode};
+use mmk_sim::player::Form;
 use mmk_sim::world::{Event, GoalPhase};
 
 use crate::sound_map::{self as map, THEME_VALUES, bgm_key};
@@ -91,6 +92,7 @@ struct Snap {
     on_ground: bool,
     wings: bool,
     big: bool,
+    phase: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,6 +140,9 @@ pub struct Sounds {
     water_lpf: f32,
     prev_player: PlayerSnap,
     footstep: i32,
+    /// Blocks bumping last tick (tile → bump frames).
+    bumps: BTreeMap<(i32, i32), u32>,
+    note_hits: usize,
     /// What the last tick played (for tests and diagnostics): user, key.
     pub log: Vec<(String, String)>,
 }
@@ -184,6 +189,8 @@ impl Sounds {
             water_lpf: 0.0,
             prev_player: PlayerSnap::default(),
             footstep: 0,
+            bumps: BTreeMap::new(),
+            note_hits: 0,
             log: Vec::new(),
         }
     }
@@ -234,6 +241,9 @@ impl Sounds {
         }
         for k in map::COMMON_KEYS {
             db.waves_of("CourseSceneBGM_Common", k, &mut w);
+        }
+        for k in ["jump", "high_jump", "sideHit"] {
+            db.waves_of(&self.user("OnpuBlock"), k, &mut w);
         }
         for u in ["GoalPole", "CastleGoal"] {
             db.waves_of(&self.user(u), "TimerCount", &mut w);
@@ -344,6 +354,7 @@ impl Sounds {
             .db
             .resolve(user, key, &props, &mut self.rng, &mut self.turns, &mut out)
         {
+            self.log.push((user.to_string(), format!("?{key}")));
             return None;
         }
         self.log.push((user.to_string(), key.to_string()));
@@ -454,6 +465,18 @@ impl Sounds {
             .unwrap_or_else(|| "cNormal".into())
     }
 
+    /// A sound of the Yoshi the player rides (or just left), at the player.
+    fn yoshi_sfx(&mut self, world: &World, key: &str) {
+        let p = &world.player;
+        let red = world
+            .actors
+            .iter()
+            .find(|a| Some(a.id) == p.yoshi)
+            .is_some_and(|a| matches!(a.kind, Kind::Yoshi { red: true }));
+        let (x, y) = (p.x, p.y);
+        self.actor_sfx(world, Kind::Yoshi { red }, key, &PropList::default(), x, y);
+    }
+
     fn has_player_key(&self, key: &str) -> bool {
         self.lib.db.has_key(&self.user("Player"), key)
     }
@@ -469,10 +492,15 @@ impl Sounds {
         if !p.alive() || world.goal_phase != GoalPhase::None {
             return;
         }
-        if now.in_water && !prev.in_water && self.theme != 4 {
-            self.player_sfx(world, "r_splash_in", &[]);
-        } else if !now.in_water && prev.in_water && self.theme != 4 {
-            self.player_sfx(world, "r_splash_out", &[]);
+        if now.in_water != prev.in_water && self.theme != 4 {
+            let (key, alt) = if now.in_water {
+                ("r_splash_in", "water_in")
+            } else {
+                ("r_splash_out", "water_out")
+            };
+            if !self.player_sfx(world, key, &[]) {
+                self.player_sfx(world, alt, &[]);
+            }
         }
         if now.on_ground && !prev.on_ground && !now.in_water && !p.pound_landed {
             self.player_sfx(world, "landing", &[]);
@@ -489,8 +517,14 @@ impl Sounds {
         if now.shoe && !prev.shoe {
             self.player_sfx(world, "kutsuIn", &[]);
         }
-        if !now.yoshi && prev.yoshi {
-            self.player_sfx(world, "marioRideOff", &[]);
+        if now.yoshi && !prev.yoshi {
+            self.yoshi_sfx(world, "marioRideOn");
+        }
+        if !now.yoshi && prev.yoshi && !self.player_sfx(world, "marioRideOff", &[]) {
+            self.yoshi_sfx(world, "marioRideOff");
+        }
+        if now.tongue && !prev.tongue {
+            self.yoshi_sfx(world, "tongue");
         }
         if now.skid && !prev.skid {
             self.player_sfx(world, "turn_slip", &[]);
@@ -723,6 +757,7 @@ impl Sounds {
         self.water_lpf = 0.0;
         self.prev_player = PlayerSnap::of(world);
         self.footstep = 0;
+        self.bumps = bumps(world);
         self.actors = snapshot(world);
         self.send(Command::SetMusicLayer {
             gain: 0.0,
@@ -779,7 +814,9 @@ impl Sounds {
         let mut downs = 0;
         let mut emerged = 0;
         self.observe_actors(world, &mut stomps, &mut kicks, &mut downs, &mut emerged);
+        let before = self.prev_player;
         self.observe_player(world);
+        self.observe_blocks(world);
 
         let pe = Self::player_emitter(world);
         let events = world.events.clone();
@@ -788,9 +825,23 @@ impl Sounds {
             match ev {
                 Event::Jump => {
                     let p = &world.player;
+                    // launched by a spring or trampoline the player stood on: its sound
+                    let spring =
+                        before.ride.and_then(|id| {
+                            world.actors.iter().find(|a| a.id == id).filter(|a| {
+                                matches!(a.kind, Kind::Spring | Kind::Trampoline { .. })
+                            })
+                        });
+                    if let Some(s) = spring {
+                        let key = if p.vy > 5.0 { "high_jump" } else { "jump" };
+                        let (kind, x, y) = (s.kind, s.x, s.y);
+                        if self.actor_sfx(world, kind, key, &PropList::default(), x, y) {
+                            continue;
+                        }
+                    }
                     let key = if p.in_water {
                         "swim"
-                    } else if self.prev_player.wall_slide {
+                    } else if before.wall_slide {
                         // off a wall: the wall kick (NSMBU "kabekick", 3D World "wallkick")
                         if self.has_player_key("kabekick") {
                             "kabekick"
@@ -808,6 +859,19 @@ impl Sounds {
                     )];
                     if !self.player_sfx(world, key, &count) && key != "jump" {
                         self.player_sfx(world, "jump", &count);
+                    }
+                    // the voice of a chained jump (NSMBU 2nd / 3rd, 3D World 3rd) [inf: the
+                    // keys' names; the code playing them was not found]
+                    if key == "jump" {
+                        let voice = match p.jump_count {
+                            1 => "voice_triple_jump1",
+                            2 if self.has_player_key("voice_triple_jump2") => "voice_triple_jump2",
+                            2 => "voice_jump_high",
+                            _ => "",
+                        };
+                        if !voice.is_empty() && self.has_player_key(voice) {
+                            self.player_sfx(world, voice, &count);
+                        }
                     }
                 }
                 Event::Coin => {
@@ -861,6 +925,10 @@ impl Sounds {
                         self.generic_enemy(world, "r_damage");
                     }
                 }
+                Event::Bump if self.note_hits > 0 => {
+                    // a note block plays its note instead of the bump
+                    self.note_hits -= 1;
+                }
                 Event::Bump => {
                     let head = world.player.head_hit.is_some()
                         && self.player_sfx(world, "block_hit", &[("HeadHitType", "Bound".into())]);
@@ -880,12 +948,20 @@ impl Sounds {
                 }
                 Event::PowerUp => {
                     // a form change plays the power-up, an item without one the pickup
-                    let key = if world.player.form != mmk_sim::player::Form::Small {
+                    // a star: its pickup; a form change: the power-up; else the item pickup
+                    let p = &world.player;
+                    let changing = before.form != Some(p.form)
+                        || matches!(p.control, mmk_sim::player::Control::Change { .. });
+                    let key = if p.star > 0 && !self.star_on {
+                        "r_get_star"
+                    } else if changing {
                         "r_power_up"
                     } else {
                         "r_get_item"
                     };
-                    self.player_sfx(world, key, &[]);
+                    if !self.player_sfx(world, key, &[]) && key == "r_get_star" {
+                        self.player_sfx(world, "r_get_item", &[]);
+                    }
                 }
                 Event::PowerDown => {
                     self.player_sfx(world, "r_power_down", &[]);
@@ -1144,7 +1220,27 @@ impl Sounds {
                             s.x,
                             s.y,
                         ));
+                    } else if let Some(key) = launch_key(s.kind) {
+                        // a projectile appeared: its own launch sound (the shooter's for a
+                        // cannonball)
+                        todo.push((s.kind, key, PropList::default(), s.x, s.y));
                     }
+                }
+                Some(prev) if prev.kind != s.kind && matches!(prev.kind, Kind::YoshiEgg { .. }) => {
+                    todo.push((prev.kind, "eggcrack", PropList::default(), s.x, s.y));
+                }
+                Some(prev)
+                    if s.kind == Kind::BobOmb
+                        && prev.phase != s.phase
+                        && (s.phase == 9 || prev.phase == 0 && s.phase != 0) =>
+                {
+                    let key = if s.phase == 9 { "explode" } else { "ignite" };
+                    todo.push((s.kind, key, PropList::default(), s.x, s.y));
+                }
+                Some(prev)
+                    if s.kind == Kind::Pow && prev.mode != Mode::Dead && s.mode == Mode::Dead =>
+                {
+                    todo.push((s.kind, "pow", PropList::default(), s.x, s.y));
                 }
                 Some(prev) => {
                     let was_shell = matches!(prev.kind, Kind::Shell { .. });
@@ -1180,8 +1276,31 @@ impl Sounds {
                 }
             }
         }
+        // the player's fireballs that went away on screen hit something
+        let (cx, cy) = (world.camera_x, world.camera_y);
+        for (id, prev) in &self.actors {
+            if matches!(prev.kind, Kind::Fireball | Kind::Superball)
+                && !now.contains_key(id)
+                && prev.x > cx
+                && prev.x < cx + VIEW_W
+                && prev.y > cy
+                && prev.y < cy + VIEW_H
+            {
+                todo.push((prev.kind, "r_hit", PropList::default(), prev.x, prev.y));
+            }
+        }
         self.actors = now;
         for (kind, key, props, x, y) in todo {
+            if key == "r_shoot_cannon" {
+                let user = self.user("SenkanHoudai");
+                let e = Emitter {
+                    x,
+                    y,
+                    water: self.in_water(world, y),
+                };
+                self.sfx_at(world, &user, "r_shoot", &PropList::default(), e, 0);
+                continue;
+            }
             if key == "r_shoot_blaster" {
                 // a Bill Blaster fired: the cannon's sound
                 let user = self.user("KillerHoudai");
@@ -1199,10 +1318,52 @@ impl Sounds {
         }
     }
 
+    /// Note blocks that started a bump: their note, pitched by the block's row (`MusicalScale`
+    /// 0…27 [obs 0x7100f1b750: the property's range]; row = scale [inf]).
+    fn observe_blocks(&mut self, world: &World) {
+        use mmk_sim::blocks::BlockKind;
+        let now = bumps(world);
+        let mut notes = Vec::new();
+        for (&(x, y), &frames) in &now {
+            let new = self.bumps.get(&(x, y)).is_none_or(|&f| f > frames);
+            if new
+                && let Some(b) = world.blocks.get(x, y)
+                && b.kind == BlockKind::Note
+            {
+                notes.push((x, y));
+            }
+        }
+        self.bumps = now;
+        self.note_hits = notes.len();
+        for (x, y) in notes {
+            let props = PropList::default().with("MusicalScale", y.clamp(0, 27) as f32);
+            let user = self.user("OnpuBlock");
+            let e = Emitter {
+                x: x as f32 * 16.0 + 8.0,
+                y: y as f32 * 16.0 + 8.0,
+                water: self.in_water(world, y as f32 * 16.0),
+            };
+            self.sfx_at(world, &user, "jump", &props, e, 0);
+        }
+    }
+
     pub fn next_handle(&mut self) -> u32 {
         self.next_handle += 1;
         self.next_handle
     }
+}
+
+/// The key a projectile plays when it appears, on its own user (`r_shoot_cannon`: the
+/// cannon's shot).
+fn launch_key(kind: Kind) -> Option<&'static str> {
+    Some(match kind {
+        Kind::BowserFire => "shot_fire",
+        Kind::EnemyFire => "fire",
+        Kind::Wrench => "fly",
+        Kind::Magic => "castspell",
+        Kind::Cannonball => "r_shoot_cannon",
+        _ => return None,
+    })
 }
 
 /// Walk-cycle travel between footsteps (px of `walk_phase`) [inf: half the SMB1 walk
@@ -1222,6 +1383,9 @@ struct PlayerSnap {
     skid: bool,
     propeller: bool,
     walking: bool,
+    ride: Option<u32>,
+    tongue: bool,
+    form: Option<Form>,
 }
 
 impl PlayerSnap {
@@ -1239,6 +1403,9 @@ impl PlayerSnap {
             skid: p.pose == Pose::Skid,
             propeller: p.prop_rise > 0,
             walking: p.pose == Pose::Walk,
+            ride: p.ride,
+            tongue: world.tongue > 0,
+            form: Some(p.form),
         }
     }
 }
@@ -1250,6 +1417,16 @@ fn liquid_type(world: &World) -> &'static str {
         Some(3) => "Poison",
         _ => "Water",
     }
+}
+
+/// Blocks bumping now: tile → frames into the bump.
+fn bumps(world: &World) -> BTreeMap<(i32, i32), u32> {
+    world
+        .blocks
+        .map
+        .iter()
+        .filter_map(|(&k, b)| b.bump.map(|bump| (k, bump.frames)))
+        .collect()
 }
 
 fn snapshot(world: &World) -> BTreeMap<u32, Snap> {
@@ -1268,6 +1445,7 @@ fn snapshot(world: &World) -> BTreeMap<u32, Snap> {
                     on_ground: a.on_ground,
                     wings: a.wings,
                     big: a.big,
+                    phase: a.phase,
                 },
             )
         })

@@ -177,6 +177,8 @@ pub enum Param {
     Int(i32),
     /// A random value in [min, max] each time the asset plays.
     Range(f32, f32),
+    /// A random value in [min, max] from a uniform draw raised to the power (min, max, power).
+    RangePow(f32, f32, f32),
     Curve(Curve),
     Raw(u32),
 }
@@ -544,6 +546,15 @@ impl<'a> Xlnk<'a> {
             3 if value < self.n_random => {
                 let o = self.random_base + 8 * value;
                 Param::Range(f32_at(self.d, o)?, f32_at(self.d, o + 4)?)
+            }
+            // random ranges with a skewed distribution: the uniform draw raised to a power
+            // (kinds 6–13: ½, ⅓, ¼, 1/1.5, 2, 3, 4, 1.5) [inf: by analogy with the kind 3
+            // range they share the table with]
+            6..=13 if value < self.n_random => {
+                let o = self.random_base + 8 * value;
+                let power =
+                    [0.5, 1.0 / 3.0, 0.25, 1.0 / 1.5, 2.0, 3.0, 4.0, 1.5][kind as usize - 6];
+                Param::RangePow(f32_at(self.d, o)?, f32_at(self.d, o + 4)?, power)
             }
             _ => Param::Raw(raw),
         }))

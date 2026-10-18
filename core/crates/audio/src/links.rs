@@ -84,6 +84,8 @@ impl Props for Layered<'_> {
 pub enum Num {
     Const(f32),
     Range(f32, f32),
+    /// min, max, and the power the uniform draw is raised to.
+    RangePow(f32, f32, f32),
     Curve {
         property: String,
         points: Vec<(f32, f32)>,
@@ -96,7 +98,10 @@ impl Num {
             return Some(Num::Const(f as f32));
         }
         if let (Some(a), Some(b)) = (v["min"].as_f64(), v["max"].as_f64()) {
-            return Some(Num::Range(a as f32, b as f32));
+            return Some(match v["pow"].as_f64() {
+                Some(p) => Num::RangePow(a as f32, b as f32, p as f32),
+                None => Num::Range(a as f32, b as f32),
+            });
         }
         let property = v["curve"].as_str()?.to_string();
         let mut points: Vec<(f32, f32)> = v["points"]
@@ -118,6 +123,7 @@ impl Num {
         match self {
             Num::Const(v) => *v,
             Num::Range(a, b) => a + (b - a) * rng.unit(),
+            Num::RangePow(a, b, p) => a + (b - a) * rng.unit().powf(*p),
             Num::Curve { property, points } => {
                 let x = match props.get(property) {
                     Some(PropValue::Num(v)) => v,
