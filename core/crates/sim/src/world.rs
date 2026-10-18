@@ -38,14 +38,24 @@ const COIN_SCORE: u32 = 100;
 const ITEM_SCORE: u32 = 1000;
 /// Brick break score (4-brick.md B8: "+10 to the score counter").
 const BREAK_SCORE: u32 = 10;
-/// [inf] Kicking a still shell scores like SMB1 (400).
-const KICK_SCORE: u32 = 400;
 const MAX_LIVES: u32 = 99;
 const HURRY_SECONDS: i32 = 100;
-/// Activation margin around the view (shared enemy draft §2.8; the area-out rule itself is [?]).
-const ACTIVATE_MARGIN: f32 = 32.0;
+/// Spawn zone (0x71003fbbc0, constants from 0x71000172e0) [obs]: a course object spawns when its
+/// spawn box touches the view extended by 47 px left/right and 31 px up/down (plus 1000 px
+/// vertically outside vertical areas), and is re-armed only after its box has left the view
+/// extended by 48 px on every side.
+const SPAWN_MARGIN_X: f32 = 47.0;
+const SPAWN_MARGIN_Y: f32 = 31.0;
+const REARM_MARGIN: f32 = 48.0;
+/// Horizontal areas extend the spawn and despawn zones by this much vertically [obs].
+const ZONE_EXTRA_Y: f32 = 1000.0;
+/// Despawn (0x7100002d30): an actor goes once its culling box, grown by 80 px, misses the view
+/// [obs].
+const DESPAWN_MARGIN: f32 = 80.0;
 /// A sideways-spring push within this many frames of the last counts as consecutive [obs].
 const SIDE_PUSH_CHAIN: i32 = 10;
+/// Fire Bar rotation per frame, as a 32-bit binary angle [obs _INIT_51].
+const FIREBAR_STEP: u32 = 0xC0_0000;
 
 /// Things that happened this tick, for audio and UI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,7 +133,9 @@ struct SpawnRecord {
     spawn: Spawn,
     alive: bool,
     killed: bool,
-    was_visible: bool,
+    /// Spawned and not yet re-armed (record state bit 1): set when the actor is created, cleared
+    /// once the spawn box leaves the keep-armed zone.
+    spawned: bool,
 }
 
 #[derive(Clone)]
@@ -554,7 +566,7 @@ impl World {
                 spawn,
                 alive: false,
                 killed: false,
-                was_visible: false,
+                spawned: false,
             })
             .collect();
         self.actors.clear();
@@ -637,7 +649,7 @@ impl World {
         self.donut_respawn.clear();
         for s in &mut self.spawns {
             s.alive = false;
-            s.was_visible = false;
+            s.spawned = false;
         }
     }
 
@@ -1384,9 +1396,12 @@ impl World {
         }
     }
 
-    /// Chain scores: 100, 200, 400 … 8000, then 1-UP.
+    /// Chain score for a kill after `n` earlier ones in the same chain. Every chain counter
+    /// is bumped (capped at 8) before its score is read (0x7100644920 and its siblings), so the
+    /// first kill is score id 1: 200, 400 … 8000, then 1-UP from the 8th on [obs 0x7100644610,
+    /// id table 0x7101d0114c, points 0x7101cfd924].
     fn chain_score(n: u32) -> u32 {
-        SCORE_TABLE.get(n as usize).copied().unwrap_or(ONE_UP)
+        SCORE_TABLE.get(n as usize + 1).copied().unwrap_or(ONE_UP)
     }
 
     pub fn step(&mut self, input: Input) {
@@ -2418,16 +2433,16 @@ impl World {
                         f.mode = Mode::Dead;
                         if let Some(down) = w3::fire_hit(e, fx) {
                             if down {
-                                scores.push((SCORE_TABLE[0], e.x, e.y + 24.0));
+                                scores.push((Self::chain_score(0), e.x, e.y + 24.0));
                             }
                         } else if e.kind.is_boss() {
                             let hit = e.boss_hit(crate::actors::BossAttack::Fire, fx);
                             if hit == crate::actors::BossHit::Defeated {
-                                scores.push((SCORE_TABLE[0], e.x, e.y + 24.0));
+                                scores.push((Self::chain_score(0), e.x, e.y + 24.0));
                             }
                         } else if !e.fire_proof() {
                             e.die_fall(fx);
-                            scores.push((SCORE_TABLE[0], e.x, e.y + 24.0));
+                            scores.push((Self::chain_score(0), e.x, e.y + 24.0));
                         }
                     }
                 }
@@ -3011,7 +3026,11 @@ impl World {
                 if stomp {
                     self.player.bounce(jump_held);
                 }
-                self.add_score(KICK_SCORE, ax, ay + 24.0);
+                // the kick scores as a stomp-family attack on the player's stomp chain
+                // (shell kick 0x71005f57a0 → 0x7100644610 with attack 0) [obs]
+                let n = self.player.stomp_chain;
+                self.player.stomp_chain += 1;
+                self.add_score(Self::chain_score(n), ax, ay + 24.0);
                 self.events.push(Event::Kick);
             } else if stomp {
                 let was_lakitu = self.actors[i].kind == Kind::Lakitu;
@@ -3126,16 +3145,47 @@ impl World {
         )
     }
 
-    /// Spawn course actors whose home comes into view (NSMB-style respawn: an actor that left
-    /// the area comes back the next time its home enters the view) [inf, shared draft §1.5].
+    /// The view grown by (mx, my), with the extra vertical reach of horizontal areas.
+    fn zone(&self, mx: f32, my: f32) -> (f32, f32, f32, f32) {
+        let extra = if self.level.vertical {
+            0.0
+        } else {
+            ZONE_EXTRA_Y
+        };
+        (
+            self.camera_x - mx,
+            self.camera_y - my - extra,
+            self.camera_x + VIEW_W + mx,
+            self.camera_y + VIEW_H + my + extra,
+        )
+    }
+
+    /// Spawn course actors whose spawn box reaches the spawn zone (0x71003fcb90) [obs]. An actor
+    /// that went off screen comes back once its home has left the keep-armed zone and returns;
+    /// defeated enemies stay gone (entering Die, 0x7100795220, sets the no-respawn byte).
     fn activate(&mut self) {
-        let v = self.view_rect(ACTIVATE_MARGIN);
+        let za = self.zone(SPAWN_MARGIN_X, SPAWN_MARGIN_Y);
+        let zc = self.zone(REARM_MARGIN, REARM_MARGIN);
+        let touches = |b: (f32, f32, f32, f32), z: (f32, f32, f32, f32)| {
+            b.0 <= z.2 && b.2 >= z.0 && b.1 <= z.3 && b.3 >= z.1
+        };
         for idx in 0..self.spawns.len() {
             let rec = &self.spawns[idx];
             let s = rec.spawn;
-            let visible = s.x >= v.0 && s.x <= v.2 && s.y >= v.1 - 32.0 && s.y <= v.3;
-            let spawn_now = visible && !rec.was_visible && !rec.alive && !rec.killed;
-            self.spawns[idx].was_visible = visible;
+            // spawn box: the actor box from the feet up (16 × 16, big 32 × 32) [inf: the
+            // per-kind profile boxes aren't tabulated]
+            let h = if s.big { 16.0 } else { 8.0 };
+            let sb = (s.x - h, s.y, s.x + h, s.y + 2.0 * h);
+            if rec.spawned {
+                if !touches(sb, zc) {
+                    self.spawns[idx].spawned = false;
+                }
+                continue;
+            }
+            if !touches(sb, za) || rec.alive || rec.killed {
+                continue;
+            }
+            self.spawns[idx].spawned = true;
             // a boss riding a Clown Car draws its own car: skip the linked car object
             let boss_car = matches!(s.kind, Kind::ClownCar { .. })
                 && s.link >= 0
@@ -3147,99 +3197,94 @@ impl World {
                             Kind::Bowser { .. } | Kind::BoomBoom { .. } | Kind::BowserJr { .. }
                         )
                 });
-            if spawn_now && boss_car {
+            if boss_car {
                 self.spawns[idx].killed = true;
                 continue;
             }
-            if spawn_now {
-                let mut a = Actor::new(s.kind, s.x, s.y);
-                a.big = s.big;
-                a.wings = s.wings;
-                a.alt = s.alt;
-                a.spawn = Some(idx);
-                a.home_y = s.y;
-                a.pipe = s.pipe;
-                if s.parachute {
-                    a.mode = Mode::Parachute {
-                        x0: s.x,
-                        phase: 0.0,
-                    };
-                }
-                a.rng ^= (idx as u32 + 1).wrapping_mul(0x85eb_ca6b);
-                if s.kind == Kind::RockyWrench {
-                    a.home_y = s.y - 8.0;
-                }
-                if s.kind == Kind::Magikoopa {
-                    a.timer = 30;
-                }
-                if s.kind == Kind::Claw {
-                    // pivot at the top centre of the 3×4 object
-                    a.home_x = s.x;
-                    a.home_y = s.y + 64.0;
-                }
-                if let Kind::ChainChomp { chained: true } = s.kind {
-                    // the stake stays at the placement; the Chomp starts beside it
-                    a.home_x = s.x;
-                    a.home_y = s.y;
-                    let side = if self.player.x <= s.x { -20.0 } else { 20.0 };
-                    a.x = s.x + side * if s.big { 2.0 } else { 1.0 };
-                }
-                if let Some(start) = s.rail {
-                    // the reference point is the object's tile centre (feet + 8)
-                    if let Some(r) = crate::track::Rail::attach(
-                        &self.level.tracks,
-                        s.x,
-                        s.y + 8.0,
-                        start,
-                        s.wings,
-                    ) {
-                        let p = r.point(&self.level.tracks);
-                        a.rail_off = (s.x - p.0, s.y - p.1);
-                        a.rail = Some(r);
-                    }
-                }
-                // enemies face the player (left if player.x ≤ x); items face right; a Twister
-                // starts facing left
-                a.dir = if (s.kind.is_enemy() && self.player.x <= s.x) || s.kind == Kind::Twister {
-                    -1
-                } else {
-                    1
+            let mut a = Actor::new(s.kind, s.x, s.y);
+            a.big = s.big;
+            a.wings = s.wings;
+            a.alt = s.alt;
+            a.spawn = Some(idx);
+            a.home_y = s.y;
+            a.pipe = s.pipe;
+            if s.parachute {
+                a.mode = Mode::Parachute {
+                    x0: s.x,
+                    phase: 0.0,
                 };
-                if s.kind == Kind::Blooper && s.alt {
-                    let id = self.next_id;
-                    self.add_actor(a.clone());
-                    for slot in 1..=4 {
-                        let mut b = Actor::new(Kind::BabyBlooper { slot }, s.x, s.y);
-                        b.chain = id;
-                        b.spawn = Some(idx);
-                        b.wings = s.wings;
-                        self.add_actor(b);
-                    }
-                    self.spawns[idx].alive = true;
-                    continue;
+            }
+            a.rng ^= (idx as u32 + 1).wrapping_mul(0x85eb_ca6b);
+            if s.kind == Kind::RockyWrench {
+                a.home_y = s.y - 8.0;
+            }
+            if s.kind == Kind::Magikoopa {
+                a.timer = 30;
+            }
+            if s.kind == Kind::Claw {
+                // pivot at the top centre of the 3×4 object
+                a.home_x = s.x;
+                a.home_y = s.y + 64.0;
+            }
+            if let Kind::ChainChomp { chained: true } = s.kind {
+                // the stake stays at the placement; the Chomp starts beside it
+                a.home_x = s.x;
+                a.home_y = s.y;
+                let side = if self.player.x <= s.x { -20.0 } else { 20.0 };
+                a.x = s.x + side * if s.big { 2.0 } else { 1.0 };
+            }
+            if let Some(start) = s.rail {
+                // the reference point is the object's tile centre (feet + 8)
+                if let Some(r) =
+                    crate::track::Rail::attach(&self.level.tracks, s.x, s.y + 8.0, start, s.wings)
+                {
+                    let p = r.point(&self.level.tracks);
+                    a.rail_off = (s.x - p.0, s.y - p.1);
+                    a.rail = Some(r);
                 }
-                if s.kind == Kind::Boo && s.alt {
-                    // a Boo circle: eight Boos round the placement
-                    for slot in 0..8 {
-                        let mut b = a.clone();
-                        b.kind = Kind::RingBoo { slot };
-                        b.home_x = s.x;
-                        b.home_y = s.y + 8.0;
-                        b.speed = 0.0;
-                        b.heading = 90.0;
-                        self.add_actor(b);
-                    }
-                } else {
-                    self.add_actor(a);
+            }
+            // enemies face the player (left if player.x ≤ x); items face right; a Twister
+            // starts facing left
+            a.dir = if (s.kind.is_enemy() && self.player.x <= s.x) || s.kind == Kind::Twister {
+                -1
+            } else {
+                1
+            };
+            if s.kind == Kind::Blooper && s.alt {
+                let id = self.next_id;
+                self.add_actor(a.clone());
+                for slot in 1..=4 {
+                    let mut b = Actor::new(Kind::BabyBlooper { slot }, s.x, s.y);
+                    b.chain = id;
+                    b.spawn = Some(idx);
+                    b.wings = s.wings;
+                    self.add_actor(b);
                 }
                 self.spawns[idx].alive = true;
+                continue;
             }
+            if s.kind == Kind::Boo && s.alt {
+                // a Boo circle: eight Boos round the placement
+                for slot in 0..8 {
+                    let mut b = a.clone();
+                    b.kind = Kind::RingBoo { slot };
+                    b.home_x = s.x;
+                    b.home_y = s.y + 8.0;
+                    b.speed = 0.0;
+                    b.heading = 90.0;
+                    self.add_actor(b);
+                }
+            } else {
+                self.add_actor(a);
+            }
+            self.spawns[idx].alive = true;
         }
     }
 
-    /// Remove actors whose activation box left the view; dead ones stay dead.
+    /// Remove actors whose culling box (half-size 32 × 32, big 48, a sliding shell 160 × 32;
+    /// 0x7100792c90) grown by 80 px misses the view; dead ones stay dead.
     fn despawn(&mut self) {
-        let v = self.view_rect(ACTIVATE_MARGIN);
+        let v = self.zone(DESPAWN_MARGIN, DESPAWN_MARGIN);
         for a in &mut self.actors {
             let (hx, hy) = match (a.mode, a.big) {
                 (Mode::ShellSlide, _) => (160.0, 32.0),
@@ -3484,10 +3529,12 @@ impl World {
         }
     }
 
-    /// Fire Bar angle (degrees). The shared area counter's per-frame step was not located
-    /// [?]; 2.8125°/frame (one turn per 128 frames) is used [inf].
+    /// Fire Bar angle (degrees): the start angle ± the area's shared rotation counter, which
+    /// advances by the binary angle 0xC00000 (1.0546875°, one turn per 341⅓ frames) every
+    /// frame the world isn't frozen (area update 0x71004005e0, step from _INIT_51) [obs].
     pub fn firebar_angle(&self, fb: &crate::level::FireBar) -> f32 {
-        fb.start + fb.dir * 2.8125 * self.tick as f32
+        let turn = self.area_timer.wrapping_mul(FIREBAR_STEP) as f64 / 4_294_967_296.0;
+        fb.start + fb.dir * (turn * 360.0) as f32
     }
 
     /// Swinging claws (105-swinging-claw.md): grab the player when the claw tip is within 46 px
@@ -3649,9 +3696,10 @@ impl World {
         }
     }
 
-    /// Blinking and spike blocks share one area timer (240 frames). Blinking blocks swap groups
-    /// at each wrap. Spike blocks: retracted for frames 0–117, warning 118–177, out 178–239; ON/OFF
-    /// linked ones are out while ON (mode 1) / OFF (mode 2).
+    /// Blinking and spike blocks share one area timer (240 frames), which also turns the Fire
+    /// Bars. Blinking blocks swap groups at each wrap. Spike blocks: their cycle counter starts
+    /// at 180 (0x71004005e0, reset 0x7100408c20) [obs]: retracted for 0–117, warning 118–177,
+    /// out 178–237, warning 238–239; ON/OFF linked ones are out while ON (mode 1) / OFF (mode 2).
     fn step_area_timer(&mut self) {
         self.area_timer = self.area_timer.wrapping_add(1);
         if self.area_timer.is_multiple_of(240) && !self.level.blink_blocks.is_empty() {
@@ -3696,7 +3744,7 @@ impl World {
 
     /// Timer-driven spike blocks have their spikes out (frames 178–239 of the shared timer).
     pub fn spikes_out(&self) -> bool {
-        (178..240).contains(&(self.area_timer % 240))
+        (178..238).contains(&((self.area_timer % 240 + 180) % 240))
     }
 
     /// A ground pound landing hits the blocks under the feet from above (bricks break when big).
@@ -6584,7 +6632,8 @@ mod tests {
         }
         assert!(stomped);
         assert!(w.player.alive());
-        assert_eq!(w.score, 100);
+        // the chain counter is bumped before it is read: the first stomp is score id 1
+        assert_eq!(w.score, 200);
     }
 
     #[test]
@@ -7677,13 +7726,14 @@ mod tests {
         run(&mut w, 0, 1);
         assert_eq!(w.level.cell(10, 5), Cell::Empty, "swapped at 240");
         assert_eq!(w.level.cell(11, 5), Cell::Solid);
-        // stand next to the spike block: safe until frame 178 of the cycle
+        // stand next to the spike block: safe until frame 178 of the cycle (the spike cycle
+        // runs 180 frames ahead of the area timer)
         w.player.x = 20.0 * TILE - 6.0;
-        w.area_timer = 100;
+        w.area_timer = 160;
         run(&mut w, 0, 10);
         assert_eq!(w.player.form, Form::Small);
         assert!(w.player.alive());
-        w.area_timer = 177;
+        w.area_timer = 237;
         run(&mut w, 0, 2);
         assert!(
             !w.player.alive() || w.events.contains(&Event::Death),
@@ -8511,6 +8561,41 @@ mod tests {
         run(&mut w, 0, 2);
         assert!(!w.level.solids.is_empty(), "solid once found");
         assert!(w.actors.iter().any(|a| a.kind == Kind::Mushroom) || w.player.big());
+    }
+
+    #[test]
+    fn enemies_spawn_47_px_before_the_view_and_rearm_past_48() {
+        let mut lvl = Level::flat(200);
+        // spawn boxes 8 px each side of x: one reaches the zone (right edge 384 + 47), one not
+        lvl.spawns
+            .push(spawn(Kind::Goomba, 384.0 + 47.0 + 8.0, 32.0));
+        lvl.spawns
+            .push(spawn(Kind::Goomba, 384.0 + 47.0 + 9.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 40.0;
+        w.step(Input::default());
+        assert!(w.camera_x.abs() < 1e-3);
+        let near = w.actors.iter().filter(|a| a.kind == Kind::Goomba).count();
+        assert_eq!(near, 1);
+        assert!(w.spawns[0].spawned && !w.spawns[1].spawned);
+    }
+
+    #[test]
+    fn fire_bars_turn_once_per_341_frames_on_the_area_timer() {
+        let mut w = World::with_level(Level::flat(40));
+        let fb = crate::level::FireBar {
+            x: 100.0,
+            y: 64.0,
+            n: 4,
+            start: 90.0,
+            dir: -1.0,
+        };
+        assert_eq!(w.firebar_angle(&fb), 90.0);
+        w.area_timer = 1;
+        assert!((w.firebar_angle(&fb) - (90.0 - 1.0546875)).abs() < 1e-4);
+        // three turns take exactly 1024 frames
+        w.area_timer = 1024;
+        assert!((w.firebar_angle(&fb) - 90.0).abs() < 1e-3);
     }
 
     #[test]
