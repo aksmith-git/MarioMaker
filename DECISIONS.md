@@ -1111,3 +1111,19 @@ decided after the native ports, with the reasons written down either way.
 **Rules:** no Nintendo binaries, assets, keys, recompiled output or disassembly in git —
 `scripts/check_no_proprietary.py` now also blocks native binaries, SPIR-V, AArch64 ELFs, anything
 under `recomp/private|generated|build/`, and text that looks like disassembly or recompiled code.
+
+## 2026-10-18 — Physics tuned against the original game, frame by frame
+- Reference: the owner's own SMM2 v3.0.3 in a locally patched Ryujinx. The patch hooks the
+  player's per-frame update (a one-instruction exefs patch turns an instruction at its entry
+  into a supervisor call the emulator handles), dumps the player object every frame and feeds
+  a scripted pad state per emulated frame, so input timing is exact. It runs from its own data
+  root (keys read in place, nothing of the owner's changed). Test courses are built with the
+  editor crate and played as the title-screen courses. The emulator patch and scripts stay in
+  private research; the repo only gets the generic `mmk trace` / `mmk trace-courses` commands.
+- A difference is fixed only when the binary explains it (state machine, timers, tables); the
+  trace decides between readings. Where the code wasn't found, the measured rule is used and
+  marked [obs: Ryujinx trace] (e.g. the 3-frame jump-press retry, CrouchEnd lengths per style).
+- The engine keeps vy = 0 while grounded where the game holds −0.5 (positions are identical);
+  comparisons treat the two as equal.
+- Replays recorded before these fixes no longer verify (`SIM_VERSION` is bumped per release, as
+  decided above).

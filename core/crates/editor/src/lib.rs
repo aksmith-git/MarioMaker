@@ -429,7 +429,12 @@ impl Editor {
         }
         let o = &mut self.area_mut().objects.items[index];
         o.child_id = part;
-        o.child_flags = if part >= 0 { child_flags } else { 0 };
+        // no child: the default flags stay in the slot (the game rejects 0 there)
+        o.child_flags = if part >= 0 {
+            child_flags
+        } else {
+            DEFAULT_FLAGS
+        };
         Ok(())
     }
 

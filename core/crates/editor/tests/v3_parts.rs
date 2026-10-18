@@ -395,6 +395,8 @@ fn a_fireball_knocks_out_one_segment_and_a_head_stomp_the_whole_stack() {
     w.player.x = px;
     w.player.y = top + 4.0;
     w.player.vy = -2.0;
+    // teleported into the air: falling, not standing where it was
+    w.player.on_ground = false;
     run(&mut w, 3);
     assert!(!pokey(&w).alive(), "DieStamp on the head");
 }
@@ -448,6 +450,8 @@ fn a_stomp_knocks_a_mechakoopa_down_for_480_frames() {
     w.player.x = mx;
     w.player.y = my + 14.0;
     w.player.vy = -2.0;
+    // teleported into the air: falling, not standing where it was
+    w.player.on_ground = false;
     run(&mut w, 2);
     assert!(mecha(&w).mecha_down(), "knocked down, not defeated");
     w.player.x = 40.0;
@@ -579,6 +583,8 @@ fn stomp_koopaling(w: &mut World) -> bool {
     w.player.x = x;
     w.player.y = top + 2.0;
     w.player.vy = -2.0;
+    // teleported into the air: falling, not standing where it was
+    w.player.on_ground = false;
     run(w, 1);
     w.player.x = 40.0;
     w.player.y = 32.0;
@@ -609,6 +615,9 @@ fn larry_takes_three_stomps_and_drops_his_key() {
         w.player.x = x;
         w.player.y = top + 2.0;
         w.player.vy = -2.0;
+        w.player.on_ground = false;
+        // teleported into the air: falling, not standing where it was
+        w.player.on_ground = false;
         run(&mut w, 1);
         assert_eq!(koop(&w).koopaling_hp(), hp, "no HP lost in the shell");
         w.player.x = 40.0;
