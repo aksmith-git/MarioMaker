@@ -27,9 +27,12 @@ pub(super) fn sense(a: &mut Actor, liquid: Option<Liquid>, p: &Player) {
     a.w3.liquid = liquid.filter(|l| !l.spec.full).map(|l| (l.y, l.water()));
     a.w3.player_wet = p.in_water;
     a.w3.player_h = p.hurt_box().3 - p.y;
-    // the player flag Skipsqueak watches (+0x488 bit 14) is set when a jump is launched and on
-    // each swim stroke [obs 0x71009f0710, 0x7100a104a0]; it lasts that one frame [inf: its
-    // clearing was not found]. Here: airborne and rising after standing, or a stroke's kick.
+    // the player flag Skipsqueak watches (+0x488 bit 14) is set by a jump launched off the
+    // ground with a fresh press (also the long jump, the water-exit jump and a spring's high
+    // jump) and by each swim stroke, never by stomp bounces or wall jumps [obs 0x71009f0710,
+    // 0x7100a104a0, 0x71009d3020]; the player's pre-update clears it the next frame, so it lasts
+    // one frame (two for the spring's high jump) [obs 0x71009bc1a0]. Here: airborne and rising
+    // after standing, or a stroke's kick.
     let launched = !p.on_ground && p.vy > 0.0 && a.w3.player_ground_prev;
     let stroke = p.in_water && p.vy > 0.0 && p.vy > a.w3.player_vy_prev + 0.5;
     a.w3.player_rising = p.alive() && (launched || stroke);
@@ -37,15 +40,27 @@ pub(super) fn sense(a: &mut Actor, liquid: Option<Liquid>, p: &Player) {
     a.w3.player_vy_prev = p.vy;
 }
 
-/// Spiky on top: a stomp hurts the player, a spin jump bounces off safely. Spiny Skipsqueak and
-/// Porcupuffer: stamp Invalid [obs EnemyDB]; the horned Ant Trooper's stamp row is ReactOnly,
-/// its top hurts through the "Needle" collider on its horn [inf: that collider's callback was
-/// not traced].
-fn spiky(kind: Kind) -> bool {
-    matches!(
-        kind,
-        Kind::AntTrooper { horned: true } | Kind::Skipsqueak { spiny: true } | Kind::Porcupuffer
-    )
+/// Spiky on top: a stomp (or a ground pound) hurts the player, a spin jump bounces off safely.
+/// Spiny Skipsqueak and Porcupuffer: stamp Invalid [obs EnemyDB]. The horned Ant Trooper: its
+/// EnemyDB row says ReactOnly, but while it walks on the floor its horn flag (+0x510 bit 18)
+/// turns stamps and ground pounds into Pass (a plain body touch: hurt, no bounce) and spin jumps
+/// into Invalid (a safe bounce, the ant untouched); on a wall or ceiling the flag is off and it
+/// takes stomps like the plain one [obs 0x71007610e0, state enters/exits 0x7100603160…
+/// 0x7100603850]. Only the big horned one's "Needle" collider (8×8 on the horn) is live, and it
+/// hurts on any touch, spin jumps included [obs 0x7100603bc0, 0x71006042c0, callback
+/// 0x7100600920].
+fn spiky(a: &Actor) -> bool {
+    match a.kind {
+        Kind::AntTrooper { horned } => horned && a.ant_side() == 0,
+        Kind::Skipsqueak { spiny } => spiny,
+        Kind::Porcupuffer => true,
+        _ => false,
+    }
+}
+
+/// The big horned Ant Trooper's live Needle on top: even a spin jump is hurt.
+fn needle(a: &Actor) -> bool {
+    a.kind == (Kind::AntTrooper { horned: true }) && a.big && a.ant_side() == 0
 }
 
 impl World {
@@ -65,9 +80,9 @@ impl World {
         if !body && !segment {
             return false;
         }
-        // a trampled creeper head is flat and harmless [inf: whether its touch callback hurts
-        // in Damage / DamageWait was not traced]
-        if matches!(kind, Kind::PiranhaCreeper { .. }) && a.creeper_trampled() {
+        // a creeper head's touch callback does nothing for 16 frames after a hit; otherwise it
+        // hurts whatever state it is in, trampled too [obs 0x710071e460]
+        if matches!(kind, Kind::PiranhaCreeper { .. }) && a.creeper_shielded() {
             return false;
         }
         let (ax, ay, ah) = (a.x, a.y, a.height());
@@ -85,6 +100,7 @@ impl World {
         }
         let above = body && p.vy < 0.0 && p.y >= ay + ah * 0.5;
         let (shoe, spin, pound) = (p.shoe.is_some(), p.spinning, p.pound == -1);
+        let (horn, needle) = (spiky(a), needle(a));
         if above {
             match kind {
                 Kind::Bully => {
@@ -101,17 +117,22 @@ impl World {
                     return false;
                 }
                 Kind::PiranhaCreeper { .. } => {
-                    // a stomp tramples the head (Damage → DamageWait) [inf: which hits set the
-                    // head's damage flags was not traced; the Trampled animations say stomps]
-                    if self.actors[i].creeper_trample() {
+                    // a stomp or spin tramples the head 2 pieces back, a ground pound 4; the
+                    // player bounces; a Goomba Shoe (or Yoshi) stomp does nothing at all [obs
+                    // 0x710071e460, stomp test 0x710076b510]
+                    if shoe {
+                        return false;
+                    }
+                    if self.actors[i].creeper_trample(pound) {
                         self.events.push(Event::Stomp);
                     }
                     self.player.bounce(jump_held);
                     return false;
                 }
-                Kind::AntTrooper { horned } if !shoe && !pound && (!horned || spin) => {
+                Kind::AntTrooper { .. } if !shoe && !pound && !horn => {
                     // stamp / spin: ReactOnly, it only squashes for a moment and walks on
-                    // [obs EnemyDB, 0x7100601700]; the player bounces
+                    // [obs EnemyDB, 0x7100601700]; the player bounces (a winged one keeps its
+                    // wings)
                     self.player.bounce(jump_held);
                     self.events.push(Event::Bump);
                     return false;
@@ -124,8 +145,8 @@ impl World {
                     self.events.push(Event::Stomp);
                     return false;
                 }
-                k if spiky(k) => {
-                    if spin {
+                _ if horn => {
+                    if spin && !needle {
                         self.player.bounce(jump_held);
                         self.events.push(Event::Bump);
                         return false;
@@ -168,6 +189,13 @@ impl World {
             self.w3_defeated(ax, ay);
             return false;
         }
+        if self.player.sliding && matches!(kind, Kind::PiranhaCreeper { .. }) {
+            // a slide tramples a creeper head [obs 0x710071e460]
+            if self.actors[i].creeper_trample(false) {
+                self.events.push(Event::Stomp);
+            }
+            return false;
+        }
         if kind == Kind::Bully {
             // the touch never hurts: the Bully is pushed (light, 7 frames apart) and the
             // player thrown back [obs 0x7100649cb0, player Pushed 0x71009d5b90]
@@ -184,6 +212,41 @@ impl World {
             return false;
         }
         self.w3_hurt()
+    }
+
+    /// The area's Charvaargh list, before the actors step [obs 0x71007a00a0, 0x71007a07c0,
+    /// 0x71007a1d60; the list hangs off the area at +0xC0]: every Charvaargh learns the other ones'
+    /// side and vertical leap spots on record (for spacing its leaps) and whether another one holds
+    /// the turn; with nobody holding it, the first one waiting (in placement order, the order the
+    /// game updates them) takes it. Needs calling once a frame ahead of the actor loop in
+    /// `World::step`; without that call each Charvaargh leaps on its own.
+    pub fn w3_charvaarghs(&mut self) {
+        let live: Vec<usize> = (0..self.actors.len())
+            .filter(|&i| {
+                self.actors[i].kind == Kind::Charvaargh && self.actors[i].mode == Mode::Normal
+            })
+            .collect();
+        if live.is_empty() {
+            return;
+        }
+        let recs: Vec<_> = live
+            .iter()
+            .map(|&i| self.actors[i].charvaargh_record())
+            .collect();
+        let mut holder = recs.iter().position(|r| r.2);
+        if holder.is_none() {
+            holder = recs.iter().position(|r| r.3);
+            if let Some(k) = holder {
+                self.actors[live[k]].charvaargh_take_turn();
+            }
+        }
+        for (k, &i) in live.iter().enumerate() {
+            let others = || recs.iter().enumerate().filter(move |(j, _)| *j != k);
+            let side: Vec<f32> = others().filter_map(|(_, r)| r.0).collect();
+            let vert: Vec<f32> = others().filter_map(|(_, r)| r.1).collect();
+            let busy = holder.is_some_and(|h| h != k);
+            self.actors[i].charvaargh_sense(&side, &vert, busy);
+        }
     }
 
     /// The player touched something harmful: true when hurt.
@@ -243,11 +306,16 @@ impl World {
 
 /// A player fireball hitting a 3D World enemy: None when `e` is not one (the generic rules
 /// apply), else whether it was knocked off. Bully: pushed back (light) [obs ReactOnly];
-/// Porcupuffer: one of its 4 HP [obs]; the rest: DieFall.
+/// Porcupuffer: one of its 4 HP [obs]; Piranha Creeper: trampled 2 pieces back [obs
+/// 0x710071e460]; the rest: DieFall.
 pub(super) fn fire_hit(e: &mut Actor, from_x: f32) -> Option<bool> {
     match e.kind {
         Kind::Bully => {
             e.bully_push(bully_push::LIGHT, from_x);
+            Some(false)
+        }
+        Kind::PiranhaCreeper { .. } => {
+            e.creeper_trample(false);
             Some(false)
         }
         Kind::Porcupuffer => Some(e.porcupuffer_hit(from_x)),
@@ -262,8 +330,19 @@ pub(super) fn fire_hit(e: &mut Actor, from_x: f32) -> Option<bool> {
 /// A sliding shell meeting a Bully: the shell attack is Invalid in its EnemyDB row, but its push
 /// component takes the shell as a heavy push (2.5 px/f) [obs 0x7100649cb0]; the shell bounces
 /// back [inf: the shell's side is the generic enemy-vs-enemy handler 0x710072bca0, not traced].
-/// True when handled.
+/// A sliding shell meeting a Piranha Creeper head tramples it 2 pieces back and is bounced back
+/// [obs 0x710071e460; inf: 4 pieces for shells whose collider has flag +0x91 bit 1, not
+/// identified]. True when handled.
 pub(super) fn shell_hit(a: &mut Actor, b: &mut Actor) -> bool {
+    let creeper = |x: &Actor| matches!(x.kind, Kind::PiranhaCreeper { .. });
+    if (a.mode == Mode::ShellSlide && creeper(b)) || (b.mode == Mode::ShellSlide && creeper(a)) {
+        let (shell, head) = if creeper(b) { (a, b) } else { (b, a) };
+        if (head.x - shell.x) * shell.vx > 0.0 && head.creeper_trample(false) {
+            shell.dir = -shell.dir;
+            shell.vx = -shell.vx;
+        }
+        return true;
+    }
     let (shell, bully) = if a.mode == Mode::ShellSlide && b.kind == Kind::Bully {
         (a, b)
     } else if b.mode == Mode::ShellSlide && a.kind == Kind::Bully {
@@ -399,6 +478,55 @@ mod tests {
             w.player.y,
             w.player.alive()
         );
+    }
+
+    #[test]
+    fn a_horned_ant_trooper_takes_a_spin_jump_safely_unless_it_is_big() {
+        let kind = Kind::AntTrooper { horned: true };
+        let mut w = world_with(kind);
+        w.player.spinning = true;
+        assert!(stomp(&mut w, kind), "a spin jump bounces off");
+        assert!(w.player.alive());
+        assert_eq!(enemy(&w, kind).mode, Mode::Normal, "the ant is untouched");
+        // a ground pound is a plain touch: hurt
+        let mut w = world_with(kind);
+        let (x, y, h) = {
+            let a = enemy(&w, kind);
+            (a.x, a.y, a.height())
+        };
+        w.player.x = x;
+        w.player.y = y + h - 2.0;
+        w.player.vy = -1.0;
+        w.player.pound = -1;
+        w.player.on_ground = false;
+        run(&mut w, 0, 1);
+        assert!(!w.player.alive(), "the horn hurts a ground pound");
+        // the big one's needle hurts even a spin jump
+        let mut lvl = Level::flat(60);
+        let mut sp = spawn(kind, 200.0, 32.0);
+        sp.big = true;
+        lvl.spawns.push(sp);
+        let mut w = World::with_level(lvl);
+        w.player.x = 40.0;
+        run(&mut w, 0, 2);
+        w.player.spinning = true;
+        stomp(&mut w, kind);
+        assert!(!w.player.alive(), "the needle hurts");
+    }
+
+    #[test]
+    fn a_stomped_winged_ant_trooper_keeps_its_wings() {
+        let kind = Kind::AntTrooper { horned: false };
+        let mut lvl = Level::flat(60);
+        let mut sp = spawn(kind, 200.0, 80.0);
+        sp.wings = true;
+        lvl.spawns.push(sp);
+        let mut w = World::with_level(lvl);
+        w.player.x = 40.0;
+        run(&mut w, 0, 2);
+        assert!(stomp(&mut w, kind));
+        let a = enemy(&w, kind);
+        assert!(a.wings && a.mode == Mode::Normal, "ReactOnly: still flying");
     }
 
     #[test]
@@ -590,9 +718,59 @@ mod tests {
     }
 
     #[test]
-    fn creeper_head_is_trampled_by_a_stomp_and_burnt_by_fire() {
+    fn charvaarghs_take_turns_to_warn_and_keep_their_leaps_apart() {
         let mut lvl = Level::flat(60);
-        lvl.creepers.push((0, vec![4, 4, 15]));
+        lvl.theme = 2;
+        lvl.liquid = Some(LiquidSpec {
+            kind: 2,
+            start: 44.0,
+            end: 44.0,
+            mode: 0,
+            speed: 0,
+            full: false,
+        });
+        lvl.spawns.push(spawn(Kind::Charvaargh, 200.0, 12.0));
+        lvl.spawns.push(spawn(Kind::Charvaargh, 220.0, 12.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 40.0;
+        let (mut both_signing, mut starts) = (false, Vec::new());
+        let mut was = [false; 2];
+        for _ in 0..700 {
+            w.player.y = 200.0; // out of reach
+            w.player.vy = 0.0;
+            w.w3_charvaarghs();
+            run(&mut w, 0, 1);
+            let cs: Vec<&Actor> = w
+                .actors
+                .iter()
+                .filter(|a| a.kind == Kind::Charvaargh)
+                .collect();
+            if cs.len() < 2 {
+                continue;
+            }
+            let signing: Vec<bool> = cs
+                .iter()
+                .map(|a| a.charvaargh_attacking() && a.charvaargh_segments().is_empty())
+                .collect();
+            both_signing |= signing[0] && signing[1];
+            for k in 0..2 {
+                let leaping = !cs[k].charvaargh_segments().is_empty();
+                if leaping && !was[k] {
+                    starts.push(cs[k].x);
+                }
+                was[k] = leaping;
+            }
+        }
+        assert!(!both_signing, "one warning at a time");
+        assert!(starts.len() >= 2, "both leapt: {starts:?}");
+        // 48 px from where the first one was when the second one's warning began
+        assert!((starts[0] - starts[1]).abs() > 47.5, "spaced: {starts:?}");
+    }
+
+    /// A creeper on a 7-piece path straight up from x 200, grown out past its 4th piece.
+    fn creeper_out() -> (World, Kind) {
+        let mut lvl = Level::flat(60);
+        lvl.creepers.push((0, vec![4, 4, 4, 4, 4, 4, 15]));
         let kind = Kind::PiranhaCreeper {
             path: 0,
             sleeps: false,
@@ -600,19 +778,78 @@ mod tests {
         lvl.spawns.push(spawn(kind, 200.0, 32.0));
         let mut w = World::with_level(lvl);
         w.player.x = 40.0;
-        run(&mut w, 0, 200);
-        // out along its path, the stalk drawn behind it
-        assert!(enemy(&w, kind).y > 60.0);
+        for _ in 0..400 {
+            run(&mut w, 0, 1);
+            if w.actors.iter().any(|a| a.kind == kind && a.y > 170.0) {
+                break;
+            }
+        }
+        assert!(enemy(&w, kind).y > 170.0, "out along its path");
+        (w, kind)
+    }
+
+    /// Put the player beside the head (touching, not from above) for one frame; true if hurt.
+    fn brush(w: &mut World, kind: Kind) -> bool {
+        let (x, y) = {
+            let a = enemy(w, kind);
+            (a.x, a.y)
+        };
+        w.player.x = x - 14.0;
+        w.player.y = y + 4.0;
+        w.player.vy = 0.0;
+        w.player.invuln = 0;
+        run(w, 0, 1);
+        !w.player.alive()
+    }
+
+    #[test]
+    fn creeper_head_is_trampled_by_a_stomp_and_still_bites() {
+        let (mut w, kind) = creeper_out();
+        // the stalk is drawn behind it
         let stalk = w
             .sprites()
             .iter()
             .filter(|s| s.image.model == "M1_Enemy_packunpipe_body_straight")
             .count();
         assert!(stalk >= 1);
-        assert!(stomp(&mut w, kind));
+        assert!(stomp(&mut w, kind), "bounced");
         assert!(enemy(&w, kind).creeper_trampled());
         assert!(w.player.alive());
+        // for 16 frames after the hit its touch does nothing; then the flat head hurts
+        assert!(!brush(&mut w, kind), "shielded");
+        w.player.x = 40.0;
+        run(&mut w, 0, 16);
+        assert!(enemy(&w, kind).creeper_trampled());
+        assert!(brush(&mut w, kind), "a trampled head still hurts");
+    }
+
+    #[test]
+    fn fire_and_shells_trample_a_creeper_head_and_a_star_defeats_it() {
+        let (mut w, kind) = creeper_out();
         shoot(&mut w, kind);
+        let a = enemy(&w, kind);
+        assert_eq!(a.mode, Mode::Normal, "not burnt");
+        assert!(a.creeper_trampled(), "trampled by the fireball");
+
+        let (mut w, kind) = creeper_out();
+        let (x, y) = (enemy(&w, kind).x, enemy(&w, kind).y);
+        let mut s = Actor::new(Kind::Shell { red: false }, x - 30.0, y);
+        s.mode = Mode::ShellWait;
+        s.kick(1, 0.0);
+        s.kick_lock = 0;
+        w.add_actor(s);
+        run(&mut w, 0, 8);
+        assert!(enemy(&w, kind).creeper_trampled(), "trampled by the shell");
+        let shell = w
+            .actors
+            .iter()
+            .find(|a| matches!(a.kind, Kind::Shell { .. }))
+            .unwrap();
+        assert!(shell.vx < 0.0, "the shell bounced back");
+
+        let (mut w, kind) = creeper_out();
+        w.player.star = 600;
+        brush(&mut w, kind);
         assert_eq!(enemy(&w, kind).mode, Mode::DieFall);
     }
 
