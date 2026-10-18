@@ -1499,6 +1499,9 @@ impl Level {
 
     /// Cell at tile coordinates; outside the grid is empty (pits, sky).
     pub fn cell(&self, x: i32, y: i32) -> Cell {
+        // the bottom row continues below the course: a pit's walls go all the way down
+        // [obs: Ryujinx trace, the player blocked by a pit wall below y = 0]
+        let y = y.max(0);
         self.index(x, y)
             .map(|i| self.cells[i])
             .unwrap_or(Cell::Empty)

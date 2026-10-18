@@ -62,6 +62,8 @@ const BROAD_VY: f32 = 2.4;
 const BROAD_GRAVITY: f32 = -0.1;
 const BROAD_LAND_FRAMES: u8 = 30;
 const GRAVITY_GROUND: f32 = -0.34;
+/// vy while standing (the game's ground state keeps it; positions are unaffected).
+const GROUNDED_VY: f32 = -0.5;
 // vy band boundaries and gravities (§3.2)
 const VY_BANDS: [f32; 5] = [2.5, 1.5, 0.3, -0.12, -3.0];
 const GRAVITY_HELD: [f32; 6] = [-0.06, -0.25, -0.34, -0.08, -0.31, -0.34];
@@ -475,6 +477,8 @@ pub struct Player {
     slope_prev: Option<(usize, i32)>,
     slide_float: u8,
     slide_hop: bool,
+    /// Walked off a ledge last frame: this frame (Walk handing over to Fall) adds no gravity.
+    fell_off: bool,
     /// 3D World long jump (BroadJump, state 14: begin 0x71009d3020, exec 0x71009d3330) and the
     /// frames left of its landing (BroadJumpLand, 0x71009d3470), which stops the player dead.
     broad: bool,
@@ -586,6 +590,7 @@ impl Player {
             slope_prev: None,
             slide_float: 0,
             slide_hop: false,
+            fell_off: false,
             broad: false,
             broad_land: 0,
         }
@@ -1430,8 +1435,17 @@ impl Player {
             }
 
             // gravity (§3.2): ground uses the fixed −0.34; airborne picks a band each frame
+            if self.on_ground {
+                // the game holds vy at −0.5 on the ground (the collision puts the feet back);
+                // it shows when walking off a ledge: the first fall frame has −0.84
+                // [obs: Ryujinx trace]
+                self.vy = GROUNDED_VY;
+            }
             let g = if self.on_ground {
                 GRAVITY_GROUND
+            } else if std::mem::take(&mut self.fell_off) {
+                // Walk's last frame (it hands over to Fall): no gravity [obs: Ryujinx trace]
+                0.0
             } else if self.slide_float > 0 {
                 self.slide_float -= 1;
                 0.0
@@ -1519,6 +1533,7 @@ impl Player {
         let airborne = !self.on_ground;
         self.move_and_collide(level, sensors);
         self.landed = airborne && self.on_ground;
+        self.fell_off = !airborne && !self.on_ground && self.vy < 0.0;
         if self.landed && self.crouch_jump {
             self.cje = match self.style {
                 Style::WU => 10,
