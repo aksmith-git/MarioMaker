@@ -21,9 +21,22 @@ pub const PIPE_LAYER: u32 = 14;
 /// Things inside a pipe: the player passing through, a Piranha Plant at home, items and enemies
 /// coming out (SMM2 order: 5, behind all terrain).
 const IN_PIPE_LAYER: u32 = 13;
-/// Coins (SMM2 order: 20, in front of blocks): behind blocks and pipes, in front of the
-/// terrain tiles [inf: the engine doesn't tell semisolid tiles from ground].
+/// Coins (SMM2 order: 20, in front of blocks): behind ground, blocks and pipes (Block 2301–3300,
+/// Coin 1300–2300), in front of the background-type tiles (Bg −6000…, Bridge −5579…, vine
+/// −5690, conveyor 1174) [obs: the EditDB `ZposPriorityType` ranges, 0x02247f48].
 const COIN_LAYER: u32 = 11;
+/// Ground and other terrain tiles in the SMM1 order: with the blocks, in front of coins.
+const GROUND_LAYER: u32 = 12;
+
+/// The layer of a terrain tile (SMM2 order: 10 for all of them).
+pub fn tile_layer(t: &crate::level::TileDraw, smm1: bool) -> u32 {
+    match (smm1, t.pipe, t.back) {
+        (false, ..) => 10,
+        (true, true, _) => PIPE_LAYER,
+        (true, false, true) => 10,
+        (true, false, false) => GROUND_LAYER,
+    }
+}
 /// Tracks (SMM2 order: 9, behind terrain): in front of pipes, behind actors.
 const TRACK_LAYER: u32 = 15;
 /// The player on a vine: behind enemies and lifts (actors draw at 40).
@@ -92,7 +105,9 @@ pub fn costume_sprite(p: &crate::player::Player, layer: u32, tick: u64) -> crate
         }
         Pose::Walk => ["walk.0", "walk.1", "walk.2"][k3(p.walk_phase, 6.0)],
         Pose::Skid => "turn.0",
-        // [inf] the falling half of a jump uses its own frame
+        // the costume rig maps the falling state "jump2" to `jump_fall` (M1_PlayerAnmTable)
+        // [obs]; [inf: that jump2 starts when the rise ends (vy < 0) — the SMM1 player's switch
+        // to jump2 (0x026c1470) was traced only for the star-jump and spin cases]
         Pose::Jump | Pose::Spin | Pose::Fire if p.vy < 0.0 => "jump_fall.0",
         Pose::Jump | Pose::Spin | Pose::Fire => "jump.0",
         Pose::Dead => "wait.0",
@@ -270,7 +285,7 @@ impl World {
     /// the mid-air wall assist.
     fn smm1_kick(&mut self, i: usize, dir: i32, rekick: bool) {
         let p = &self.player;
-        let (pvx, p_ground, p_in_water) = (p.vx, p.on_ground, p.in_water);
+        let (pvx, p_ground) = (p.vx, p.on_ground);
         let s = &self.actors[i];
         let speed = if rekick {
             REKICK_SPEED
@@ -281,29 +296,35 @@ impl World {
         };
         let assist = (!rekick).then(|| self.wall_assist(i, dir)).flatten();
         let (ax, ay) = (s.x, s.y);
+        // the no-hit window (0x0225c120) [obs]: the water tests use the shell's own water flag
         let window = {
             let s = &self.actors[i];
-            let mut w = 16;
-            if p_ground && s.on_ground {
-                w = if (s.x - self.player.x).abs() < 8.0 {
-                    8
-                } else {
-                    4
-                };
-            } else if p_in_water && !p_ground && self.player.y > s.y {
-                // squeezed between two walls in the water [inf: the probes at +8 px, ±12 px]
-                let probe = |dx: f32| self.level.cell_at(s.x + dx, s.y + 8.0).is_solid();
-                if probe(-12.0) && probe(12.0) {
-                    w = 4;
+            let shell_in_water = self
+                .liquid
+                .is_some_and(|l| l.water() && l.covers(s.y + 8.0))
+                || (self.level.theme == 2 && self.level.night);
+            // a shell in the water squeezed between two walls, the kicker airborne above it:
+            // probes from 8 px up the shell, 12 px to each side, both hit a wall → 4 flat
+            let probe = |dx: f32| self.level.cell_at(s.x + dx, s.y + 8.0).is_solid();
+            if shell_in_water && !p_ground && self.player.y > s.y && probe(-12.0) && probe(12.0) {
+                4
+            } else {
+                let mut w = 16;
+                if p_ground && s.on_ground {
+                    w = if (s.x - self.player.x).abs() < 8.0 {
+                        8
+                    } else {
+                        4
+                    };
                 }
+                if rekick {
+                    w += 4;
+                }
+                if shell_in_water {
+                    w += 8;
+                }
+                w
             }
-            if rekick {
-                w += 4;
-            }
-            if p_in_water {
-                w += 8;
-            }
-            w
         };
         let s = &mut self.actors[i];
         s.kick(dir, 0.0);
@@ -412,6 +433,28 @@ mod tests {
             })
             .map(|s| s.layer)
             .collect()
+    }
+
+    #[test]
+    fn smm1_coins_go_between_background_tiles_and_ground() {
+        use crate::level::TileDraw;
+        let tile = |back| TileDraw {
+            x: 0,
+            y: 0,
+            atlas: 0,
+            flip: 0,
+            pipe: false,
+            back,
+        };
+        let (semi, ground) = (tile(true), tile(false));
+        assert_eq!(
+            super::tile_layer(&semi, false),
+            super::tile_layer(&ground, false)
+        );
+        let coin = super::smm1_layer(20);
+        assert!(super::tile_layer(&semi, true) < coin);
+        assert!(coin < super::tile_layer(&ground, true));
+        assert!(super::tile_layer(&ground, true) < super::PIPE_LAYER);
     }
 
     #[test]

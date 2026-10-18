@@ -885,3 +885,10 @@ renderers upload a texture when a sprite first uses it. Measured on the same cou
   stand-ins (small Mario, Super Mario, the Super Mushroom).
 - Options are not yet part of replays, rollback sessions or `World::checksum` input: a replay
   or an online session is only valid with all options off (⬜ carry them in both).
+
+## 2026-10-18 — Slopes: the game's surface, a solid wedge underneath
+- A slope object is a band in the game (a sloped floor and a sloped ceiling 16 px apart between
+  two 1×1 end caps). The engine keeps the binary's surface and caps exactly but fills the cells
+  under the surface (and under the high cap) solid instead of modelling the hollow underside:
+  walkers and the player meet the same top, and a slope's underside is rarely reachable. Revisit
+  if a course needs to pass under a floating slope.

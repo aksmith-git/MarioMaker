@@ -210,7 +210,12 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   their contents when bumped; winged lifts bob; winged Thwomps patrol and bob (12-thwomp.md)
 - ✅ Fish Bone: patrol, 40-frame aim, charge (2 / 6 px/f), shatters on contact; fire-proof
 - ✅ Custom autoscroll: camera centre follows the area's part-89 nodes (speed per segment,
-  0.03 easing, pauses during warps/death/goal; the player is pushed at the edges)
+  0.03 easing, pauses during warps/death/goal; the player is pushed at the edges); the main area's
+  path starts at the start unit and ends at the goal unit, so a course without nodes still
+  scrolls (binary pass 3)
+- ✅ Binary pass 3 (course loading): slopes as caps + diagonal (flush with the ground), spike
+  block colours (0 red / 1 blue ON/OFF, 2 timer), cannon facing + aim, goal pole over the goal
+  ground's first column, angry alternate Wiggler
 - ✅ Conveyor slopes (steep slope + belt carry); winged/tracked coins and note blocks —
   SMB1 sample 148/150 playable (left: a Bill Blaster and a Burner on tracks)
 - ✅ Theme music per style: the importer copies every style's theme / hurry / star tracks (105
