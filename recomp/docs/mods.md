@@ -74,8 +74,37 @@ World screen runs the game's own code, which finds no connection and shows "A co
 | PassEndlessModeCourse (skip) | `result: skip` |
 | Suspend / FinishEndlessMode | `POST /api/endless/<d>/suspend`, `/finish` |
 | GetUsers (own) | `GET /api/me` (name), best per difficulty (completed 100 Mario runs under `hundred`) |
+| GetUsers (players) | the makers of the listed courses (names from the course list, the default Mii) |
+| GetCourses (by id) | `GET /api/courses/<code>` |
+| comments, play report / result, two course records, a course post, an id check | answered empty or accepted (nothing the run needs) |
+| GetApplicationConfig | Endless switched on for the four difficulties |
 
 Data ids and course codes map 1:1 (`games/smm2/mods/course.c`, the same arithmetic as `mmk_formats::course_id`).
+
+### Run end
+
+When the server answers a clear with `run_complete` (the 8th / 16th / 16th / 6th clear), the game goes back to the map
+as after any clear; the next course start is answered with no lives left, so the game ends the run there and returns
+to the menu, where the run shows as finished (no Continue) and the completion counts on the `hundred_<d>` board.
+
+### Layout and texts (made from your dump)
+
+At the first launch with the mod on, `games/smm2/mods/overlay.c` writes `mods-generated/100mario-v2/romfs/` in the
+data folder from your own RomFS and lays it over the game's files:
+
+- `Layout/Nwk_WorldMap_00`: the map's lives number is drawn narrower, so "100" no longer runs into the clears
+  counter (the HUD and the course card already fit three digits);
+- `Message/LayoutMsg_*`, `CommonMsg_*` (English): "Endless Challenge" reads "100 Mario Challenge", and the menu's
+  description line is ours.
+
+Delete the folder to have it made again.
+
+### Unattended runs
+
+`RECOMP_MOD_AUTOPLAY=1` (or `=jump`) is a small autopilot for tests: it presses A on the map, holds right + run in
+a course (`jump`: and jumps every 1.5 s) and skips a course after `RECOMP_MOD_AUTOPLAY_SKIP` seconds (default 20). It
+needs `LARECOMP_INPUT` set (the test-input hook), which also scripts the way to the Endless menu.
+`RECOMP_MOD_TRACE=1` logs Course World's states and every request the mod doesn't answer.
 
 ### Limits
 

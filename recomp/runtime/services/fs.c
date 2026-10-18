@@ -297,7 +297,9 @@ static void rix_open(const char *dir) {
     uint64_t t0 = plat_now_ns();
     char overlay[1100] = "";
     struct stat os;
+    extern const char *game_romfs_overlay(void);  // a game's own generated files (runtime/game_hooks.c: none)
     if (mods_dir()) snprintf(overlay, sizeof overlay, "%s/romfs", mods_dir());
+    else if (game_romfs_overlay()) snprintf(overlay, sizeof overlay, "%s", game_romfs_overlay());
     bool have_overlay = overlay[0] && !stat(overlay, &os) && S_ISDIR(os.st_mode);
     if (!romfs_index(dir, have_overlay ? overlay : NULL, &g_rix, why, sizeof why)) FATAL("RomFS %s: %s\n", dir, why);
     g_rix_on = true;

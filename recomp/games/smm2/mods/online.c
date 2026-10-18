@@ -78,7 +78,10 @@ static void answered(Cpu *c, const char *what) {
         answered(c, #name);                                                                      \
     }
 
-LOCAL_WRAPPER(get_application_config, 0x14ce2f0, {})                 // config map stays as it is (defaults)
+// The server's application config: 38 u32 values at +0x737b0 (copied to the UI cache at +0x28). Values 0-3 switch the
+// Endless Challenge on per difficulty (> 0; with 0 the game says "This service is not active right now"); the rest
+// stay 0 (features the mod doesn't serve).
+LOCAL_WRAPPER(get_application_config, 0x14ce2f0, { for (int d = 0; d < 4; d++) s32(no + 0x737b0 + 4 * d, 1); })
 LOCAL_WRAPPER(get_user_name_ng_type, 0x14f2cc0, s32(no + 0x141608, 0))  // the name is fine
 LOCAL_WRAPPER(sync_user_profile, 0x14cef40, {})
 LOCAL_WRAPPER(get_mii_clothes, 0x14d8360, s32(no + 0x73a58, 0))      // no costume rewards (ring count)
@@ -188,6 +191,28 @@ static void trace_state(Cpu *c) {
     guest_call_orig(c, pc);
 }
 
+// Every Course World request function of v3.0.3 (the callers of the session's "connected" check). With
+// RECOMP_MOD_TRACE=1 the ones the mod doesn't answer are logged with their result (status word +0x60).
+static const uint32_t all_wrappers[] = {
+    0x14ce500, 0x14cef40, 0x14d02d0, 0x14d1820, 0x14d2f00, 0x14d5cd0, 0x14d74a0, 0x14d7780, 0x14d7b00, 0x14d7c30,
+    0x14d7d20, 0x14d7e00, 0x14d7f50, 0x14d8360, 0x14d8550, 0x14dbae0, 0x14dbeb0, 0x14dc0d0, 0x14de010, 0x14de3f0,
+    0x14e0c50, 0x14e0d40, 0x14e0e70, 0x14e2530, 0x14e2cf0, 0x14e30e0, 0x14e3f90, 0x14e5110, 0x14e5440, 0x14e55a0,
+    0x14e58b0, 0x14e5c10, 0x14e5f20, 0x14e6060, 0x14e6b90, 0x14e6da0, 0x14e7240, 0x14e73d0, 0x14e7560, 0x14e7730,
+    0x14e7af0, 0x14e8950, 0x14e8c60, 0x14e8d60, 0x14e8ec0, 0x14e96b0, 0x14e9c10, 0x14eaa20, 0x14eadb0, 0x14eaf30,
+    0x14ebc60, 0x14ec0d0, 0x14ec2d0, 0x14ece20, 0x14ecf30, 0x14ed120, 0x14ed360, 0x14ed4a0, 0x14ed5e0, 0x14ed750,
+    0x14eddc0, 0x14edee0, 0x14ee050, 0x14ef610, 0x14ef720, 0x14f0090, 0x14f0470, 0x14f0b30, 0x14f1210, 0x14f1330,
+    0x14f15c0, 0x14f17a0, 0x14f1920, 0x14f1cf0, 0x14f22e0, 0x14f2910, 0x14f2cc0, 0x14f2de0, 0x14f3770, 0x14f3980,
+    0x14f3ab0, 0x14f3cb0, 0x14f3da0, 0x14f4260, 0x14f4710, 0x14f4da0, 0x14f5940, 0x14f6100, 0x14f6600, 0x14f79a0,
+    0x14f7c30, 0x14f7d10, 0x14f8260, 0x14f84d0, 0x14f8850,
+};
+
+static void trace_wrapper(Cpu *c) {
+    uint64_t pc = c->pc, self = c->x[0];
+    guest_call_orig(c, pc);
+    LOG("[mod] wrapper main+%#llx (not answered by the mod): status %u\n", (unsigned long long)(pc - MAIN_ADDR(0)),
+        g32(self + 0x60));
+}
+
 void online_register(void) {
     hle_override(ENL_LOGIN_READY, enl_login_ready, "mod: enl cLogInReady");
     hle_override(ENL_LOGIN, enl_login, "mod: enl cLogIn");
@@ -201,7 +226,12 @@ void online_register(void) {
     hle_override(MAIN_ADDR(0x14f0b30), post_activity_quest, "mod: PostActivityQuest");
     hle_override(MAIN_ADDR(0x14edee0), get_new_notification, "mod: GetNewNotification");
     hle_override(MAIN_ADDR(0x14f3ab0), get_event_course_status, "mod: GetEventCourseStatus");
-    if (getenv("RECOMP_MOD_TRACE"))
+    if (getenv("RECOMP_MOD_TRACE")) {
         for (size_t i = 0; i < sizeof traced / sizeof *traced; i++)
             hle_override(MAIN_ADDR(traced[i].off), trace_state, traced[i].name);
+        extern void endless_register(void);
+        endless_register();  // (the answered ones first: the first override of an address wins)
+        for (size_t i = 0; i < sizeof all_wrappers / sizeof *all_wrappers; i++)
+            hle_override(MAIN_ADDR(all_wrappers[i]), trace_wrapper, "mod: trace wrapper");
+    }
 }

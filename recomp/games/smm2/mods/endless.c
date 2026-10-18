@@ -15,6 +15,9 @@
 #include "mod.h"
 #include "../../../runtime/net/json.h"
 
+void autoplay_event(const char *what);  // autoplay.c
+bool endless_run_complete(uint32_t d);
+
 static const char *const DIFF[4] = {"easy", "normal", "expert", "super_expert"};
 
 // NetObj fields (v3.0.3)
@@ -54,10 +57,32 @@ uint64_t mod_player_pid(void) {
     return 0x4000000000000000ull | (h & 0x0000ffffffffffffull) | 1;
 }
 
-static uint64_t maker_pid(const char *maker_id) {
+// Makers of the courses served (fake player ids -> names), for the user records the game asks for next.
+static struct { uint64_t pid; char name[48]; } makers[64];
+static int nmakers;
+
+static uint64_t maker_pid(const char *maker_id, const char *name) {
     uint64_t h = 1469598103934665603ull;
     for (const char *p = maker_id ? maker_id : ""; *p; p++) h = (h ^ (uint8_t)*p) * 1099511628211ull;
-    return 0x5000000000000000ull | (h & 0x0000ffffffffffffull) | 1;
+    uint64_t pid = 0x5000000000000000ull | (h & 0x0000ffffffffffffull) | 1;
+    pthread_mutex_lock(&state_lock);
+    int i = 0;
+    while (i < nmakers && makers[i].pid != pid) i++;
+    if (i == nmakers) {
+        i = nmakers < 64 ? nmakers++ : (int)(pid % 64);
+        makers[i].pid = pid;
+    }
+    snprintf(makers[i].name, sizeof makers[i].name, "%s", name && *name ? name : "Maker");
+    pthread_mutex_unlock(&state_lock);
+    return pid;
+}
+
+static void maker_name(uint64_t pid, char *out, size_t cap) {
+    pthread_mutex_lock(&state_lock);
+    snprintf(out, cap, "Maker");
+    for (int i = 0; i < nmakers; i++)
+        if (makers[i].pid == pid) snprintf(out, cap, "%s", makers[i].name);
+    pthread_mutex_unlock(&state_lock);
 }
 
 static bool hundred_rules(void) { return mod_hundred_rules(); }
@@ -177,6 +202,7 @@ WRAPPER(init_run, 0x14ece20) {
         pthread_mutex_lock(&state_lock);
         memset(&runs[d], 0, sizeof runs[d]);
         pthread_mutex_unlock(&state_lock);
+        autoplay_event("new");
         LOG("[mod] New Game: %s, %s rules, %u lives\n", DIFF[d], g_mod.ruleset,
             (uint32_t)json_num(json_get(json_get(j, "run"), "lives"), 0));
     }
@@ -265,11 +291,13 @@ static void put_utf16(uint64_t buf, uint32_t cap, const char *s) {
 // One course-list entry (0x548 bytes), as the game's converter fills it from a NEX CourseInfo. The string objects
 // inside the entry already own their buffers: only their contents are written.
 static void fill_course(uint64_t e, Json *m, uint32_t data_id, uint32_t difficulty) {
-    char code[12];
+    char code[12], bare[10];
     data_id_to_code(data_id, code);
+    snprintf(bare, sizeof bare, "%.3s%.3s%.3s", code, code + 4, code + 8);  // (the game adds the dashes itself)
     s64(e + 0x000, data_id);
-    put_utf16(g64(e + 0x010), g32(e + 0x018), code);
-    s64(e + 0x030, maker_pid(json_str(json_get(m, "maker_id"), json_str(json_get(m, "maker"), ""))));
+    put_utf16(g64(e + 0x010), g32(e + 0x018), bare);
+    const char *maker = json_str(json_get(m, "maker"), "");
+    s64(e + 0x030, maker_pid(json_str(json_get(m, "maker_id"), ""), maker));
     put_utf16(g64(e + 0x040), g32(e + 0x048), json_str(json_get(m, "name"), ""));
     put_utf16(g64(e + 0x098), g32(e + 0x0a0), json_str(json_get(m, "description"), ""));
     s8(e + 0x170, (uint8_t)style_index(json_str(json_get(m, "style"), "")));
@@ -321,9 +349,139 @@ WRAPPER(search_courses, 0x14d8550) {
     }
     s32(ring + 0x10, count);
     netobj_unlock(c);
+    autoplay_event("list");
     LOG("[mod] course list (%s): %u courses%s\n", DIFF[d], count, json_bool(json_get(j, "widened"), false) ? " (band widened)" : "");
     json_free(j);
     finish(c, no, count > 0, 2);
+}
+
+// GetUsers for a list of players (the makers of the courses just listed): request ring of u64 player ids at
+// +0x72b10 (+8 capacity, +0xc head, +0x10 count); answer: the user ring at +0x68, one record each (name from the
+// course list, the default Mii).
+void user_entry_reset(uint64_t e);                                     // online.c
+void mii_default_charinfo(uint8_t out[0x58], const char *nickname);  // runtime/services/mii.c
+
+WRAPPER(get_users, 0x14d02d0) {
+    netobj_lock(c);
+    uint64_t req = no + 0x72b10, out = no + 0x68;
+    uint32_t rcap = g32(req + 8), rhead = g32(req + 0xc), rcount = g32(req + 0x10);
+    uint32_t ocap = g32(out + 8), n = 0;
+    s64(out + 0xc, 0);
+    for (uint32_t i = 0; i < rcount && rcap && n < ocap; i++) {
+        uint64_t pid = g64(g64(req) + 8ull * ((rhead + i) % rcap));
+        if (!pid) continue;
+        char name[48];
+        if (pid == mod_player_pid()) snprintf(name, sizeof name, "%s", getenv("RECOMP_USER_NAME") ? getenv("RECOMP_USER_NAME") : "Player");
+        else maker_name(pid, name, sizeof name);
+        uint64_t e = g64(out) + 0x1f0ull * n++;
+        user_entry_reset(e);
+        put_utf16(g64(e + 0x08), g32(e + 0x10), name);
+        s64(e + 0x58, pid);
+        mii_default_charinfo((uint8_t *)(uintptr_t)(e + 0x9c), name);
+        s8(e + 0x1ec, 1);
+    }
+    s32(out + 0x10, n);
+    netobj_unlock(c);
+    MLOG("GetUsers: %u players\n", n);
+    finish(c, no, true, 0);
+}
+
+// Course details the game asks for around a course start (names [?]; outputs as the originals write them): two
+// player records about the course (+0xe8530 and +0xe8580, each with a "valid" byte; [inf] world record / first
+// clear), a list for a course (ring at +0xe85a0, 0x18-byte entries), and a check on an id (+0x141480 -> u32 result
+// at +0x141604, 0 = fine). Answered empty: no records, an empty list, the check passes. Not connected, the game
+// shows a communication error at times (it doesn't need them to play).
+WRAPPER(course_records, 0x14ebc60) {
+    netobj_lock(c);
+    s8(no + 0xe8542, 0);
+    s8(no + 0xe8592, 0);
+    netobj_unlock(c);
+    finish(c, no, true, 0);
+}
+
+WRAPPER(course_list_info, 0x14ec0d0) {
+    netobj_lock(c);
+    s64(no + 0xe85ac, 0);  // head 0, count 0
+    netobj_unlock(c);
+    finish(c, no, true, 0);
+}
+
+WRAPPER(id_check, 0x14f17a0) {
+    netobj_lock(c);
+    s32(no + 0x141604, 0);
+    netobj_unlock(c);
+    finish(c, no, true, 0);
+}
+
+// The course's comments (SearchCommentsInOrder, read while a course plays): none. Ring of 0x390-byte comments at
+// +0x8f410; +0xe8528 / +0xe852c / +0xe852d: the request it answered and "answered".
+WRAPPER(course_comments, 0x14e8ec0) {
+    netobj_lock(c);
+    s64(no + 0x8f41c, 0);  // head 0, count 0
+    s32(no + 0xe8528, g32(no + 0x737a8));
+    s8(no + 0xe852c, g8(no + 0x737ac));
+    s8(no + 0xe852d, 1);
+    netobj_unlock(c);
+    finish(c, no, true, 0);
+}
+
+// A play report for a course (data id +0xe8548, two bytes, the "notify the maker" setting), sent after a skip that
+// followed a miss: nothing to store, accepted.
+WRAPPER(play_report, 0x14e6b90) {
+    MLOG("play report for %llu: accepted\n", (unsigned long long)g64(no + 0xe8548));
+    finish(c, no, true, 0);
+}
+
+// The play result of a course (data id +0x8e618, time +0x8e620 and more, with a recording of the play uploaded
+// first [inf]): our server keeps its own statistics from the Endless reports; accepted.
+WRAPPER(play_result, 0x14e30e0) {
+    MLOG("play result for %llu: accepted\n", (unsigned long long)g64(no + 0x8e618));
+    finish(c, no, true, 0);
+}
+
+// Course records by data id (asked for after a clear, for the map): the ids are in a linked list at +0x74748 (count
+// +0x74760); the answer goes to the course list ring at +0x30780, as for a search. From GET /api/courses/<code>.
+WRAPPER(get_courses, 0x14dbae0) {
+    uint64_t ids[16];
+    uint32_t n = 0;
+    netobj_lock(c);
+    uint64_t sentinel = no + 0x74748, p = g64(no + 0x74758);
+    if (p != no + 0x74750)
+        for (int guard = 0; guard < 64 && n < 16; guard++) {
+            p = g64(p + 8);
+            if (!p || p - 8 == sentinel) break;
+            ids[n++] = g64(p - 8);
+        }
+    netobj_unlock(c);
+    Json *metas[16] = {0};
+    for (uint32_t i = 0; i < n; i++) {
+        char code[12], path[96];
+        code_of(ids[i], code);
+        snprintf(path, sizeof path, "/api/courses/%s", code);
+        metas[i] = srv_call("GET", path, NULL, NULL);
+    }
+    netobj_lock(c);
+    uint64_t ring = no + NO_COURSES, entries = g64(ring);
+    uint32_t cap = g32(ring + 8), count = 0;
+    s64(ring + 0xc, 0);
+    for (uint32_t i = 0; i < n && count < cap && entries; i++) {
+        if (!metas[i]) continue;
+        uint32_t diff = (uint32_t)json_num(json_get(metas[i], "difficulty"), 50);
+        fill_course(entries + (uint64_t)COURSE_ENTRY * count++, metas[i], (uint32_t)ids[i],
+                    diff < 35 ? 0 : diff < 75 ? 1 : diff < 96 ? 2 : 3);
+    }
+    s32(ring + 0x10, count);
+    netobj_unlock(c);
+    for (uint32_t i = 0; i < n; i++) json_free(metas[i]);
+    MLOG("GetCourses: %u of %u\n", count, n);
+    finish(c, no, count > 0 || n == 0, 2);
+}
+
+// A post about a course (id +0x141480, a byte +0x141518, a text of up to 100 characters +0x141528 [inf: a comment or
+// a report]): accepted, not stored.
+WRAPPER(course_post, 0x14f2910) {
+    MLOG("course post for %llu (kind %u): accepted\n", (unsigned long long)g64(no + 0x141480), g8(no + 0x141518));
+    finish(c, no, true, 0);
 }
 
 // The course file the game expects: a 0x10-byte header {u32 1, u16 0x10, u16 0, u32 CRC32 of the course, "SCDL"},
@@ -401,11 +559,21 @@ WRAPPER(start_course, 0x14ecf30) {
     pthread_mutex_unlock(&state_lock);
     char code[12];
     code_of(id, code);
+    if (!miss && endless_run_complete(d)) {
+        // 100 Mario: the run reached its goal. The next course doesn't start: with no lives left in the record the
+        // game ends the run (course-in -> finish -> back to the menu), and the server already counted it as complete.
+        set_play(c, no, d, 0, clears_now(no, d));
+        LOG("[mod] 100 Mario Challenge (%s) complete: ending the run\n", DIFF[d]);
+        autoplay_event("end");
+        finish(c, no, true, 0);
+        return;
+    }
     if (!miss) {  // a new course: the server's lives and clears as they are
         Json *st = srv_call("GET", "/api/endless", NULL, NULL);
         Json *run = json_get(json_get(st, "runs"), DIFF[d]);
         bool ok = run != NULL;
         if (ok) set_play(c, no, d, (uint32_t)json_num(json_get(run, "lives"), 0), (uint32_t)json_num(json_get(run, "clears"), 0));
+        autoplay_event("start");
         LOG("[mod] course start %s (%s): lives %u\n", code, DIFF[d], lives_now(no, d));
         json_free(st);
         finish(c, no, ok, 2);
@@ -417,6 +585,7 @@ WRAPPER(start_course, 0x14ecf30) {
     Json *j = srv_call("POST", path, body, NULL);
     if (j) {
         set_play(c, no, d, (uint32_t)json_num(json_get(j, "lives"), 0), (uint32_t)json_num(json_get(j, "clears"), 0));
+        autoplay_event("miss");
         LOG("[mod] miss on %s: lives %u%s\n", code, lives_now(no, d), json_bool(json_get(j, "game_over"), false) ? " (game over)" : "");
     }
     json_free(j);
@@ -448,6 +617,7 @@ WRAPPER(clear_course, 0x14ed120) {
         runs[d].coins += dcoins, runs[d].score += dscore, runs[d].started = 0;
         if (complete) runs[d].complete = true;
         pthread_mutex_unlock(&state_lock);
+        autoplay_event("clear");
         LOG("[mod] clear %s (%s): lives %u, clears %u%s\n", code, DIFF[d], lives, clears,
             complete ? " -- 100 Mario Challenge complete!" : "");
     }
@@ -469,6 +639,7 @@ WRAPPER(skip_course, 0x14ed5e0) {
         pthread_mutex_lock(&state_lock);
         runs[d].started = 0;
         pthread_mutex_unlock(&state_lock);
+        autoplay_event("skip");
         LOG("[mod] skip %s (%s): lives %u\n", code, DIFF[d], (uint32_t)json_num(json_get(j, "lives"), 0));
     }
     json_free(j);
@@ -509,6 +680,15 @@ void endless_register(void) {
     hle_override(MAIN_ADDR(0x14eddc0), get_rank, "mod: GetEndlessModeRank");
     hle_override(MAIN_ADDR(0x14d8550), search_courses, "mod: SearchCourses (Endless)");
     hle_override(MAIN_ADDR(0x14de010), get_course_file, "mod: GetObject (course file)");
+    hle_override(MAIN_ADDR(0x14d02d0), get_users, "mod: GetUsers (players)");
+    hle_override(MAIN_ADDR(0x14ebc60), course_records, "mod: course records");
+    hle_override(MAIN_ADDR(0x14ec0d0), course_list_info, "mod: course list info");
+    hle_override(MAIN_ADDR(0x14f17a0), id_check, "mod: id check");
+    hle_override(MAIN_ADDR(0x14e8ec0), course_comments, "mod: course comments");
+    hle_override(MAIN_ADDR(0x14e6b90), play_report, "mod: play report");
+    hle_override(MAIN_ADDR(0x14e30e0), play_result, "mod: play result");
+    hle_override(MAIN_ADDR(0x14dbae0), get_courses, "mod: GetCourses (by id)");
+    hle_override(MAIN_ADDR(0x14f2910), course_post, "mod: course post");
     hle_override(MAIN_ADDR(0x14ecf30), start_course, "mod: StartEndlessModeCourse");
     hle_override(MAIN_ADDR(0x14ed120), clear_course, "mod: DominateEndlessModeCourse");
     hle_override(MAIN_ADDR(0x14ed5e0), skip_course, "mod: PassEndlessModeCourse");

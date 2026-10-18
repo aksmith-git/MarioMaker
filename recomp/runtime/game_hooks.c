@@ -15,6 +15,8 @@
 // ---- frame / level (renderers): the current level's name, for logs and per-level render-target resets
 WEAK const char *game_level_name(void) { return ""; }
 WEAK void romfs_file_read_hook(const char *path) { (void)path; }
+// a folder of files a game's mods generate, laid over the RomFS when no RECOMP_MOD_DIR is set (runtime/services/fs.c)
+WEAK const char *game_romfs_overlay(void) { return NULL; }
 
 // ---- once per frame on the game's main thread (runtime/hle/input.c), and per presented frame (renderers)
 WEAK void warp_game_tick(Cpu *c) { (void)c; }
