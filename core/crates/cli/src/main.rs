@@ -154,6 +154,41 @@ enum Cmd {
         server: String,
         #[arg(long, default_value = "anonymous")]
         maker: String,
+        /// Account token (default $MMK_TOKEN): uploads under that account.
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// Create an account on a course server; prints the maker ID and the token (keep it secret,
+    /// pass it with --token or $MMK_TOKEN).
+    Register {
+        name: String,
+        #[arg(long, default_value = "http://localhost:8640")]
+        server: String,
+    },
+    /// Like (or with --boo, boo) a course as your account.
+    Like {
+        code: String,
+        #[arg(long)]
+        boo: bool,
+        #[arg(long, default_value = "http://localhost:8640")]
+        server: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// List a course's comments, or post TEXT as your account.
+    Comment {
+        code: String,
+        text: Option<String>,
+        #[arg(long, default_value = "http://localhost:8640")]
+        server: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// Show a maker's profile and courses.
+    Maker {
+        maker_id: String,
+        #[arg(long, default_value = "http://localhost:8640")]
+        server: String,
     },
     /// Search a course server.
     Search {
@@ -935,6 +970,7 @@ fn main() -> ExitCode {
             file,
             server,
             maker,
+            token,
         } => {
             let data = match std::fs::read(&file) {
                 Ok(raw) if raw.len() == mmk_formats::smm2::COURSE_SIZE => raw,
@@ -954,7 +990,7 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            match mmk_online::Client::new(server).upload(&data, &maker) {
+            match online(server, token).upload(&data, &maker) {
                 Ok(l) => {
                     println!("{} {}", l.code, l.name);
                     ExitCode::SUCCESS
@@ -965,6 +1001,56 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Cmd::Register { name, server } => match mmk_online::Client::new(server).register(&name) {
+            Ok((a, token)) => {
+                println!("maker ID {}  ({})", a.maker_id, a.name);
+                println!("token {token}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail("register", e),
+        },
+        Cmd::Like {
+            code,
+            boo,
+            server,
+            token,
+        } => match online(server, token).vote(&code, !boo) {
+            Ok(l) => {
+                println!("{} likes, {} boos", l.likes, l.boos);
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail("vote", e),
+        },
+        Cmd::Comment {
+            code,
+            text,
+            server,
+            token,
+        } => {
+            let c = online(server, token);
+            if let Some(Err(e)) = text.map(|t| c.comment(&code, &t)) {
+                return fail("comment", e);
+            }
+            match c.comments(&code) {
+                Ok(list) => {
+                    for m in list {
+                        println!("{} ({}): {}", m.name, m.maker_id, m.text);
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => fail("comments", e),
+            }
+        }
+        Cmd::Maker { maker_id, server } => match mmk_online::Client::new(server).maker(&maker_id) {
+            Ok((a, courses)) => {
+                println!("{} — {}", a.maker_id, a.name);
+                for l in courses {
+                    println!("  {}  {:>5} plays  {}", l.code, l.plays, l.name);
+                }
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail("maker", e),
+        },
         Cmd::Search {
             query,
             server,
@@ -1330,4 +1416,15 @@ fn missing_art(files: &[PathBuf], assets: &std::path::Path, keys: Option<PathBuf
         missing.len()
     );
     ExitCode::SUCCESS
+}
+
+/// A course-server client signed in with `token` or $MMK_TOKEN when set.
+fn online(server: String, token: Option<String>) -> mmk_online::Client {
+    let token = token.or_else(|| std::env::var("MMK_TOKEN").ok().filter(|t| !t.is_empty()));
+    mmk_online::Client::new(server).with_token(token)
+}
+
+fn fail(what: &str, e: impl std::fmt::Display) -> ExitCode {
+    eprintln!("{what}: {e}");
+    ExitCode::FAILURE
 }
