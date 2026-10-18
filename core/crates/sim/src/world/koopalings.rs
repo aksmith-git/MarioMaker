@@ -6,8 +6,13 @@ use super::{Event, World, overlap};
 use crate::actors::{Actor, Kind, Mode};
 use crate::render::Sprite;
 
-/// Players in view of a quake are stunned for 80 frames (player state 0x58 [obs
-/// 0x71015a6880]; grounded players only [inf]).
+/// A quake stuns for 80 frames (player state 0x58, QuakeDamage). Morton's Quake enter (and
+/// Roy's LandOnQuake) runs only while the Koopaling's in-view flag (+0x520 bit 3) is set and
+/// asks each player whose camera view its box touches (edges included); the request
+/// 0x71015a6880 does nothing unless the player is on the ground (+0x2308 bit 0, in the place of
+/// v1's on-ground bit +0x22D0 in the Sledge Bro request 0x71009d5520), has no Star (+0x27D4,
+/// v1 +0x2770) and no damage invincibility (+0x2798, v1 +0x2734), and is not a Power Balloon
+/// (form 12) [obs 0x71011eab30, 0x71015a6880].
 const QUAKE_STUN: i32 = 80;
 
 impl World {
@@ -25,7 +30,11 @@ impl World {
             if star {
                 return false;
             }
-            // a player can bounce on Lemmy's balls [inf from its bounce callbacks]
+            // a player can bounce on Lemmy's balls [?: the ball's "bounce callbacks" once cited
+            // (0x7100de8560 … 0x7100de86b0) are its own spring-ride slots (vtable 0x1C0–0x1D8
+            // and 0x1F0–0x200: start, launch with its own vy 4.0 / 4.15, riding?, cancel; v1's
+            // trampoline slots 0x1A0/0x1A8 four slots on), so they say nothing about the player;
+            // the player-vs-projectile stomp rule is not traced]
             if what == crate::actors::koopaling_shot::BALL && self.v3_from_above_pub(i) {
                 self.player.bounce(jump_held);
                 self.events.push(Event::Bump);
@@ -105,14 +114,15 @@ impl World {
             }
             if a.v3.quake {
                 a.v3.quake = false;
-                quake |= a.x > v.0 && a.x < v.2 && a.y > v.1 && a.y < v.3;
+                let (x0, y0, x1, y1) = a.bbox();
+                quake |= x1 >= v.0 && x0 <= v.2 && y1 >= v.1 && y0 <= v.3;
             }
             if !a.alive() && a.koopaling_key() {
                 keys.push((a.x, a.y + a.height() / 2.0 - 8.0));
             }
         }
         if quake {
-            if self.player.on_ground && self.player.star == 0 {
+            if self.player.on_ground && self.player.star == 0 && self.player.invuln == 0 {
                 self.player.stun = QUAKE_STUN;
                 self.player.vx = 0.0;
             }

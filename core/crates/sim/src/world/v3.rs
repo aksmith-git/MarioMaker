@@ -131,11 +131,16 @@ impl World {
         self.v3_hurt()
     }
 
-    /// A Spike's ball. The iron ball (EnemyDB GabonIronBallWU): stomps and ground pounds are
-    /// Invalid, so it hurts from every side — a spin jump bounces off safely (as on other spiky
-    /// enemies [inf]); the shoe and the Star break it. The snowball: a plain stomp is Invalid
-    /// (a bounce, it stays [inf]), a spin, the shoe, a ground pound or the Star break it, and a
-    /// touch from the side kicks it [obs 0x71010f78d0] — or picks it up with Run held.
+    /// A Spike's ball. The stomp result follows the generic handler: an Invalid reaction to a
+    /// plain stomp, a shoe stomp or a ground pound (attack types 0, 3, 34 …) turns into Pass, an
+    /// ordinary touch, while other Invalid stomps bounce the player unharmed [obs v1
+    /// 0x71007610e0 mask 0x580000009, 0x710072bca0]. The iron ball (EnemyDB GabonIronBallWU):
+    /// plain stomps and ground pounds are Invalid → Pass, so it hurts from every side; a spin
+    /// (stamp_spin Invalid) bounces off [?: the game hurts instead when the collider's class is
+    /// the spiky one (5) and a ceiling is within 20 px (+ held item) above; the ball's class is
+    /// not mapped]; the shoe and the Star break it. The snowball: a plain stomp is Invalid →
+    /// Pass, the same touch as from the side, which kicks it [obs 0x71010f78d0] — or picks it up
+    /// with Run held; a spin, the shoe, a ground pound or the Star break it.
     fn ball_contact(&mut self, i: usize, snow: bool, jump_held: bool) -> bool {
         let (ax, ay) = (self.actors[i].x, self.actors[i].y);
         let px = self.player.x;
@@ -163,19 +168,15 @@ impl World {
             }
             return self.v3_hurt();
         }
-        if above {
-            if self.player.spinning || self.player.pound == -1 {
-                self.actors[i].mode = Mode::Dead; // DieStamp: it bursts
-                if self.player.pound != -1 {
-                    self.player.bounce(jump_held);
-                }
-                self.v3_defeated(ax, ay, true);
-            } else {
+        if above && (self.player.spinning || self.player.pound == -1) {
+            self.actors[i].mode = Mode::Dead; // DieStamp: it bursts
+            if self.player.pound != -1 {
                 self.player.bounce(jump_held);
-                self.events.push(Event::Bump);
             }
+            self.v3_defeated(ax, ay, true);
             return false;
         }
+        // a plain stomp (Invalid → Pass) is an ordinary touch: carried or kicked as below
         if self.style.can_carry() && self.run_held && self.player.held.is_none() {
             let id = self.actors[i].id;
             self.actors[i].held = true;
@@ -332,8 +333,10 @@ impl World {
 
     /// Carrying a snowball or a knocked-down Mechakoopa (from `carry_held`). Let go of Run, it
     /// is thrown: the snowball at 2.5 + 0.35·|vx| (≤ 4) with vy 1.0 [obs 0x71010f7d80], the
-    /// robot at 3.7 + 0.9·|vx| with vy 1.2 [obs]; carried into an enemy, both are knocked out
-    /// as with a shell [inf].
+    /// robot at 3.7 + 0.9·|vx| with vy 1.2 [obs]. Carried, it is an attacker (carried flag →
+    /// attack 6, the `shell` column): an enemy that takes shells reacts as to a shell and the
+    /// carried thing dies itself (DieFall, no score); one that does not (Bully) is ignored
+    /// [obs v1 0x7100732640, 0x710072bca0; the v3 parts share the enemy base].
     pub(super) fn v3_carry(&mut self, i: usize) {
         let p = &self.player;
         let (x, y, facing, pvx) = (p.x + p.facing as f32 * 11.0, p.y + 2.0, p.facing, p.vx);
@@ -382,8 +385,9 @@ impl World {
             .actors
             .iter()
             .position(|e| e.id != id && e.alive() && e.kind.is_enemy() && overlap(sb, e.bbox()));
-        if let Some(j) = hit {
-            self.actors[j].die_fall(x);
+        if let Some(j) = hit
+            && shell_attack(&mut self.actors[j], x, y)
+        {
             self.actors[i].held = false;
             self.actors[i].die_fall(x - facing as f32);
             self.player.held = None;
@@ -433,7 +437,12 @@ impl World {
 
     /// A missile at the end of its time explodes [obs]: blocks break in a 3×3 square plus the
     /// four tiles two away (as a Bob-omb's), the blast (half 18, big 36) hurts the player and
-    /// knocks out enemies in it [inf: the attack box's enemy side is not traced].
+    /// hits the enemies in it with the shell attack: its collider profile (0x7102a62d28, set up
+    /// by _INIT_350, used by Explode enter 0x7100dea640) has attack type 6, the EnemyDB `shell`
+    /// column, where the flying missile's has 0 [obs]. So it does what a sliding shell does:
+    /// most enemies DieFall, a Koopaling loses 1 HP, a Pokey the touched segment, bosses take a
+    /// shell hit. [simplified: one frame; the game's blast collider lives until the Explode
+    /// counter passes 15 (0x7100deab10)]
     fn v3_blasts(&mut self) {
         let blasts: Vec<(f32, f32, f32)> = self
             .actors
@@ -450,12 +459,10 @@ impl World {
                 let (cx, cy) = (a.x, a.y + a.height() / 2.0);
                 if a.kind.is_enemy()
                     && a.alive()
-                    && !a.kind.is_boss()
-                    && !matches!(a.kind, Kind::Koopaling { .. })
                     && (cx - bx).abs() < r + a.half_w()
                     && (cy - by).abs() < r + a.height() / 2.0
                 {
-                    a.die_fall(bx);
+                    blast_hit(a, bx, by);
                 }
             }
             let (tx, ty) = ((bx / TILE).floor() as i32, (by / TILE).floor() as i32);
@@ -577,11 +584,14 @@ impl World {
                     } else {
                         "M1_Enemy_gabonball"
                     };
+                    // [simplified: drawn where the hand joint is at the release frame; the game's
+                    // ball follows the joint through the lift]
+                    let (hx, hy) = a.spike_hand(a.v3.style as usize);
                     out.push(Self::model_sprite(
                         model,
                         "gabonball_model",
-                        a.x - 8.0 * s,
-                        a.y + 16.0 * s,
+                        hx - 8.0 * s,
+                        hy - 8.0 * s,
                         16.0 * s,
                         16.0 * s,
                         false,
@@ -674,6 +684,31 @@ impl World {
     }
 }
 
+/// The shell attack (EnemyDB `shell` column, attack type 6) from (`bx`, `by`) on enemy `e`,
+/// through the same rules as a sliding shell (with a still stand-in shell, so nothing is pushed
+/// by it): false when `e` does not take it (the Bully's `shell` reaction is Invalid, so the
+/// generic handler clears the attack from its accepted mask, v1 0x7100732640).
+fn shell_attack(e: &mut Actor, bx: f32, by: f32) -> bool {
+    if e.kind == Kind::Bully {
+        return false;
+    }
+    let mut shell = Actor::new(Kind::MechaMissile, bx, by - 8.0);
+    shell.mode = Mode::ShellSlide;
+    if super::bosses::boss_shell_hit(&mut shell, e).is_some() || super::w3::shell_hit(&mut shell, e)
+    {
+        return true;
+    }
+    if e.kind.is_v3() && shell_hit(&mut shell, e).is_some() {
+        return true;
+    }
+    e.die_fall(bx);
+    true
+}
+
+fn blast_hit(e: &mut Actor, bx: f32, by: f32) {
+    shell_attack(e, bx, by);
+}
+
 /// A player fireball hitting a 2.0 / 3.0 part at height `fy`: None when `e` is not one (the
 /// generic rules apply), else whether it was knocked off. Spike, a snowball: DieFall /
 /// DieStamp; the iron ball and Mechakoopas: Invalid (the fireball is spent); a Pokey loses the
@@ -737,12 +772,59 @@ pub(super) fn shell_hit(a: &mut Actor, b: &mut Actor) -> Option<Option<(f32, f32
             v.die_fall(sx);
             return Some(Some((v.x, v.y)));
         }
-        if (rolling || thrown) && v.kind.is_v3() {
-            return Some(None); // the 2.0 / 3.0 parts pass each other [inf]
+        if thrown && v.kind.is_v3() {
+            // a thrown enemy carries the shell attack to every enemy, 2.0 / 3.0 parts included
+            // (attacker flags → attack 6, v1 0x7100732640)
+            let (sx, sy) = (s.x, s.y + 8.0);
+            let (vx, vy) = (v.x, v.y);
+            return Some(shell_attack(v, sx, sy).then_some((vx, vy)));
+        }
+        if rolling && v.kind.is_v3() {
+            // a Spike's rolling ball and a 2.0 / 3.0 part pass each other [?: the v1 handler
+            // makes an enemy an attacker only through flags (ShellSlide, carried, released,
+            // a fixed attacker box; v1 0x7100732640) and the ball's states set none of their
+            // v3 counterparts (the flag block moved by 0x10), which would make it harmless to
+            // every enemy; the v3 attacker test itself was not found, so the old rule stays]
+            return Some(None);
         }
     }
     if a.kind.is_v3() || b.kind.is_v3() {
         return Some(None);
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::actors::Seg;
+
+    #[test]
+    fn a_missile_blast_hits_like_a_shell() {
+        // a Pokey loses only the segment at the blast's height; a Goomba is knocked out
+        let mut p = Actor::new(
+            Kind::Pokey {
+                snow: false,
+                height: 4,
+            },
+            100.0,
+            0.0,
+        );
+        p.phase = 1;
+        p.v3.segs = vec![Seg::default(); 4];
+        blast_hit(&mut p, 100.0, 8.0);
+        assert!(p.alive());
+        assert_eq!(p.v3.segs.len(), 3);
+        let mut g = Actor::new(Kind::Goomba, 100.0, 0.0);
+        blast_hit(&mut g, 100.0, 8.0);
+        assert_eq!(g.mode, Mode::DieFall);
+    }
+
+    #[test]
+    fn a_bully_does_not_take_the_shell_attack() {
+        // (so a snowball carried into it survives)
+        let mut b = Actor::new(Kind::Bully, 100.0, 0.0);
+        assert!(!shell_attack(&mut b, 90.0, 8.0));
+        assert!(b.alive());
+    }
 }

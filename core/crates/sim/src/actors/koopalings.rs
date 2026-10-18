@@ -1001,9 +1001,14 @@ impl Actor {
             st::IN_GROUND => {
                 self.vx = 0.0;
                 self.vy = 0.0;
-                self.timer -= 1;
-                if self.timer <= 0 && !self.kl_roy_surface(level) {
-                    self.timer = 10; // no spot this time: try again shortly [inf]
+                // once the timer is out, one spot is tried per frame until one is found: no
+                // retry delay (after 3 misses the game switches surface mode) [obs
+                // InGroundSearch exe 0x7101241b80]
+                if self.timer > 0 {
+                    self.timer -= 1;
+                }
+                if self.timer <= 0 {
+                    self.kl_roy_surface(level);
                 }
                 false
             }
@@ -1035,37 +1040,35 @@ impl Actor {
         }
     }
 
-    /// Pick a floor spot inside the view, away from the player (x ±3 tiles, y −1…+4 tiles),
-    /// not in water [obs 0x7101241b80; the ceiling exits (≤ 33 %) are not modelled: inf].
+    /// One try at a floor spot inside the view, away from the player (x ±3 tiles, y −1…+4
+    /// tiles), not in water [obs 0x7101241b80: one try per frame; the ceiling exits (≤ 33 %) and
+    /// the object-surface weighting are not modelled: inf].
     fn kl_roy_surface(&mut self, level: &Level) -> bool {
         let (cx, cy) = self.camera;
-        for _ in 0..3 {
-            let x = cx + 32.0 + self.rand((crate::world::VIEW_W - 64.0) as u32) as f32;
-            let mut y = cy + crate::world::VIEW_H - TILE;
-            while y > cy {
-                let here = level.cell_at(x, y);
-                let below = level.cell_at(x, y - TILE);
-                if here == Cell::Empty && below.is_solid() {
-                    break;
-                }
-                y -= TILE;
+        let x = cx + 32.0 + self.rand((crate::world::VIEW_W - 64.0) as u32) as f32;
+        let mut y = cy + crate::world::VIEW_H - TILE;
+        while y > cy {
+            let here = level.cell_at(x, y);
+            let below = level.cell_at(x, y - TILE);
+            if here == Cell::Empty && below.is_solid() {
+                break;
             }
-            if y <= cy {
-                continue;
-            }
-            let fy = (y / TILE).floor() * TILE;
-            let (px, py) = self.target;
-            if (px - x).abs() <= 3.0 * TILE && py - fy >= -TILE && py - fy <= 4.0 * TILE {
-                continue;
-            }
-            self.x = x;
-            self.y = fy;
-            self.v3.flags &= !fl::HIDDEN;
-            self.dir = self.v3_toward();
-            self.kl_enter(st::APPEAR_HEAD);
-            return true;
+            y -= TILE;
         }
-        false
+        if y <= cy {
+            return false;
+        }
+        let fy = (y / TILE).floor() * TILE;
+        let (px, py) = self.target;
+        if (px - x).abs() <= 3.0 * TILE && py - fy >= -TILE && py - fy <= 4.0 * TILE {
+            return false;
+        }
+        self.x = x;
+        self.y = fy;
+        self.v3.flags &= !fl::HIDDEN;
+        self.dir = self.v3_toward();
+        self.kl_enter(st::APPEAR_HEAD);
+        true
     }
 
     // ------------------------------------------------------------ Ludwig

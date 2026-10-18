@@ -312,6 +312,28 @@ fn smb1_spike_walks_and_its_ball_flies_level() {
 }
 
 #[test]
+fn the_ball_leaves_the_spike_s_generator_joint() {
+    // SMB1: the joint is 3 px behind and 24 px above the feet at the release frame; the ball's
+    // centre is on it (radius 8)
+    let c = course("spike_hand", "M1", 0, &[part(74, 18, 2)]);
+    let mut w = world(&c);
+    for _ in 0..400 {
+        run(&mut w, 1);
+        if count(&w, |k| matches!(k, Kind::SpikeBall { .. })) > 0 {
+            break;
+        }
+    }
+    let s = first(&w, |k| k == Kind::Spike);
+    let b = first(&w, |k| matches!(k, Kind::SpikeBall { .. }));
+    let ahead = (b.x - s.x) * s.dir as f32;
+    assert!(
+        (-3.01..=-1.49).contains(&ahead),
+        "3 px behind (+1.5 flown): {ahead}"
+    );
+    assert_eq!(b.y - s.y, 16.0);
+}
+
+#[test]
 fn snowballs_in_the_snow_theme_are_kicked_from_the_side() {
     let c = course("spike_snow", "MW", 6, &[with_flags(part(74, 10, 2), 0x4)]);
     let mut w = world(&c);
@@ -346,6 +368,32 @@ fn the_iron_ball_hurts_even_from_above() {
 
 fn pokey(w: &World) -> &mmk_sim::actors::Actor {
     first(w, |k| matches!(k, Kind::Pokey { .. }))
+}
+
+#[test]
+fn a_winged_pokey_hops_small_small_big() {
+    let c = course("pokey_wing", "M3", 0, &[with_flags(part(78, 16, 2), 0x2)]);
+    let mut w = world(&c);
+    let mut hops = Vec::new();
+    let mut last = pokey(&w).vy;
+    for _ in 0..600 {
+        run(&mut w, 1);
+        let vy = pokey(&w).vy;
+        if vy > 2.0 && last <= 0.0 {
+            hops.push(vy);
+        }
+        last = vy;
+        if hops.len() == 6 {
+            break;
+        }
+    }
+    let r = |v: f32| (v * 10.0).round() / 10.0;
+    let hops: Vec<f32> = hops.into_iter().map(r).collect();
+    // (its first hop comes during the setup frames)
+    let big: Vec<usize> = (0..hops.len()).filter(|&i| hops[i] == 4.7).collect();
+    assert_eq!(big.len(), 2, "{hops:?}");
+    assert_eq!(big[1] - big[0], 3, "{hops:?}");
+    assert!(hops.iter().all(|&v| v == 4.7 || v == 2.5), "{hops:?}");
 }
 
 #[test]
@@ -544,6 +592,9 @@ fn zappa_charges_and_fires_a_horizontal_laser() {
     assert!((56..=120).contains(&f), "{f}");
     let m = first(&w, |k| k == Kind::MechaLaser);
     assert!(m.laser_box().is_none(), "telegraph: no damage");
+    // no robot model has a "shot" joint: the beam starts at the robot's feet
+    let r = mecha(&w);
+    assert_eq!((m.x, m.y), (r.x, r.y));
     run(&mut w, 69 + 20);
     let m = first(&w, |k| k == Kind::MechaLaser);
     let b = m.laser_box().expect("firing");
@@ -706,6 +757,10 @@ fn morton_ground_pounds_stun_the_player_and_send_out_two_flames() {
     let mut stunned = false;
     let mut flames = 0;
     for _ in 0..900 {
+        // a player with damage invincibility is not stunned (0x71015a6880): drop the test's
+        // invincibility while Morton drops and lands (QuakeDrop 23, Quake 24)
+        let landing = matches!(koop(&w).phase, 23 | 24);
+        w.player.invuln = if landing { 0 } else { 1_000_000 };
         run(&mut w, 1);
         stunned |= w.player.stun > 0;
         flames = flames.max(count(&w, |k| k == Kind::KoopalingShot { what: 4 }));
