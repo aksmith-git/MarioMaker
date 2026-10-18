@@ -175,6 +175,18 @@ pub const PLAYER_KEYS: &[&str] = &[
     "p_get_missionClear",
     "kabekick",
     "wallkick",
+    "landing",
+    "r_splash_in",
+    "r_splash_out",
+    "catchIvy",
+    "climb",
+    "kutsuIn",
+    "marioRideOff",
+    "turn_slip",
+    "propellerjump",
+    "footstep_L",
+    "footstep_R",
+    "DoorIn",
 ];
 
 /// Keys of the shared object user (`<style>_ObjectCommon`).

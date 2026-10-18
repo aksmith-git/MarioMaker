@@ -520,6 +520,35 @@ fn effects_json(romfs: &Path) -> Result<Value> {
     Ok(Value::Object(out))
 }
 
+/// Ground materials of the 3D styles' terrain parts per theme (`Mush/<style>_BgGroundAttrTable`:
+/// part → theme → material), for footstep and landing sounds.
+fn ground_json(romfs: &Path) -> Result<Value> {
+    let path = romfs.join("Pack/Static.pack");
+    let sarc = open(&path)?;
+    let mut out = Map::new();
+    for style in STYLES {
+        let Some(d) = sarc.get(&format!("Mush/{style}_BgGroundAttrTable.byml")) else {
+            continue;
+        };
+        let doc = byml::parse(d).map_err(fmt_err(&path))?;
+        let mut parts = Map::new();
+        for row in doc.as_array().into_iter().flatten() {
+            let Some(part) = row["PartsName"].as_str() else {
+                continue;
+            };
+            let mut themes = Map::new();
+            for (k, v) in row.as_object().into_iter().flatten() {
+                if k != "PartsName" {
+                    themes.insert(k.clone(), v.clone());
+                }
+            }
+            parts.insert(part.to_string(), Value::Object(themes));
+        }
+        out.insert(style.to_string(), Value::Object(parts));
+    }
+    Ok(Value::Object(out))
+}
+
 #[derive(Debug, Default)]
 pub struct SoundReport {
     pub users: usize,
@@ -639,6 +668,7 @@ pub fn import_sounds(romfs: &Path, out: &Path, progress: Progress) -> Result<Sou
         "groups": groups_json(romfs)?,
         "attenuation": attenuation_json(romfs)?,
         "effects": effects_json(romfs)?,
+        "ground": ground_json(romfs)?,
         "waves": wave_files,
     });
     write(

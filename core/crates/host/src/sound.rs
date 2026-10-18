@@ -136,6 +136,8 @@ pub struct Sounds {
     on_off: bool,
     actors: BTreeMap<u32, Snap>,
     water_lpf: f32,
+    prev_player: PlayerSnap,
+    footstep: i32,
     /// What the last tick played (for tests and diagnostics): user, key.
     pub log: Vec<(String, String)>,
 }
@@ -180,6 +182,8 @@ impl Sounds {
             on_off: true,
             actors: BTreeMap::new(),
             water_lpf: 0.0,
+            prev_player: PlayerSnap::default(),
+            footstep: 0,
             log: Vec::new(),
         }
     }
@@ -414,16 +418,103 @@ impl Sounds {
         }
     }
 
-    fn player_props(world: &World) -> PropList {
+    fn player_props(&self, world: &World) -> PropList {
         let p = &world.player;
         PropList::default()
             .with("PlayerMode", map::player_mode(p.form))
             .with("RideYoshi", if p.yoshi.is_some() { 1 } else { 0 })
             .with("BodyWaterType", if p.in_water { "Water" } else { "None" })
+            .with("BgWaterType", liquid_type(world))
+            .with("@ground", self.ground(world).as_str())
+            .with(
+                "ShoeKind",
+                if p.shoe_karon {
+                    "cKaronShell"
+                } else {
+                    "cNormal"
+                },
+            )
+    }
+
+    /// The ground material under the player: the theme's terrain (ice when on ice) [inf: the
+    /// game looks up the part the player stands on].
+    fn ground(&self, world: &World) -> String {
+        let part = if world.player.on_ice {
+            "IceBlock"
+        } else {
+            "Ground"
+        };
+        self.lib
+            .db
+            .ground
+            .get(&self.style)
+            .and_then(|parts| parts.get(part).or_else(|| parts.get("Ground")))
+            .and_then(|t| t.get(theme_value(self.theme)))
+            .cloned()
+            .unwrap_or_else(|| "cNormal".into())
+    }
+
+    fn has_player_key(&self, key: &str) -> bool {
+        self.lib.db.has_key(&self.user("Player"), key)
+    }
+
+    /// Sounds from the player's state changes: landing, entering and leaving water, ground
+    /// pound, vines, shoes, Yoshi, skids, the propeller, footsteps (the 3D styles play these
+    /// from the player's states and animation frames; the step points here are [inf]).
+    fn observe_player(&mut self, world: &World) {
+        let p = &world.player;
+        let now = PlayerSnap::of(world);
+        let prev = self.prev_player;
+        self.prev_player = now;
+        if !p.alive() || world.goal_phase != GoalPhase::None {
+            return;
+        }
+        if now.in_water && !prev.in_water && self.theme != 4 {
+            self.player_sfx(world, "r_splash_in", &[]);
+        } else if !now.in_water && prev.in_water && self.theme != 4 {
+            self.player_sfx(world, "r_splash_out", &[]);
+        }
+        if now.on_ground && !prev.on_ground && !now.in_water && !p.pound_landed {
+            self.player_sfx(world, "landing", &[]);
+        }
+        if now.pound_start && !prev.pound_start {
+            self.player_sfx(world, "hipdrop_start", &[]);
+        }
+        if p.pound_landed {
+            self.player_sfx(world, "hipdrop", &[]);
+        }
+        if now.climbing && !prev.climbing && !self.player_sfx(world, "catchIvy", &[]) {
+            self.player_sfx(world, "climb", &[]);
+        }
+        if now.shoe && !prev.shoe {
+            self.player_sfx(world, "kutsuIn", &[]);
+        }
+        if !now.yoshi && prev.yoshi {
+            self.player_sfx(world, "marioRideOff", &[]);
+        }
+        if now.skid && !prev.skid {
+            self.player_sfx(world, "turn_slip", &[]);
+        }
+        if now.propeller && !prev.propeller {
+            self.player_sfx(world, "propellerjump", &[]);
+        }
+        // footsteps every half walk cycle while walking on the ground
+        if now.on_ground && now.walking {
+            let step = (p.walk_phase / FOOTSTEP_PHASE) as i32;
+            if step != self.footstep {
+                self.footstep = step;
+                let key = if step % 2 == 0 {
+                    "footstep_L"
+                } else {
+                    "footstep_R"
+                };
+                self.player_sfx(world, key, &[]);
+            }
+        }
     }
 
     fn player_sfx(&mut self, world: &World, key: &str, extra: &[(&str, PropValue)]) -> bool {
-        let mut props = Self::player_props(world);
+        let mut props = self.player_props(world);
         for (k, v) in extra {
             props.set(k, v.clone());
         }
@@ -623,6 +714,8 @@ impl Sounds {
         self.coins = world.coins;
         self.on_off = world.on_off;
         self.water_lpf = 0.0;
+        self.prev_player = PlayerSnap::of(world);
+        self.footstep = 0;
         self.actors = snapshot(world);
         self.send(Command::SetMusicLayer {
             gain: 0.0,
@@ -679,6 +772,7 @@ impl Sounds {
         let mut downs = 0;
         let mut emerged = 0;
         self.observe_actors(world, &mut stomps, &mut kicks, &mut downs, &mut emerged);
+        self.observe_player(world);
 
         let pe = Self::player_emitter(world);
         let events = world.events.clone();
@@ -689,13 +783,24 @@ impl Sounds {
                     let p = &world.player;
                     let key = if p.in_water {
                         "swim"
+                    } else if self.prev_player.wall_slide {
+                        // off a wall: the wall kick (NSMBU "kabekick", 3D World "wallkick")
+                        if self.has_player_key("kabekick") {
+                            "kabekick"
+                        } else {
+                            "wallkick"
+                        }
                     } else if p.spinning {
                         "spinjump"
                     } else {
                         "jump"
                     };
-                    if !self.player_sfx(world, key, &[]) && key != "jump" {
-                        self.player_sfx(world, "jump", &[]);
+                    let count = [(
+                        "TripleJumpCount",
+                        PropValue::Num(p.jump_count.min(2) as f32),
+                    )];
+                    if !self.player_sfx(world, key, &count) && key != "jump" {
+                        self.player_sfx(world, "jump", &count);
                     }
                 }
                 Event::Coin => {
@@ -868,7 +973,22 @@ impl Sounds {
                 }
                 Event::Clear => {}
                 Event::Pipe => {
-                    self.player_sfx(world, "DokanIn", &[]);
+                    // a door at the player (the sim reports doors as warps too)
+                    let p = &world.player;
+                    let door = world
+                        .level
+                        .doors
+                        .iter()
+                        .any(|&(x, y, _)| (x - p.x).abs() < 16.0 && (y - p.y).abs() < 24.0);
+                    if door {
+                        let e = pe;
+                        let door_user = self.user("Door");
+                        if !self.sfx_at(world, &door_user, "DoorOpen", &PropList::default(), e, 0) {
+                            self.player_sfx(world, "DoorIn", &[]);
+                        }
+                    } else {
+                        self.player_sfx(world, "DokanIn", &[]);
+                    }
                 }
                 Event::Checkpoint => {
                     self.player_sfx(world, "r_MiddleFlag_On", &[]);
@@ -1075,6 +1195,53 @@ impl Sounds {
     pub fn next_handle(&mut self) -> u32 {
         self.next_handle += 1;
         self.next_handle
+    }
+}
+
+/// Walk-cycle travel between footsteps (px of `walk_phase`) [inf: half the SMB1 walk
+/// animation's 18].
+const FOOTSTEP_PHASE: f32 = 9.0;
+
+/// The player state the director watches for sounds.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct PlayerSnap {
+    on_ground: bool,
+    in_water: bool,
+    pound_start: bool,
+    wall_slide: bool,
+    climbing: bool,
+    shoe: bool,
+    yoshi: bool,
+    skid: bool,
+    propeller: bool,
+    walking: bool,
+}
+
+impl PlayerSnap {
+    fn of(world: &World) -> Self {
+        use mmk_sim::player::Pose;
+        let p = &world.player;
+        Self {
+            on_ground: p.on_ground,
+            in_water: p.in_water,
+            pound_start: p.pound > 0,
+            wall_slide: p.wall_slide > 0,
+            climbing: p.climbing.is_some(),
+            shoe: p.shoe.is_some(),
+            yoshi: p.yoshi.is_some(),
+            skid: p.pose == Pose::Skid,
+            propeller: p.prop_rise > 0,
+            walking: p.pose == Pose::Walk,
+        }
+    }
+}
+
+/// The area liquid's `BgWaterType` value.
+fn liquid_type(world: &World) -> &'static str {
+    match world.liquid.as_ref().map(|l| l.spec.kind) {
+        Some(2) => "Lava",
+        Some(3) => "Poison",
+        _ => "Water",
     }
 }
 

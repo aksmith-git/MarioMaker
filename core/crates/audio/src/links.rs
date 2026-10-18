@@ -337,6 +337,8 @@ pub struct SoundDb {
     pub effects: HashMap<String, Vec<ThemeFx>>,
     /// Wave name → file relative to `audio/`.
     pub waves: HashMap<String, String>,
+    /// Ground material per style, terrain part and theme value (`@ground` values).
+    pub ground: HashMap<String, HashMap<String, HashMap<String, String>>>,
 }
 
 /// Sequence containers' next child, per (user, node).
@@ -409,6 +411,19 @@ impl SoundDb {
                 })
                 .collect();
             db.effects.insert(style.clone(), list);
+        }
+        for (style, parts) in doc["ground"].as_object().into_iter().flatten() {
+            let mut m = HashMap::new();
+            for (part, themes) in parts.as_object().into_iter().flatten() {
+                let t: HashMap<String, String> = themes
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                    .collect();
+                m.insert(part.clone(), t);
+            }
+            db.ground.insert(style.clone(), m);
         }
         for (w, f) in doc["waves"].as_object().into_iter().flatten() {
             if let Some(f) = f.as_str() {
