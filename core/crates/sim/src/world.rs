@@ -1696,6 +1696,7 @@ impl World {
         self.magikoopas();
         self.claws(input);
         self.pow_quake();
+        self.cape_quake();
         // a Sledge Bro landing on screen stuns grounded players for 100 frames (3-hammer-bro.md,
         // QuakeDamage 0x71009d5680 / 0x71009d5910) [obs]
         let v = self.view_rect(0.0);
@@ -3998,6 +3999,34 @@ impl World {
         if self.clear.goal == crate::clear::Goal::Pow {
             let r = self.clear.count(None, 1);
             self.condition_counted(Some(r));
+        }
+    }
+
+    /// A cape dive landing (stage 5) shakes the ground: the player posts the same quake event
+    /// as a POW (0x71009f5f50 → 0x7100420860, type 4) [obs]; grounded enemies in view fall.
+    fn cape_quake(&mut self) {
+        if !self.player.cape_quake {
+            return;
+        }
+        let v = self.view_rect(16.0);
+        let px = self.player.x;
+        let mut downs = 0;
+        for a in &mut self.actors {
+            if a.kind.is_enemy()
+                && a.alive()
+                && a.on_ground
+                && a.x >= v.0
+                && a.x <= v.2
+                && a.y >= v.1
+                && a.y <= v.3
+            {
+                a.die_fall(px);
+                downs += 1;
+            }
+        }
+        self.events.push(Event::Break);
+        if downs > 0 {
+            self.events.push(Event::EnemyDown);
         }
     }
 
@@ -6459,7 +6488,15 @@ impl World {
             Form::Cat if p.attack > 0 => (model, "AttackAir.0"),
             Form::Builder if p.attack > 0 && p.on_ground => (model, "Hammer_Right.0"),
             Form::Builder if p.attack > 0 => (model, "HammerAir_Right.0"),
-            Form::Cape if !p.on_ground && p.flight > 0 => ("M1_Player_MantMario", "up1.0"),
+            // the cape's glide poses by stage (cape model list 0x71009875a0)
+            Form::Cape if p.cape_stage().is_some() => (
+                "M1_Player_MantMario",
+                ["up2.0", "up1.0", "down1.0", "down2.0", "down3.0", "down4.0"]
+                    [p.cape_stage().unwrap_or(0) as usize],
+            ),
+            Form::Cape if matches!(p.cape, crate::player::CapeState::Rise(_)) => {
+                ("M1_Player_MantMario", "up1.0")
+            }
             Form::Cape if !p.on_ground && p.vy <= -0.99 && p.vy >= -1.01 => {
                 ("M1_Player_MantMario", "down1.0")
             }
@@ -7298,6 +7335,23 @@ mod tests {
         run(&mut w, input::JUMP, 1);
         assert!(w.player.climbing.is_none());
         assert!(w.player.vy > 0.0);
+
+        // the grab needs Up and a player who isn't rising (0x7100a12cb0)
+        let mut lvl = Level::flat(40);
+        lvl.vines.push((10.0 * TILE + 8.0, 2.0 * TILE, 8.0 * TILE));
+        let mut w = World::with_level(lvl);
+        w.player.x = 10.0 * TILE + 4.0;
+        run(&mut w, input::DOWN, 1);
+        assert!(w.player.climbing.is_none(), "Down doesn't grab");
+        w.player.y = 4.0 * TILE;
+        w.player.vy = 2.0;
+        w.player.on_ground = false;
+        w.step(Input { buttons: input::UP });
+        assert!(w.player.climbing.is_none(), "not while rising");
+        for _ in 0..30 {
+            w.step(Input { buttons: input::UP });
+        }
+        assert!(w.player.climbing.is_some(), "grabs once falling");
     }
 
     #[test]

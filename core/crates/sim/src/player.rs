@@ -255,6 +255,33 @@ pub enum Pose {
     Spin,
 }
 
+/// SMW cape flight: MantFlyingUp (0x47), MantFlying (0x48), MantSlide (0x4a).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CapeState {
+    None,
+    /// The climb: frames left of the 72-frame state counter.
+    Rise(i32),
+    /// Gliding: the cape's pose stage (0 up2 … 5 down4) steps one at a time toward `target`
+    /// every 8 frames (2 after a change made with the stored lift at 3.5); `mode` 0 neutral,
+    /// 1 pulled back, 2 diving; `lift` is the stored climb from a dive.
+    Fly {
+        stage: u8,
+        target: u8,
+        mode: u8,
+        counter: u8,
+        quick: bool,
+        lift: f32,
+    },
+    /// Landed from a glide: skidding to a stop without control.
+    Slide,
+}
+
+/// MantFlying per-stage minimum vy and vy change (0x7101d09cd8 / 0x7101d09cf0) [obs].
+const CAPE_MIN_VY: [f32; 6] = [-1.0, -3.0, -3.0, -3.5, -3.5, -4.0];
+const CAPE_DVY: [f32; 6] = [-0.06, -0.06, -0.18, -0.24, -0.3, -0.36];
+/// Stored lift by fall speed, index clamp(int(−2·vy), 0, 8) (0x7101d09cb4) [obs].
+const CAPE_LIFT: [f32; 9] = [0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 0.75, 1.0, 3.5];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SkidPhase {
     None,
@@ -340,6 +367,13 @@ pub struct Player {
     pub p_meter: i32,
     p_hold: i32,
     pub flight: i32,
+    /// SMW cape flight and the cape run meter (0…30: frames running at ≥ 2.1 px/f); a cape
+    /// dive landed this frame (the world shakes as for a POW); the head hit something last
+    /// frame.
+    pub cape: CapeState,
+    pub cape_meter: i32,
+    pub cape_quake: bool,
+    ceiling: bool,
     /// Raccoon / cape: attack (tail swing, cape spin) frames left; flap and slow-fall frames.
     pub attack: i32,
     pub flap: i32,
@@ -445,6 +479,10 @@ impl Player {
             p_meter: 0,
             p_hold: 0,
             flight: 0,
+            cape: CapeState::None,
+            cape_meter: 0,
+            cape_quake: false,
+            ceiling: false,
             attack: 0,
             flap: 0,
             slow_fall: 0,
@@ -1044,6 +1082,7 @@ impl Player {
             self.exit_window -= 1;
         }
         let vy_before = self.vy;
+        let (vx_before, face_before) = (self.vx, self.facing);
         if self.in_water {
             self.swim(inp, pressed);
         } else {
@@ -1054,6 +1093,8 @@ impl Player {
             if self.on_ground {
                 if self.sliding {
                     self.slide(level);
+                } else if self.cape == CapeState::Slide {
+                    self.cape_slide(level);
                 } else {
                     self.ground(inp);
                 }
@@ -1113,6 +1154,7 @@ impl Player {
             } else {
                 self.vy = (self.vy + g).max(FALL_CAP);
             }
+            self.step_cape(inp, jump, vy_before, vx_before, face_before);
         }
         if self.chain_window > 0 {
             self.chain_window -= 1;
@@ -1151,7 +1193,11 @@ impl Player {
             } else if self.slow_fall > 0 {
                 self.slow_fall -= 1;
                 self.vy = self.vy.max(-1.0);
-            } else if self.form == Form::Cape && jump && self.vy < 0.0 {
+            } else if self.form == Form::Cape
+                && self.cape == CapeState::None
+                && jump
+                && self.vy < 0.0
+            {
                 self.vy = self.vy.max(-1.0);
             }
         } else {
@@ -1174,6 +1220,23 @@ impl Player {
 
         let sensors = self.sensors();
         self.move_and_collide(level, sensors);
+        self.ceiling = self.head_hit.is_some() || self.head_solid.is_some();
+        // the cape lands: a dive (stage 5) shakes the ground (0x71009f5f50), any other glide
+        // slides to a stop (MantSlide); the climb just ends
+        self.cape_quake = false;
+        if self.on_ground {
+            self.cape = match self.cape {
+                CapeState::Fly { stage: 5, .. } => {
+                    self.cape_quake = true;
+                    CapeState::None
+                }
+                CapeState::Fly { .. } => CapeState::Slide,
+                CapeState::Slide => CapeState::Slide,
+                _ => CapeState::None,
+            };
+        } else if self.cape == CapeState::Slide {
+            self.cape = CapeState::None;
+        }
         // landing from a jump advances the chain count 0 → 1 → 2 → 0 and opens its window
         if self.on_ground && self.in_jump {
             self.in_jump = false;
@@ -1530,12 +1593,169 @@ impl Player {
             }
             self.attack = self.attack.max(8);
         }
-        if pressed && self.on_ground && self.p_meter >= 630 && self.form == Form::Cape {
-            // cape flight (simplified): a high launch, then the glide [inf: MantFlying dives ⬜]
-            self.flight = 72;
+        // SMW cape meter (0x71009f5d10) [obs]: +1 a frame running on the ground with Run and a
+        // direction held at ≥ 2.1 px/f, up to 30; anything else empties it, except that a full
+        // meter is kept in the air
+        if self.style == Style::MW {
+            if running {
+                self.cape_meter = (self.cape_meter + 1).min(30);
+            } else if !(self.cape_meter == 30 && !self.on_ground) {
+                self.cape_meter = 0;
+            }
         }
-        if self.form == Form::Cape && self.flight > 60 && !self.on_ground {
-            self.vy = self.vy.max(3.628);
+    }
+
+    /// SMW cape flight [obs]. A jump rising faster than 1.0 with a full cape meter (Jump exec
+    /// 0x71009f1450) starts MantFlyingUp (0x71009f60a0 / 0x71009f61a0): a 72-frame counter
+    /// holds vy at the jump launch speed (3.628 + the speed bonus) with no gravity; letting go
+    /// of Jump after 11 frames, or a ceiling, ends it; then vy falls by 0.3 a frame and at 0
+    /// the glide (MantFlying 0x71009f68c0 / 0x71009f6990) starts if Run is held. Gliding, the
+    /// speed heads for 3.25 forward (0.06 a frame, only while diving), vy = max(vy, minimum of
+    /// the cape stage) + the stage's change, and a dive's stored lift is paid back as +0.75 a
+    /// frame in stage 0 while moving forward. Run released at stage 0 ends it. Called after
+    /// gravity; `vy0` / `vx0` / `face0` are this frame's values before the movement code.
+    fn step_cape(&mut self, inp: Input, jump: bool, vy0: f32, vx0: f32, face0: i32) {
+        if self.form != Form::Cape || self.in_water {
+            self.cape = CapeState::None;
+            return;
+        }
+        let run = inp.held(input::RUN);
+        match self.cape {
+            CapeState::None => {
+                if self.in_jump && !self.on_ground && vy0 > 1.0 && self.cape_meter == 30 {
+                    self.cape = CapeState::Rise(72);
+                }
+            }
+            CapeState::Rise(t) => {
+                // the state counter ticks before the state runs
+                let mut t = (t - 1).max(0);
+                let mut vy = vy0;
+                if self.ceiling {
+                    t = 0;
+                    vy = 0.0;
+                }
+                if t < 61 && !jump {
+                    t = 0;
+                }
+                if t == 0 {
+                    self.vy = vy - 0.3;
+                    self.cape = if self.vy > 0.0 {
+                        CapeState::Rise(0)
+                    } else if run {
+                        CapeState::Fly {
+                            stage: 0,
+                            target: 2,
+                            mode: 0,
+                            counter: 8,
+                            quick: false,
+                            lift: 0.0,
+                        }
+                    } else {
+                        CapeState::None
+                    };
+                } else {
+                    self.vy = JUMP_BASE + jump_bonus(self.vx.abs());
+                    self.cape = CapeState::Rise(t);
+                }
+            }
+            CapeState::Fly {
+                mut stage,
+                target,
+                mode,
+                mut counter,
+                quick,
+                mut lift,
+            } => {
+                if !run && stage == 0 {
+                    self.cape = CapeState::None;
+                    return;
+                }
+                // the glide steers by itself: undo this frame's air control and turning
+                self.vx = vx0;
+                self.facing = face0;
+                let new_mode = if self.ceiling {
+                    0
+                } else if vy0 < 0.0 && run {
+                    match inp.dir_x() {
+                        0 => 0,
+                        d if d == self.facing => 2,
+                        _ => 1,
+                    }
+                } else {
+                    1
+                };
+                if new_mode == 2 {
+                    lift = 0.0;
+                }
+                let (mut mode, mut target, mut quick) = (mode, target, quick);
+                if new_mode != mode {
+                    mode = new_mode;
+                    quick = (lift - 3.5).abs() <= f32::EPSILON;
+                    target = [2, 0, 5][mode as usize];
+                    counter = 0;
+                }
+                if mode == 2 {
+                    self.vx = approach(self.vx, self.facing as f32 * 3.25, 0.06);
+                }
+                let k = ((-2.0 * vy0) as i32).clamp(0, 8) as usize;
+                lift = lift.max(CAPE_LIFT[k]);
+                let base = vy0.max(CAPE_MIN_VY[stage as usize]);
+                let mut add = CAPE_DVY[stage as usize];
+                if stage == 0 && lift != 0.0 {
+                    if self.ceiling || lift < vy0 {
+                        lift = 0.0;
+                    }
+                    if self.vx * self.facing as f32 > 0.0 {
+                        add = 0.75;
+                    }
+                }
+                self.vy = (base + add).max(FALL_CAP);
+                // the cape's own update at the end of the frame (0x7100987080)
+                if counter <= 1 {
+                    if stage != target {
+                        stage = if target > stage { stage + 1 } else { stage - 1 };
+                    }
+                    counter = if quick { 2 } else { 8 };
+                } else {
+                    counter -= 1;
+                }
+                self.cape = CapeState::Fly {
+                    stage,
+                    target,
+                    mode,
+                    counter,
+                    quick,
+                    lift,
+                };
+            }
+            CapeState::Slide => {}
+        }
+    }
+
+    /// The cape's pose stage while gliding (0 up2 … 5 down4).
+    pub fn cape_stage(&self) -> Option<u8> {
+        match self.cape {
+            CapeState::Fly { stage, .. } => Some(stage),
+            _ => None,
+        }
+    }
+
+    /// MantSlide (0x71009f6df0) [obs]: on flat ground the speed is capped at 3.25 and runs down
+    /// at 0.06 (ice 0.02) with no control; it ends at a stop. On a slope it becomes the slip.
+    fn cape_slide(&mut self, level: &Level) {
+        let on_slope = level
+            .slope_at(self.x)
+            .is_some_and(|(sy, _)| (self.y - sy).abs() < 6.0);
+        if on_slope {
+            self.cape = CapeState::None;
+            self.sliding = true;
+            return;
+        }
+        let decel = if self.on_ice { 0.02 } else { 0.06 };
+        self.vx = approach(self.vx.clamp(-3.25, 3.25), 0.0, decel);
+        self.pose = Pose::Slide;
+        if self.vx == 0.0 {
+            self.cape = CapeState::None;
         }
     }
 
@@ -1547,16 +1767,25 @@ impl Player {
             .find(|v| (x - v.0).abs() <= 10.0 && y + 8.0 >= v.1 && y + 4.0 <= v.2)
     }
 
-    /// Grab a vine the player overlaps: Up, or Down in the air [inf: grab input not traced].
+    /// Grab a vine the player overlaps (grab check 0x7100a12cb0) [obs]: Up held, not carrying
+    /// anything, not rising, and the re-grab lock run out. The side: the near one at |v| ≥ 1.5
+    /// (the facing flipped), else the side the player is on.
     fn try_grab(&mut self, inp: Input, level: &Level) -> bool {
-        if self.climb_lock > 0 || self.in_water {
+        if self.climb_lock > 0 || self.in_water || self.held.is_some() || self.vy > 0.0 {
             return false;
         }
-        let want = inp.held(input::UP) || (inp.held(input::DOWN) && !self.on_ground);
+        let want = inp.held(input::UP);
         let Some(v) = want.then(|| Self::vine_at(level, self.x, self.y)).flatten() else {
             return false;
         };
-        self.climbing = Some((v.0, if self.x < v.0 { -1 } else { 1 }));
+        let side = if self.vx.abs() >= 1.5 {
+            -self.facing
+        } else if self.x <= v.0 {
+            -1
+        } else {
+            1
+        };
+        self.climbing = Some((v.0, side));
         self.vx = 0.0;
         self.vy = 0.0;
         self.crouch = false;
@@ -2188,6 +2417,80 @@ mod tests {
             c.step(run, &level);
         }
         assert!(c.dashing(), "the cat dashes after 60 frames ({})", c.dash);
+    }
+
+    #[test]
+    fn cape_meter_climb_glide_and_dive() {
+        let level = Level::flat(400);
+        let mut p = Player::new(56.0, 32.0);
+        p.style = Style::MW;
+        p.form = Form::Cape;
+        let run_right = input::RIGHT | input::RUN;
+        // 30 frames at ≥ 2.1 px/f fill the meter
+        let mut frames = 0;
+        while p.cape_meter < 30 {
+            p.step(Input { buttons: run_right }, &level);
+            frames += 1;
+            assert!(frames < 200);
+        }
+        // the jump turns into the climb: vy held at the launch speed while Jump is held
+        p.step(
+            Input {
+                buttons: run_right | input::JUMP,
+            },
+            &level,
+        );
+        p.step(
+            Input {
+                buttons: run_right | input::JUMP,
+            },
+            &level,
+        );
+        assert!(matches!(p.cape, CapeState::Rise(_)), "{:?}", p.cape);
+        let launch = JUMP_BASE + 0.3;
+        for _ in 0..20 {
+            p.step(
+                Input {
+                    buttons: run_right | input::JUMP,
+                },
+                &level,
+            );
+            assert!((p.vy - launch).abs() < 1e-5, "{}", p.vy);
+        }
+        // release Jump: vy drains by 0.3 a frame, then the glide starts (Run held)
+        let mut glide = false;
+        for _ in 0..40 {
+            p.step(Input { buttons: run_right }, &level);
+            if p.cape_stage().is_some() {
+                glide = true;
+                break;
+            }
+        }
+        assert!(glide);
+        // forward held while falling: the dive stage climbs to 5, one step per 8 frames
+        let mut stage5 = false;
+        for _ in 0..80 {
+            p.step(Input { buttons: run_right }, &level);
+            if p.cape_stage() == Some(5) {
+                stage5 = true;
+                break;
+            }
+            if p.on_ground {
+                break;
+            }
+        }
+        assert!(stage5);
+        assert!(p.vx > 3.0, "dives toward 3.25: {}", p.vx);
+        // landing in the dive shakes the ground
+        let mut quake = false;
+        for _ in 0..200 {
+            p.step(Input { buttons: run_right }, &level);
+            quake |= p.cape_quake;
+            if p.on_ground {
+                break;
+            }
+        }
+        assert!(quake);
     }
 
     #[test]
