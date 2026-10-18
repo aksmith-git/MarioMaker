@@ -137,6 +137,19 @@ mod native {
         /// Any engine option as NAME=VALUE (repeatable; see `mmk_sim::Options`).
         #[arg(long = "option", value_name = "NAME=VALUE")]
         options: Vec<String>,
+        /// SMM1 costume art (`mmk import-smm1` output's costumes/ folder; "none" to skip).
+        /// Default: $MMK_COSTUMES, else ~/smm-work/cache/smm1-v208/costumes if it exists.
+        #[arg(long, value_name = "DIR")]
+        costumes: Option<String>,
+    }
+
+    fn default_costumes() -> Option<PathBuf> {
+        if let Ok(p) = std::env::var("MMK_COSTUMES") {
+            return (!p.is_empty() && p != "none").then(|| PathBuf::from(p));
+        }
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+        let p = PathBuf::from(home).join("smm-work/cache/smm1-v208/costumes");
+        p.join("manifest.json").is_file().then_some(p)
     }
 
     /// The engine options from the command line.
@@ -192,6 +205,26 @@ mod native {
             None => None,
         };
         let mut game = Game::load(source_ref, if args.edit { None } else { course.as_deref() })?;
+        let costumes = match args.costumes.as_deref() {
+            Some("none") => None,
+            Some(p) => Some(PathBuf::from(p)),
+            None => default_costumes(),
+        };
+        if let Some(dir) = costumes.filter(|_| assets_dir.is_some())
+            && let Some(cache) = Arc::get_mut(&mut game.cache)
+        {
+            match mmk_assets::Cache::open(&dir) {
+                Ok(c) => {
+                    cache.merge(c);
+                    log(&format!(
+                        "costumes: {} ({} costumes)",
+                        dir.display(),
+                        cache.costume_names().len()
+                    ));
+                }
+                Err(e) => log(&format!("costumes: {e}")),
+            }
+        }
         if args.edit {
             let editor = match &course {
                 Some(bytes) => {

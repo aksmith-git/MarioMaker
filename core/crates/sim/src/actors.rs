@@ -575,6 +575,9 @@ pub struct Actor {
     pub floor_ref: f32,
     /// 3D World enemy state and what the world senses for them (actors/w3.rs).
     pub w3: W3State,
+    /// SMM1 shell physics: a shell kicked by the mid-air wall assist — its stop point (x) and
+    /// kick direction (world/smm1.rs).
+    pub assist: Option<(f32, i32)>,
 }
 
 impl Actor {
@@ -623,6 +626,7 @@ impl Actor {
             camera: (0.0, 0.0),
             floor_ref: 0.0,
             w3: W3State::default(),
+            assist: None,
         }
     }
 

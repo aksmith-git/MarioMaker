@@ -73,8 +73,23 @@ pub fn place(s: &Sprite, tex_w: f32, tex_h: f32, quad: Option<Quad>) -> [f32; 8]
     out
 }
 
-/// Texture index and BFRES quad of a (model, texture) name; None if the cache lacks the texture.
-type Resolved = Option<(u32, Option<Quad>)>;
+/// Texture index and BFRES quad of a (model, texture) name, and whether it is a stand-in drawn
+/// at its own size (an SMM1 costume without its art: small Mario); None if the cache lacks it.
+type Resolved = Option<(u32, Option<Quad>, bool)>;
+
+/// Model name prefix of the SMM1 costumes (`SMM1_Costume_<id>`, the importer's costume cache).
+pub const COSTUME_PREFIX: &str = "SMM1_Costume_";
+
+/// Small Mario's frame for a costume frame (costumes have a few poses he lacks).
+fn costume_stand_in(frame: &str) -> &str {
+    match frame.split_once('.') {
+        Some(("b_dash", n)) => ["walk.0", "walk.1", "walk.2"][n.parse::<usize>().unwrap_or(0) % 3],
+        Some(("jump_fall", _)) => "jump.0",
+        Some(("pole", _)) => "climb.0",
+        Some(("appeal" | "shoes_wait", _)) => "wait.0",
+        _ => frame,
+    }
+}
 
 /// Resolves the sim's (model, texture) names against an asset cache, once per name. Clear it
 /// (`reset`) when the cache changes.
@@ -106,8 +121,17 @@ impl SpriteResolver {
         let found = *self.lookup.entry(key).or_insert_with(|| {
             let resolve_tex = |model: &str, tex: &str| {
                 let i = cache.texture_index(model, tex)?;
-                Some((i as u32, cache.sprite_quad(model, tex)))
+                Some((i as u32, cache.sprite_quad(model, tex), false))
             };
+            if key.0.starts_with(COSTUME_PREFIX) {
+                // an SMM1 costume: its own art, else small Mario standing in
+                return resolve_tex(key.0, key.1).or_else(|| {
+                    let model = "M1_Player_MarioMdl";
+                    resolve_tex(model, costume_stand_in(key.1))
+                        .or_else(|| resolve_tex(model, "wait.0"))
+                        .map(|(i, q, _)| (i, q, true))
+                });
+            }
             // the sim names SMB1 models; other styles use the same names with their own prefix
             // (M3_, MW_, …) and fall back to the SMB1 art where a style has no such model
             let styled = key
@@ -136,12 +160,19 @@ impl SpriteResolver {
                 .or_else(|| wu_field.as_deref().and_then(|m| resolve_tex(m, m)))
         });
         let (texture, p) = match found {
-            Some((texture, quad)) => {
+            Some((texture, quad, stand_in)) => {
                 let t = &cache.textures[texture as usize];
-                (
-                    Some(texture),
-                    place(s, t.width as f32, t.height as f32, quad),
-                )
+                let (tw, th) = (t.width as f32, t.height as f32);
+                let p = if stand_in {
+                    // drawn at its own size around the same origin
+                    let mut own = *s;
+                    own.x = s.x + s.w / 2.0 - tw / 2.0;
+                    (own.w, own.h) = (tw, th);
+                    place(&own, tw, th, quad)
+                } else {
+                    place(s, tw, th, quad)
+                };
+                (Some(texture), p)
             }
             None => (None, place(s, s.w.max(1.0), s.h.max(1.0), None)),
         };

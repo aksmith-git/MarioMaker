@@ -27,6 +27,7 @@ use crate::warp::{self, SideHold, Transit};
 mod bosses;
 mod debug;
 mod smm1;
+use smm1::Smm1Shell;
 mod w3;
 
 /// SMM2 shows 24 × 13.5 tiles.
@@ -1655,6 +1656,8 @@ impl World {
             }
             at
         };
+        // SMM1 shell physics: shells kicked by the mid-air wall assist
+        self.step_shell_assist();
         for a in &mut self.actors {
             if a.held {
                 continue;
@@ -2871,6 +2874,8 @@ impl World {
             let d = ay + ah - p.y;
             let falling = p.vy <= 0.0;
             let w = match (a.big, falling) {
+                // SMM1 (0x0234aa14): a flat 10 for ordinary enemies when falling
+                (false, true) if self.options.smm1_shell_kicks => 10.0,
                 (false, true) => 7.0 + (-p.vy).max(0.0),
                 (false, false) => 3.0,
                 (true, true) => 12.0,
@@ -2986,9 +2991,19 @@ impl World {
                 i += 1;
                 continue;
             }
+            // SMM1 shell physics (Options::smm1_shell_kicks, world/smm1.rs)
+            if self.options.smm1_shell_kicks && matches!(a.kind, Kind::Shell { .. }) {
+                match self.smm1_shell_contact(i, stomp, jump_held) {
+                    Smm1Shell::Done => {
+                        i += 1;
+                        continue;
+                    }
+                    Smm1Shell::Hurt => {}
+                }
+            }
             if still_shell {
-                let dir = if ax >= p.x { 1 } else { -1 };
-                let pvx = p.vx;
+                let dir = if ax >= self.player.x { 1 } else { -1 };
+                let pvx = self.player.vx;
                 self.actors[i].kick(dir, pvx);
                 if stomp {
                     self.player.bounce(jump_held);
