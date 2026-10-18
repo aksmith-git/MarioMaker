@@ -276,19 +276,24 @@ async function importDump(paths, prefix) {
   }
   status(`Importing the dump in this browser (${romfs.length} RomFS files)…`);
   await removeData();
+  await removeData(UI_ROOT);
   const worker = new Worker(new URL("./mmk-import-worker.js", import.meta.url), { type: "module" });
   // the importer's output files, stored here (the worker can't wait for storage), WRITERS at a
-  // time; the manifest last, as for a copied cache
+  // time; the manifests last, as for a copied cache. The SMM2 UI import's files come as
+  // "@ui/<path>" and go to their own folder.
+  const UI_MARK = "@ui/";
   const queue = [];
   let active = 0;
   let manifest = null;
+  let uiManifest = null;
+  const uiPaths = [];
   let writeError = null;
   let drained = null;
   const pump = () => {
     while (active < WRITERS && queue.length) {
-      const [path, bytes] = queue.shift();
+      const [path, bytes, root] = queue.shift();
       active++;
-      writeFile(path, bytes)
+      writeFile(path, bytes, root)
         .catch((e) => (writeError ??= e))
         .finally(() => {
           active--;
@@ -303,15 +308,22 @@ async function importDump(paths, prefix) {
       worker.onerror = (e) => reject(new Error(e.message || "import worker failed"));
       worker.onmessage = ({ data }) => {
         if (data.write) {
-          if (data.write === "manifest.json") manifest = data.bytes;
-          else queue.push([data.write, data.bytes]);
+          const ui = data.write.startsWith(UI_MARK);
+          const path = ui ? data.write.slice(UI_MARK.length) : data.write;
+          if (path === "manifest.json") {
+            if (ui) uiManifest = data.bytes;
+            else manifest = data.bytes;
+          } else {
+            if (ui) uiPaths.push(path);
+            queue.push([path, data.bytes, ui ? UI_ROOT : ROOT]);
+          }
           pump();
         } else if (data.progress) {
           const [stage, done, total] = data.progress;
           status(`Importing the dump in this browser: ${stage} (${done}/${total})…`);
           progress(done, total);
         } else if (data.done) {
-          resolve(JSON.parse(data.done));
+          resolve({ data: JSON.parse(data.done), ui: data.ui ? JSON.parse(data.ui) : null });
         } else if (data.error) {
           reject(new Error(data.error));
         }
@@ -329,6 +341,11 @@ async function importDump(paths, prefix) {
   if (writeError) throw writeError;
   if (!manifest) throw new Error("the import wrote no manifest");
   await writeFile("manifest.json", manifest);
+  if (uiManifest) {
+    const list = uiPaths.concat("manifest.json");
+    await writeFile(UI_INDEX, new TextEncoder().encode(list.join("\n")), UI_ROOT);
+    await writeFile("manifest.json", uiManifest, UI_ROOT);
+  }
   console.log("imported in the browser:", summary);
 }
 

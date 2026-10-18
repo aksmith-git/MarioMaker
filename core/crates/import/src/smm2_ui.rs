@@ -26,7 +26,6 @@
 //! found loose.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use ab_glyph::FontVec;
@@ -103,11 +102,11 @@ pub(crate) struct LayoutSource {
 }
 
 fn sorted_files(dir: &Path, ext: &str) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = fs::read_dir(dir)
-        .map(|rd| {
-            rd.flatten()
-                .map(|e| e.path())
-                .filter(|p| p.is_file() && p.to_string_lossy().ends_with(ext))
+    let mut v: Vec<PathBuf> = crate::read_dir(dir)
+        .map(|paths| {
+            paths
+                .into_iter()
+                .filter(|p| crate::is_file(p) && p.to_string_lossy().ends_with(ext))
                 .collect()
         })
         .unwrap_or_default();
@@ -262,7 +261,7 @@ fn icon_models(romfs: &Path, suffix: &str) -> Vec<(String, Vec<u8>)> {
         .collect();
     let mut out: Vec<(String, Vec<u8>)> = Vec::new();
     for w in &wanted {
-        if let Ok(d) = fs::read(romfs.join("Model").join(w)) {
+        if let Ok(d) = read(&romfs.join("Model").join(w)) {
             out.push((format!("Model/{w}"), d));
         }
     }
@@ -270,7 +269,7 @@ fn icon_models(romfs: &Path, suffix: &str) -> Vec<(String, Vec<u8>)> {
         if out.len() == wanted.len() {
             break;
         }
-        let Ok(data) = fs::read(&path) else { continue };
+        let Ok(data) = read(&path) else { continue };
         let Ok(sarc) = archive::unwrap(data).and_then(Sarc::parse) else {
             continue;
         };
@@ -644,6 +643,7 @@ pub fn run_smm2_ui(cfg: &Smm2UiConfig, progress: Progress) -> Result<Smm2UiRepor
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     /// Minimal little-endian SARC writer (names stored; readers don't need hash order).
     fn sarc(files: &[(&str, &[u8])]) -> Vec<u8> {
