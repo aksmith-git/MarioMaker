@@ -15,11 +15,16 @@ import SwiftUI
 //             L_CourseRobotPlayBtn_00 "Coursebot" (Cmn_MainMenuBtn_00: Select = grow 3%,
 //             Decide = flash)
 //   Type      logo letters black (frame 0) or white (frame 1)
+// From the game's title page (private research/specs/smm2-frontend.md "Title") [obs]: the four
+// layout states are an animation graph (prompt →PressKey→ Make/Play →DecidePlayBtn→ Play menu,
+// back by DecideBackBtnTop / DecideBackBtn, Make →DecideEditBtn→ editor); the prompt puts the
+// cursor on Make; the Play menu opens with the cursor on Story Mode and going back from it puts
+// it on Play; the choices change scene with the black fade (AppModel).
 // Inferred [inf]: which logo colour goes with which course (by the course's sky colour), the
 // cursor (`Cmn_Cursor_00`, sized to the selected button's N_Carsor_00 / B_Btn_00 as the panes'
-// names suggest), the timings between an animation's end and the next screen. Departures: a
+// names suggest), how long a button's Decide plays before its choice acts. Departures: a
 // fourth Play-menu button "100 Mario Challenge" (a copy of the Coursebot button, 116 below it,
-// with the castle icon) for the SMM1-style challenge; Make is disabled ("coming soon").
+// with the castle icon); Make plays its clap and says "coming soon" (no editor in the app yet).
 
 enum TitleChoice {
     case storyMode, courseWorld, coursebot, hundredMario
@@ -33,7 +38,8 @@ final class TitleScene: UIScene {
     let cursor: UILayout?
     private(set) var tick = 0
     private(set) var state: State
-    private(set) var mainSelection = 1          // 0 Make, 1 Play
+    /// 0 Make, 1 Play; the prompt puts the cursor on Make [obs].
+    private(set) var mainSelection = 0
     private(set) var categorySelection = 0
     private var busyUntil = 0
     private var pending: (choice: TitleChoice, at: Int)?
@@ -126,40 +132,49 @@ final class TitleScene: UIScene {
             if !pressed.isEmpty { toMain(from: .top) }
         case .main:
             if pressed.contains(.left) || pressed.contains(.right) {
-                selectMain(pressed.contains(.left) ? 0 : 1, animate: true)
+                let i = pressed.contains(.left) ? 0 : 1
+                if i != mainSelection { sound.button(Self.layoutName, Self.mainButtons[i], .select) }
+                selectMain(i, animate: true)
             } else if pressed.contains(.confirm) {
                 let b = Self.mainButtons[mainSelection]
+                sound.button(Self.layoutName, b, .decide)
                 title.play("\(b)/Decide", at: tick)
                 if mainSelection == 0 {
                     busyUntil = tick + Int(title.length("\(b)/Decide"))
                     onComingSoon?()
                 } else {
-                    // the clap, then the menu swaps to the category buttons
+                    // the clap, then the menu swaps to the category buttons; the Play menu
+                    // opens on Story Mode [obs]
                     let clap = Int(title.length("\(b)/Decide"))
                     restart("DecidePlayBtn", at: tick + clap)
                     state = .category
-                    selectCategory(categorySelection, animate: false)
+                    selectCategory(0, animate: false)
                     busyUntil = tick + clap + Int(title.length("DecidePlayBtn"))
                 }
             } else if pressed.contains(.back) {
+                sound.back(Self.layoutName, context: "title")
                 title.stop("PressKey")
                 restart("DecideBackBtnTop", at: tick)
                 state = .top
                 busyUntil = tick + Int(title.length("DecideBackBtnTop"))
+                mainSelection = 0    // Wait: the cursor goes back to Make [obs]
             }
         case .category:
             let n = Self.categoryButtons.count
-            if pressed.contains(.up) {
-                selectCategory((categorySelection + n - 1) % n, animate: true)
-            } else if pressed.contains(.down) {
-                selectCategory((categorySelection + 1) % n, animate: true)
+            if pressed.contains(.up) || pressed.contains(.down) {
+                let i = (categorySelection + (pressed.contains(.up) ? n - 1 : 1)) % n
+                sound.button(Self.layoutName, Self.soundPane(Self.categoryButtons[i]), .select)
+                selectCategory(i, animate: true)
             } else if pressed.contains(.confirm) {
                 let b = Self.categoryButtons[categorySelection]
+                sound.button(Self.layoutName, Self.soundPane(b), .decide)
                 title.play("\(b)/Decide", at: tick)
                 state = .leaving
                 // the button's flash (frames 0–8 of Decide), then the next screen [inf]
                 pending = (Self.categoryChoices[categorySelection], tick + 24)
             } else if pressed.contains(.back) {
+                sound.back(Self.layoutName, context: "title")
+                mainSelection = 1    // back from the Play menu: the cursor on Play [obs]
                 toMain(from: .category)
             }
         case .leaving:
@@ -167,8 +182,15 @@ final class TitleScene: UIScene {
         }
     }
 
+    /// The layout's name for its sounds (`UISound`), and the pane whose sound type a button
+    /// uses (the added 100 Mario button sounds like the Coursebot one it copies).
+    static let layoutName = "Play_Title_00"
+    static func soundPane(_ b: String) -> String { b == "L_HundredBtn_00" ? "L_CourseRobotPlayBtn_00" : b }
+    private var sound: UISound { UISound.shared }
+
     private func toMain(from: State) {
         if from == .top {
+            sound.anim(Self.layoutName, "PressKey")
             title.stop("DecideBackBtnTop")
             restart("PressKey", at: tick)
             busyUntil = tick + Int(title.length("PressKey"))

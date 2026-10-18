@@ -38,11 +38,20 @@ final class ChallengeFlow: ObservableObject, Identifiable {
     /// Shown on the ending screen: a difficulty this run unlocked.
     @Published private(set) var unlocked: Int?
     @Published private(set) var credits: [Course] = []
-    /// The layout screen for the current stage (nil while playing, or without the SMM1 import).
+    /// The layout screen for the current stage (nil while playing, or without the import).
     @Published private(set) var scene: UIScene?
-    let ui = SMM1UI.shared
+    /// Which game's screens present the run: SMM2's Endless Challenge menus (with the SMM2 UI
+    /// import, the default; SMM2Endless.swift) or SMM1's own (`hundred.presentation` = smm1).
+    enum Presentation { case smm1, smm2 }
+    let presentation: Presentation
+    /// The import the screens come from (SMM1's or SMM2's).
+    let ui: LayoutUI?
     /// Map and title bar handed from the select screen to the MapIn that follows it.
     var handoff: (WorldMap, UILayout)?
+    /// SMM2: the Endless menu handed to the run's map (ChangeMap continues it).
+    var endlessHandoff: EndlessBoard?
+    var isSMM2: Bool { presentation == .smm2 }
+    var isPlaying: Bool { if case .playing = stage { true } else { false } }
     /// How the next world-map visit starts (set by start / the last course result).
     private var entry: MapIntroScene.Entry = .newGame
 
@@ -54,10 +63,22 @@ final class ChallengeFlow: ObservableObject, Identifiable {
 
     static var saveURL: URL { AppPaths.support.appendingPathComponent("hundred.json") }
 
-    /// `library`: the playable courses offered to the pools.
-    init(assets: EngineAssets, library: [CourseEntry], saves: SaveStore?) {
+    /// `library`: the playable courses offered to the pools. `presentation` nil: from Settings.
+    init(assets: EngineAssets, library: [CourseEntry], saves: SaveStore?, presentation: Presentation? = nil) {
         self.assets = assets
         self.saves = saves
+        // MMK_HUNDRED=smm1|smm2 (captures) over Settings > Game
+        let setting = ProcessInfo.processInfo.environment["MMK_HUNDRED"]
+            ?? UserDefaults.standard.string(forKey: SettingsKey.hundredPresentation)
+        let wanted = presentation ?? (setting == "smm1" ? .smm1 : .smm2)
+        // the chosen game's import, else the other one
+        if wanted == .smm2 && LayoutUI.smm2 != nil || LayoutUI.smm1 == nil && LayoutUI.smm2 != nil {
+            self.presentation = .smm2
+            ui = LayoutUI.smm2
+        } else {
+            self.presentation = .smm1
+            ui = LayoutUI.smm1
+        }
         let json = try? String(contentsOf: Self.saveURL, encoding: .utf8)
         handle = mmk_challenge_new(json, UInt64.random(in: 1...UInt64.max))
         var map: [String: CourseEntry] = [:]
@@ -72,7 +93,13 @@ final class ChallengeFlow: ObservableObject, Identifiable {
 
     private func makeMenu() {
         handoff = nil
-        scene = ui.flatMap { ChallengeMenuScene(flow: self, ui: $0, difficulty: difficulty) }
+        endlessHandoff = nil
+        guard let ui else {
+            scene = nil
+            return
+        }
+        scene = isSMM2 ? EndlessMenuScene(flow: self, ui: ui, difficulty: difficulty)
+                       : ChallengeMenuScene(flow: self, ui: ui, difficulty: difficulty)
     }
 
     static func lockedMessage(_ d: Int) -> String {
@@ -142,9 +169,23 @@ final class ChallengeFlow: ObservableObject, Identifiable {
         course = Course(path: Self.str(c.id), name: Self.str(c.name), maker: Self.str(c.maker),
                         difficulty: Int(c.difficulty))
         let cleared = max(0, Int(status.course_number) - 1)
-        scene = ui.flatMap {
-            MapIntroScene(flow: self, ui: $0, entry: entry, difficulty: difficulty, info: cardInfo(),
-                          cleared: cleared, handoff: handoff)
+        if isSMM2 {
+            let e: EndlessMapScene.Entry = switch entry {
+            case .newGame: .newGame
+            case .resume: .resume
+            case .afterClear, .direct: cleared > 0 ? .afterClear : .resume
+            }
+            let theme = course.flatMap { entries[$0.path]?.info.theme }
+            scene = ui.flatMap {
+                EndlessMapScene(flow: self, ui: $0, entry: e, difficulty: difficulty, lives: Int(status.lives),
+                                cleared: cleared, theme: theme, handoff: endlessHandoff)
+            }
+            endlessHandoff = nil
+        } else {
+            scene = ui.flatMap {
+                MapIntroScene(flow: self, ui: $0, entry: entry, difficulty: difficulty, info: cardInfo(),
+                              cleared: cleared, handoff: handoff)
+            }
         }
         handoff = nil
         entry = .direct
@@ -160,8 +201,19 @@ final class ChallengeFlow: ObservableObject, Identifiable {
             let s = try GameSession(assets: assets, course: data, title: entry?.name ?? course.name,
                                     courseKey: entry?.info.key, saves: saves)
             s.run = self
-            if let ui { s.overlay = RunOverlay(ui: ui) }
             applyCounters(to: s.engine)
+            if isSMM2, let ui, let screens = CourseScreens(ui: ui) {
+                // SMM2's in-course screens with lives (the Endless Challenge's card and HUD)
+                var info = CourseCardInfo()
+                info.name = s.title
+                info.maker = course.maker.isEmpty ? nil : course.maker
+                info.lives = true
+                info.modeText = pauseLine
+                if let key = entry?.info.key { info.bestTicks = saves?.record(key).bestTicks }
+                s.attachSMM2(screens, info: info, intro: ProcessInfo.processInfo.environment["MMK_UI_INTRO"] != "0")
+            } else if let ui {
+                s.overlay = RunOverlay(ui: ui)
+            }
             s.onExit = { [weak self] in self?.sessionEnded() }
             mmk_challenge_course_started(handle)
             persist()
@@ -270,12 +322,24 @@ final class ChallengeFlow: ObservableObject, Identifiable {
         case Int32(MMK_NEXT_PLAY): showIntro()
         case Int32(MMK_NEXT_GAME_OVER):
             refresh()
+            if isSMM2 {
+                // the course already showed Play_GameOver_00: back to the menu
+                backToSelect()
+                return
+            }
             scene = ui.flatMap { GameOverScene(flow: self, ui: $0) }
             stage = .gameOver
         case Int32(MMK_NEXT_COMPLETE):
             let u = mmk_challenge_take_unlock(handle)
             unlocked = u >= 0 ? Int(u) : nil
             persist()
+            if isSMM2 {
+                // an endless run has no ending in SMM2: the menu, with the news [departure]
+                message = "\(Self.difficulties[difficulty]) run cleared with \(status.lives) lives left!"
+                    + (unlocked.map { " \(Self.difficulties[$0]) is now open!" } ?? "")
+                backToSelect()
+                return
+            }
             showEnding()
         default: backToSelect()
         }
@@ -291,6 +355,7 @@ final class ChallengeFlow: ObservableObject, Identifiable {
 
     /// Debug captures (MMK_UI_SCREEN=challenge-ending): the ending with library courses as credits.
     func debugEnding(_ d: Int, library: [CourseEntry]) {
+        guard !isSMM2 else { return }   // SMM2 presents no ending (see SMM2Endless.swift)
         difficulty = d
         credits = library.prefix(Self.runLengths[d]).map {
             Course(path: $0.url.path, name: $0.name, maker: $0.meta.maker ?? "", difficulty: 0)
@@ -304,7 +369,19 @@ final class ChallengeFlow: ObservableObject, Identifiable {
         var info = RunCardInfo(name: "Course", maker: "Maker", lives: 87, number: cleared + 1,
                                total: Self.runLengths[d])
         if let c = entries.values.first { info.name = c.name; info.maker = c.meta.maker ?? "" }
-        scene = ui.flatMap { MapIntroScene(flow: self, ui: $0, entry: e, difficulty: d, info: info, cleared: cleared, handoff: nil) }
+        if isSMM2 {
+            let entry: EndlessMapScene.Entry = switch e {
+            case .newGame: .newGame
+            case .resume: .resume
+            default: .afterClear
+            }
+            scene = ui.flatMap {
+                EndlessMapScene(flow: self, ui: $0, entry: entry, difficulty: d, lives: 87, cleared: cleared,
+                                theme: 0, handoff: nil)
+            }
+        } else {
+            scene = ui.flatMap { MapIntroScene(flow: self, ui: $0, entry: e, difficulty: d, info: info, cleared: cleared, handoff: nil) }
+        }
         stage = .intro
     }
 
@@ -314,6 +391,7 @@ final class ChallengeFlow: ObservableObject, Identifiable {
     }
 
     func debugGameOver() {
+        guard !isSMM2 else { return }   // SMM2: the course's own Play_GameOver_00 (course-gameover)
         scene = ui.flatMap { GameOverScene(flow: self, ui: $0) }
         stage = .gameOver
     }
@@ -360,7 +438,7 @@ struct ChallengeView: View {
             if case .playing(let s) = flow.stage {
                 GameView(session: s).id(s.id)
             } else if let scene = flow.scene {
-                UIScreenView(scene: scene).id(ObjectIdentifier(scene))
+                UIScreenView(scene: scene, ui: flow.ui).id(ObjectIdentifier(scene))
             } else {
                 switch flow.stage {
                 case .select: DifficultySelect(flow: flow)

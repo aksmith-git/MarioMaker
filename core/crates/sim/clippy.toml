@@ -1,0 +1,23 @@
+# The sim must be bit-identical on every platform (online play, server-verified replays): the
+# platform math library differs between systems, so these go through `crate::fmath::DetMath`.
+disallowed-methods = [
+    { path = "f32::sin", reason = "platform libm; use DetMath::dsin (crate::fmath)" },
+    { path = "f32::cos", reason = "platform libm; use DetMath::dcos (crate::fmath)" },
+    { path = "f32::sin_cos", reason = "platform libm; use DetMath::dsin_cos (crate::fmath)" },
+    { path = "f32::tan", reason = "platform libm; use DetMath::dtan (crate::fmath)" },
+    { path = "f32::asin", reason = "platform libm; use DetMath::dasin (crate::fmath)" },
+    { path = "f32::atan2", reason = "platform libm; use DetMath::datan2 (crate::fmath)" },
+    { path = "f32::hypot", reason = "platform libm; use DetMath::dhypot (crate::fmath)" },
+    { path = "f32::acos", reason = "platform libm; add a DetMath method" },
+    { path = "f32::atan", reason = "platform libm; add a DetMath method" },
+    { path = "f32::exp", reason = "platform libm; add a DetMath method" },
+    { path = "f32::ln", reason = "platform libm; add a DetMath method" },
+    { path = "f32::powf", reason = "platform libm; add a DetMath method" },
+    { path = "f64::sin", reason = "platform libm; use DetMath::dsin (crate::fmath)" },
+    { path = "f64::cos", reason = "platform libm; use DetMath::dcos (crate::fmath)" },
+    { path = "f64::sin_cos", reason = "platform libm; use DetMath::dsin_cos (crate::fmath)" },
+    { path = "f64::atan2", reason = "platform libm; use DetMath::datan2 (crate::fmath)" },
+    { path = "f64::hypot", reason = "platform libm; use DetMath::dhypot (crate::fmath)" },
+    { path = "f64::powf", reason = "platform libm; add a DetMath method" },
+    { path = "f64::exp", reason = "platform libm; add a DetMath method" },
+]

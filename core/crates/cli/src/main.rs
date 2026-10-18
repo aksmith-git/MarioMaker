@@ -136,6 +136,10 @@ enum Cmd {
         /// Frames per course (60 per second).
         #[arg(long, default_value_t = 3600)]
         frames: u32,
+        /// Print each course's final state hash (compare two runs, e.g. in separate processes,
+        /// to catch nondeterminism that would desync online play).
+        #[arg(long)]
+        checksum: bool,
     },
     /// Run the open-source course server (courses + index in DIR) and the online-play relay
     /// (UDP, same port).
@@ -150,6 +154,22 @@ enum Cmd {
         /// The relay's WebSocket address for browsers (default: the HTTP port + 1).
         #[arg(long)]
         relay_ws: Option<String>,
+        /// World records only from replays the server re-simulates (typed-in times count as
+        /// clears only).
+        #[arg(long)]
+        verified_records: bool,
+        /// Request threads.
+        #[arg(long, default_value_t = 8)]
+        threads: usize,
+        /// Writes (uploads, votes, comments, clears) per client address per minute.
+        #[arg(long, default_value_t = 60)]
+        writes_per_minute: u32,
+        /// New accounts per client address per hour.
+        #[arg(long, default_value_t = 5)]
+        accounts_per_hour: u32,
+        /// Behind your own reverse proxy: take client addresses from X-Forwarded-For.
+        #[arg(long)]
+        trust_proxy: bool,
     },
     /// Upload a course (raw, zlib or .bcd needs decrypting first) to a course server.
     Upload {
@@ -691,7 +711,8 @@ fn main() -> ExitCode {
             each,
             keys,
             frames,
-        } => simulate(&files, each, keys, frames),
+            checksum,
+        } => simulate(&files, each || checksum, keys, frames, checksum),
         Cmd::MissingArt {
             files,
             assets,
@@ -960,10 +981,15 @@ fn main() -> ExitCode {
             addr,
             admin_token,
             relay_ws,
+            verified_records,
+            threads,
+            writes_per_minute,
+            accounts_per_hour,
+            trust_proxy,
         } => {
             let admin = admin_token.or_else(|| std::env::var("MMK_ADMIN_TOKEN").ok());
             let store = match mmk_server::Store::open(&dir) {
-                Ok(s) => s.with_admin(admin),
+                Ok(s) => s.with_admin(admin).with_verified_records(verified_records),
                 Err(e) => {
                     eprintln!("{}: {e:?}", dir.display());
                     return ExitCode::FAILURE;
@@ -982,7 +1008,15 @@ fn main() -> ExitCode {
                 Err(e) => eprintln!("mmk-server: no relay ({e})"),
             }
             eprintln!("mmk-server: {} on http://{addr}", dir.display());
-            match mmk_server::serve(store, &addr) {
+            let opts = mmk_server::ServeOptions {
+                threads,
+                limits: mmk_server::limits::Limits {
+                    writes_per_minute,
+                    accounts_per_hour,
+                },
+                trust_proxy,
+            };
+            match mmk_server::serve_with(store, &addr, opts) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("server: {e}");
@@ -1222,7 +1256,7 @@ fn read_key_table(path: Option<PathBuf>) -> Option<smm2::KeyTable> {
 
 /// One scripted run: hold right + run, jump in 24-frame bursts every 40 frames, and a long jump
 /// when stuck for a second. Returns (progress 0-1 toward the goal, deaths, cleared).
-fn simulate_course(course: &smm2::Course, frames: u32) -> (f32, u32, bool) {
+fn simulate_course(course: &smm2::Course, frames: u32) -> (f32, u32, bool, u64) {
     use mmk_sim::input::{self, Input};
     let mut w = mmk_sim::World::from_course(course);
     w.lives = 9999; // keep retrying for the whole run
@@ -1255,10 +1289,17 @@ fn simulate_course(course: &smm2::Course, frames: u32) -> (f32, u32, bool) {
         ((best - start_x) / span).clamp(0.0, 1.0),
         lives0.saturating_sub(w.lives),
         cleared,
+        w.checksum(),
     )
 }
 
-fn simulate(files: &[PathBuf], each: bool, keys: Option<PathBuf>, frames: u32) -> ExitCode {
+fn simulate(
+    files: &[PathBuf],
+    each: bool,
+    keys: Option<PathBuf>,
+    frames: u32,
+    checksum: bool,
+) -> ExitCode {
     let table = read_key_table(keys);
     let (mut total, mut panics, mut clears) = (0usize, 0usize, 0usize);
     let mut progress = 0.0f32;
@@ -1276,11 +1317,15 @@ fn simulate(files: &[PathBuf], each: bool, keys: Option<PathBuf>, frames: u32) -
         let style = c.header.game_style.as_str_lossy();
         let run = std::panic::catch_unwind(|| simulate_course(&c, frames));
         let line = match run {
-            Ok((p, deaths, cleared)) => {
+            Ok((p, deaths, cleared, hash)) => {
                 progress += p;
                 clears += cleared as usize;
-                json!({"file": f.display().to_string(), "style": style, "progress": p,
-                       "deaths": deaths, "cleared": cleared})
+                let mut v = json!({"file": f.display().to_string(), "style": style, "progress": p,
+                       "deaths": deaths, "cleared": cleared});
+                if checksum {
+                    v["checksum"] = json!(format!("{hash:016x}"));
+                }
+                v
             }
             Err(e) => {
                 panics += 1;

@@ -14,6 +14,11 @@
 //!                                       language (ReferenceMsg: clear conditions, part names …)
 //! ui/textures/MissionIcon/<name>.mtex   the clear-condition icons of every game style
 //!                                       (`Model/<style>_Lyt_Mission_RGBA8`, BFRES textures)
+//! ui/textures/GameSkin/<name>.mtex      the game styles' logos (`Model/<style>_Lyt_Logo`; the
+//!                                       game puts them into `Cmn_GameSkin_00`, e.g. Course
+//!                                       World's course rows)
+//! ui/sound/sounds.json, <sound>.wav     the layouts' button and animation sounds
+//!                                       (`super::smm2_ui_sound`)
 //! courses/title_course_data_<n>.bcd     the title screen's demo courses (as in the RomFS)
 //! ```
 //! Layout archives: `Layout/*.szs` (zstd/Yaz0 → SARC → `<Name>.arc` SARC with `blyt/`,
@@ -37,7 +42,7 @@ use serde_json::{Value, json};
 use crate::smm1::{font_to_json, to_mtex};
 use crate::{ImportError, Progress, Result, read, write};
 
-pub const SMM2_UI_IMPORTER_VERSION: u32 = 2;
+pub const SMM2_UI_IMPORTER_VERSION: u32 = 4;
 
 #[derive(Clone, Debug)]
 pub struct Smm2UiConfig {
@@ -238,13 +243,22 @@ fn region(language: &str) -> &'static str {
 
 /// Texture group (`ui/textures/<group>/`) of the clear-condition icons.
 pub const MISSION_ICONS: &str = "MissionIcon";
+/// Texture group of the game styles' logos.
+pub const GAME_SKIN_ICONS: &str = "GameSkin";
 
-/// The clear-condition icon models `<style>_Lyt_Mission_RGBA8` of the five styles: loose in
-/// `Model/`, else members of `Pack/*.pack` (v3.0.3 keeps them in `StaticModel.pack`).
-fn mission_icon_models(romfs: &Path) -> Vec<(String, Vec<u8>)> {
+/// Layout icon models per game style, and the texture group each goes to: the clear-condition
+/// icons and the style logos.
+const ICON_MODELS: [(&str, &str); 2] = [
+    ("_Lyt_Mission_RGBA8", MISSION_ICONS),
+    ("_Lyt_Logo", GAME_SKIN_ICONS),
+];
+
+/// The icon models `<style><suffix>` of the five styles: loose in `Model/`, else members of
+/// `Pack/*.pack` (v3.0.3 keeps them in `StaticModel.pack`).
+fn icon_models(romfs: &Path, suffix: &str) -> Vec<(String, Vec<u8>)> {
     let wanted: Vec<String> = ["M1", "M3", "MW", "WU", "3W"]
         .iter()
-        .map(|s| format!("{s}_Lyt_Mission_RGBA8.Nin_NX_NVN.zs"))
+        .map(|s| format!("{s}{suffix}.Nin_NX_NVN.zs"))
         .collect();
     let mut out: Vec<(String, Vec<u8>)> = Vec::new();
     for w in &wanted {
@@ -538,9 +552,19 @@ pub fn run_smm2_ui(cfg: &Smm2UiConfig, progress: Progress) -> Result<Smm2UiRepor
     }
 
     // --- clear-condition icons (the HUD and pause menu put one into Cmn_MissionIcon's picture)
+    // and the style logos (Cmn_GameSkin_00)
     let mut mission_icons = 0usize;
-    for (name, data) in mission_icon_models(&cfg.romfs) {
-        progress("condition icons", mission_icons, 0);
+    let mut skin_icons = 0usize;
+    let models: Vec<(&str, String, Vec<u8>)> = ICON_MODELS
+        .iter()
+        .flat_map(|(suffix, group)| {
+            icon_models(&cfg.romfs, suffix)
+                .into_iter()
+                .map(move |(n, d)| (*group, n, d))
+        })
+        .collect();
+    for (group, name, data) in models {
+        progress("condition icons", mission_icons + skin_icons, 0);
         let ctx = PathBuf::from(&name);
         let blobs: Vec<Vec<u8>> = match archive::unwrap(data) {
             Ok(d) => match Sarc::parse(d.clone()) {
@@ -566,10 +590,14 @@ pub fn run_smm2_ui(cfg: &Smm2UiConfig, progress: Progress) -> Result<Smm2UiRepor
                             continue;
                         };
                         write(
-                            &ui.join(format!("textures/{MISSION_ICONS}/{}.mtex", t.name)),
+                            &ui.join(format!("textures/{group}/{}.mtex", t.name)),
                             &m.to_bytes(),
                         )?;
-                        mission_icons += 1;
+                        if group == MISSION_ICONS {
+                            mission_icons += 1;
+                        } else {
+                            skin_icons += 1;
+                        }
                         report.textures += 1;
                     }
                 }
@@ -577,6 +605,12 @@ pub fn run_smm2_ui(cfg: &Smm2UiConfig, progress: Progress) -> Result<Smm2UiRepor
             }
         }
     }
+
+    // --- the layouts' sounds (button / animation → sound, from the game's data)
+    progress("ui sounds", 0, 1);
+    let sound = crate::smm2_ui_sound::run(&cfg.romfs, &ui)?;
+    report.skipped.extend(sound.skipped.iter().cloned());
+    progress("ui sounds", 1, 1);
 
     // --- manifest
     let manifest = json!({
@@ -594,6 +628,8 @@ pub fn run_smm2_ui(cfg: &Smm2UiConfig, progress: Progress) -> Result<Smm2UiRepor
         "messages": message_files,
         "title_courses": title_courses,
         "mission_icons": mission_icons,
+        "game_skin_icons": skin_icons,
+        "ui_sounds": {"layouts": sound.layouts, "users": sound.users, "sounds": sound.sounds},
         "missing_part_layouts": missing_parts,
         "skipped": report.skipped,
     });

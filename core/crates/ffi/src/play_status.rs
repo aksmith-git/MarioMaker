@@ -1,6 +1,8 @@
 //! `mmk_engine_play_status`: what the SMM2 in-course screens show besides the HUD counters
-//! (keys, pink coins, game style, character, checkpoint, why the player died).
+//! (keys, pink coins, game style, character, checkpoint, why the player died, where the player
+//! is on screen and when a death restarts the course — for the death iris).
 
+use mmk_sim::player::{Control, DOWN_FALL_FRAMES};
 use mmk_sim::world::GoalPhase;
 
 use crate::{MmkEngine, guard};
@@ -24,6 +26,12 @@ pub struct MmkPlayStatus {
     pub flags: u32,
     /// Current area (0 main, 1 sub).
     pub area: u32,
+    /// Player 1 in the view: px from its bottom-left corner (feet).
+    pub player_x: f32,
+    pub player_y: f32,
+    /// Frames until the death sequence restarts the course; −1 while alive.
+    pub restart_in: i32,
+    pub _pad: u32,
 }
 
 /// # Safety
@@ -36,6 +44,11 @@ pub unsafe extern "C" fn mmk_engine_play_status(engine: *const MmkEngine, out: *
         };
         let w = &e.world;
         let dying = !w.player.alive();
+        let restart_in = match w.player.control {
+            Control::DownPose { timer } => timer + DOWN_FALL_FRAMES,
+            Control::DownFall { timer } => timer,
+            _ => -1,
+        };
         *out = MmkPlayStatus {
             keys: w.keys,
             pink_coins: w.pink.len() as u32,
@@ -47,6 +60,10 @@ pub unsafe extern "C" fn mmk_engine_play_status(engine: *const MmkEngine, out: *
                 | ((dying && w.time == 0) as u32) << 1
                 | ((w.goal_phase != GoalPhase::None) as u32) << 2,
             area: w.area as u32,
+            player_x: w.player.x - w.camera_x,
+            player_y: w.player.y - w.camera_y,
+            restart_in,
+            _pad: 0,
         };
     })
 }
@@ -55,6 +72,6 @@ pub unsafe extern "C" fn mmk_engine_play_status(engine: *const MmkEngine, out: *
 mod tests {
     #[test]
     fn layout_matches_header() {
-        assert_eq!(size_of::<super::MmkPlayStatus>(), 32);
+        assert_eq!(size_of::<super::MmkPlayStatus>(), 48);
     }
 }

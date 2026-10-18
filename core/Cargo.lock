@@ -1269,8 +1269,10 @@ dependencies = [
  "mmk-host",
  "mmk-import",
  "mmk-modes",
+ "mmk-online",
  "mmk-sim",
  "mmk-ui",
+ "serde_json",
 ]
 
 [[package]]
@@ -1312,6 +1314,9 @@ dependencies = [
 name = "mmk-modes"
 version = "0.1.0"
 dependencies = [
+ "mmk-editor",
+ "mmk-formats",
+ "mmk-sim",
  "serde_json",
 ]
 
@@ -1338,8 +1343,11 @@ name = "mmk-server"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
+ "mmk-editor",
  "mmk-formats",
+ "mmk-modes",
  "mmk-netplay",
+ "mmk-sim",
  "ring",
  "serde_json",
  "tiny_http",
@@ -1361,6 +1369,7 @@ dependencies = [
  "mmk-formats",
  "mmk-host",
  "mmk-import",
+ "mmk-modes",
  "mmk-netplay",
  "mmk-online",
  "mmk-sim",
@@ -1379,6 +1388,7 @@ dependencies = [
 name = "mmk-sim"
 version = "0.1.0"
 dependencies = [
+ "libm",
  "mmk-formats",
 ]
 

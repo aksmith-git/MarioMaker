@@ -109,7 +109,11 @@ the sim and the screen/speakers, so placement and sound rules exist once.
     SMM2 in-course screens: `mmk_ui_table_message` (shared tables such as `GoalCondition`),
     `mmk_ui_set_picture` (an import texture in a picture, e.g. a clear-condition icon),
     `mmk_ui_set_material_color`, `mmk_ui_text_width`; `mmk_engine_play_status` (keys, pink
-    coins, style, character, checkpoint, time-out death, goal sequence).
+    coins, style, character, checkpoint, time-out death, goal sequence, the player's view
+    position and the frames until a death restarts the course — the death iris).
+  - SMM2 front end: `mmk_engine_set_character` (player 1's character, the pause Settings);
+    `mmk_online_search / download / report` (`ffi/src/online.rs`, the open-source course server
+    through `mmk-online`; blocking, called off the main thread) for Course World.
   - `mmk_texture_decode_rgba(info, out, len)`: any cache or UI texture as RGBA8 (BCn decoded by
     `host::texture`), for GPUs without BC support (iPhones, iPads before M1; `MMK_CPU_TEXTURES=1`).
   - `mmk_last_error()` for messages; every entry point catches panics and returns an error code.
@@ -175,6 +179,12 @@ ui/fonts/<Font>.json, <Font>/sheet_n.mtex   bitmap fonts (BFFNT 4.1, BNTX sheets
                                       scalable-font combinations rasterised (smm2_font)
 ui/messages/<LayoutMsg|CommonMsg|ReferenceMsg>/<Table>.json   (ReferenceMsg: GoalCondition,
                                       PartsIconName, … shared tables)
+ui/textures/GameSkin/<style>_Lyt_Logo_00.mtex   the styles' logos (`Model/<style>_Lyt_Logo`)
+ui/sound/sounds.json, <sound>.wav     menu sounds: per layout its SLink user, button sound types
+                                      and animations with sounds (`Pack/Static.pack`
+                                      `Param/Layout/*.byml`), per user event key → sound /
+                                      volume / delay (`SLink2/SLink2DB.szs`, `formats::xlink`),
+                                      the sounds as 16-bit WAV (`import::smm2_ui_sound`)
 ui/textures/MissionIcon/<style>_Lyt_M_<name>.mtex   clear-condition icons of the five styles
                                       (`Model/<style>_Lyt_Mission_RGBA8`, BFRES textures)
 courses/title_course_data_<n>.bcd
@@ -236,6 +246,22 @@ events, and waits for a button's Decide animation before acting. The Renderer dr
 in the overlay pass and leaves out the drawn HUD strip. `SMM2Condition` maps the engine's clear
 condition to the import's icon and `GoalCondition` sentence. Without the import (or with
 `MMK_UI_SMM2=off`) the session keeps the drawn HUD and the SwiftUI menus.
+
+### SMM2 front end (app)
+Following the game's scene code (private `research/specs/smm2-frontend.md`):
+- `SceneFade` (`SceneFade.swift`): one `Cmn_Fade_00` shared by every screen — `run(kind) {
+  switch }` plays the kind's Out animation, switches the screen, then its In; both Metal
+  renderers draw `SceneFade.shared.layers` last, SwiftUI screens get a black veil.
+- `BootScene` (`SMM2Boot.swift`): `Boot_BootScene_00` before the title (`AppModel.Screen.boot`).
+- `CourseWorldFlow` (`SMM2CourseWorld.swift`): `CourseWorldScene` (`Nwk_Title_00`) and
+  `CourseListScene` (`Nwk_CourseListGeneral_00`: a five-slot ring of `Nwk_CourseData_00` rows,
+  three visible) over `WorldCourse`s from the library and the course server; plays courses in a
+  `GameSession` with the SMM2 screens and no lives.
+- `EndlessMenuScene` / `EndlessMapScene` (`SMM2Endless.swift`): the 100 Mario Challenge in
+  `Nwk_EndlessModeMenu_00` + `Nwk_WorldMap_00` (`EndlessBoard` holds the layout and a second
+  instance for the start buttons); `ChallengeFlow.presentation` chooses them or SMM1's screens.
+- `MenuCursor`, `DebugInput` (`SMM2Menus.swift`): the selection frame and scripted capture
+  input shared by these screens; `UISound` (`UISound.swift`): the import's menu sounds.
 
 ### 100 Mario screens (app)
 `ChallengeScreens.swift` sequences SMM1 layouts in plain Swift classes (`UIScene`: 60 Hz `step`,

@@ -15,6 +15,14 @@ struct CourseMeta: Hashable, Sendable {
     /// Server data id (SMM2 course code source) and world record in ms, when the index has them.
     var dataId: UInt32?
     var worldRecordMs: Int?
+    /// The server's statistics and tags (SMM2 tag ids 1 Standard … 15 Link) and upload date,
+    /// when the index has them (Course World's course rows).
+    var plays: Int?
+    var likes: Int?
+    var clears: Int?
+    var attempts: Int?
+    var uploaded: Date?
+    var tags: [Int] = []
 
     /// 100 Mario difficulty value 0–100: the fail rate (100 − clear %), as SMM1's bands use it.
     /// Falls back to a value inside the SMM2 bucket, then to an easy value for unknown courses
@@ -25,7 +33,11 @@ struct CourseMeta: Hashable, Sendable {
         return 30
     }
 
-    /// `index.json` files under `root` → metadata by standardized file path.
+    /// The key a course file's metadata is stored under: its path with symlinks resolved (an
+    /// enumerated URL and one built from `index.json` standardize differently under /private).
+    static func key(_ url: URL) -> String { URL(fileURLWithPath: url.path).resolvingSymlinksInPath().path }
+
+    /// `index.json` files under `root` → metadata by `key`.
     static func scan(under root: URL) -> [String: CourseMeta] {
         var out: [String: CourseMeta] = [:]
         guard let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil,
@@ -37,12 +49,20 @@ struct CourseMeta: Hashable, Sendable {
             let dir = url.deletingLastPathComponent()
             for c in list {
                 guard let file = c["file"] as? String else { continue }
-                let path = dir.appendingPathComponent(file).standardizedFileURL.path
-                out[path] = CourseMeta(clearRate: (c["clear_rate"] as? NSNumber)?.doubleValue,
-                                       bucket: (c["difficulty"] as? NSNumber)?.intValue,
-                                       maker: c["maker"] as? String,
-                                       dataId: (c["data_id"] as? NSNumber)?.uint32Value,
-                                       worldRecordMs: (c["world_record"] as? NSNumber)?.intValue)
+                let path = key(dir.appendingPathComponent(file))
+                func n(_ k: String) -> Int? { (c[k] as? NSNumber)?.intValue }
+                var m = CourseMeta(clearRate: (c["clear_rate"] as? NSNumber)?.doubleValue,
+                                   bucket: n("difficulty"),
+                                   maker: c["maker"] as? String,
+                                   dataId: (c["data_id"] as? NSNumber)?.uint32Value,
+                                   worldRecordMs: n("world_record"))
+                m.plays = n("plays")
+                m.likes = n("likes")
+                m.clears = n("clears")
+                m.attempts = n("attempts")
+                m.uploaded = n("uploaded").map { Date(timeIntervalSince1970: TimeInterval($0)) }
+                m.tags = [n("tag1"), n("tag2")].compactMap { $0 }.filter { $0 > 0 }
+                out[path] = m
             }
         }
         return out
@@ -136,7 +156,7 @@ final class CourseLibrary: ObservableObject {
                 guard let data = try? Data(contentsOf: url) else { continue }
                 switch CourseInfo.read(data, assets: assets) {
                 case .success(let info):
-                    found.append(CourseEntry(url: url, info: info, meta: meta[url.standardizedFileURL.path] ?? CourseMeta(),
+                    found.append(CourseEntry(url: url, info: info, meta: meta[CourseMeta.key(url)] ?? CourseMeta(),
                                              builtIn: builtIn))
                 case .failure(let e): bad.append((url.path, e.description))
                 }

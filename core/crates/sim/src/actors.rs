@@ -5,6 +5,7 @@
 //! 35-super-star.md, 33-one-up.md and the shared enemy draft (death, emergence, activation).
 //! Positions are the feet centre (px, y up); boxes extend half_w either side and h upward.
 
+use crate::fmath::DetMath;
 use crate::level::{Cell, Level, PipeDir, TILE};
 
 mod bosses;
@@ -764,7 +765,7 @@ impl Actor {
     /// Top-surface slope of a platform (seesaw tilt: `heading` in degrees).
     pub fn solid_slope(&self) -> f32 {
         match self.kind {
-            Kind::Seesaw { .. } => self.heading.to_radians().tan(),
+            Kind::Seesaw { .. } => self.heading.to_radians().dtan(),
             _ => 0.0,
         }
     }
@@ -802,7 +803,7 @@ impl Actor {
             }
         }
         self.speed = self.speed.clamp(-8.0, 8.0);
-        self.heading += (2.0 * (self.speed / 16.0).clamp(-1.0, 1.0).asin()).to_degrees();
+        self.heading += (2.0 * (self.speed / 16.0).clamp(-1.0, 1.0).dasin()).to_degrees();
         if self.heading.abs() > 45.0 {
             self.heading = 45.0 * self.heading.signum();
             self.speed = -self.speed * (w + 3.0) / 36.0;
@@ -1001,7 +1002,7 @@ impl Actor {
     /// Swinging claw tip (where a held player hangs): pivot (home) + rope of 40 px.
     pub fn claw_tip(&self) -> (f32, f32) {
         let a = self.heading.to_radians();
-        (self.home_x + 40.0 * a.sin(), self.home_y - 40.0 * a.cos())
+        (self.home_x + 40.0 * a.dsin(), self.home_y - 40.0 * a.dcos())
     }
 
     /// Spring compression c (0…4 px), kept in `pause`.
@@ -1021,7 +1022,7 @@ impl Actor {
     /// cloud)]. Angle in `heading`.
     fn wing_bob(&mut self, amp: f32) {
         self.heading = (self.heading + 2.8125) % 360.0;
-        self.y = self.home_y + amp * self.heading.to_radians().sin();
+        self.y = self.home_y + amp * self.heading.to_radians().dsin();
     }
 
     fn step_thwomp(&mut self, level: &Level, side: bool) {
@@ -1033,7 +1034,7 @@ impl Actor {
                 // vy = 0.15·sin(2°·t) while waiting (12-thwomp.md)
                 let target = 0.3 * self.dir as f32;
                 self.vx += (target - self.vx).clamp(-0.003, 0.003);
-                self.vy = 0.15 * (2.0 * self.age as f32).to_radians().sin();
+                self.vy = 0.15 * (2.0 * self.age as f32).to_radians().dsin();
                 self.collide(level);
                 if self.wall {
                     self.turn();
@@ -1112,7 +1113,7 @@ impl Actor {
     /// Turn `heading` (degrees, 0 = right, 90 = up) toward the player by at most `rate`.
     fn home_toward(&mut self, rate: f32) {
         let (tx, ty) = self.target;
-        let want = (ty + 8.0 - (self.y + 8.0)).atan2(tx - self.x).to_degrees();
+        let want = (ty + 8.0 - (self.y + 8.0)).datan2(tx - self.x).to_degrees();
         let d = (want - self.heading + 540.0).rem_euclid(360.0) - 180.0;
         self.heading += d.clamp(-rate, rate);
     }
@@ -1457,7 +1458,7 @@ impl Actor {
             Mode::Parachute { x0, phase } => {
                 self.vy = (self.vy - 0.01875).max(-0.4);
                 let phase = phase + 2.5;
-                let nx = x0 + 24.0 * phase.to_radians().sin();
+                let nx = x0 + 24.0 * phase.to_radians().dsin();
                 self.vx = nx - self.x;
                 self.collide(level);
                 self.mode = if self.on_ground {
@@ -1654,7 +1655,7 @@ impl Actor {
                         Some((PipeDir::Down, ..)) => (self.x, self.y - self.height() + 8.0),
                         _ => (self.x, self.y + self.height() - 8.0),
                     };
-                    let want = (py + 8.0 - my).atan2(px - mx);
+                    let want = (py + 8.0 - my).datan2(px - mx);
                     let face = if px <= self.x {
                         std::f32::consts::PI
                     } else {
@@ -1668,15 +1669,15 @@ impl Actor {
                             } else {
                                 std::f32::consts::PI - d.to_radians()
                             };
-                            let diff = (a - want).sin().atan2((a - want).cos()).abs();
+                            let diff = (a - want).dsin().datan2((a - want).dcos()).abs();
                             (diff, a)
                         })
                         .min_by(|a, b| a.0.total_cmp(&b.0))
                         .map(|(_, a)| a)
                         .unwrap_or(0.0);
                     let mut f = Actor::new(Kind::EnemyFire, mx, my - 4.0);
-                    f.vx = best.cos();
-                    f.vy = best.sin();
+                    f.vx = best.dcos();
+                    f.vy = best.dsin();
                     f.timer = 600;
                     return Some(f);
                 }
@@ -1739,8 +1740,8 @@ impl Actor {
                 let v = (self.age as f32 * 0.04).min(1.0);
                 self.heading -= v * k;
                 let a = (self.heading - slot as f32 * 37.06).to_radians();
-                self.x = self.home_x + self.speed * a.cos();
-                self.y = self.home_y + self.speed * a.sin() - 8.0;
+                self.x = self.home_x + self.speed * a.dcos();
+                self.y = self.home_y + self.speed * a.dsin() - 8.0;
                 self.dir = if self.target.0 < self.x { -1 } else { 1 };
             }
             Kind::Bowser { .. } => return self.step_bowser(level),
@@ -2092,7 +2093,7 @@ impl Actor {
                         self.timer += 1;
                     }
                     let a = self.heading.to_radians();
-                    (self.vx, self.vy) = (a.cos(), a.sin());
+                    (self.vx, self.vy) = (a.dcos(), a.dsin());
                     self.x += self.vx;
                     self.y += self.vy;
                     if self.vx.abs() > 0.01 {
@@ -2112,8 +2113,8 @@ impl Actor {
                     self.timer += 1;
                 }
                 let a = self.heading.to_radians();
-                self.x += a.cos();
-                self.y += a.sin();
+                self.x += a.dcos();
+                self.y += a.dsin();
             }
             Kind::Donut => {
                 self.vy = (self.vy - 0.1875).max(-2.0);
@@ -2168,7 +2169,7 @@ impl Actor {
                         self.dir = if self.x > self.home_x { -1 } else { 1 };
                     }
                     let phase = self.age as f32 * 3.0;
-                    let tv = 0.3 * phase.to_radians().sin();
+                    let tv = 0.3 * phase.to_radians().dsin();
                     self.vy += (tv - self.vy).clamp(-0.1, 0.1);
                     self.collide(level);
                     if self.wall {
@@ -2210,11 +2211,11 @@ impl Actor {
                     }
                 } else {
                     // pulse: speed 2·|sin φ|, φ += 6°/frame, 38 frames
-                    let t = 2.0 * (self.timer as f32 * 6.0).to_radians().sin().abs();
+                    let t = 2.0 * (self.timer as f32 * 6.0).to_radians().dsin().abs();
                     self.speed += (t - self.speed).clamp(-1.0, 1.0);
                     let a = self.heading.to_radians();
-                    self.x += self.speed * a.cos();
-                    self.y += self.speed * a.sin();
+                    self.x += self.speed * a.dcos();
+                    self.y += self.speed * a.dsin();
                     self.timer += 1;
                     if self.timer >= 38 {
                         self.phase = 0;
@@ -2275,7 +2276,7 @@ impl Actor {
             Kind::Claw => {
                 // pendulum: angle = A·sin(2π t / T); A 60°, T 160 frames [inf: the rope helper
                 // simulation is outside the decompiled range]
-                self.heading = 60.0 * (self.age as f32 * std::f32::consts::TAU / 160.0).sin();
+                self.heading = 60.0 * (self.age as f32 * std::f32::consts::TAU / 160.0).dsin();
                 if self.timer > 0 {
                     self.timer -= 1; // re-grab cooldown
                 }
@@ -2513,7 +2514,7 @@ impl Actor {
         if looking {
             self.speed = (self.speed - (0.12 * self.speed).max(0.002)).max(0.0);
         } else {
-            let want = (py + 8.0 - self.y).atan2(px - self.x).to_degrees();
+            let want = (py + 8.0 - self.y).datan2(px - self.x).to_degrees();
             let want = if want.abs() > 90.0 {
                 let w = if want < 0.0 { want + 360.0 } else { want };
                 w.clamp(135.0, 225.0)
@@ -2538,8 +2539,8 @@ impl Actor {
             self.timer += 1;
         }
         let amp = (self.timer as f32 * 0.0015).min(0.2);
-        let w = amp * (self.timer as f32 * 2.0).to_radians().sin();
-        let (s, c) = self.heading.to_radians().sin_cos();
+        let w = amp * (self.timer as f32 * 2.0).to_radians().dsin();
+        let (s, c) = self.heading.to_radians().dsin_cos();
         self.vx = self.speed * c - w * s;
         self.vy = self.speed * s + w * c;
         self.x += self.vx;
@@ -2649,7 +2650,7 @@ impl Actor {
             }
             2 => {
                 self.heading += 3.0;
-                self.x = self.home_x + 20.0 * self.heading.to_radians().sin();
+                self.x = self.home_x + 20.0 * self.heading.to_radians().dsin();
                 self.vx = 0.0;
                 self.vy = -0.5;
                 self.collide(level);
@@ -2813,7 +2814,7 @@ impl Actor {
                 if facing && (dx * dx + dy * dy).sqrt() <= reach && (!winged || dy.abs() <= 80.0) {
                     self.phase = 1;
                     self.timer = 40;
-                    self.heading = dy.atan2(dx).to_degrees();
+                    self.heading = dy.datan2(dx).to_degrees();
                 }
             }
             1 => {
@@ -2827,7 +2828,7 @@ impl Actor {
             }
             2 => {
                 self.speed = (self.speed + 0.25).min(if winged { 6.0 } else { 2.0 });
-                let (s, c) = self.heading.to_radians().sin_cos();
+                let (s, c) = self.heading.to_radians().dsin_cos();
                 self.vx = self.speed * c;
                 self.vy = self.speed * s;
                 let up = self.vy > 0.0;
@@ -2875,7 +2876,7 @@ impl Actor {
                     .max(1.0);
                 let want = 90.0 * ((self.y - hide) / (h_tiles * 16.0)).clamp(0.0, 1.0);
                 self.heading += (want - self.heading).clamp(-10.0, 10.0);
-                self.vy = (a * self.heading.to_radians().cos()).max(0.25);
+                self.vy = (a * self.heading.to_radians().dcos()).max(0.25);
                 self.y += self.vy;
                 if self.home_y - self.y < 20.0 {
                     self.phase = 2;
@@ -3000,8 +3001,8 @@ impl Actor {
             1 => {
                 self.heading += 10.0;
                 let a = self.heading.to_radians();
-                self.x = anchor.0 + 16.0 * a.sin();
-                self.y = anchor.1 - 16.0 + 8.0 * (1.0 - a.cos());
+                self.x = anchor.0 + 16.0 * a.dsin();
+                self.y = anchor.1 - 16.0 + 8.0 * (1.0 - a.dcos());
                 if self.heading >= 360.0 {
                     self.phase = 2;
                     self.heading = 0.0;
@@ -3010,8 +3011,8 @@ impl Actor {
             _ => {
                 self.heading = (self.heading + 1.40).min(180.0);
                 let a = self.heading.to_radians();
-                self.x = centre + side * r * a.cos();
-                self.y = top - 16.0 - 121.0 * a.sin().abs();
+                self.x = centre + side * r * a.dcos();
+                self.y = top - 16.0 - 121.0 * a.dsin().abs();
                 self.dir = -side as i32;
                 if self.heading >= 180.0 {
                     self.hops ^= 1;
@@ -3105,7 +3106,7 @@ impl Actor {
                     };
                     self.dir = dir;
                     let reach = 51.2 * s + 4.0;
-                    let (sn, cs) = (deg as f32).to_radians().sin_cos();
+                    let (sn, cs) = (deg as f32).to_radians().dsin_cos();
                     // lunge target (centre) in `trail[0]`
                     self.trail = vec![(stake.0 + reach * cs * dir as f32, stake.1 + reach * sn)];
                 }
@@ -3189,7 +3190,7 @@ impl Actor {
                 }
             }
             _ => {
-                self.vy = 0.8 * (90.0 + self.timer as f32 * 5.0).to_radians().sin();
+                self.vy = 0.8 * (90.0 + self.timer as f32 * 5.0).to_radians().dsin();
                 self.y += self.vy;
                 self.timer += 1;
                 if self.timer >= 120 {
@@ -3206,7 +3207,7 @@ impl Actor {
     fn step_generic_wings(&mut self, level: &Level) {
         let t = 0.3 * self.dir as f32;
         self.vx += (t - self.vx).clamp(-0.003, 0.003);
-        self.vy = 0.15 * (self.age as f32 * 2.0).to_radians().sin();
+        self.vy = 0.15 * (self.age as f32 * 2.0).to_radians().dsin();
         let before = self.x;
         self.collide(level);
         if self.wall || (self.x - before).abs() < 1e-4 && self.vx.abs() > 0.05 {

@@ -91,6 +91,8 @@ pub struct Scene<'a> {
     pub hud: &'a HudText,
     /// The 3D styles' meshes, skinned (`crate::mesh`).
     pub meshes: &'a crate::mesh::MeshFrame,
+    /// A replay's player racing alongside (drawn half transparent over the course).
+    pub ghost: &'a [DrawSprite],
 }
 
 /// A cache texture on the GPU: not uploaded yet, unusable on this path, or ready.
@@ -126,6 +128,16 @@ fn fs(i: VOut) -> @location(0) vec4<f32> {
     return c;
 }
 
+// a replay's player: half transparent
+@fragment
+fn fs_ghost(i: VOut) -> @location(0) vec4<f32> {
+    let c = textureSample(tex, samp, i.uv);
+    if (c.a < 0.01) {
+        discard;
+    }
+    return vec4<f32>(c.rgb, c.a * 0.5);
+}
+
 // texture checks: the texel as is, no blending or discard
 @fragment
 fn fs_copy(i: VOut) -> @location(0) vec4<f32> {
@@ -137,6 +149,8 @@ fn fs_copy(i: VOut) -> @location(0) vec4<f32> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Bind {
     Texture(u32),
+    /// A ghost sprite (the replay's player), half transparent.
+    Ghost(u32),
     Missing(usize),
     Sky,
     Hud,
@@ -243,6 +257,7 @@ pub fn viewport(w: u32, h: u32, integer: bool) -> (f32, f32, f32, f32, f32) {
 
 pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
+    ghost_pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     /// Cache texture index → bind group (None: not uploadable, e.g. BC6H without GPU support).
@@ -376,6 +391,14 @@ impl Renderer {
             true,
             Some(Self::depth_state(false)),
         );
+        let ghost_pipeline = Self::pipeline(
+            device,
+            &layout,
+            format,
+            "fs_ghost",
+            true,
+            Some(Self::depth_state(false)),
+        );
         let mesh_pipeline = Self::mesh_pipeline(device, &layout, format);
         // nearest sampling, clamped (SMB1 style is pixel-exact)
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -438,6 +461,7 @@ impl Renderer {
             mesh_ibuf,
             depth: None,
             pipeline,
+            ghost_pipeline,
             layout,
             sampler,
             textures,
@@ -766,7 +790,7 @@ impl Renderer {
         let (sx, sy) = (2.0 / VIEW_W, 2.0 / VIEW_H);
         let flip = if scene.upside_down { -1.0 } else { 1.0 };
         let ndc = |x: f32, y: f32| [(x - cam_x) * sx - 1.0, flip * ((y - cam_y) * sy - 1.0)];
-        for s in scene.sprites {
+        for s in scene.sprites.iter().chain(scene.ghost) {
             if let Some(t) = s.texture {
                 self.ensure(gpu, t as usize);
             }
@@ -812,6 +836,29 @@ impl Renderer {
         while next_group < meshes.groups.len() {
             self.batches.push((0, 0, Bind::Mesh(next_group)));
             next_group += 1;
+        }
+        for s in scene.ghost {
+            let Some(t) = s.texture.filter(|&t| self.texture(t as usize).is_some()) else {
+                continue;
+            };
+            let (mut u0, mut u1) = (s.u0, s.u1);
+            if s.flip_x {
+                std::mem::swap(&mut u0, &mut u1);
+            }
+            let (x0, y0) = (s.x.round(), s.y.round());
+            let [ax, ay] = ndc(x0, y0);
+            let [bx, by] = ndc(x0 + s.w, y0 + s.h);
+            self.push(
+                Bind::Ghost(t),
+                [
+                    [ax, ay, u0, s.v1],
+                    [bx, ay, u1, s.v1],
+                    [bx, by, u1, s.v0],
+                    [ax, ay, u0, s.v1],
+                    [bx, by, u1, s.v0],
+                    [ax, by, u0, s.v0],
+                ],
+            );
         }
         self.push(Bind::Hud, Self::full_quad());
 
@@ -924,7 +971,15 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.vbuf.slice(..));
                 continue;
             }
+            if let Bind::Ghost(t) = bind {
+                pass.set_pipeline(&self.ghost_pipeline);
+                pass.set_bind_group(0, self.texture(t as usize).expect("checked above"), &[]);
+                pass.draw(start..start + n, 0..1);
+                pass.set_pipeline(&self.pipeline);
+                continue;
+            }
             let group = match bind {
+                Bind::Ghost(_) => continue,
                 Bind::Texture(t) => self.texture(t as usize).expect("ensured above"),
                 Bind::Missing(i) => &self.missing[i],
                 Bind::Sky => &self.sky.1,

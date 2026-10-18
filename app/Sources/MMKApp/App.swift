@@ -77,6 +77,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 final class AppModel: ObservableObject {
     enum Screen {
         case importer, library, game(GameSession), challenge(ChallengeFlow), title(TitleFlow)
+        /// SMM2's opening before the title (`Boot_BootScene_00`).
+        case boot(BootScene)
+        /// Course World with SMM2's layouts (hub, courses, play).
+        case courseWorld(CourseWorldFlow)
     }
 
     @Published var screen: Screen = .library
@@ -93,6 +97,7 @@ final class AppModel: ObservableObject {
     var isPlaying: Bool {
         switch screen {
         case .game, .challenge: true
+        case .courseWorld(let f): if case .playing = f.stage { true } else { false }
         default: false
         }
     }
@@ -116,14 +121,24 @@ final class AppModel: ObservableObject {
         if assets == nil {
             screen = .importer
         } else if LayoutUI.smm2 != nil && env["MMK_TITLE"] != "off" {
-            // the SMM2 title screen first (MMK_UI_SCREEN=title-main / title-play: captures)
+            // SMM2's opening, then the title. MMK_UI_SCREEN=title / title-main / title-play
+            // captures start on the title; MMK_UI_SCREEN=boot or MMK_BOOT=on force the opening,
+            // MMK_BOOT=off (or Settings) leaves it out
             let start: TitleScene.State = switch env["MMK_UI_SCREEN"] {
             case "title-main": .main
             case "title-play": .category
             default: .top
             }
             library.scan(assets: assets)
-            showTitle(start: start)
+            let forced = env["MMK_BOOT"] == "on" || env["MMK_UI_SCREEN"] == "boot"
+            let boot = forced || (env["MMK_BOOT"] != "off" && !DebugCapture.requested
+                                  && UserDefaults.standard.bool(forKey: SettingsKey.bootOpening))
+            if boot, let ui = LayoutUI.smm2, let scene = BootScene(ui: ui, opening: env["MMK_BOOT_OPENING"]) {
+                scene.onFinished = { [weak self] in self?.bootFinished() }
+                screen = .boot(scene)
+            } else {
+                showTitle(start: start)
+            }
             if case .title(let flow) = screen, let i = env["MMK_UI_SELECT"].flatMap(Int.init) {
                 flow.scene.debugSelectCategory(i)
             }
@@ -140,36 +155,80 @@ final class AppModel: ObservableObject {
         library.scan(assets: assets)
     }
 
-    /// The SMM2 title screen (needs the SMM2 UI import; the library otherwise).
-    func showTitle(start: TitleScene.State = .main) {
+    /// The SMM2 title screen (needs the SMM2 UI import; the library otherwise). `select`: the
+    /// Play-menu button selected (coming back from a mode).
+    func showTitle(start: TitleScene.State = .main, select: Int? = nil) {
         guard let ui = LayoutUI.smm2, let flow = TitleFlow(ui: ui, assets: assets, start: start) else {
             showLibrary()
             return
         }
         flow.onChoice = { [weak self] choice in self?.titleChoice(choice) }
+        if let select { flow.scene.debugSelectCategory(select) }
         screen = .title(flow)
     }
 
+    /// The opening is over: the boot sequence changes to the title course with the black
+    /// circle [obs].
+    private func bootFinished() {
+        SceneFade.shared.run(.circleBlack) { [weak self] in self?.showTitle(start: .top) }
+    }
+
+    /// The title's Play menu: the game requests the next scene without fade parameters, which
+    /// means the 30-frame black fade [obs].
     private func titleChoice(_ choice: TitleChoice) {
+        SceneFade.shared.run(.black) { [weak self] in self?.enter(choice) }
+    }
+
+    private func enter(_ choice: TitleChoice) {
         switch choice {
         case .storyMode:
             // Story Mode's courses are the built-in ones (the jobs map isn't there yet)
             libraryStartFilter = .builtIn
             showLibrary()
-        case .courseWorld, .coursebot:
+        case .courseWorld:
+            showCourseWorld()
+        case .coursebot:
             showLibrary()
         case .hundredMario:
-            showChallenge()
+            // back to the title's Play menu, on the 100 Mario button [inf]
+            showChallenge { [weak self] in
+                SceneFade.shared.run(.black) { self?.showTitle(start: .category, select: 3) }
+            }
         }
+    }
+
+    /// Course World with SMM2's layouts (the library without the SMM2 UI import); `selection`:
+    /// the hub button selected (coming back from one).
+    func showCourseWorld(selection: Int = 0) {
+        guard let ui = LayoutUI.smm2, let assets,
+              let flow = CourseWorldFlow(ui: ui, assets: assets, library: library.entries, saves: saves,
+                                         selection: selection) else {
+            showLibrary()
+            return
+        }
+        // back to the title's Play menu, Course World selected [inf]
+        flow.onExit = { [weak self] in
+            SceneFade.shared.run(.black) { self?.showTitle(start: .category, select: 1) }
+        }
+        flow.onEndless = { [weak self] in
+            // the Endless menu (100 Mario rules), then back to Course World on its button
+            SceneFade.shared.run(.black) {
+                self?.showChallenge(presentation: .smm2) {
+                    SceneFade.shared.run(.black) { [weak self] in self?.showCourseWorld(selection: 3) }
+                }
+            }
+        }
+        screen = .courseWorld(flow)
     }
 
     func showImporter() { screen = .importer }
 
-    /// 100 Mario Challenge over the library's playable courses.
-    func showChallenge() {
+    /// 100 Mario Challenge over the library's playable courses; `onExit` (default: the library)
+    /// when the player leaves it. `presentation` nil: Settings > Game.
+    func showChallenge(presentation: ChallengeFlow.Presentation? = nil, onExit: (() -> Void)? = nil) {
         guard let assets else { return }
-        let flow = ChallengeFlow(assets: assets, library: library.entries, saves: saves)
-        flow.onExit = { [weak self] in self?.showLibrary() }
+        let flow = ChallengeFlow(assets: assets, library: library.entries, saves: saves, presentation: presentation)
+        flow.onExit = onExit ?? { [weak self] in self?.showLibrary() }
         screen = .challenge(flow)
     }
 
@@ -203,6 +262,8 @@ final class AppModel: ObservableObject {
         do {
             let data = try Data(contentsOf: entry.url)
             let session = try GameSession(assets: assets, course: data, title: entry.name, courseKey: entry.info.key, saves: saves)
+            // library play follows Course World / Story Mode: no lives, unlimited retries
+            session.unlimitedLives = true
             attachSMM2(session, maker: entry.meta.maker, builtIn: entry.collection == "Story Mode", intro: true)
             start(session)
         } catch {
@@ -227,6 +288,7 @@ final class AppModel: ObservableObject {
         info.name = session.title
         info.maker = maker
         info.builtIn = builtIn
+        info.lives = !session.unlimitedLives
         if let key = session.courseKey { info.bestTicks = saves.record(key).bestTicks }
         session.attachSMM2(screens, info: info, intro: intro)
     }
@@ -265,6 +327,7 @@ final class AppModel: ObservableObject {
                 mmk_engine_debug_teleport(session.engine, x, env["MMK_START_Y"].flatMap(Float.init) ?? 32)
             }
             if let t = env["MMK_UI_PAUSE_TICKS"].flatMap(UInt64.init) { session.autoPauseTick = t }
+            session.unlimitedLives = env["MMK_LIVES"] != "on"
             // the SMM2 screens (the smoke test's MMK_SCREENSHOT runs straight into play; UI
             // captures start with the course card unless MMK_UI_INTRO=0)
             let intro = env["MMK_SCREENSHOT"] == nil && env["MMK_UI_INTRO"] != "0"
@@ -295,8 +358,12 @@ struct RootView: View {
             case .game(let session): GameView(session: session).id(session.id)
             case .challenge(let flow): ChallengeView(flow: flow).id(flow.id)
             case .title(let flow): TitleView(flow: flow).id(flow.id)
+            case .boot(let scene): UIScreenView(scene: scene, ui: LayoutUI.smm2).id(ObjectIdentifier(scene))
+            case .courseWorld(let flow): CourseWorldView(flow: flow).id(flow.id)
             }
         }
+        // the scene fade over SwiftUI screens (Metal screens draw the fade layout themselves)
+        .overlay { if model.showsSwiftUIScreen { SceneFadeVeil() } }
         .alert("Error", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -334,12 +401,23 @@ struct RootView: View {
     }
 }
 
+extension AppModel {
+    /// Screens drawn by SwiftUI alone (no Metal view to draw a scene fade into).
+    var showsSwiftUIScreen: Bool {
+        switch screen {
+        case .importer, .library: true
+        case .challenge(let flow): flow.scene == nil && !flow.isPlaying
+        default: false
+        }
+    }
+}
+
 #if os(iOS)
 extension AppModel {
     /// The game, a 100 Mario run or the title: full screen, touch controls shown.
     var showsGameScreen: Bool {
         switch screen {
-        case .game, .challenge, .title: true
+        case .game, .challenge, .title, .boot, .courseWorld: true
         case .importer, .library: false
         }
     }

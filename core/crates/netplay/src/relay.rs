@@ -518,6 +518,7 @@ mod tests {
             first_frame: 3,
             inputs: vec![1, 2],
             acks: vec![],
+            check: None,
         };
         let mut got = Vec::new();
         for _ in 0..400 {
@@ -558,6 +559,7 @@ mod tests {
                     first_frame: 0,
                     inputs: vec![],
                     acks: vec![],
+                    check: None,
                 });
                 l.poll();
             }
@@ -638,6 +640,7 @@ mod tests {
             first_frame: 9,
             inputs: vec![4],
             acks: vec![],
+            check: None,
         };
         let mut got = None;
         for _ in 0..500 {
