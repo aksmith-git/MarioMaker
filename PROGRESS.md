@@ -95,7 +95,16 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   Up/Down, snow-night ice, forest-night poison, castle-night air swimming
 - 🔄 Coverage (`mmk coverage`): 33 of 150 sample SMB1 courses fully playable (was 20); biggest
   blockers now Chain Chomp, tracks, Bowser, clear conditions, swinging claw, grinder, liquids
-- ⬜ 7. Play real courses start to goal; tune against Ryujinx (needs a Ryujinx build with a GDB stub)
+- 🔄 7. Tune against Ryujinx ✅ frame-exact loop: a locally patched Ryujinx (1.3.2 + a trace hook on
+  the player's per-frame update, scripted pad state per emulated frame, private data root) runs
+  the owner's SMM2 v3.0.3 on physics test courses (`mmk trace-courses`, played as title courses);
+  `mmk trace` runs the same input script in the sim and the two are diffed frame by frame (tooling
+  private). ~310 recorded tests over all five styles (walk/run/skid, every jump height, air turns,
+  jump chain, crouch/duck/crouch jump, spin and 3DW long jump, ground pound, wall slide/jump,
+  ledges, slopes, swimming, Super Mario): 152 matched exactly before, all but the slide-end cases
+  exact now (landing frame, jump-press retry, CrouchEnd, 3DW run timer, slope geometry, wall
+  slide only in NSMBU/3DW, …) · ⬜ other power-up forms, enemies/objects, playing real courses
+  start to goal
 
 ### Phase 5b — Native app (must be done before Phase 6) 🔄
 - ✅ `.app` bundle: `scripts/make-app.sh` → `build/MMK.app` (Info.plist, generated placeholder icon,

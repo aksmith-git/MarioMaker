@@ -110,7 +110,7 @@ pub fn run(course: &[u8], script: &[Input], start: &Start) -> Result<String, Str
 // Physics test courses
 
 pub const STYLES: [&str; 5] = ["M1", "M3", "MW", "WU", "3W"];
-pub const KINDS: [&str; 5] = ["flat", "wall", "slope", "water", "items"];
+pub const KINDS: [&str; 6] = ["flat", "wall", "slope", "water", "items", "form"];
 
 /// All test course names: `<style>_<kind>`.
 pub fn course_names() -> Vec<String> {
@@ -187,6 +187,12 @@ pub fn build_course(name: &str) -> Result<Vec<u8>, String> {
             // a Super Mushroom on the floor just ahead of the start (walk into it to grow)
             floor(&mut e, 0, len - 1)?;
             e.place(20, 10, base).map_err(err)?;
+        }
+        "form" => {
+            // the style's own power-up (part 44: leaf, feather, propeller, bell; a mushroom in
+            // SMB1) just ahead of the start
+            floor(&mut e, 0, len - 1)?;
+            e.place(44, 10, base).map_err(err)?;
         }
         "wall" => {
             // floor, then a 12-tall wall at x 40 and a second one at x 46 (a 5-wide shaft for
