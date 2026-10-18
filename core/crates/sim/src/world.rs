@@ -875,6 +875,7 @@ impl World {
                         | Kind::BoomBoom { .. }
                         | Kind::BowserJr { .. }
                         | Kind::Boo
+                        | Kind::RingBoo { .. }
                         | Kind::Thwomp { .. }
                         | Kind::AngrySun { .. }
                 )
@@ -1191,6 +1192,7 @@ impl World {
         let (ax, ay, kind) = (a.x, a.y, a.kind);
         match kind {
             Kind::Goomba
+            | Kind::Goombrat
             | Kind::ShoeGoomba { .. }
             | Kind::Piranha { fire: false }
             | Kind::HammerBro
@@ -1555,12 +1557,17 @@ impl World {
         if prev_vy > 0.0 && self.player.vy <= 0.0 {
             self.hit_exclamation_blocks();
         }
+        self.side_springs();
         self.shake_trees();
         if let Some((tx, ty)) = self.player.head_hit {
             self.head_hit(tx, ty);
         }
         if self.player.throw {
-            self.throw_fireball();
+            if self.player.form == Form::Superball {
+                self.throw_superball();
+            } else {
+                self.throw_fireball();
+            }
         }
         if !self.player.alive() {
             self.events.push(Event::Death);
@@ -1671,6 +1678,24 @@ impl World {
         self.magikoopas();
         self.claws(input);
         self.pow_quake();
+        // a Sledge Bro landing on screen stuns grounded players (3-hammer-bro.md) [inf: 100
+        // frames]
+        let v = self.view_rect(0.0);
+        if self.actors.iter().any(|a| {
+            a.kind == Kind::HammerBro
+                && a.alt
+                && a.kick_lock == 50
+                && a.x > v.0
+                && a.x < v.2
+                && a.y > v.1
+                && a.y < v.3
+        }) {
+            if self.player.on_ground && self.player.star == 0 {
+                self.player.stun = 100;
+                self.player.vx = 0.0;
+            }
+            self.events.push(Event::Bump);
+        }
         self.bump_moving_block();
         self.tail_attack();
         self.pound_blocks();
@@ -1917,6 +1942,82 @@ impl World {
         }
     }
 
+    /// Blooper Nanny babies sit on her path, 8 + 12·k frames back (8 + 8·k winged); without
+    /// her they're knocked out too [inf].
+    fn place_baby_bloopers(&mut self) {
+        let mut moves = Vec::new();
+        for (i, b) in self.actors.iter().enumerate() {
+            let Kind::BabyBlooper { slot } = b.kind else {
+                continue;
+            };
+            if !b.alive() {
+                continue;
+            }
+            let mum = self
+                .actors
+                .iter()
+                .find(|m| m.id == b.chain && m.alive() && m.kind == Kind::Blooper);
+            let delay = if b.wings {
+                8 + 8 * slot as usize
+            } else {
+                8 + 12 * slot as usize
+            };
+            moves.push((
+                i,
+                mum.map(|m| {
+                    let n = m.trail.len();
+                    m.trail
+                        .get(n.saturating_sub(1 + delay))
+                        .copied()
+                        .unwrap_or((m.x, m.y + 8.0))
+                }),
+            ));
+        }
+        for (i, at) in moves {
+            match at {
+                Some((x, y)) => {
+                    let b = &mut self.actors[i];
+                    b.dir = if x < b.x { -1 } else { 1 };
+                    b.moved = (x - b.x, y - 4.0 - b.y);
+                    b.x = x;
+                    b.y = y - 4.0;
+                }
+                None => {
+                    let x = self.actors[i].x;
+                    self.actors[i].die_fall(x);
+                }
+            }
+        }
+    }
+
+    /// Sideways springs fling a player touching their side away: 4.5 px/f held for 20 frames
+    /// with a small hop (vy ≥ 1.5) [inf: the push speed wasn't extracted].
+    fn side_springs(&mut self) {
+        let p = &self.player;
+        let (x0, y0, x1, y1) = p.hurt_box();
+        let mut push = None;
+        for a in &mut self.actors {
+            if a.kind != Kind::SideSpring || a.pause > 6 {
+                continue;
+            }
+            let touching = y1 > a.y + 2.0 && y0 < a.y + 14.0 && x1 >= a.x - 9.0 && x0 <= a.x + 9.0;
+            if touching {
+                a.pause = 12;
+                push = Some(if p.x < a.x { -1.0 } else { 1.0 });
+                break;
+            }
+        }
+        if let Some(dir) = push {
+            let p = &mut self.player;
+            p.vx = 4.5 * dir;
+            p.facing = dir as i32;
+            p.vy = p.vy.max(1.5);
+            p.on_ground = false;
+            p.side_push = 20;
+            self.events.push(Event::Jump);
+        }
+    }
+
     /// The player's head bumped into a ! block (or its chain) from below: the whole chain
     /// bounces and enemies standing on it are knocked out.
     fn hit_exclamation_blocks(&mut self) {
@@ -2009,7 +2110,7 @@ impl World {
                 continue;
             }
             match a.kind {
-                Kind::Goomba | Kind::Piranha { .. } => {
+                Kind::Goomba | Kind::Goombrat | Kind::Piranha { .. } => {
                     a.die_fall(cx);
                     kills += 1;
                     scores.push((a.x, a.y + 24.0));
@@ -2108,6 +2209,21 @@ impl World {
         self.add_actor(a);
     }
 
+    /// Superball: one at a time [inf], 3 px/f forward and down (vy −3), 270 frames.
+    fn throw_superball(&mut self) {
+        if self.actors.iter().any(|a| a.kind == Kind::Superball) {
+            return;
+        }
+        let p = &self.player;
+        let mut f = Actor::new(Kind::Superball, p.x + p.facing as f32 * 8.0, p.y + 12.0);
+        f.dir = p.facing;
+        f.vx = 3.0 * p.facing as f32;
+        f.vy = -3.0;
+        f.timer = 270;
+        self.add_actor(f);
+        self.events.push(Event::Fireball);
+    }
+
     fn throw_fireball(&mut self) {
         let mine: Vec<&Actor> = self
             .actors
@@ -2135,6 +2251,28 @@ impl World {
     }
 
     fn collect_coins(&mut self) {
+        // a superball collects the coins it passes through [ext]
+        let balls: Vec<_> = self
+            .actors
+            .iter()
+            .filter(|a| a.kind == Kind::Superball && a.alive())
+            .map(|a| a.bbox())
+            .collect();
+        let mut got = 0;
+        self.level.coins.retain(|c| {
+            let cb = (
+                c.x as f32 * TILE,
+                c.y as f32 * TILE,
+                (c.x + 1) as f32 * TILE,
+                (c.y + 1) as f32 * TILE,
+            );
+            let hit = balls.iter().any(|&b| overlap(b, cb));
+            got += hit as u32;
+            !hit
+        });
+        for _ in 0..got {
+            self.add_coin();
+        }
         let b = self.player.contact_box();
         let mut got = 0;
         self.level.coins.retain(|c| {
@@ -2214,7 +2352,10 @@ impl World {
                     } else {
                         (&mut *a, &mut *b)
                     };
-                    if f.kind == Kind::Fireball && e.kind.is_enemy() && f.mode != Mode::Dead {
+                    if matches!(f.kind, Kind::Fireball | Kind::Superball)
+                        && e.kind.is_enemy()
+                        && f.mode != Mode::Dead
+                    {
                         let fx = f.x;
                         f.mode = Mode::Dead;
                         if let Some(down) = w3::fire_hit(e, fx) {
@@ -2631,7 +2772,13 @@ impl World {
                     Kind::Bowser { .. } | Kind::BoomBoom { .. } | Kind::BowserJr { .. }
                 )
             {
-                if h == 2 && p.vy > 0.0 && !matches!(a.kind, Kind::Thwomp { .. } | Kind::Boo) {
+                if h == 2
+                    && p.vy > 0.0
+                    && !matches!(
+                        a.kind,
+                        Kind::Thwomp { .. } | Kind::Boo | Kind::RingBoo { .. }
+                    )
+                {
                     let px = p.x;
                     self.actors[i].die_fall(px);
                     self.events.push(Event::EnemyDown);
@@ -2645,6 +2792,7 @@ impl World {
                     a.kind,
                     Kind::Thwomp { .. }
                         | Kind::Boo
+                        | Kind::RingBoo { .. }
                         | Kind::AngrySun { .. }
                         | Kind::EnemyFire
                         | Kind::Hammer
@@ -2678,6 +2826,7 @@ impl World {
                     a.kind,
                     Kind::Thwomp { .. }
                         | Kind::Boo
+                        | Kind::RingBoo { .. }
                         | Kind::AngrySun { .. }
                         | Kind::EnemyFire
                         | Kind::Hammer
@@ -2708,6 +2857,7 @@ impl World {
                         | Kind::BowserJr { .. }
                         | Kind::Thwomp { .. }
                         | Kind::Boo
+                        | Kind::RingBoo { .. }
                         | Kind::LavaBubble
                         | Kind::AngrySun { .. }
                         | Kind::ChainChomp { .. }
@@ -2851,6 +3001,11 @@ impl World {
                 self.events.push(Event::PowerUp);
                 self.add_score(ITEM_SCORE, x, y + 16.0);
             }
+            Kind::SuperballFlower => {
+                self.player.power_up(Form::Superball);
+                self.events.push(Event::PowerUp);
+                self.add_score(ITEM_SCORE, x, y + 16.0);
+            }
             Kind::Star => {
                 self.player.star = STAR_FRAMES;
                 self.events.push(Event::PowerUp);
@@ -2923,6 +3078,7 @@ impl World {
                 let mut a = Actor::new(s.kind, s.x, s.y);
                 a.big = s.big;
                 a.wings = s.wings;
+                a.alt = s.alt;
                 a.spawn = Some(idx);
                 a.home_y = s.y;
                 a.pipe = s.pipe;
@@ -2972,7 +3128,33 @@ impl World {
                 } else {
                     1
                 };
-                self.add_actor(a);
+                if s.kind == Kind::Blooper && s.alt {
+                    let id = self.next_id;
+                    self.add_actor(a.clone());
+                    for slot in 1..=4 {
+                        let mut b = Actor::new(Kind::BabyBlooper { slot }, s.x, s.y);
+                        b.chain = id;
+                        b.spawn = Some(idx);
+                        b.wings = s.wings;
+                        self.add_actor(b);
+                    }
+                    self.spawns[idx].alive = true;
+                    continue;
+                }
+                if s.kind == Kind::Boo && s.alt {
+                    // a Boo circle: eight Boos round the placement
+                    for slot in 0..8 {
+                        let mut b = a.clone();
+                        b.kind = Kind::RingBoo { slot };
+                        b.home_x = s.x;
+                        b.home_y = s.y + 8.0;
+                        b.speed = 0.0;
+                        b.heading = 90.0;
+                        self.add_actor(b);
+                    }
+                } else {
+                    self.add_actor(a);
+                }
                 self.spawns[idx].alive = true;
             }
         }
@@ -3502,7 +3684,7 @@ impl World {
                 && !boss
                 && !matches!(
                     a.kind,
-                    Kind::Boo | Kind::Thwomp { .. } | Kind::AngrySun { .. }
+                    Kind::Boo | Kind::RingBoo { .. } | Kind::Thwomp { .. } | Kind::AngrySun { .. }
                 )
                 && overlap(reach, a.bbox())
             {
@@ -3626,12 +3808,34 @@ impl World {
             return;
         };
         self.actors[i].mode = Mode::Dead;
+        let red = self.actors[i].alt;
         let v = self.view_rect(16.0);
         let px = self.player.x;
+        if red {
+            // the red POW's quake_shock also breaks the bricks on screen [ext]
+            let bricks: Vec<(i32, i32)> = self
+                .blocks
+                .map
+                .iter()
+                .filter(|&(&(x, y), b)| {
+                    b.kind == BlockKind::Brick && b.contents.is_none() && {
+                        let (bx, by) = (x as f32 * TILE, y as f32 * TILE);
+                        bx >= v.0 && bx <= v.2 && by >= v.1 && by <= v.3
+                    }
+                })
+                .map(|(&k, _)| k)
+                .collect();
+            for (x, y) in bricks {
+                self.blocks.map.remove(&(x, y));
+                self.level.set(x, y, Cell::Empty);
+                let (bx, by) = blocks::origin(x, y);
+                self.effects.extend(Effect::debris(bx, by, 0.0, 0.1));
+            }
+        }
         for a in &mut self.actors {
             if a.kind.is_enemy()
                 && a.alive()
-                && a.on_ground
+                && (a.on_ground || red) // [inf] the red one reaches the air too
                 && a.x >= v.0
                 && a.x <= v.2
                 && a.y >= v.1
@@ -3664,8 +3868,10 @@ impl World {
             }
             self.cannon_timers[ci] = 190;
             let mut b = Actor::new(Kind::Cannonball, mx, my - 8.0);
-            b.vx = a.cos();
-            b.vy = a.sin();
+            let speed = if c.red { 2.4 } else { 1.0 };
+            b.vx = speed * a.cos();
+            b.vy = speed * a.sin();
+            b.phase = c.red as u8;
             self.add_actor(b);
             self.events.push(Event::Kick);
         }
@@ -3730,6 +3936,7 @@ impl World {
             }
             a.step_spawning(&self.level);
         }
+        self.place_baby_bloopers();
         // fixed objects riding tracks follow their carrier
         for a in &self.actors {
             let Kind::TrackMount { what, index, .. } = a.kind else {
@@ -3915,6 +4122,7 @@ impl World {
             a.dir = dir;
             if kind == Kind::BulletBill {
                 a.vx = dir as f32;
+                a.phase = b.homing as u8;
             }
             self.add_actor(a);
             self.events.push(Event::Kick);
@@ -4992,7 +5200,11 @@ impl World {
             }
             out.push(Self::model_sprite(
                 "M1_Enemy_senkan_houdai",
-                "senkan_houdai_base",
+                if c.red {
+                    "senkan_houdai_search"
+                } else {
+                    "senkan_houdai_base"
+                },
                 c.x - 8.0,
                 c.y,
                 16.0,
@@ -5074,7 +5286,7 @@ impl World {
             let top = b.y + (b.h - 2) as f32 * TILE;
             out.push(Self::model_sprite(
                 "M1_Enemy_killer_houdai",
-                "wait.0",
+                if b.homing { "search.0" } else { "wait.0" },
                 b.x - 8.0,
                 top,
                 16.0,
@@ -5085,7 +5297,7 @@ impl World {
             for i in 0..(b.h - 2).max(0) {
                 out.push(Self::model_sprite(
                     "M1_Enemy_killer_houdai",
-                    "unit.0",
+                    if b.homing { "unit_search.0" } else { "unit.0" },
                     b.x - 8.0,
                     b.y + i as f32 * TILE,
                     16.0,
@@ -5245,11 +5457,11 @@ impl World {
                 let p = &self.player;
                 out.push(Self::model_sprite(
                     if h == 2 {
-                        "M1_Enemy_togezo"
+                        "M1_Player_Togezo_model"
                     } else {
-                        "M1_Enemy_met"
+                        "M1_Player_Met_model"
                     },
-                    "shellkara.0",
+                    if h == 2 { "togezo.0" } else { "met.0" },
                     p.x - 8.0,
                     p.y + p.sensors().head_y - 6.0,
                     16.0,
@@ -5263,7 +5475,7 @@ impl World {
                 let p = &self.player;
                 let mut sh = if p.shoe_karon {
                     Self::model_sprite(
-                        "M1_Enemy_karon",
+                        "M1_Player_Karon_model",
                         "shellkara.0",
                         p.x - 8.0,
                         p.y,
@@ -5437,14 +5649,19 @@ impl World {
         };
         let scale = if a.big { 2.0 } else { 1.0 };
         let (model, tex, w, h, flip_x) = match a.kind {
-            Kind::Goomba => {
+            Kind::Goomba | Kind::Goombrat => {
                 // walk.1 is walk.0 mirrored: the texture swap alone animates it
                 let t = if a.mode == Mode::Stomped {
                     "damage.0"
                 } else {
                     walk2(WALK_FRAMES)
                 };
-                ("M1_Enemy_kuribo", t, 16.0, 32.0, false)
+                let model = if a.kind == Kind::Goombrat {
+                    "M1_Enemy_kakibo"
+                } else {
+                    "M1_Enemy_kuribo"
+                };
+                (model, t, 16.0, 32.0, false)
             }
             Kind::Koopa { red } => (
                 if red {
@@ -5497,6 +5714,14 @@ impl World {
                 a.x < a.home_x,
             ),
             Kind::OneUp => ("M1_Item_kinoko1up", "wait.0", 16.0, 16.0, false),
+            Kind::SuperballFlower => (
+                "M1_Item_ballflower",
+                ["wait.0", "wait.1", "wait.2"][(a.age as usize / 4) % 3],
+                16.0,
+                16.0,
+                false,
+            ),
+            Kind::Superball => ("M1_Object_superball", "superball", 8.0, 8.0, false),
             Kind::FireFlower => (
                 "M1_Item_flower",
                 ["wait.0", "wait.1", "wait.2", "wait.3"][(a.age as usize / 4) % 4],
@@ -5545,6 +5770,13 @@ impl World {
                 32.0,
                 false,
             ),
+            Kind::SideSpring => (
+                "M1_Object_jumpstep2",
+                ["jump.0", "jump.3", "jump.2", "jump.1"][(a.pause / 3).clamp(0, 3) as usize],
+                16.0,
+                16.0,
+                false,
+            ),
             Kind::Spring => (
                 "M1_Object_jumpstep",
                 ["jump.0", "jump.1", "jump.1", "jump.2", "jump.2"][a.pause.clamp(0, 4) as usize],
@@ -5552,7 +5784,13 @@ impl World {
                 16.0,
                 false,
             ),
-            Kind::BulletBill => ("M1_Enemy_killer", "wait.0", 16.0, 16.0, a.dir > 0),
+            Kind::BulletBill => (
+                "M1_Enemy_killer",
+                if a.phase == 1 { "search.0" } else { "wait.0" },
+                16.0,
+                16.0,
+                a.dir > 0,
+            ),
             Kind::Lift { .. } => return None,
             Kind::PSwitch => (
                 "M1_Object_pswitch",
@@ -5580,6 +5818,13 @@ impl World {
             Kind::Spiny => ("M1_Enemy_togezo", walk2(8), 16.0, 16.0, a.dir > 0),
             Kind::Buzzy => ("M1_Enemy_met", walk2(8), 16.0, 16.0, a.dir > 0),
             Kind::SpikeTop => ("M1_Enemy_togemetA", walk2(8), 16.0, 16.0, a.dir > 0),
+            Kind::HammerBro if a.alt => (
+                "M1_Enemy_bros_mega",
+                if a.timer < 12 { "throw.0" } else { walk2(8) },
+                32.0,
+                32.0,
+                a.dir > 0,
+            ),
             Kind::HammerBro => (
                 "M1_Enemy_bros",
                 if a.timer < 12 { "throw.0" } else { walk2(8) },
@@ -5612,7 +5857,13 @@ impl World {
                 32.0,
                 a.dir > 0,
             ),
-            Kind::BanzaiBill { dir } => ("M1_Enemy_killermagnum", "wait.0", 64.0, 64.0, dir == 0),
+            Kind::BanzaiBill { dir, homing } => (
+                "M1_Enemy_killermagnum",
+                if homing { "search.0" } else { "wait.0" },
+                64.0,
+                64.0,
+                dir == 0,
+            ),
             Kind::Bumper => ("M1_Object_saw", "saw_maru", 48.0, 48.0, false),
             Kind::Grinder => (
                 "M1_Object_saw",
@@ -5627,7 +5878,11 @@ impl World {
             ),
             Kind::Cannonball => (
                 "M1_Enemy_senkan_houdai",
-                "senkan_houdai_ball.0",
+                if a.phase == 1 {
+                    "senkan_houdai_ball_search.0"
+                } else {
+                    "senkan_houdai_ball.0"
+                },
                 16.0,
                 16.0,
                 false,
@@ -5896,6 +6151,14 @@ impl World {
                 16.0,
                 false,
             ),
+            Kind::RingBoo { .. } => ("M1_Enemy_teresa", "walk.0", 16.0, 16.0, a.dir > 0),
+            Kind::BabyBlooper { .. } => (
+                "M1_Enemy_gessomini",
+                ["wait.0", "wait.1"][(a.age as usize / 16) % 2],
+                8.0,
+                8.0,
+                false,
+            ),
             Kind::Boo => (
                 "M1_Enemy_teresa",
                 if (a.target.0 < a.x) == (a.target_facing > 0) {
@@ -5969,6 +6232,7 @@ impl World {
             // NSMBU draws one 3D Mario with the propeller part (the mesh path maps it)
             Form::Super | Form::Cape | Form::Propeller => "M1_Player_SpMarioMdl",
             Form::Fire => "M1_Player_FireMarioMdl",
+            Form::Superball => "M1_Player_SpBallMarioMdl",
             Form::Raccoon => "M1_Player_TnkMarioMdl",
             // 3D World only: the mesh path draws the cat suit (3W_Player_MarioClimb) and the
             // builder outfit (3W_Player_MarioBuilder)
@@ -6192,6 +6456,7 @@ mod tests {
             rail: None,
             link: -1,
             clown: false,
+            alt: false,
         });
         let mut w = World::with_level(lvl);
         assert_eq!(w.actors.len(), 1);
@@ -6228,6 +6493,7 @@ mod tests {
             rail: None,
             link: -1,
             clown: false,
+            alt: false,
         });
         let mut w = World::with_level(lvl);
         let lives = w.lives;
@@ -6410,6 +6676,7 @@ mod tests {
             rail: None,
             link: -1,
             clown: false,
+            alt: false,
         });
         let mut w = World::with_level(lvl);
         w.player.x = 200.0;
@@ -6498,6 +6765,7 @@ mod tests {
             rail: None,
             link: -1,
             clown: false,
+            alt: false,
         }
     }
 
@@ -7612,6 +7880,7 @@ mod tests {
             x: 200.0,
             y: 32.0,
             angle: 180.0,
+            red: false,
         });
         let mut w = World::with_level(lvl);
         w.player.x = 300.0; // behind the cannon (it fires left)
@@ -8133,6 +8402,84 @@ mod tests {
     }
 
     #[test]
+    fn alternate_forms_behave() {
+        // Goombrat turns at a ledge
+        let mut lvl = Level::flat(60);
+        for x in 12..60 {
+            lvl.set(x, 0, Cell::Empty);
+            lvl.set(x, 1, Cell::Empty);
+        }
+        lvl.spawns.push(spawn(Kind::Goombrat, 150.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 20.0;
+        run(&mut w, 0, 200);
+        let g = w.actors.iter().find(|a| a.kind == Kind::Goombrat).unwrap();
+        assert!(g.y >= 31.0, "stayed on the ledge: {}", g.y);
+
+        // a sideways spring flings the player back
+        let mut lvl = Level::flat(60);
+        lvl.spawns.push(spawn(Kind::SideSpring, 200.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 160.0;
+        run(&mut w, input::RIGHT, 60);
+        assert!(
+            w.player.x < 190.0 && w.player.side_push >= 0,
+            "pushed back: {}",
+            w.player.x
+        );
+
+        // a Boo circle spreads to 52 px and turns
+        let mut lvl = Level::flat(60);
+        let mut b = spawn(Kind::Boo, 300.0, 64.0);
+        b.alt = true;
+        lvl.spawns.push(b);
+        let mut w = World::with_level(lvl);
+        w.player.x = 200.0;
+        run(&mut w, 0, 120);
+        let ring: Vec<_> = w
+            .actors
+            .iter()
+            .filter(|a| matches!(a.kind, Kind::RingBoo { .. }))
+            .collect();
+        assert_eq!(ring.len(), 8);
+        let r = (ring[0].x - 300.0).hypot(ring[0].y + 8.0 - 72.0);
+        assert!((r - 52.0).abs() < 1.0, "radius {r}");
+
+        // a homing Bullet Bill turns toward the player
+        let mut w = World::with_level(Level::flat(60));
+        let mut bill = Actor::new(Kind::BulletBill, 400.0, 32.0);
+        bill.dir = -1;
+        bill.phase = 1;
+        w.add_actor(bill);
+        w.player.x = 200.0;
+        w.player.y = 150.0;
+        run(&mut w, 0, 60);
+        let bill = w
+            .actors
+            .iter()
+            .find(|a| a.kind == Kind::BulletBill)
+            .unwrap();
+        assert!(bill.y > 33.0, "climbed toward the player: {}", bill.y);
+
+        // a Superball bounces off the floor and keeps going
+        let mut w = World::with_level(Level::flat(60));
+        let mut ball = Actor::new(Kind::Superball, 100.0, 40.0);
+        ball.vx = 3.0;
+        ball.vy = -3.0;
+        ball.timer = 270;
+        w.add_actor(ball);
+        w.player.x = 30.0;
+        run(&mut w, 0, 10);
+        let ball = w.actors.iter().find(|a| a.kind == Kind::Superball).unwrap();
+        assert!(
+            ball.vy > 0.0 && ball.vx == 3.0,
+            "reflected: {} {}",
+            ball.vx,
+            ball.vy
+        );
+    }
+
+    #[test]
     fn riding_a_snake_block() {
         let mut lvl = Level::flat(60);
         lvl.snakes
@@ -8329,6 +8676,7 @@ mod tests {
                     rail: None,
                     link: -1,
                     clown: false,
+                    alt: false,
                 });
             }
             World::with_level(lvl)

@@ -9,7 +9,7 @@ use crate::{MmkEngine, guard};
 pub struct MmkCondition {
     /// 0 none, 1 defeat N (target = enemy class), 2 collect N 1-Ups, 3 collect N coins (target =
     /// coin value, 0 any), 4 use N POW blocks, 5 press N P Switches, 6 goal while invincible,
-    /// 7 goal as Super, 8 goal as Fire, 9 no damage, 10 no landing, 11 goal in a Goomba's Shoe, 12 in a Koopa Clown Car, 13 as Raccoon, 14 as Cape, 15 as Propeller, 16 holding a shell, 17 on Yoshi, 18 as Cat, 19 in a Koopa Troopa Car, 20 as Builder, 21 on a Lakitu's Cloud, 22 holding the stone, 23 shake N trees, 24 not held by a claw, 25 no water, 26 wearing a helmet (target 1 Buzzy, 2 Spiny), 27 in a Dry Bones Shell,
+    /// 7 goal as Super, 8 goal as Fire, 9 no damage, 10 no landing, 11 goal in a Goomba's Shoe, 12 in a Koopa Clown Car, 13 as Raccoon, 14 as Cape, 15 as Propeller, 16 holding a shell, 17 on Yoshi, 18 as Cat, 19 in a Koopa Troopa Car, 20 as Builder, 21 on a Lakitu's Cloud, 22 holding the stone, 23 shake N trees, 24 not held by a claw, 25 no water, 26 wearing a helmet (target 1 Buzzy, 2 Spiny), 27 in a Dry Bones Shell, 28 as Superball Mario,
     /// 255 not supported.
     pub kind: u32,
     pub target: u32,
@@ -58,6 +58,7 @@ pub unsafe extern "C" fn mmk_engine_clear_condition(
             Goal::NoWater => (25, 0),
             Goal::Helmet(h) => (26, h as u32),
             Goal::DryBonesShell => (27, 0),
+            Goal::Superball => (28, 0),
             Goal::HoldingShell => (16, 0),
             Goal::Yoshi => (17, 0),
             Goal::ClownCar => (12, 0),

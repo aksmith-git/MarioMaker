@@ -15,6 +15,8 @@ pub use w3::{CREEP_CELL, W3Look, W3State, creeper_corner, push as bully_push};
 pub const WALK_SPEED: f32 = 0.5;
 pub const ENEMY_GRAVITY: f32 = -0.1875;
 pub const MAX_FALL: f32 = -4.0;
+/// How long homing Bills steer (13-bill-blaster.md, 32-banzai-bill.md).
+pub const HOMING_FRAMES: i32 = 528;
 pub const TURN_LOCK: i32 = 8;
 pub const STOMP_FRAMES: i32 = 30;
 pub const SHELL_WAKE: i32 = 511;
@@ -34,6 +36,8 @@ const DIE_GRAVITY: f32 = -0.24375;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Goomba,
+    /// Goombrat (the Goomba's 0x4 form; Goombud in SMW): a Goomba that turns at ledges.
+    Goombrat,
     Koopa {
         red: bool,
     },
@@ -69,6 +73,9 @@ pub enum Kind {
     },
     /// Trampoline.
     Spring,
+    /// Sideways spring (the Spring's 0x4 form, JumpStepSide): a solid block that flings what
+    /// touches its sides away; `pause` = push animation frames left.
+    SideSpring,
     /// Bullet Bill from a blaster: flies straight at 1 px/frame, through terrain.
     BulletBill,
     /// P Switch: pressed from above.
@@ -93,9 +100,23 @@ pub enum Kind {
     DryBones,
     /// Boo: chases when not looked at.
     Boo,
-    /// Banzai Bill: 64×64, flies 1 px/frame (dir 0 right, 1 down, 2 left, 3 up).
+    /// A Blooper Nanny's baby (`slot` 1–4): placed by the world on her path 8 + 12·k frames
+    /// back (8 + 8·k winged); `chain` = her actor id. 8×8 [inf].
+    BabyBlooper {
+        slot: u8,
+    },
+    /// One Boo of a Boo circle (the Boo's 0x4 form, TeresaSpread): 8 slots 37.06° apart round
+    /// the placement (`home_x`, `home_y`), spreading to 52 px (×1.4 big) at 0.15·(R − r)
+    /// clamped 0.1–0.6 px/f, turning clockwise at up to 1°/frame (0.5 big), the turn speed
+    /// ramping in by 0.04/frame (41-boo.md). Radius in `speed`, ring angle in `heading`.
+    RingBoo {
+        slot: u8,
+    },
+    /// Banzai Bill: 64×64, flies 1 px/frame (dir 0 right, 1 down, 2 left, 3 up); `homing` = the
+    /// 0x4 Bull's-Eye Banzai (turns ≤ 0.25°/frame toward the player for 528 frames).
     BanzaiBill {
         dir: u8,
+        homing: bool,
     },
     /// Bumper: bounces the player (82-bumper.md).
     Bumper,
@@ -210,6 +231,10 @@ pub enum Kind {
     KoopaCar,
     /// Super Hammer (116, 3D World): walks like a mushroom [inf]; makes Builder Mario.
     SuperHammer,
+    /// Superball Flower (SMB1; 34-fire-flower.md) and the ball Superball Mario throws: 3 px/f
+    /// on both axes, reflecting off surfaces, 270 frames (34-fire-flower.md) [ext: the bounce].
+    SuperballFlower,
+    Superball,
     /// A coin that moves (wings or a track): collected on touch.
     FloatCoin,
     /// Yoshi's Egg (45 in SMW / NSMBU): hatches into Yoshi; `red` = Red Yoshi [inf: alt flag].
@@ -292,6 +317,8 @@ impl Kind {
         matches!(
             self,
             Kind::Goomba
+                | Kind::Goombrat
+                | Kind::BabyBlooper { .. }
                 | Kind::Bowser { .. }
                 | Kind::BoomBoom { .. }
                 | Kind::BowserJr { .. }
@@ -313,6 +340,7 @@ impl Kind {
                 | Kind::BobOmb
                 | Kind::DryBones
                 | Kind::Boo
+                | Kind::RingBoo { .. }
                 | Kind::ChainChomp { .. }
                 | Kind::LavaBubble
                 | Kind::MontyMole
@@ -325,7 +353,7 @@ impl Kind {
     pub fn defeat_class(self, buzzy: bool) -> Option<u8> {
         use crate::clear::enemy as e;
         Some(match self {
-            Kind::Goomba | Kind::ShoeGoomba { .. } => e::GOOMBA,
+            Kind::Goomba | Kind::Goombrat | Kind::ShoeGoomba { .. } => e::GOOMBA,
             Kind::Bowser { .. } => e::BOWSER,
             Kind::BoomBoom { pom: true, .. } => e::POM_POM,
             Kind::BoomBoom { .. } => e::BOOM_BOOM,
@@ -353,7 +381,8 @@ impl Kind {
             Kind::Wiggler => e::WIGGLER,
             Kind::BobOmb => e::BOB_OMB,
             Kind::Thwomp { .. } => e::THWOMP,
-            Kind::Boo => e::BOO,
+            Kind::Boo | Kind::RingBoo { .. } => e::BOO,
+            Kind::BabyBlooper { .. } => e::BLOOPER,
             Kind::BanzaiBill { .. } => e::BANZAI_BILL,
             Kind::Magikoopa => e::MAGIKOOPA,
             Kind::BulletBill => e::BULLET_BILL,
@@ -369,6 +398,7 @@ impl Kind {
         matches!(
             self,
             Kind::Goomba
+                | Kind::Goombrat
                 | Kind::Koopa { .. }
                 | Kind::Shell { .. }
                 | Kind::Spiny
@@ -390,6 +420,7 @@ impl Kind {
                 | Kind::Spiny
                 | Kind::SpikeTop
                 | Kind::Boo
+                | Kind::RingBoo { .. }
                 | Kind::Hammer
                 | Kind::LavaBubble
                 | Kind::AngrySun { .. }
@@ -399,7 +430,7 @@ impl Kind {
     pub fn ledge_turner(self) -> bool {
         matches!(
             self,
-            Kind::Koopa { red: true } | Kind::SpikeTop | Kind::DryBones
+            Kind::Koopa { red: true } | Kind::SpikeTop | Kind::DryBones | Kind::Goombrat
         )
     }
     /// Moves before the player and offers a solid surface (riders are carried).
@@ -414,6 +445,7 @@ impl Kind {
                 | Kind::Crate { .. }
                 | Kind::Stone
                 | Kind::Spring
+                | Kind::SideSpring
                 | Kind::Muncher
                 | Kind::Donut
                 | Kind::Seesaw { .. }
@@ -428,6 +460,7 @@ impl Kind {
             self,
             Kind::Mushroom
                 | Kind::FireFlower
+                | Kind::SuperballFlower
                 | Kind::Star
                 | Kind::OneUp
                 | Kind::StyleItem
@@ -521,6 +554,9 @@ pub struct Actor {
     /// Bones shell (0 = a shell with its owner inside). Empty shells never wake; the Buzzy and
     /// Spiny ones are worn as helmets, the Dry Bones one is ridden.
     pub shell_of: u8,
+    /// The placed object's alternate form (flag 0x4) where the kind doesn't encode it: a fast
+    /// Spike Top, a lit Bob-omb, …
+    pub alt: bool,
     /// Floating movers (Boo): speed along `heading` (degrees).
     pub speed: f32,
     pub heading: f32,
@@ -576,6 +612,7 @@ impl Actor {
             moved: (0.0, 0.0),
             buzzy: false,
             shell_of: 0,
+            alt: false,
             speed: 0.0,
             heading: 0.0,
             target_facing: 1,
@@ -597,6 +634,7 @@ impl Actor {
                 | Kind::SpikeTop
                 | Kind::DryBones
                 | Kind::Boo
+                | Kind::RingBoo { .. }
                 | Kind::Thwomp { .. }
                 | Kind::ChainChomp { .. }
                 | Kind::LavaBubble
@@ -653,6 +691,7 @@ impl Actor {
                 self.y + 16.0,
                 true,
             )),
+            Kind::SideSpring => Some((self.x - 8.0, self.y, self.x + 8.0, self.y + 16.0, false)),
             Kind::Pow if self.mode == Mode::Normal => {
                 Some((self.x - 8.0, self.y, self.x + 8.0, self.y + 16.0, false))
             }
@@ -1033,6 +1072,14 @@ impl Actor {
         }
     }
 
+    /// Turn `heading` (degrees, 0 = right, 90 = up) toward the player by at most `rate`.
+    fn home_toward(&mut self, rate: f32) {
+        let (tx, ty) = self.target;
+        let want = (ty + 8.0 - (self.y + 8.0)).atan2(tx - self.x).to_degrees();
+        let d = (want - self.heading + 540.0).rem_euclid(360.0) - 180.0;
+        self.heading += d.clamp(-rate, rate);
+    }
+
     fn rand(&mut self, n: u32) -> u32 {
         let mut x = self.rng.max(1);
         x ^= x << 13;
@@ -1044,7 +1091,7 @@ impl Actor {
 
     pub fn half_w(&self) -> f32 {
         match self.kind {
-            Kind::Fireball | Kind::EnemyFire => 4.0,
+            Kind::Fireball | Kind::EnemyFire | Kind::Superball => 4.0,
             Kind::Bowser { .. } | Kind::BoomBoom { .. } if self.big => 32.0,
             Kind::Bowser { .. } | Kind::BoomBoom { .. } => 16.0,
             Kind::BowserFire => 12.0,
@@ -1060,7 +1107,9 @@ impl Actor {
             }
             Kind::Lift { width, .. } => width as f32 * 8.0,
             Kind::ClownCar { .. } => 14.0,
+            Kind::HammerBro if self.alt => 16.0, // Sledge Bro
             Kind::KoopaCar => 14.0,
+            Kind::BabyBlooper { .. } => 4.0,
             Kind::Trampoline { width, .. } => width as f32 * 8.0,
             Kind::TrackBlock { .. } => 16.0,
             Kind::TrackMount { .. } => 8.0,
@@ -1072,7 +1121,7 @@ impl Actor {
 
     pub fn height(&self) -> f32 {
         match self.kind {
-            Kind::Fireball | Kind::EnemyFire => 8.0,
+            Kind::Fireball | Kind::EnemyFire | Kind::Superball => 8.0,
             Kind::Bowser { .. } | Kind::BoomBoom { .. } if self.big => 64.0,
             Kind::Bowser { .. } | Kind::BoomBoom { .. } => 32.0,
             Kind::BowserFire | Kind::Shuriken => 8.0,
@@ -1087,6 +1136,8 @@ impl Actor {
             }
             Kind::Piranha { .. } => PIRANHA_H * if self.big { 2.0 } else { 1.0 },
             Kind::Koopa { .. } if !self.big => 16.0, // body box 16×16 (art is 16×32)
+            Kind::HammerBro if self.alt => 32.0,
+            Kind::BabyBlooper { .. } => 8.0,
             Kind::TrackMount { h, .. } => h as f32 * TILE,
             k if k.is_w3() => self.w3_size().1,
             _ if self.big => 32.0,
@@ -1173,6 +1224,12 @@ impl Actor {
                 self.vx = 0.0;
                 true
             }
+            Kind::BobOmb if self.phase == 3 => {
+                // a walking lit one stops, its fuse still running [inf]
+                self.phase = 1;
+                self.vx = 0.0;
+                true
+            }
             Kind::BobOmb if self.phase == 0 => {
                 // fuse lit: it stops (the fuse runs 240 frames)
                 self.phase = 1;
@@ -1213,7 +1270,7 @@ impl Actor {
                 self.die_fall(self.x - self.dir as f32);
                 true
             }
-            Kind::Goomba => {
+            Kind::Goomba | Kind::Goombrat => {
                 self.mode = Mode::Stomped;
                 self.timer = STOMP_FRAMES;
                 self.vx = 0.0;
@@ -1600,7 +1657,7 @@ impl Actor {
     fn step_normal(&mut self, level: &Level, player_x: f32) -> Option<Actor> {
         if self.wings {
             match self.kind {
-                Kind::Goomba | Kind::Koopa { .. } | Kind::Thwomp { .. } => {} // their own wing behaviour
+                Kind::Goomba | Kind::Goombrat | Kind::Koopa { .. } | Kind::Thwomp { .. } => {} // their own wing behaviour
                 Kind::Bowser { .. } | Kind::BoomBoom { .. } | Kind::BowserJr { .. } => {}
                 k if k.is_w3() => {} // their own wing behaviour (actors/w3.rs)
                 Kind::Piranha { .. } | Kind::Muncher if self.pipe.is_none() => {
@@ -1633,6 +1690,18 @@ impl Actor {
                 self.y += self.vy;
             }
             Kind::Boo => self.step_boo(),
+            Kind::RingBoo { slot } => {
+                let k = if self.big { 0.5 } else { 1.0 };
+                let r_max = if self.big { 52.0 * 1.4 } else { 52.0 };
+                self.speed += (0.15 * (r_max - self.speed)).clamp(0.1, 0.6 * k);
+                self.speed = self.speed.min(r_max);
+                let v = (self.age as f32 * 0.04).min(1.0);
+                self.heading -= v * k;
+                let a = (self.heading - slot as f32 * 37.06).to_radians();
+                self.x = self.home_x + self.speed * a.cos();
+                self.y = self.home_y + self.speed * a.sin() - 8.0;
+                self.dir = if self.target.0 < self.x { -1 } else { 1 };
+            }
             Kind::Bowser { .. } => return self.step_bowser(level),
             Kind::BoomBoom { .. } => return self.step_boom_boom(level),
             Kind::BowserJr { .. } => return self.step_bowser_jr(level),
@@ -1685,20 +1754,37 @@ impl Actor {
             Kind::MontyMole => self.step_monty(level),
             Kind::AngrySun { moon } => self.step_sun(moon),
             Kind::Goomba
+            | Kind::Goombrat
             | Kind::Koopa { .. }
             | Kind::Spiny
             | Kind::Buzzy
             | Kind::SpikeTop
             | Kind::BobOmb
             | Kind::DryBones => {
-                if self.wings && matches!(self.kind, Kind::Goomba | Kind::Koopa { .. }) {
+                if self.wings
+                    && matches!(
+                        self.kind,
+                        Kind::Goomba | Kind::Goombrat | Kind::Koopa { .. }
+                    )
+                {
                     self.step_wings(level, player_x);
                     return None;
                 }
-                if self.on_ground {
-                    self.vx = WALK_SPEED * self.dir as f32;
+                // the alternate Spike Top crawls 1.5× as fast (40-spike-top.md)
+                let speed = if self.alt && self.kind == Kind::SpikeTop {
+                    0.75
                 } else {
-                    self.vx = self.vx.clamp(-WALK_SPEED, WALK_SPEED);
+                    WALK_SPEED
+                };
+                if self.alt && self.kind == Kind::BobOmb && self.age <= 1 {
+                    // the alternate Bob-omb starts lit and keeps walking (15-bob-omb.md)
+                    self.phase = 3;
+                    self.timer = 240;
+                }
+                if self.on_ground {
+                    self.vx = speed * self.dir as f32;
+                } else {
+                    self.vx = self.vx.clamp(-speed, speed);
                 }
                 // red Koopa turns at ledges: probe |half width| + 0.1 ahead for floor
                 if self.kind.ledge_turner() && self.on_ground && self.turn_lock == 0 {
@@ -1726,7 +1812,7 @@ impl Actor {
                     self.vx = ITEM_SPEED * self.dir as f32;
                 }
             }
-            Kind::FireFlower => {
+            Kind::FireFlower | Kind::SuperballFlower => {
                 self.vx = 0.0;
                 self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
                 self.collide(level);
@@ -1753,6 +1839,28 @@ impl Actor {
                 }
                 if self.wall || self.timer <= 0 {
                     self.mode = Mode::Dead; // snuffed against a wall
+                }
+            }
+            Kind::Superball => {
+                self.timer -= 1;
+                let before = (self.vx, self.vy);
+                let y0 = self.y;
+                self.collide(level);
+                if self.wall {
+                    self.vx = -before.0;
+                } else {
+                    self.vx = before.0;
+                }
+                if self.on_ground {
+                    self.vy = 3.0;
+                    self.on_ground = false;
+                } else if before.1 > 0.0 && self.y < y0 + before.1 - 0.01 {
+                    self.vy = -3.0; // a ceiling
+                } else {
+                    self.vy = before.1;
+                }
+                if self.timer <= 0 {
+                    self.mode = Mode::Dead;
                 }
             }
             Kind::EnemyFire => {
@@ -1783,7 +1891,13 @@ impl Actor {
                     self.wing_bob(amp);
                 }
             }
-            Kind::TrackMount { .. } => {} // moved by its rail only
+            Kind::TrackMount { .. } => {}  // moved by its rail only
+            Kind::BabyBlooper { .. } => {} // placed by the world
+            Kind::SideSpring => {
+                if self.pause > 0 {
+                    self.pause -= 1;
+                }
+            }
             Kind::EmptyShell { what } => {
                 self.kind = Kind::Shell { red: false };
                 self.shell_of = what;
@@ -1910,13 +2024,39 @@ impl Actor {
                 self.collide(level);
             }
             Kind::BulletBill => {
-                self.vx = self.dir as f32;
-                self.x += self.vx;
+                if self.phase == 1 {
+                    // Bull's-Eye Bill (from a red blaster): 1°/frame toward the player for 528
+                    // frames, then straight on
+                    if self.age <= 1 {
+                        self.heading = if self.dir < 0 { 180.0 } else { 0.0 };
+                    }
+                    if self.timer < HOMING_FRAMES {
+                        self.home_toward(1.0);
+                        self.timer += 1;
+                    }
+                    let a = self.heading.to_radians();
+                    (self.vx, self.vy) = (a.cos(), a.sin());
+                    self.x += self.vx;
+                    self.y += self.vy;
+                    if self.vx.abs() > 0.01 {
+                        self.dir = self.vx.signum() as i32;
+                    }
+                } else {
+                    self.vx = self.dir as f32;
+                    self.x += self.vx;
+                }
             }
-            Kind::BanzaiBill { dir } => {
-                let (dx, dy) = [(1.0, 0.0), (0.0, -1.0), (-1.0, 0.0), (0.0, 1.0)][dir as usize & 3];
-                self.x += dx;
-                self.y += dy;
+            Kind::BanzaiBill { dir, homing } => {
+                if self.age <= 1 {
+                    self.heading = [0.0, -90.0, 180.0, 90.0][dir as usize & 3];
+                }
+                if homing && self.timer < HOMING_FRAMES {
+                    self.home_toward(0.25);
+                    self.timer += 1;
+                }
+                let a = self.heading.to_radians();
+                self.x += a.cos();
+                self.y += a.sin();
             }
             Kind::Donut => {
                 self.vy = (self.vy - 0.1875).max(-2.0);
@@ -1992,6 +2132,13 @@ impl Actor {
                 }
             }
             Kind::Blooper => {
+                if self.alt {
+                    // Blooper Nanny: her path, which the babies follow (48-blooper.md)
+                    self.trail.push((self.x, self.y + 8.0));
+                    if self.trail.len() > 200 {
+                        self.trail.remove(0);
+                    }
+                }
                 let (px, py) = self.target;
                 if self.phase == 0 {
                     // sink at 0.5 for at least 30 frames, until level with the player
@@ -2117,8 +2264,9 @@ impl Actor {
         None
     }
 
-    /// Lit Bob-omb (15-bob-omb.md): fuse 240 frames; stopped (phase 1) or kicked (phase 2,
-    /// sliding with friction 0.03125, bouncing). At 0 it explodes (`phase` = 9, world handles).
+    /// Lit Bob-omb (15-bob-omb.md): fuse 240 frames; stopped (phase 1), kicked (phase 2,
+    /// sliding with friction 0.03125, bouncing) or placed lit and walking (phase 3). At 0 it
+    /// explodes (`phase` = 9, world handles).
     fn step_lit_bobomb(&mut self, level: &Level) {
         self.timer -= 1;
         if self.phase == 2 {
@@ -2128,6 +2276,11 @@ impl Actor {
             } else {
                 (self.vx + f).min(0.0)
             };
+        } else if self.phase == 3 {
+            // placed lit: walks on until it goes off
+            if self.on_ground {
+                self.vx = WALK_SPEED * self.dir as f32;
+            }
         } else if self.on_ground {
             self.vx = 0.0;
         }
@@ -2167,6 +2320,9 @@ impl Actor {
     /// every 300–449 frames (5.5 up, [inf] alternating with a 2.5 hop), throws hammers every
     /// 75–104 frames (70 % chance of a double, 10 frames apart), always facing the player.
     fn step_hammer_bro(&mut self, level: &Level) -> Option<Actor> {
+        if self.alt {
+            return self.step_sledge_bro(level);
+        }
         let (px, _) = self.target;
         self.dir = if px < self.x { -1 } else { 1 };
         if self.on_ground {
@@ -2213,6 +2369,68 @@ impl Actor {
                 return Some(self.make_hammer());
             }
         }
+        None
+    }
+
+    /// Sledge Bro (the Hammer Bro's 0x4 form, MegaBros; 3-hammer-bro.md): paces like a Hammer
+    /// Bro; every 360 + U[0,180) frames jumps (vy 5.1, 6.5 winged), hovers 10 frames at the top,
+    /// hip-drops (gravity −0.75, cap −8) and quakes on landing (the world stuns grounded
+    /// players), then pauses 50 frames; throws single hammers every 40 + U[0,40) frames.
+    /// Jump state in `heading`: 0 normal, > 0 hover frames left, −1 dropping; landing pause in
+    /// `kick_lock` (50 on the landing frame).
+    fn step_sledge_bro(&mut self, level: &Level) -> Option<Actor> {
+        let (px, _) = self.target;
+        self.dir = if px < self.x { -1 } else { 1 };
+        if self.on_ground && self.kick_lock == 0 && self.heading == 0.0 {
+            let d = self.home_x - self.x;
+            let pace = if self.phase == 0 { 1.0 } else { -1.0 };
+            if (pace > 0.0 && d < -16.0) || (pace < 0.0 && d > 16.0) {
+                self.phase ^= 1;
+            }
+            let target = 0.3 * pace;
+            self.vx += (target - self.vx).clamp(-0.1, 0.1);
+        } else if self.on_ground {
+            self.vx = 0.0;
+        }
+        if self.pause <= 0 {
+            self.pause = 360 + self.rand(180) as i32;
+        }
+        self.pause -= 1;
+        if self.pause == 0 && self.on_ground && self.heading == 0.0 {
+            self.vy = if self.wings { 6.5 } else { 5.1 };
+            self.on_ground = false;
+            self.home_x = self.x;
+        }
+        if self.heading > 0.0 {
+            self.heading -= 1.0;
+            self.vy = 0.0;
+            self.vx = 0.0;
+            if self.heading <= 0.0 {
+                self.heading = -1.0;
+            }
+        } else if self.heading < 0.0 {
+            self.vy = (self.vy - 0.75).max(-8.0);
+        } else {
+            let before = self.vy;
+            self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+            if before > 0.0 && self.vy <= 0.0 && !self.on_ground {
+                self.heading = 10.0; // the hover at the top
+            }
+        }
+        // (`kick_lock` counts down in `step`)
+        self.collide(level);
+        if self.heading < 0.0 && self.on_ground {
+            self.heading = 0.0;
+            self.kick_lock = 50; // landing quake
+        }
+        if self.wall {
+            self.phase ^= 1;
+        }
+        if self.timer <= 0 {
+            self.timer = 40 + self.rand(40) as i32;
+            return Some(self.make_hammer());
+        }
+        self.timer -= 1;
         None
     }
 

@@ -274,6 +274,7 @@ mod tests {
             rail: None,
             link: -1,
             clown: false,
+            alt: false,
         }
     }
 

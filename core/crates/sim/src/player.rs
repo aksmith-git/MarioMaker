@@ -108,6 +108,8 @@ pub enum Form {
     Cat,
     /// 3D World Super Hammer (Builder Mario): swings a hammer.
     Builder,
+    /// SMB1 Superball Flower (the Fire Flower's 0x4 form in SMB1): throws bouncing superballs.
+    Superball,
 }
 
 /// Invincibility after taking damage (§7).
@@ -336,6 +338,10 @@ pub struct Player {
     cat_climbed: f32,
     cat_climb_used: bool,
     pub dive: bool,
+    /// Flung by a sideways spring: frames the push speed is held (no air control) [inf].
+    pub side_push: i32,
+    /// Stunned by a Sledge Bro's landing quake: frames the controls do nothing [inf: length].
+    pub stun: i32,
     pub roll: i32,
     roll_used: bool,
     /// Riding Yoshi (his actor id), the re-mount lockout, and what the world must do with
@@ -422,6 +428,8 @@ impl Player {
             cat_climbed: 0.0,
             cat_climb_used: false,
             dive: false,
+            side_push: 0,
+            stun: 0,
             roll: 0,
             roll_used: false,
             yoshi: None,
@@ -791,6 +799,10 @@ impl Player {
     }
 
     fn air(&mut self, inp: Input) {
+        if self.side_push > 0 {
+            self.side_push -= 1;
+            return;
+        }
         let dir = inp.dir_x();
         if dir == 0 {
             // no direction: accel 0 → momentum preserved
@@ -831,6 +843,12 @@ impl Player {
 
     /// One 60 Hz tick.
     pub fn step(&mut self, inp: Input, level: &Level) {
+        let inp = if self.stun > 0 {
+            self.stun -= 1;
+            Input::default()
+        } else {
+            inp
+        };
         self.head_hit = None;
         self.head_solid = None;
         self.throw = false;
@@ -881,7 +899,11 @@ impl Player {
             self.on_ground = false;
         }
         let run = inp.held(input::RUN);
-        if run && !self.prev_run && self.form == Form::Fire && !self.crouch {
+        if run
+            && !self.prev_run
+            && matches!(self.form, Form::Fire | Form::Superball)
+            && !self.crouch
+        {
             self.throw = true;
         }
         // raccoon tail swing / cape spin / cat scratch on Run (player-physics.md §5.4)
@@ -1130,6 +1152,7 @@ impl Player {
                 Form::Propeller => 5,
                 Form::Cat => 6,
                 Form::Builder => 7,
+                Form::Superball => 8,
             },
             shoe: self.shoe.is_some() && !self.shoe_karon,
             karon_shell: self.shoe.is_some() && self.shoe_karon,

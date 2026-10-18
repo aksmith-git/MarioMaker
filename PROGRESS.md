@@ -325,6 +325,12 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   shells met with the head become helmets (take one hit; the Spiny one knocks out what it rises
   into), the Dry Bones Shell is ridden like a shoe [inf: mechanics not decoded]; Buzzy shells now
   drawn with their own art; helmet / Dry Bones Shell goal conditions
+- ✅ Alternate forms (flag 0x4) that were silently ignored: Goombrat (turns at ledges), sideways
+  Spring (flings 4.5 px/f [inf]), Bull's-Eye Blaster / Bull's-Eye Banzai (homing 1° / 0.25° per
+  frame for 528 f), red Cannon (2.4 px/f balls), fast Spike Top (0.75), lit Bob-omb (walks lit),
+  Boo circle (8 Boos, 52 px), Blooper Nanny (4 babies on her path), Sledge Bro (hover, hip-drop,
+  landing quake stuns), Superball Flower (SMB1: ball reflects at 3 px/f, 270 f, collects coins),
+  red POW (breaks on-screen bricks [ext]); the coverage check now reports any unhandled 0x4 form
 - ✅ Winged Hidden Blocks: invisible flying blocks revealed by a bump — built-ins 180/180
 - ✅ Super Hammer / Builder Mario (116): item walks like a mushroom [inf]; Run swings the hammer
   (hits enemies and breaks blocks in front), air swing falls ≤ 1.5 and |vx| ≤ 1.125; "goal as

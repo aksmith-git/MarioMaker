@@ -158,6 +158,8 @@ pub struct Spawn {
     /// the link id.
     pub link: i16,
     pub clown: bool,
+    /// The object's alternate form (flag 0x4), for actors whose kind doesn't encode it.
+    pub alt: bool,
 }
 
 /// A tree (106-tree.md): `x` trunk centre, `y` origin (centre of the bottom row), `h` height in
@@ -185,6 +187,8 @@ pub struct Cannon {
     pub x: f32,
     pub y: f32,
     pub angle: f32,
+    /// The red (0x4) cannon: its balls fly at 2.4 px/f instead of 1.0 (47-cannon.md).
+    pub red: bool,
 }
 
 /// The area's liquid (themes.md §3): kind 1 water, 2 lava, 3 poison; heights in px
@@ -242,6 +246,8 @@ pub struct Blaster {
     pub h: i32,
     /// None = Bullet Bill.
     pub contents: Option<Kind>,
+    /// The red (0x4) Bull's-Eye Blaster: its Bullet Bills home in.
+    pub homing: bool,
 }
 
 /// A checkpoint flag: origin (bottom centre) and the power-up inside.
@@ -421,6 +427,14 @@ pub const SUPPORTED_PARTS: &[i16] = &[
     107, 108, 109, 110, 112, 113, 114, 115, 116, 117, 119,
 ];
 
+/// Parts whose alternate form (flag 0x4) the engine implements (or where the flag only picks a
+/// look or sound: 23 the music Note Block [inf], 52 Wiggler [?: no alternate found]). Any other
+/// part with the flag is reported by `unsupported_features`.
+const ALT_FORMS: &[i16] = &[
+    0, 1, 2, 3, 10, 11, 12, 13, 15, 19, 23, 25, 28, 32, 34, 36, 40, 41, 42, 45, 46, 47, 48, 51, 52,
+    54, 56, 61, 77, 84, 85, 96, 97, 100, 103, 104, 107, 108, 113,
+];
+
 /// Game styles the engine plays.
 pub const PLAYABLE_STYLES: &[&str] = &["M1", "M3", "MW", "WU", "3W"];
 
@@ -453,6 +467,8 @@ pub fn unsupported_features(course: &Course) -> Vec<String> {
             } else if o.flags & 0x400 != 0 && !RIDES_TRACKS.contains(&o.id) {
                 // blocks, coins and fixed objects on tracks need moving versions: not yet
                 out.insert(format!("part {} on a track", o.id));
+            } else if o.flags & 0x4 != 0 && !ALT_FORMS.contains(&o.id) {
+                out.insert(format!("alternate form of part {}", o.id));
             } else if o.flags & 0x2 != 0 && o.id == 13 {
                 // winged Bill Blasters fly as actors: not yet
                 out.insert(format!("wings on part {}", o.id));
@@ -675,6 +691,7 @@ impl Level {
             let big = o.flags & 0x6000 == 0x4000;
             let wings = o.flags & 0x2 != 0;
             let actor = match o.id {
+                0 if o.flags & 0x4 != 0 => Some(Kind::Goombrat),
                 0 => Some(Kind::Goomba),
                 1 => Some(Kind::Koopa {
                     red: o.flags & 0x4 != 0,
@@ -684,6 +701,7 @@ impl Level {
                 // mushroom for now
                 44 if lvl.style != "M1" => Some(Kind::StyleItem),
                 44 => Some(Kind::Mushroom),
+                34 if o.flags & 0x4 != 0 && lvl.style == "M1" => Some(Kind::SuperballFlower),
                 34 => Some(Kind::FireFlower),
                 35 => Some(Kind::Star),
                 33 => Some(Kind::OneUp),
@@ -767,10 +785,12 @@ impl Level {
                 }),
                 32 => Some(Kind::BanzaiBill {
                     dir: ((o.flags >> 22) & 3) as u8,
+                    homing: o.flags & 0x4 != 0,
                 }),
                 70 => Some(Kind::BigCoin {
                     value: ((o.flags >> 18) & 3).min(2) as u8,
                 }),
+                10 if o.flags & 0x4 != 0 => Some(Kind::SideSpring),
                 10 => Some(Kind::Spring),
                 18 => Some(Kind::PSwitch),
                 // the 0x4 forms are empty shells (MetShell / TogezoShell / KaronShell rows)
@@ -851,6 +871,7 @@ impl Level {
                             rail: None,
                             link: -1,
                             clown: false,
+                            alt: false,
                         });
                     } else {
                         lvl.generators.push(PipeGenerator {
@@ -877,6 +898,7 @@ impl Level {
                     rail: (o.flags & 0x400 != 0).then_some(((o.flags >> 20) & 3) as u8),
                     link: o.link_id,
                     clown: o.flags & 0x200 != 0,
+                    alt: o.flags & 0x4 != 0,
                 });
                 continue;
             }
@@ -898,6 +920,7 @@ impl Level {
                     rail: Some(((o.flags >> 20) & 3) as u8),
                     link: o.link_id,
                     clown: false,
+                    alt: false,
                 });
             };
             if o.id == 13 {
@@ -919,6 +942,7 @@ impl Level {
                     y: ty as f32 * TILE,
                     h: hgt.max(2),
                     contents,
+                    homing: o.flags & 0x4 != 0,
                 });
                 if on_track {
                     let i = lvl.blasters.len() - 1;
@@ -1101,6 +1125,7 @@ impl Level {
                     x: tx as f32 * TILE + 8.0,
                     y: ty as f32 * TILE,
                     angle,
+                    red: o.flags & 0x4 != 0,
                 });
                 if on_track {
                     let i = lvl.cannons.len() - 1;
@@ -1178,6 +1203,7 @@ impl Level {
                     rail: (o.flags & 0x400 != 0).then_some(((o.flags >> 20) & 3) as u8),
                     link: -1,
                     clown: false,
+                    alt: false,
                 });
                 continue;
             }
@@ -1198,6 +1224,7 @@ impl Level {
                     rail: (o.flags & 0x400 != 0).then_some(((o.flags >> 20) & 3) as u8),
                     link: -1,
                     clown: false,
+                    alt: false,
                 });
                 continue;
             }
@@ -1536,6 +1563,7 @@ impl Level {
             rail: None,
             link: -1,
             clown: false,
+            alt: false,
         });
         lvl.spawns.push(Spawn {
             kind: Kind::Koopa { red: false },
@@ -1548,6 +1576,7 @@ impl Level {
             rail: None,
             link: -1,
             clown: false,
+            alt: false,
         });
         // pipe
         lvl.add_pipe(46, 2, 2, PipeDir::Up);
