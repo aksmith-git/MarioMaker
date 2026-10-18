@@ -1353,9 +1353,9 @@ impl Player {
         }
     }
 
-    /// Slip: downhill toward 4.0 px/f with the slide accel of the slope (gentle 0.05, steep
-    /// 0.17 [inf: steepness index for the two slope kinds]); on flat ground it slows by 0.09
-    /// and ends at rest.
+    /// Slip: downhill toward 4.0 px/f with the slide accel of the slope class (table
+    /// 0x7101d09700: gentle, class 2, 0.05; steep, class 3, 0.07) [obs]; on flat ground it
+    /// slows by 0.09 and ends at rest.
     fn slide(&mut self, level: &Level) {
         let slope = level
             .slope_at(self.x)
@@ -1363,7 +1363,7 @@ impl Player {
             .map(|(_, s)| {
                 (
                     if s.rising { -1.0 } else { 1.0 },
-                    if s.steep { 0.17 } else { 0.05 },
+                    if s.steep { 0.07 } else { 0.05 },
                 )
             });
         match slope {

@@ -3461,9 +3461,10 @@ impl World {
 
     // ---------------------------------------------------------------- explosions
 
-    /// Bob-omb explosions (15-bob-omb.md): break breakable blocks in a plus shape around the
-    /// bomb, knock out enemies and hurt the player nearby. Radius [inf]: 1 tile (plus) for
-    /// terrain, 32 px for actors and the player.
+    /// Bob-omb explosions (15-bob-omb.md): break breakable blocks around the
+    /// bomb, knock out enemies and hurt the player nearby: terrain within the diamond of radius
+    /// 2 tiles [obs], actors and the player within 32 px [inf: the shared Explode collider's
+    /// size wasn't found].
     fn explosions(&mut self) {
         let bombs: Vec<(f32, f32)> = self
             .actors
@@ -3491,7 +3492,23 @@ impl World {
                 }
             }
             let (tx, ty) = ((bx / TILE).floor() as i32, (by / TILE).floor() as i32);
-            for (dx, dy) in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
+            // the terrain break regions (0x710060cb90) [obs]: a 32×32 box on the bomb's tile
+            // centre plus lines 32 px out on each axis — the 3×3 tiles and the four two away
+            for (dx, dy) in [
+                (0, 0),
+                (1, 0),
+                (-1, 0),
+                (0, 1),
+                (0, -1),
+                (1, 1),
+                (1, -1),
+                (-1, 1),
+                (-1, -1),
+                (2, 0),
+                (-2, 0),
+                (0, 2),
+                (0, -2),
+            ] {
                 let (x, y) = (tx + dx, ty + dy);
                 if self
                     .blocks
