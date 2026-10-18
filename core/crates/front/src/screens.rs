@@ -1595,3 +1595,30 @@ fn fill_clear_info(l: &mut Layout, info: &CardInfo, ticks: Option<i64>) {
     l.text(&format!("{i}/T_Time_00"), &main);
     l.text(&format!("{i}/T_Time_01"), &frac);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A click on the give-up screen's buttons hits them once the screen is up (with the owner's
+    /// SMM2 UI import; skipped without it).
+    #[test]
+    fn retire_buttons_take_clicks() {
+        let Some(ui) = crate::testing::smm2() else {
+            return;
+        };
+        let mut s = CourseScreens::new(&ui).unwrap();
+        s.show_retire();
+        while !s.retire_ready() {
+            s.step();
+        }
+        for (i, part) in RETIRE_PARTS.iter().enumerate() {
+            let tick = s.tick;
+            let l = s.retire_l.as_mut().unwrap();
+            l.apply(tick);
+            let r = l.rect(&format!("{part}/B_Btn_00")).unwrap();
+            assert_eq!(s.hit(r.center), Some(i), "{part}");
+        }
+        assert_eq!(s.hit([0.0, -340.0]), None);
+    }
+}
