@@ -243,6 +243,33 @@ void renderer_submit(void) {
     }
 }
 
+// Guest memory the GPU reads when it executes, not when we encode: vertex, index and storage buffers (bound in
+// place in the heap). Commands the guest GPU runs in order but we apply on the CPU while encoding
+// (UpdateUniformBuffer) must not overwrite such memory under draws that are encoded and not yet run: SMM2 updates a
+// buffer between draws that read it, and every draw saw the last update (3D World terrain stretched across the
+// screen). Marked in 64 KB pages since the last renderer_flush (which waits for the GPU).
+#define GPU_READ_PAGE_SHIFT 16
+static uint64_t gpu_read_bits[(HEAP_MAX >> GPU_READ_PAGE_SHIFT) / 64 + 1];
+static bool gpu_read_any;
+static void gpu_read_mark(uint64_t addr, uint64_t size) {
+    if (!size || addr < HEAP_BASE || addr >= HEAP_BASE + HEAP_MAX) return;
+    uint64_t end = addr + size > HEAP_BASE + HEAP_MAX ? HEAP_BASE + HEAP_MAX : addr + size;
+    for (uint64_t pg = (addr - HEAP_BASE) >> GPU_READ_PAGE_SHIFT; pg <= (end - 1 - HEAP_BASE) >> GPU_READ_PAGE_SHIFT; pg++)
+        gpu_read_bits[pg >> 6] |= 1ull << (pg & 63);
+    gpu_read_any = true;
+}
+static bool gpu_read_pending(uint64_t addr, uint64_t size) {
+    if (!gpu_read_any || !size || addr < HEAP_BASE || addr >= HEAP_BASE + HEAP_MAX) return false;
+    uint64_t end = addr + size > HEAP_BASE + HEAP_MAX ? HEAP_BASE + HEAP_MAX : addr + size;
+    for (uint64_t pg = (addr - HEAP_BASE) >> GPU_READ_PAGE_SHIFT; pg <= (end - 1 - HEAP_BASE) >> GPU_READ_PAGE_SHIFT; pg++)
+        if (gpu_read_bits[pg >> 6] & (1ull << (pg & 63))) return true;
+    return false;
+}
+static void gpu_read_clear(void) {
+    if (gpu_read_any) memset(gpu_read_bits, 0, sizeof gpu_read_bits);
+    gpu_read_any = false;
+}
+
 // Finish all recorded GPU work (the CPU is about to read GPU results, or reuse the ring).
 void renderer_flush(void) {
     renderer_submit();
@@ -253,6 +280,7 @@ void renderer_flush(void) {
     wait_cb(c);
     g_wait_kind = 0;
     ring_reset();
+    gpu_read_clear();
 }
 
 // Wait for submitted work without committing anything new (nvnSyncWait / QueueFinish).
@@ -656,6 +684,7 @@ static void ring_reset(void) { ring_off = 0; }
 // Bind guest memory [addr, addr+size) as a buffer: zero-copy inside the heap, copied otherwise.
 static void bind_guest(id<MTLRenderCommandEncoder> e, bool vertex_stage, uint64_t addr, uint64_t size, int index) {
     if (addr >= HEAP_BASE && addr + size <= HEAP_BASE + HEAP_MAX && (addr & 3) == 0) {
+        gpu_read_mark(addr, size);
         if (vertex_stage) [e setVertexBuffer:g_guest_buffer offset:addr - HEAP_BASE atIndex:index];
         else [e setFragmentBuffer:g_guest_buffer offset:addr - HEAP_BASE atIndex:index];
         return;
@@ -1308,6 +1337,7 @@ static void bind_cbufs(int stage, ShaderInfo *si) {
                 e[0] = (uint32_t)st.sbuf[stage][i].addr;
                 e[1] = (uint32_t)(st.sbuf[stage][i].addr >> 32);
                 e[2] = (uint32_t)st.sbuf[stage][i].size;
+                if (si->uses_gmem) gpu_read_mark(st.sbuf[stage][i].addr, st.sbuf[stage][i].size);
             }
             uint64_t size = si->cbuf_size[0] > sizeof drv ? sizeof drv : (si->cbuf_size[0] ? si->cbuf_size[0] : 256);
             uint64_t off = ring_alloc(drv, size);
@@ -1416,6 +1446,8 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
                 if (i < 18) { u[0] = (uint32_t)st.ubuf[5][i].addr; u[1] = (uint32_t)(st.ubuf[5][i].addr >> 32); u[2] = (uint32_t)st.ubuf[5][i].size; }
                 uint32_t *e = &drv[(0x310 + 16 * i) / 4];
                 e[0] = (uint32_t)st.sbuf[5][i].addr; e[1] = (uint32_t)(st.sbuf[5][i].addr >> 32); e[2] = (uint32_t)st.sbuf[5][i].size;
+                gpu_read_mark(st.sbuf[5][i].addr, st.sbuf[5][i].size);  // (compute reads both in place)
+                if (i < 18) gpu_read_mark(st.ubuf[5][i].addr, st.ubuf[5][i].size);
             }
             off = ring_alloc(drv, sizeof drv);
         } else if (k == 1) {
@@ -2080,7 +2112,21 @@ static void draw(CmdRec *r, bool indexed) {
     for (int s = 0; s < 12; s++) {
         if (!(used_streams & (1u << s))) continue;
         Range v = st.vbuf[s];
-        if (v.addr) bind_guest(enc, true, v.addr, v.size ? v.size : 16, 18 + s);
+        uint32_t stride = s < st.nstream ? st.stream[s][0] : 0;
+        if (v.addr && stride % 4 && v.size) {
+            // Metal wants vertex strides in multiples of 4 (the pipeline rounds them up): repack a 1- or 2-byte-stride
+            // stream (SMM2's terrain: small per-vertex indices) into padded records, a snapshot in the ring
+            uint32_t ps = (stride + 3) & ~3u;
+            uint64_t n = v.size / stride;
+            if (n > (1u << 20)) n = 1u << 20;
+            static uint8_t *tmp;
+            static uint64_t tmp_cap;
+            if (n * ps > tmp_cap) { tmp_cap = n * ps + 4096; tmp = realloc(tmp, tmp_cap); }
+            const uint8_t *src = (const uint8_t *)(uintptr_t)v.addr;
+            for (uint64_t k = 0; k < n; k++) { memcpy(tmp + k * ps, src + k * stride, stride); memset(tmp + k * ps + stride, 0, ps - stride); }
+            uint64_t off = ring_alloc(tmp, n * ps ? n * ps : 16);
+            [enc setVertexBuffer:ring offset:off atIndex:18 + s];
+        } else if (v.addr) bind_guest(enc, true, v.addr, v.size ? v.size : 16, 18 + s);
         else { static const float zero[4]; [enc setVertexBytes:zero length:16 atIndex:18 + s]; }
     }
     if (used_streams & (1u << 31)) { static const float zero[4] = {0, 0, 0, 1}; [enc setVertexBytes:zero length:16 atIndex:30]; }
@@ -2143,6 +2189,7 @@ static void draw(CmdRec *r, bool indexed) {
             uint64_t ioff;
             if (iaddr >= HEAP_BASE && iaddr + (uint64_t)count * isz <= HEAP_BASE + HEAP_MAX && (iaddr % isz) == 0) {
                 ib = g_guest_buffer; ioff = iaddr - HEAP_BASE;
+                gpu_read_mark(iaddr, (uint64_t)count * isz);
             } else {
                 ioff = ring_alloc((void *)(uintptr_t)iaddr, (uint64_t)count * isz); ib = ring;
             }
@@ -2732,6 +2779,7 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_DRAW_ELEMENTS: if (!st.render_off) draw(r, true); break;
         case CMD_UPDATE_UNIFORM_BUFFER:
             // (buffer, size, offset, dataSize, data): apply the update in command order
+            if (gpu_read_pending(r->x[0] + r->x[2], r->x[3])) renderer_flush();  // (see gpu_read_mark)
             memcpy((void *)(uintptr_t)(r->x[0] + r->x[2]), x, r->x[3]);
             break;
         case CMD_FENCE_SYNC: {
