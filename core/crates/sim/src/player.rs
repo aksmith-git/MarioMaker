@@ -56,6 +56,11 @@ const CAT_SLIDE_FRAMES: i32 = 44;
 const SKID_PAUSE: i32 = 8;
 
 const JUMP_BASE: f32 = 3.628;
+/// 3D World long jump: launch vy, fixed gravity, landing hold [obs: binary 0x71009d3020;
+/// landing length from a Ryujinx trace].
+const BROAD_VY: f32 = 2.4;
+const BROAD_GRAVITY: f32 = -0.1;
+const BROAD_LAND_FRAMES: u8 = 30;
 const GRAVITY_GROUND: f32 = -0.34;
 // vy band boundaries and gravities (§3.2)
 const VY_BANDS: [f32; 5] = [2.5, 1.5, 0.3, -0.12, -3.0];
@@ -397,6 +402,9 @@ pub struct Player {
     /// Ground pound: > 0 wind-up frames left, −1 diving; `pound_landed` for the world this frame.
     pub pound: i32,
     pub pound_landed: bool,
+    /// Frames Down has been held in the air since it was pressed (no left/right): the input
+    /// object turns the 5th into the ground-pound command (input +0x28) [obs: Ryujinx trace].
+    pound_hold: u8,
     /// 3D World: frames of continuous running (the dash stage starts at 75, 60 as Cat).
     pub dash: i32,
     /// Cat: wall climb (> 0 frames climbed, −1 sliding down after it), the wall's side, height
@@ -449,6 +457,13 @@ pub struct Player {
     /// Down is let go) [obs: Ryujinx trace, states 5 → 6 → 1].
     duck: bool,
     duck_end: u8,
+    /// Airborne from a jump made while ducking (CrouchJump): its landing (CrouchJumpEnd) moves
+    /// with crouch friction at once instead of the air routine [obs: Ryujinx trace].
+    crouch_jump: bool,
+    /// 3D World long jump (BroadJump, state 14: begin 0x71009d3020, exec 0x71009d3330) and the
+    /// frames left of its landing (BroadJumpLand, 0x71009d3470), which stops the player dead.
+    broad: bool,
+    broad_land: u8,
     /// Climbing a vine: its centre x and the side the player hangs on (−1 left, +1 right).
     pub climbing: Option<(f32, i32)>,
     /// Frames before a vine can be grabbed again (after jumping off).
@@ -520,6 +535,7 @@ impl Player {
             in_jump: false,
             pound: 0,
             pound_landed: false,
+            pound_hold: 0,
             dash: 0,
             cat_climb: 0,
             cat_wall: 0,
@@ -548,6 +564,9 @@ impl Player {
             air_move: (0.0, 0.0),
             duck: false,
             duck_end: 0,
+            crouch_jump: false,
+            broad: false,
+            broad_land: 0,
         }
     }
 
@@ -587,6 +606,33 @@ impl Player {
     }
 
     /// 3D World: the run has reached the dash stage (75 frames, 60 as Cat).
+    /// 3D World run timer (0x7100a186a0, after the state's move, before integration) [obs]:
+    /// counts frames on the ground with a direction and Run held while already moving forward
+    /// (the speed before this frame's change), up to 75 (60 as Cat); anything else resets it,
+    /// except that a full timer survives the air. With a star it jumps to full after 45.
+    fn step_dash(&mut self, inp: Input, vx_before: f32, grounded: bool) {
+        if self.style != Style::W3 {
+            self.dash = 0;
+            return;
+        }
+        let full = if self.form == Form::Cat { 60 } else { 75 };
+        if !grounded {
+            if self.dash < full {
+                self.dash = 0;
+            }
+            return;
+        }
+        let forward = vx_before * self.facing as f32 > 0.0;
+        if inp.dir_x() == 0 || !inp.held(input::RUN) || !forward {
+            self.dash = 0;
+        } else if self.dash < full {
+            self.dash += 1;
+            if self.star > 0 && self.dash > 45 {
+                self.dash = full;
+            }
+        }
+    }
+
     pub fn dashing(&self) -> bool {
         let need = if self.form == Form::Cat { 60 } else { 75 };
         self.style == Style::W3 && self.dash >= need
@@ -792,9 +838,6 @@ impl Player {
     fn ground(&mut self, inp: Input) {
         let dir = inp.dir_x();
         let run = inp.held(input::RUN);
-        if self.on_ground {
-            self.dash = if run && dir != 0 { self.dash + 1 } else { 0 };
-        }
         if self.cat_slide > 0 {
             // cat slide attack (ClimbSlidingAttack 0x7100a1d030 / 0x7100a1d150) [obs]: 2.5 px/f
             // forward with no accel for 12 frames, then down to 0 at 0.075 (ice 0.0375) until
@@ -1151,9 +1194,11 @@ impl Player {
                 && (self.crouch || !self.big());
             if self.duck && !want {
                 // CrouchEnd runs its crouch-friction move until its animation ends, plus the
-                // frame it hands over to Walk: pixel styles 1 + 1, NSMBU 2 + 1 [obs: Ryujinx]
+                // frame it hands over to Walk: pixel styles 1 + 1, NSMBU 2 + 1, 3D World
+                // 15 + 1 [obs: Ryujinx traces]
                 self.duck_end = match self.style {
-                    Style::WU | Style::W3 => 3,
+                    Style::WU => 3,
+                    Style::W3 => 16,
                     _ => 2,
                 };
             } else if want {
@@ -1177,6 +1222,7 @@ impl Player {
         }
         let vy_before = self.vy;
         let (vx_before, face_before) = (self.vx, self.facing);
+        let grounded_before = self.on_ground;
         if self.in_water {
             self.swim(inp, pressed);
         } else {
@@ -1193,12 +1239,21 @@ impl Player {
                     self.slide(level);
                 } else if self.cape == CapeState::Slide {
                     self.cape_slide(level);
+                } else if self.landed && self.broad {
+                    self.broad = false;
+                    self.vx = 0.0;
+                    self.broad_land = BROAD_LAND_FRAMES;
+                } else if self.broad_land > 0 {
+                    self.broad_land -= 1;
+                    self.vx = 0.0;
+                } else if self.landed && self.crouch_jump {
+                    self.crouch_jump = false;
+                    self.ground(inp);
                 } else if self.landed {
                     // the airborne state's last frame (see `landed`), then the Landing state's
                     // begin: no direction held and |speed| ≤ 0.3 stops dead; SMW then holds
                     // the speed for 4 more frames, the other styles go on walking
                     let dir = inp.dir_x();
-                    self.dash = if run && dir != 0 { self.dash + 1 } else { 0 };
                     self.air(inp);
                     if dir == 0 && self.vx.abs() <= 0.3 {
                         self.vx = 0.0;
@@ -1216,6 +1271,23 @@ impl Player {
                 self.duck_end = self.duck_end.saturating_sub(1);
                 if spin_pressed && self.form == Form::Propeller {
                     // the propeller launch replaces the spin jump
+                } else if self.broad_land > 0 {
+                    // no actions until the long-jump landing ends
+                } else if spin_pressed && self.style == Style::W3 && self.held.is_none() {
+                    // 3D World: the spin button is the long jump, and only when already moving
+                    // faster than 0.5 (0x7100a0b2b0): 2.0 forward (3.0 above 1.5), vy 2.4
+                    // [obs: binary; Ryujinx trace]
+                    if self.vx.abs() > 0.5 {
+                        let f = self.facing as f32;
+                        self.vx = f * if self.vx.abs() <= 1.5 { 2.0 } else { 3.0 };
+                        self.vy = BROAD_VY;
+                        self.broad = true;
+                        self.spinning = false;
+                        self.sliding = false;
+                        self.crouch = false;
+                        self.on_ground = false;
+                        self.skid = SkidPhase::None;
+                    }
                 } else if spin_pressed && self.style.can_spin() && self.held.is_none() {
                     if walking {
                         (self.vx, self.facing) = before;
@@ -1249,6 +1321,7 @@ impl Player {
                         self.jump_count = 0;
                     }
                     self.in_jump = true;
+                    self.crouch_jump = self.duck || self.crouch;
                     self.vy = JUMP_BASE + jump_bonus(self.vx.abs());
                     if self.jump_count == 2 || self.dashing() {
                         self.vy *= 1.05;
@@ -1263,12 +1336,26 @@ impl Player {
                 // leaving the ground ends the Turn state and the cat slide
                 self.cat_slide = 0;
                 self.skid = SkidPhase::None;
-                self.air(inp);
+                if self.broad {
+                    // the long jump keeps its speed; pressing back eases it toward half speed
+                    // the other way (target facing × 0.5, rate 0.07)
+                    let f = self.facing as f32;
+                    let target = if inp.dir_x() == -self.facing {
+                        f * 0.5
+                    } else {
+                        self.vx
+                    };
+                    self.vx = approach(self.vx, target, 0.07);
+                } else {
+                    self.air(inp);
+                }
             }
 
             // gravity (§3.2): ground uses the fixed −0.34; airborne picks a band each frame
             let g = if self.on_ground {
                 GRAVITY_GROUND
+            } else if self.broad {
+                BROAD_GRAVITY
             } else if jump || spin {
                 GRAVITY_HELD[vy_band(self.vy)]
             } else {
@@ -1290,6 +1377,7 @@ impl Player {
         if self.chain_lock > 0 {
             self.chain_lock -= 1;
         }
+        self.step_dash(inp, vx_before, grounded_before);
         self.step_wall_and_pound(inp, pressed, level, vy_before);
         self.step_propeller(inp, spin_pressed, vy_before);
         // NSMBU flutter (yoshi.md §4): falling faster than 2.0 with jump held, Yoshi flutters —
@@ -1347,6 +1435,9 @@ impl Player {
         let airborne = !self.on_ground;
         self.move_and_collide(level, sensors);
         self.landed = airborne && self.on_ground;
+        if self.in_water {
+            self.broad = false;
+        }
         if !self.on_ground {
             self.land_hold = 0;
         }
@@ -1606,9 +1697,9 @@ impl Player {
 
     /// Wall slide / wall jump (§3.3, NSMBU and 3D World): falling against a wall with the stick toward
     /// it slides at ≥ −2.0; jump → vy 3.5 and 2.25 px/f away; 15 frames of stick held away let go.
-    /// Ground pound (NSMBU / 3DW, HipAttack): Down in the air → a wind-up with no speed or gravity
-    /// for the `hip_start` animation (NSMBU 9 frames, 3D World 24) plus 5 frames, then a dive
-    /// that starts at −6.0 (fall cap −6.0) until landing [obs].
+    /// Ground pound (NSMBU / 3DW, HipAttack): Down held 5 frames in the air → a wind-up with no
+    /// speed or gravity for the `hip_start` animation plus 5 frames (NSMBU 9 + 5, 3D World 17 + 5
+    /// [obs: Ryujinx trace]), then a dive that starts at −6.0 (fall cap −6.0) until landing.
     fn step_wall_and_pound(&mut self, inp: Input, pressed: bool, level: &Level, vy_before: f32) {
         let down = inp.held(input::DOWN);
         let down_pressed = down && !self.prev_down;
@@ -1619,6 +1710,7 @@ impl Player {
                 self.pound_landed = true;
             }
             self.pound = 0;
+            self.pound_hold = 0;
             self.wall_slide = 0;
             self.cat_climb = 0;
             self.cat_climbs = 0;
@@ -1631,8 +1723,15 @@ impl Player {
             self.cat_climb = 0;
             self.dive = false;
         }
+        if down && (down_pressed || self.pound_hold > 0) {
+            if inp.dir_x() == 0 {
+                self.pound_hold = self.pound_hold.saturating_add(1);
+            }
+        } else {
+            self.pound_hold = 0;
+        }
         if self.style.has_jump_chain()
-            && down_pressed
+            && self.pound_hold == 5
             && self.pound == 0
             && !self.dive
             && self.cat_climb == 0
@@ -1643,7 +1742,7 @@ impl Player {
                 self.dive = true;
             } else {
                 self.pound = if self.style == Style::W3 {
-                    24 + 5
+                    17 + 5
                 } else {
                     9 + 5
                 };
@@ -2089,7 +2188,9 @@ impl Player {
                 if steep >= 3 {
                     std::f32::consts::FRAC_1_SQRT_2
                 } else {
-                    0.894_427_2
+                    // cos of the gentle angle (0x12e4051d) from the game's 256-step sine
+                    // table with linear interpolation, not the exact 0.8944272 [obs: trace]
+                    0.894_400_9
                 }
             }
             _ => 1.0,
@@ -2097,13 +2198,17 @@ impl Player {
         let was_on_ground = self.on_ground;
         self.spiked = false;
         self.x += self.vx * cos;
+        // the slope under the feet centre: its own body never blocks sideways (only its outer
+        // faces do, approached from beside it) [obs: Ryujinx trace, running up a slope]
+        let own_slope = level.slope_at(self.x).map(|(_, sl)| *sl);
         for dir in [-1.0f32, 1.0] {
             let wx = self.x + dir * s.wall_x;
             let prev_wx = wx - self.vx * cos;
             let cell_x = (wx / TILE).floor() * TILE;
+            let inside_own = own_slope.is_some_and(|sl| sl.covers(wx));
             let hit = [s.wall_y0, s.wall_y1].iter().any(|&wy| {
                 let c = level.cell_at(wx, self.y + wy);
-                c.is_solid()
+                (c.is_solid() && !inside_own)
                     // one-way walls block only motion into them from their blocking side
                     || (dir < 0.0 && c == Cell::PassRight && prev_wx >= cell_x + TILE - 0.01)
                     || (dir > 0.0 && c == Cell::PassLeft && prev_wx <= cell_x + 0.01)
@@ -2198,7 +2303,9 @@ impl Player {
             // feet: land on solid cells, or on one-way tops we were above last frame
             let mut landed = None;
             for fx in [-s.foot_x, s.foot_x] {
-                let (px, py) = (self.x + fx, self.y);
+                // the probe sits just under the feet: arriving exactly on a tile top lands
+                // [obs: Ryujinx trace, a long jump ending at y = 32.0]
+                let (px, py) = (self.x + fx, self.y - 0.001);
                 // a slope's columns are probed at the feet centre only (below)
                 if level.slope_at(px).is_some() {
                     continue;
@@ -2795,12 +2902,15 @@ mod tests {
                 &level,
             );
         }
-        p.step(
-            Input {
-                buttons: input::DOWN,
-            },
-            &level,
-        );
+        // the ground-pound command needs Down held for 5 frames
+        for _ in 0..5 {
+            p.step(
+                Input {
+                    buttons: input::DOWN,
+                },
+                &level,
+            );
+        }
         assert!(
             p.dive && p.vx == 4.0 && p.vy == -3.0,
             "dive {} {}",

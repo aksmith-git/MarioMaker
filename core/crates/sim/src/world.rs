@@ -7879,6 +7879,9 @@ mod tests {
         w.player.x = 100.0;
         w.player.y = 120.0;
         w.player.on_ground = false;
+        // the command needs Down held 5 frames
+        run(&mut w, input::DOWN, 4);
+        assert_eq!(w.player.pound, 0);
         run(&mut w, input::DOWN, 1);
         assert!(w.player.pound > 0);
         // hip_start (9 frames) + 5 [obs]
