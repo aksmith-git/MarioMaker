@@ -561,3 +561,30 @@ renderers upload a texture when a sprite first uses it. Measured on the same cou
 
 `Cache::load` through a reader function, used by the web and by tests, still loads everything.
 
+## 2026-10-18 — Web build: game data in OPFS, streamed; both import paths in the browser
+- **Storage: the origin private file system (OPFS), not IndexedDB.** It holds the cache as
+  files (about 1.3 GB, 15,944 files without the unused `meshes/` and `anims/`), a picked `File`
+  is written without passing through JavaScript memory, and reads come back per file. Copying
+  the owner's `mmk import` cache takes about 15 s in Edge. Nothing is uploaded; **Remove game
+  data** deletes it. Rejected: keeping a `showDirectoryPicker` handle to the owner's folder
+  instead of a copy (Chromium only, and every visit asks for permission again).
+- **The whole cache never sits in memory.** OPFS reads are asynchronous and the game loop is
+  not, so `Cache::load_deferred` reads only the index and the shell streams texture files on
+  first use (`take_requests` / `provide`; the session holds up to 30 frames while reads are on
+  their way, then plays on and the art pops in). Course music is read before the course starts.
+  `Cache::load` (everything up front) stays for tests and small caches.
+- **The dump import runs in the browser too, with the real importer.** Measured natively, it
+  peaks at about 1.3 GB, which fits in wasm32's 4 GB. `mmk-import` builds for wasm32; its file
+  access goes through `mmk_import::vfs` (a thread-local override, so the stage functions keep
+  their signatures). The page runs it in a module worker, because only workers can read picked
+  files synchronously (`FileReaderSync`). The worker posts each output file to the page, which
+  stores it, because workers can't wait for storage either. In headless Edge it takes about
+  35 s and the Edge process peaks near 1.5 GB. The output matches the desktop import (same file
+  list; 169 sampled files byte-identical). Copying a cache made on the desktop is still the
+  lighter way, for machines with little memory and for mobile browsers.
+- **Sound: cpal's WebAudio backend** (the `wasm-bindgen` feature; `futures-channel` was already
+  in the local cargo cache) rather than our own AudioWorklet. The native and web shells share
+  `audio_out`. The stream opens on the first pointer or key event, since browsers block audio
+  before a gesture. It schedules buffers from the main thread, so a long main-thread stall can
+  click. An AudioWorklet needs wasm threads (cross-origin isolation) to share the mixer.
+

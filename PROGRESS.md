@@ -264,10 +264,18 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
 - 🔄 Windows and Linux builds of the shell; CI jobs on Windows + Ubuntu (clippy, tests, release
   binaries) and wasm32 on Ubuntu. Windows type-checks locally (clippy, MSVC target); not yet run
   on Windows or Linux hardware
-- 🔄 Web: wasm32 build of core + shell runs the demo strip in a canvas (WebGPU, WebGL2 fallback;
-  checked in headless Edge), `scripts/build-web.sh`, `AssetSource` trait for browser-picked files.
-  Open: WebAudio, asset import through the file picker into OPFS/IndexedDB (nothing uploaded),
-  Gamepad API check
+- 🔄 Web: wasm32 build of core + shell in a canvas (WebGPU, WebGL2 fallback), `scripts/build-web.sh`.
+  Playable with the owner's own data (docs/architecture.md §5b "Web"):
+  - ✅ Import game data from a picked folder into OPFS (never uploaded, kept between visits):
+    an `mmk import` cache is copied (~15 s), or the dump's `romfs/` + `exefs/` is imported in
+    the page by `mmk-import` itself in a worker (~35 s, ~1.5 GB peak; output identical to the
+    desktop import); textures stream from storage on first use, music per course
+  - ✅ WebAudio (cpal) through the shared sound director, started on the first gesture
+  - ✅ Gamepad API (gilrs) and keyboard; course picker: built-in courses of the import, or any
+    `.bcd` / zlib / raw course file
+  - checked in headless Edge (CDP: import, courses, keys, a scripted Gamepad API pad, non-silent
+    WebAudio) and headless Firefox (WebDriver BiDi). Open: Safari (OPFS `createWritable`),
+    a real controller in a browser, touch controls, mobile memory limits, menus (layout player)
 - ⬜ iOS/iPadOS: the Swift app on UIKit/SwiftUI + Metal (shared renderer code), touch controls,
   Files-app import of the owner's dump; installs over Tailscale with the existing tool
 - 🔄 Engine-drawn menus everywhere (layout player), so every platform shows the same screens:

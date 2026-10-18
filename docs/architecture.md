@@ -29,7 +29,8 @@ core/                       Cargo workspace (Rust, toolchain pinned in rust-tool
                             audio handle + sound director (sim events → mixer commands)
     ffi/                    C ABI static library for the Swift app (cbindgen header)
     shell/                  portable shell `mmk-play`: winit + wgpu + gilrs + cpal; native
-                            (macOS, Windows, Linux) and wasm32 (WebGPU/WebGL2); web/index.html
+                            (macOS, Windows, Linux) and wasm32 (WebGPU/WebGL2, WebAudio, OPFS);
+                            web/ (page, storage glue, import worker)
     cli/                    `mmk` tool: import, inspect, headless run/replay, golden dumps
 app/                        Xcode project (Swift 6, SwiftUI + Metal + GameController + AVAudioEngine)
   Shell/  Render/  Input/  AudioOut/  Bridge/ (module map for the core library)
@@ -109,7 +110,8 @@ the sim and the screen/speakers, so placement and sound rules exist once.
 ### Importer input (v1)
 A folder with the owner's extracted **RomFS + ExeFS**, as written by Ryujinx "Extract Data" or by
 our CLI from their dump, plus optional update RomFS/ExeFS. (v2, later: read the NSP directly with
-the owner's keys.)
+the owner's keys.) All file access goes through `mmk_import::vfs` (the file system natively; the
+web build's worker installs its own for the browser's picked files and storage, §5b).
 
 ### Steps
 1. **Identify** the build: NSO module id of `exefs/main` → known build table (ids only, no
@@ -247,7 +249,7 @@ and on macOS too. No platform code outside this crate; everything below `shell` 
  │      keys + gilrs pads → Input                    │
  │ render: wgpu (Metal/Vulkan/DX12/GL/WebGPU)        │
  │ hud: built-in 5×7 font   audio_out: cpal stream   │
- │ source: AssetSource (dir / memory / later OPFS)   │
+ │ source: AssetSource (dir / memory; web: OPFS)     │
  └───────────────▲───────────────┬───────────────────┘
                  │ Rust calls    │
    host (place, resolver, clear colour, director, course bytes)
@@ -272,17 +274,40 @@ and on macOS too. No platform code outside this crate; everything below `shell` 
   view swizzle). `mmk-play --check-textures` compares GPU sampling with the CPU decoders for every
   BC texture of a cache (BC4/5/7 exact, BC1–3 within 3 steps of interpolation rounding).
 - **Input** (`input`): physical key codes (arrows/WASD, Z/Space jump, X/Shift run) and gilrs
-  gamepads by button position (south/east jump, west/north run, d-pad or left stick).
-- **Audio** (`audio_out`, native): cpal default output; the mixer (`host::audio::AudioOut`)
-  renders at the device's rate on the callback thread, fed by the session's `Director`.
+  gamepads by button position (south/east jump, west/north run, d-pad or left stick); in a
+  browser gilrs reads the Gamepad API (standard mapping).
+- **Audio** (`audio_out`): cpal default output (Core Audio, WASAPI, ALSA; WebAudio in a browser);
+  the mixer (`host::audio::AudioOut`) renders at the device's rate on the callback thread, fed by
+  the session's `Director`, with the course's theme music read from `audio/music/`
+  (`source::music_reader`; the web build prefetches it, see below).
 - **Assets** (`source`): every cache read goes through `AssetSource` (`DirSource` on disk,
   `MemorySource` for files handed over by the browser); `assets::Cache::load` and
-  `audio::Bank::load_cache_with` take a read function for this.
-- **Web** (`web`, wasm32): the same app in `<canvas id="mmk">`; WebGPU, or WebGL2 where WebGPU is
-  missing (`wgpu::util::new_instance_with_webgpu_detection`); graphics start asynchronously and
-  arrive as a winit user event. Today it plays the built-in demo strip with placeholder art; next:
-  the owner's cache from the browser's file picker (OPFS/IndexedDB, nothing uploaded), WebAudio.
+  `audio::Bank::load_cache_with` take a read function for this. `Cache::load_deferred` reads only
+  the index: `texture(i)` records a request, the host reads the file when it can and hands it
+  over (`take_requests` / `provide`), and the renderer keeps the texture pending meanwhile.
+- **Web** (`web`, `web_import`, wasm32; page: `web/index.html`, `mmk-web.js`,
+  `mmk-import-worker.js`): the same app in `<canvas id="mmk">`; WebGPU, or WebGL2 where WebGPU
+  is missing (`wgpu::util::new_instance_with_webgpu_detection`); graphics start asynchronously
+  and arrive as a winit user event. The page talks to the running app through exported functions
+  that send it user events (`Game`: play this; `Sound`: a mixer).
+  - *Game data* lives in the origin private file system (OPFS, `mmk-data/`, about 1.3 GB),
+    never uploaded. The owner picks a folder (`<input webkitdirectory>`): an asset cache made
+    by `mmk import` is copied file by file (16 writers, the manifest last as the completion
+    mark; `meshes/` and `anims/` skipped, the shell draws no meshes yet); a folder with
+    `romfs/` + `exefs/main` is imported by `mmk-import` itself in a module worker: it reads the
+    picked files synchronously (`FileReaderSync`) through `mmk_import::vfs` and posts each
+    output file to the page, which stores it (workers can't wait for storage).
+  - *Reading it back*: OPFS reads are asynchronous, the game is not. `open_assets` reads the
+    manifest, texture index, sprites, audio index + sounds and key table (`mmkStorage.read`),
+    opens the cache deferred and the bank; each frame `pump_textures` starts the reads the
+    renderer asked for and holds the session (at most 30 frames) while they're on their way;
+    `play_course` decodes the course (`.bcd` with the key table) and reads its music before
+    the mixer needs it. Memory holds what is being played, not the cache.
+  - *Sound* opens on the first pointer or key event (`unlock_audio`; browsers start WebAudio
+    only after a gesture); cpal's WebAudio backend runs the callback on the main thread.
+  - *Courses*: the cache's built-in courses (`courses/`) in a list, or any course file.
   Build: `scripts/build-web.sh` (wasm-bindgen CLI matching `Cargo.lock`), serve the folder.
+  Checked in headless Edge (CDP; WebGPU, BC on the GPU) and Firefox (WebDriver BiDi).
 - **Smoke tests:** `mmk-play <course> --screenshot out.png --ticks N [--scale S] [--idle]
   [--cpu-textures]` runs N ticks of the Swift app's scripted input (run right, jump every 90
   ticks) and renders one frame offscreen to PNG; `--quit-after S [--scripted]` runs the real
@@ -320,10 +345,10 @@ checked on Ubuntu.
 | winit 0.30 | shell: window, event loop (native + web) | Apache-2.0 |
 | wgpu 30 | shell: renderer (Metal, Vulkan, DX12, GL, WebGPU) | MIT/Apache-2.0 |
 | gilrs 0.11 | shell: gamepads | MIT/Apache-2.0 |
-| cpal 0.18 | shell: audio output (native) | Apache-2.0 |
+| cpal 0.18 | shell: audio output (native; WebAudio backend in the browser) | Apache-2.0 |
 | png, pollster, bytemuck | shell: screenshots, blocking on GPU setup, vertex bytes | MIT/Apache-2.0 (bytemuck also Zlib) |
 | ab_glyph 0.2.32 (+ ttf-parser) | import: rasterise SMM2's scalable fonts into bitmap fonts | Apache-2.0 (ttf-parser MIT/Apache-2.0) |
-| wasm-bindgen, web-sys, wasm-bindgen-futures, console_error_panic_hook | shell: web build | MIT/Apache-2.0 |
+| wasm-bindgen, web-sys, js-sys, wasm-bindgen-futures, console_error_panic_hook | shell: web build | MIT/Apache-2.0 |
 
 The Swift app uses only Apple frameworks.
 
