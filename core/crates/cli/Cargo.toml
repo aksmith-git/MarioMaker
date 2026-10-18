@@ -17,6 +17,7 @@ mmk-sim = { path = "../sim" }
 mmk-assets = { path = "../assets" }
 mmk-server = { path = "../server" }
 mmk-online = { path = "../online" }
+mmk-editor = { path = "../editor" }
 clap.workspace = true
 flate2.workspace = true
 serde_json.workspace = true

@@ -1240,6 +1240,7 @@ dependencies = [
  "clap",
  "flate2",
  "mmk-assets",
+ "mmk-editor",
  "mmk-formats",
  "mmk-import",
  "mmk-online",

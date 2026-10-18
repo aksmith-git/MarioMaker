@@ -19,19 +19,26 @@ pub const UNDO_DEPTH: usize = 64;
 /// Size in tiles a freshly placed part gets (most parts 1×1).
 pub fn default_size(part: i16) -> (u8, u8) {
     match part {
-        9 => (2, 2),            // pipe: 2 wide, height = length
-        16 | 17 | 14 => (3, 1), // semisolid, bridge, mushroom platform
-        11 => (3, 1),           // lift
-        12 => (2, 2),           // Thwomp
-        13 => (1, 2),           // Bill Blaster
-        53 => (3, 1),           // conveyor
-        62 | 77 | 98 => (2, 2), // Bowser, Boom Boom, Bowser Jr
-        42 => (2, 2),           // Koopa Clown Car
-        67 => (2, 2),           // one-way wall
-        90 => (2, 2),           // checkpoint flag
+        9 => (2, 2),             // pipe: 2 wide, height = length
+        16 | 17 | 14 => (3, 1),  // semisolid, bridge, mushroom platform
+        11 => (3, 1),            // lift
+        12 => (2, 2),            // Thwomp
+        13 => (1, 2),            // Bill Blaster
+        53 => (3, 1),            // conveyor
+        62 | 77 | 98 => (2, 2),  // Bowser, Boom Boom, Bowser Jr
+        42 => (2, 2),            // Koopa Clown Car
+        67 => (2, 2),            // one-way wall
+        90 => (2, 2),            // checkpoint flag
+        72 | 85 | 119 => (2, 2), // Koopa Troopa Car, Track Block, ! Block
+        107 | 110 => (2, 2),     // Piranha Creeper, spike block
+        113 => (3, 1),           // Mushroom Trampoline
+        106 => (4, 6),           // tree
         _ => (1, 1),
     }
 }
+
+/// Parts placed by their left tile's centre (others by their horizontal centre).
+const TILE_LIKE: &[i16] = &[9, 14, 16, 17, 53, 71, 87, 88, 94, 110];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditError {
@@ -173,7 +180,12 @@ impl Editor {
         } else {
             (w, h)
         };
-        let left = ((o.x as f32 / 10.0 - 8.0) / 16.0).round() as i32;
+        let half = if TILE_LIKE.contains(&o.id) {
+            8.0
+        } else {
+            w as f32 * 8.0
+        };
+        let left = ((o.x as f32 / 10.0 - half) / 16.0).round() as i32;
         let bottom = ((o.y as f32 / 10.0 - 8.0) / 16.0).round() as i32;
         (left, bottom, w, h)
     }
@@ -230,7 +242,13 @@ impl Editor {
             return Err(EditError::Full);
         }
         let mut o = CourseObject::parse(&[0u8; 0x20]);
-        o.x = (tx * 16 + 8) * 10;
+        // the corpus convention: tile-like parts sit on their left tile's centre, the rest on
+        // their horizontal centre; y is always the centre of the bottom row
+        o.x = if TILE_LIKE.contains(&part) {
+            (tx * 16 + 8) * 10
+        } else {
+            (tx * 16 + w as i32 * 8) * 10
+        };
         o.y = (ty * 16 + 8) * 10;
         o.width = w;
         o.height = h;

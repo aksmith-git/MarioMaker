@@ -99,6 +99,21 @@ enum Cmd {
     /// Smoke-run courses headlessly with a scripted run-and-jump input: reports crashes, how far
     /// right the player got (of the goal distance), deaths and clears. One JSON line per course
     /// with --each.
+    /// Write test courses laying out every supported part in a row (pages of ≈ 220 tiles) for a
+    /// style, for visual checks: `<out>/gallery_<style>[_alt]_<page>.bin` (raw course data).
+    Gallery {
+        #[arg(long, default_value = "M1")]
+        style: String,
+        /// Place the alternate (0x4) forms instead.
+        #[arg(long)]
+        alt: bool,
+        #[arg(long, default_value = "0")]
+        theme: u8,
+        #[arg(long)]
+        night: bool,
+        #[arg(short, long, default_value = ".")]
+        out: PathBuf,
+    },
     Simulate {
         files: Vec<PathBuf>,
         #[arg(long)]
@@ -616,6 +631,24 @@ fn main() -> ExitCode {
             keys,
             frames,
         } => simulate(&files, each, keys, frames),
+        Cmd::Gallery {
+            style,
+            alt,
+            theme,
+            night,
+            out,
+        } => match gallery(&style, alt, theme, night, &out) {
+            Ok(files) => {
+                for f in files {
+                    println!("{}", f.display());
+                }
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("gallery: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Cmd::Coverage { files, each, keys } => {
             let table: Option<mmk_formats::smm2::KeyTable> = keys.and_then(|p| {
                 let b = std::fs::read(p).ok()?;
@@ -1109,4 +1142,70 @@ fn simulate(files: &[PathBuf], each: bool, keys: Option<PathBuf>, frames: u32) -
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// Gallery courses: every supported part on a two-tile floor, two tiles apart, in pages.
+fn gallery(
+    style: &str,
+    alt: bool,
+    theme: u8,
+    night: bool,
+    out: &std::path::Path,
+) -> Result<Vec<PathBuf>, String> {
+    // parts that aren't placeable objects of their own (header-made goal / start, track and
+    // scroll nodes, sound effects)
+    const SKIP: &[i16] = &[26, 27, 37, 38, 59, 89, 109];
+    const PAGE: i32 = 220;
+    let parts: Vec<i16> = mmk_sim::level::SUPPORTED_PARTS
+        .iter()
+        .copied()
+        .filter(|p| !SKIP.contains(p))
+        .collect();
+    std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
+    let mut written = Vec::new();
+    let mut rest = &parts[..];
+    let mut page = 0;
+    while !rest.is_empty() {
+        let mut ed = mmk_editor::Editor::new(style);
+        ed.set_theme(theme);
+        ed.set_night(night);
+        ed.set_timer(500);
+        ed.set_name(&format!("Gallery {style} {}", page + 1));
+        let width = PAGE + 30;
+        ed.course.main.header.boundary_right = width * 16;
+        ed.course.header.goal_x = ((width - 10) * 10) as i16;
+        for x in 0..width {
+            for y in 0..2 {
+                ed.paint_ground(x, y).map_err(|e| format!("{e:?}"))?;
+            }
+        }
+        let mut x = 6;
+        let mut placed = 0;
+        for &part in rest {
+            let (w, _) = mmk_editor::default_size(part);
+            if x + w as i32 > PAGE {
+                break;
+            }
+            let i = ed
+                .place(part, x, 2)
+                .map_err(|e| format!("part {part}: {e:?}"))?;
+            if alt {
+                ed.toggle_flags(i, 0x4);
+            }
+            x += w as i32 + 2;
+            placed += 1;
+        }
+        rest = &rest[placed.max(1)..];
+        let data = ed.save().map_err(|e| format!("{e:?}"))?;
+        let name = format!(
+            "gallery_{style}{}_{}.bin",
+            if alt { "_alt" } else { "" },
+            page + 1
+        );
+        let path = out.join(name);
+        std::fs::write(&path, data).map_err(|e| e.to_string())?;
+        written.push(path);
+        page += 1;
+    }
+    Ok(written)
 }
