@@ -773,3 +773,30 @@ renderers upload a texture when a sprite first uses it. Measured on the same cou
 - Effect when switched: 1 of the 550 sample courses ended in a different state (its trig hit a
   last-bit difference between Apple's library and musl's) — the case this prevents across
   machines. Front ends (rendering, audio) may keep using the platform functions.
+
+## 2026-10-18 — SMM1 extras are engine options, by name
+- Phase 11's SMM1 behaviours are fields of one `mmk_sim::Options` value, each off by default; with
+  all of them off the simulation is the SMM2 one (every existing test passes unchanged). A world
+  keeps its options across deaths and restarts; hosts hold one value and hand it to every world
+  they make (`World::set_options`), so a course load or restart can't drop a setting.
+- Hosts address options by name and integer (`Options::set` / `get` / `apply`): the FFI has one
+  setter/getter pair (`mmk_engine_set_option(engine, "smm1_shell_kicks", 1)`), the command lines
+  take `--option NAME=VALUE` plus a flag per option. A new option needs no new entry point and no
+  C struct layout change (the app's header is owned by the Swift side).
+- Options follow the binary, not memory: the request said "pipes drawn over the player", but
+  SMM1 draws the player in front of pipes in play; the option is `smm1_layering`, SMM1's whole
+  depth ladder. The shell option likewise carries everything SMM1's shell code does differently
+  from the engine (window, no-bounce kick, kicker windows, re-kick, wall assist).
+- SMM2 courses contain no Weird or Mystery Mushrooms, so `smb1_mushroom` turns every Super
+  Mushroom item of an SMB1-style course into one (SMM1 made them by shaking the Super Mushroom,
+  SMB1 only). That includes the Super Mushroom a small player gets from a Fire Flower block — the
+  simple rule, kept on purpose.
+- Costumes are numbered as SMM1 numbers them (0–99, amiibo 100 + n); the importer reads that order
+  from the owner's executable, so no costume list is in the repository. The sim only knows ids
+  and draws `SMM1_Costume_<id>`; random picks come from the costumes the host has art for
+  (`Options::costume_pool`, set by the FFI engine and `mmk-play` from the merged cache).
+- The SMM1 art and sounds are a separate asset cache (`<smm1 cache>/sprites`) merged into the
+  SMM2 one at load time (`Cache::merge`); without it the extras still play, drawn with SMM2
+  stand-ins (small Mario, Super Mario, the Super Mushroom).
+- Options are not yet part of replays, rollback sessions or `World::checksum` input: a replay
+  or an online session is only valid with all options off (⬜ carry them in both).
