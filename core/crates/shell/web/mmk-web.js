@@ -6,12 +6,16 @@
 //
 // Accepted folders:
 // - an asset cache made by `mmk import` (contains manifest.json and textures/index.json);
+// - an SMM2 UI import made by `mmk import-smm2-ui` (manifest.json of game SMM2 and ui/layouts/):
+//   copied into `mmk-ui/`; with it the page starts on the SMM2 menus (mmk-front);
+// - a folder holding both of the above;
 // - a folder with the extracted `romfs/` and `exefs/` of the owner's dump: imported here, in a
 //   worker running the same importer (mmk-import), straight into the browser's storage.
 
 import init, * as mmk from "./mmk-play.js";
 
 const ROOT = "mmk-data";
+const UI_ROOT = "mmk-ui";
 // written by `mmk import` but not used by the portable shell yet (3D models): not copied
 const SKIP = ["meshes/", "anims/"];
 const WRITERS = 16;
@@ -42,20 +46,21 @@ async function opfs() {
   return navigator.storage.getDirectory();
 }
 
-// directory handles by path, so reads don't walk the tree every time
+// directory handles by root and path, so reads don't walk the tree every time
 let dirs = new Map();
 
-async function dirAt(path, create = false) {
-  let d = dirs.get(path);
+async function dirAt(path, create = false, root = ROOT) {
+  const key = `${root}/${path}`;
+  let d = dirs.get(key);
   if (d) return d;
   if (path === "") {
-    d = await (await opfs()).getDirectoryHandle(ROOT, { create });
+    d = await (await opfs()).getDirectoryHandle(root, { create });
   } else {
     const cut = path.lastIndexOf("/");
-    const parent = await dirAt(cut < 0 ? "" : path.slice(0, cut), create);
+    const parent = await dirAt(cut < 0 ? "" : path.slice(0, cut), create, root);
     d = await parent.getDirectoryHandle(path.slice(cut + 1), { create });
   }
-  dirs.set(path, d);
+  dirs.set(key, d);
   return d;
 }
 
@@ -64,10 +69,10 @@ function split(path) {
   return cut < 0 ? ["", path] : [path.slice(0, cut), path.slice(cut + 1)];
 }
 
-async function readFile(path) {
+async function readFile(path, root = ROOT) {
   try {
     const [dir, name] = split(path);
-    const file = await (await (await dirAt(dir)).getFileHandle(name)).getFile();
+    const file = await (await (await dirAt(dir, false, root)).getFileHandle(name)).getFile();
     return new Uint8Array(await file.arrayBuffer());
   } catch (e) {
     if (e.name === "NotFoundError" || e.name === "TypeMismatchError") return null;
@@ -75,9 +80,9 @@ async function readFile(path) {
   }
 }
 
-async function writeFile(path, data) {
+async function writeFile(path, data, root = ROOT) {
   const [dir, name] = split(path);
-  const handle = await (await dirAt(dir, true)).getFileHandle(name, { create: true });
+  const handle = await (await dirAt(dir, true, root)).getFileHandle(name, { create: true });
   if (handle.createWritable) {
     const w = await handle.createWritable();
     await w.write(data);
@@ -87,19 +92,19 @@ async function writeFile(path, data) {
   }
 }
 
-async function removeData() {
+async function removeData(root = ROOT) {
   dirs = new Map();
   try {
-    await (await opfs()).removeEntry(ROOT, { recursive: true });
+    await (await opfs()).removeEntry(root, { recursive: true });
   } catch (e) {
     if (e.name !== "NotFoundError") throw e;
   }
 }
 
-async function listDir(path) {
+async function listDir(path, root = ROOT) {
   const out = [];
   try {
-    for await (const [name, h] of (await dirAt(path)).entries()) {
+    for await (const [name, h] of (await dirAt(path, false, root)).entries()) {
       if (h.kind === "file") out.push(name);
     }
   } catch (e) {
@@ -108,7 +113,56 @@ async function listDir(path) {
   return out.sort();
 }
 
-globalThis.mmkStorage = { read: readFile };
+// Paths of all files under `root` (none when it doesn't exist).
+async function walk(root) {
+  const out = [];
+  const go = async (d, pre) => {
+    for await (const [name, h] of d.entries()) {
+      if (h.kind === "file") out.push(pre + name);
+      else await go(h, `${pre}${name}/`);
+    }
+  };
+  try {
+    await go(await dirAt("", false, root), "");
+  } catch (e) {
+    if (e.name !== "NotFoundError") throw e;
+  }
+  return out;
+}
+
+// Read `paths` of `root`, READERS at a time: their bytes (or null), in order.
+const READERS = 32;
+async function readAll(paths, root) {
+  const out = new Array(paths.length).fill(null);
+  let next = 0;
+  const reader = async () => {
+    while (next < paths.length) {
+      const i = next++;
+      out[i] = await readFile(paths[i], root);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(READERS, paths.length) }, reader));
+  return out;
+}
+
+// The paths of the stored UI import: its file list (written with the copy; walking OPFS's ~500
+// folders takes seconds), else a walk, whose list is then kept.
+const UI_INDEX = "files.txt";
+async function uiFiles() {
+  const index = await readFile(UI_INDEX, UI_ROOT);
+  if (index) return new TextDecoder().decode(index).split("\n").filter(Boolean);
+  const paths = (await walk(UI_ROOT)).filter((p) => p !== UI_INDEX);
+  if (paths.includes("manifest.json")) await writeFile(UI_INDEX, new TextEncoder().encode(paths.join("\n")), UI_ROOT);
+  return paths;
+}
+
+globalThis.mmkStorage = {
+  read: (p) => readFile(p),
+  list: (p) => listDir(p),
+  readUi: (p) => readFile(p, UI_ROOT),
+  readAllUi: (paths) => readAll(paths, UI_ROOT),
+  walkUi: uiFiles,
+};
 
 // ---- import ----------------------------------------------------------------------------------
 
@@ -144,6 +198,44 @@ function findCache(paths) {
     if (paths.has(dir + "textures/index.json") && (best === null || dir.length < best.length)) best = dir;
   }
   return best;
+}
+
+// Where an SMM2 UI import is in the picked tree (manifest.json of game SMM2 next to
+// ui/layouts/; "" = the folder itself, null = none).
+async function findUi(paths) {
+  const dirs = new Set();
+  for (const p of paths.keys()) {
+    const at = p.indexOf("ui/layouts/");
+    if (at >= 0 && (at === 0 || p[at - 1] === "/")) dirs.add(p.slice(0, at));
+  }
+  for (const dir of [...dirs].sort((a, b) => a.length - b.length)) {
+    const m = paths.get(dir + "manifest.json");
+    if (!m) continue;
+    try {
+      if (JSON.parse(await m.text()).game === "SMM2") return dir;
+    } catch {}
+  }
+  return null;
+}
+
+async function importUi(paths, prefix) {
+  const files = [];
+  let manifest = null;
+  for (const [p, f] of paths) {
+    if (!p.startsWith(prefix)) continue;
+    const rel = p.slice(prefix.length);
+    if (rel.split("/").some((c) => c.startsWith("."))) continue;
+    if (rel === "manifest.json") manifest = f;
+    else if (rel.startsWith("ui/") || rel.startsWith("courses/")) files.push([rel, f]);
+  }
+  const bytes = files.reduce((n, [, f]) => n + f.size, 0);
+  status(`Copying the SMM2 UI import into this browser: ${files.length} files, ${(bytes / 1e6).toFixed(0)} MB…`);
+  await removeData(UI_ROOT);
+  await pool(files.map(([rel, f]) => () => writeFile(rel, f, UI_ROOT)), WRITERS, (n) => progress(n, files.length));
+  const list = files.map(([rel]) => rel).concat("manifest.json");
+  await writeFile(UI_INDEX, new TextEncoder().encode(list.join("\n")), UI_ROOT);
+  // the manifest last: its presence means a complete copy
+  await writeFile("manifest.json", manifest, UI_ROOT);
 }
 
 // Where `romfs/` and `exefs/main` are ("" or "<dir>/"), or null.
@@ -243,14 +335,18 @@ async function importDump(paths, prefix) {
 async function importFolder(fileList) {
   const paths = byPath(fileList);
   const cache = findCache(paths);
-  const dump = cache === null ? findDump(paths) : null;
-  if (cache === null && dump === null) {
-    throw new Error("that folder has no asset cache (manifest.json + textures/) and no romfs/ + exefs/main");
+  const uiImport = await findUi(paths);
+  const dump = cache === null && uiImport === null ? findDump(paths) : null;
+  if (cache === null && uiImport === null && dump === null) {
+    throw new Error(
+      "that folder has no asset cache (manifest.json + textures/), no SMM2 UI import (manifest.json + ui/layouts/) and no romfs/ + exefs/main",
+    );
   }
   ui.forget.disabled = true;
   try {
     if (cache !== null) await importCache(paths, cache);
-    else await importDump(paths, dump);
+    else if (dump !== null) await importDump(paths, dump);
+    if (uiImport !== null) await importUi(paths, uiImport);
     await navigator.storage.persist?.();
   } finally {
     progress(0, 0);
@@ -261,18 +357,35 @@ async function importFolder(fileList) {
 // ---- game data and courses ---------------------------------------------------------------------
 
 async function openData() {
+  let text;
+  let have = false;
   if (!(await readFile("manifest.json"))) {
-    status("No game data yet: placeholder art. Import game data to play your courses.");
-    ui.forget.disabled = true;
+    text = "No game data yet: placeholder art. Import game data to play your courses.";
     fillCourses([]);
-    return false;
+  } else {
+    const info = JSON.parse(await mmk.open_assets());
+    const courses = (await listDir("courses")).filter((n) => /\.(bcd|zlib|bin)$/.test(n));
+    text = `Game data ${info.build}: ${info.textures} textures, ${info.sounds} sounds, ${courses.length} built-in courses (stored in this browser).`;
+    fillCourses(courses);
+    have = true;
   }
-  const info = JSON.parse(await mmk.open_assets());
-  const courses = (await listDir("courses")).filter((n) => /\.(bcd|zlib|bin)$/.test(n));
-  status(`Game data ${info.build}: ${info.textures} textures, ${info.sounds} sounds, ${courses.length} built-in courses (stored in this browser).`);
-  ui.forget.disabled = false;
-  fillCourses(courses);
-  return true;
+  // the SMM2 menus, when the UI import is stored too
+  const front = await openFront();
+  if (front) text += ` SMM2 menus ${front.build || ""} (${front.layouts} layouts).`;
+  else if (have) text += " Import an SMM2 UI import (mmk import-smm2-ui) for the SMM2 menus.";
+  status(text);
+  ui.forget.disabled = !have && !front;
+  return have;
+}
+
+// Start (or restart) the SMM2 menus from the stored UI import; null without one.
+async function openFront() {
+  if (!(await readFile("manifest.json", UI_ROOT))) {
+    mmk.close_front();
+    return null;
+  }
+  const opening = new URLSearchParams(location.search).get("opening") !== "0";
+  return JSON.parse(await mmk.open_front(opening));
 }
 
 function fillCourses(names) {
@@ -362,6 +475,8 @@ ui.courses.onchange = () =>
 ui.forget.onclick = () =>
   guard(async () => {
     await removeData();
+    await removeData(UI_ROOT);
+    mmk.close_front();
     mmk.close_assets();
     await openData();
   });
@@ -391,7 +506,7 @@ $("online").onclick = () =>
   });
 
 // for scripted checks (and the console)
-globalThis.mmkPage = { importFolder, openData, playBuiltin, play, readFile, removeData, netJoin };
+globalThis.mmkPage = { importFolder, openData, openFront, playBuiltin, play, readFile, removeData, netJoin, UI_ROOT };
 
 await guard(openData);
 // ?relay=ws://host:8641&room=NAME&player=1&players=2 joins at once (after ?course=builtin name)

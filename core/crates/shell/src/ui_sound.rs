@@ -60,6 +60,10 @@ pub fn parse_wav(b: &[u8]) -> Option<Clip> {
     None
 }
 
+/// Where clips come from without a folder: a WAV's bytes by name, or None while they are not
+/// there (yet: the web build reads them from the browser's storage after starting).
+pub type ClipReader = Box<dyn Fn(&str) -> Option<Vec<u8>> + Send + Sync>;
+
 struct Voice {
     clip: Arc<Clip>,
     pos: f64,
@@ -76,6 +80,7 @@ pub struct UiMixer {
     voices: Mutex<Vec<Voice>>,
     clips: Mutex<HashMap<String, Option<Arc<Clip>>>>,
     dir: Option<std::path::PathBuf>,
+    reader: Option<ClipReader>,
     /// Master × effects volume.
     pub volume: f32,
 }
@@ -88,23 +93,36 @@ impl UiMixer {
             voices: Mutex::new(Vec::new()),
             clips: Mutex::new(HashMap::new()),
             dir,
+            reader: None,
             volume: 1.0,
+        }
+    }
+
+    /// Clips from `reader` (asked again until it has them).
+    pub fn with_reader(reader: ClipReader, rate: u32) -> Self {
+        Self {
+            reader: Some(reader),
+            ..Self::new(None, rate)
         }
     }
 
     fn clip(&self, name: &str) -> Option<Arc<Clip>> {
         let mut clips = self.clips.lock().ok()?;
-        clips
-            .entry(name.to_string())
-            .or_insert_with(|| {
-                let dir = self.dir.as_ref()?;
-                if name.contains(['/', '\\']) || name.starts_with('.') {
-                    return None;
-                }
-                let b = std::fs::read(dir.join(format!("{name}.wav"))).ok()?;
-                parse_wav(&b).map(Arc::new)
-            })
-            .clone()
+        if let Some(c) = clips.get(name) {
+            return c.clone();
+        }
+        if name.contains(['/', '\\']) || name.starts_with('.') {
+            return None;
+        }
+        let bytes = match (&self.dir, &self.reader) {
+            (Some(dir), _) => std::fs::read(dir.join(format!("{name}.wav"))).ok(),
+            // not there yet: ask again next time
+            (None, Some(read)) => Some(read(name)?),
+            (None, None) => None,
+        };
+        let clip = bytes.and_then(|b| parse_wav(&b)).map(Arc::new);
+        clips.insert(name.to_string(), clip.clone());
+        clip
     }
 
     /// Start `cue` (its delay counts from now).
