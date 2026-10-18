@@ -13,7 +13,7 @@
 
 #include "../../runtime/hle.h"
 
-#define RANDOM_INIT_RET 0x700029a064ull  // return address of the GetSystemTick call inside sead::Random::init()
+#define RANDOM_INIT_RET (MAIN_BASE + 0x29a064ull) // return address of the GetSystemTick call inside sead::Random::init()
 
 HLE_FUNC("_ZN2nn2os13GetSystemTickEv", smm2_get_system_tick) {
     uint64_t t = rt_ticks();

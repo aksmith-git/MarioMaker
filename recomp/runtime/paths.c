@@ -79,6 +79,23 @@ static void fail(const char *msg) {
     exit(1);
 }
 
+#if TARGET_OS_IPHONE
+// A build that carries the game files in the app (tools/make_ios_app.sh RECOMP_IOS_DATA: data/extracted, fonts,
+// sysdata) links them into Documents at every launch, since the app's own path changes with each install; files the
+// player copied into Documents themselves are left alone.
+static void ios_link_bundle_data(void) {
+    static const char *const names[] = {"extracted", "fonts", "sysdata"};
+    for (size_t i = 0; i < sizeof names / sizeof *names; i++) {
+        char target[1100];
+        snprintf(target, sizeof target, "%s/data/%s", g_exe_dir, names[i]);
+        if (!is_dir(target)) continue;
+        if (is_link(names[i])) unlink(names[i]);
+        if (!exists(names[i]) && symlink(target, names[i]) != 0)
+            fprintf(stderr, "[paths] can't link %s -> %s (%s)\n", names[i], target, strerror(errno));
+    }
+}
+#endif
+
 static bool g_dev;  // the data root is the starting folder because it has extracted/ (a source checkout)
 bool rt_dev_mode(void) { return g_dev; }
 
@@ -124,6 +141,9 @@ void rt_paths_init(void) {
         fail(msg);
     }
     if (!getcwd(g_root, sizeof g_root)) snprintf(g_root, sizeof g_root, "%s", root);
+#if TARGET_OS_IPHONE
+    if (!g_dev) ios_link_bundle_data();
+#endif
     fprintf(stderr, "[paths] data: %s\n", g_root);
 }
 

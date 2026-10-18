@@ -126,16 +126,28 @@ Signing: `RECOMP_IOS_IDENTITY=<codesigning identity> RECOMP_IOS_PROFILE=<.mobile
 far above iOS's default address space, and the game uses 3+ GB: the profile must carry
 `com.apple.developer.kernel.extended-virtual-addressing` and `com.apple.developer.kernel.increased-memory-limit`.
 That means an explicit App ID with both capabilities. A wildcard profile lacks them, and the app then stops at start
-with a message. Install over Tailscale with `~/.claude/tools/ios-install-tailscale/ios-install-tailscale <app> --device ipad`,
+with a message. `tools/ios_profile.sh <bundle id> <team id>` has Xcode make that App ID and profile (automatic
+signing of an empty stub app; needs the team's Apple ID in Xcode > Settings > Accounts, and xcodegen) and prints the
+profile's path.
+
+The window fits on iOS 27 (iPad Pro M5): with the entitlement the app's address space reaches 0x8000000000, and iOS
+keeps 0x2ee000000-0x7000000000 for itself, so 0x7000000000 is the first free place. Where that differs, the window can
+move: `make GUEST_ORIGIN=<base> ...` generates the game code for that base (`generated/smm2-<base>`) and builds the
+runtime with it (runtime/rt.h; a game's patch addresses move with it, tools/patches.py). If the reservation fails, the
+log lists the address space (kernel limits, what is mapped, which reservations would work). Install over Tailscale with `~/.claude/tools/ios-install-tailscale/ios-install-tailscale <app> --device ipad`,
 or locally with Xcode / `xcrun devicectl device install app`.
 
 Game files go in the app's **Documents** folder (Finder's file sharing for the device, or the Files app):
 `extracted/` (exefs + romfs, laid out by `games/smm2/setup.py` on the Mac), `fonts/` and `sysdata/` (sysdata.py), and
-optionally a `save/` to carry over. The log is `Documents/smm2recomp.log`.
+optionally a `save/` to carry over. The log is `Documents/smm2recomp.log`. Or `RECOMP_IOS_DATA=private/smm2` puts
+them inside the app (data/, linked into Documents at every launch): nothing to copy, but a 3 GB app to install.
 - **Simulator:** copy them into the app's container, `xcrun simctl get_app_container <device> org.smcraft.smm2recomp data`.
   macOS privacy blocks links from there into `~/Documents` or external disks.
 
 Input:
+- An on-screen controller on touch-only devices (runtime/ui/touchpad.mm): left stick, A/B/X/Y, L/R/ZL/ZR, Plus /
+  Minus, and a menu button for the overlay menu. Fingers that land on it are its own; every other touch goes to the
+  touch screen. The button in the top left corner hides / shows it, and it hides while a controller is connected.
 - Touches are the console's touch screen (`nn::hid::GetTouchScreenState`).
 - Game controllers go through SDL (GameController), and an attached keyboard as on the desktop.
 - On the desktop, the left mouse button is a finger on the touch screen (`RECOMP_NO_MOUSE_TOUCH=1` turns it off).

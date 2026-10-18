@@ -42,6 +42,8 @@ cat > "$APP/Info.plist" <<EOF
     <key>UILaunchScreen</key><dict/>
     <key>UIRequiresFullScreen</key><true/>
     <key>UIStatusBarHidden</key><true/>
+    <key>UIViewControllerBasedStatusBarAppearance</key><false/>
+    <key>UIApplicationSupportsIndirectInputEvents</key><true/>
     <key>UIApplicationSceneManifest</key>
     <dict><key>UIApplicationSupportsMultipleScenes</key><false/></dict>
     <key>UISupportedInterfaceOrientations</key>
@@ -60,6 +62,19 @@ cat > "$APP/Info.plist" <<EOF
 EOF
 plutil -lint "$APP/Info.plist" >/dev/null
 printf 'APPL????' > "$APP/PkgInfo"
+# RECOMP_IOS_DATA=<data folder> (e.g. private/smm2): the game files go into the app as data/ (extracted/exefs and
+# romfs, fonts, sysdata; runtime/paths.c links them into Documents), so a device needs nothing copied by hand - for
+# your own device only: such an app holds the game. Staged next to the app once (rsync), then cloned into each new
+# bundle (APFS clones: no second 3 GB copy).
+if [ -n "${RECOMP_IOS_DATA:-}" ]; then
+    stage="$(dirname "$APP")/data-stage"
+    for d in extracted/exefs extracted/romfs fonts sysdata; do
+        [ -d "$RECOMP_IOS_DATA/$d" ] || { echo "make_ios_app: $RECOMP_IOS_DATA/$d is missing" >&2; exit 1; }
+        mkdir -p "$stage/$d"
+        rsync -aL --delete "$RECOMP_IOS_DATA/$d/" "$stage/$d/"
+    done
+    cp -Rc "$stage" "$APP/data" 2>/dev/null || cp -R "$stage" "$APP/data"
+fi
 if [ "$PLAT" = iossim ]; then
     codesign --force --sign - --timestamp=none "$APP"
 elif [ -n "${RECOMP_IOS_IDENTITY:-}" ] && [ -n "${RECOMP_IOS_PROFILE:-}" ]; then
