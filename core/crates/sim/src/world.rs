@@ -44,6 +44,8 @@ const MAX_LIVES: u32 = 99;
 const HURRY_SECONDS: i32 = 100;
 /// Activation margin around the view (shared enemy draft §2.8; the area-out rule itself is [?]).
 const ACTIVATE_MARGIN: f32 = 32.0;
+/// A sideways-spring push within this many frames of the last counts as consecutive [obs].
+const SIDE_PUSH_CHAIN: i32 = 10;
 
 /// Things that happened this tick, for audio and UI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1557,7 +1559,7 @@ impl World {
         if prev_vy > 0.0 && self.player.vy <= 0.0 {
             self.hit_exclamation_blocks();
         }
-        self.side_springs();
+        self.side_springs(input.held(input::DOWN));
         self.shake_trees();
         self.mega_breaks_bricks();
         if let Some((tx, ty)) = self.player.head_hit {
@@ -2014,17 +2016,23 @@ impl World {
         }
     }
 
-    /// Sideways springs fling a player touching their side away: 4.5 px/f held for 20 frames
-    /// with a small hop (vy ≥ 1.5) [inf: the push speed wasn't extracted].
-    fn side_springs(&mut self) {
+    /// Sideways springs push a player touching their side away (JumpStepSide 0x71008af470 →
+    /// player 0x71009f37e0) [obs].
+    fn side_springs(&mut self, down: bool) {
         let p = &self.player;
-        let (x0, y0, x1, y1) = p.hurt_box();
+        let (_, y0, _, y1) = p.hurt_box();
+        // the push comes from the spring's side colliders: the player's wall probe meeting a
+        // side (0x710085e8e0 → 0x71008b0f90)
+        let reach = p.sensors().wall_x + 1.0;
         let mut push = None;
         for a in &mut self.actors {
             if a.kind != Kind::SideSpring || a.pause > 6 {
                 continue;
             }
-            let touching = y1 > a.y + 2.0 && y0 < a.y + 14.0 && x1 >= a.x - 9.0 && x0 <= a.x + 9.0;
+            let touching = y1 > a.y + 2.0
+                && y0 < a.y + 14.0
+                && p.x + reach >= a.x - 8.0
+                && p.x - reach <= a.x + 8.0;
             if touching {
                 a.pause = 12;
                 push = Some(if p.x < a.x { -1.0 } else { 1.0 });
@@ -2033,11 +2041,37 @@ impl World {
         }
         if let Some(dir) = push {
             let p = &mut self.player;
-            p.vx = 4.5 * dir;
-            p.facing = dir as i32;
-            p.vy = p.vy.max(1.5);
-            p.on_ground = false;
-            p.side_push = 20;
+            // the push (player vf 0x1c0 = 0x71009f37e0) [obs]: speed 3.0 away from the spring
+            // (2.0 in water); a fourth push in a row with Down held only 1.0 (water 0.1). The
+            // player keeps their state and normal control. Pinned against a wall on the push
+            // side they bounce back instead: facing reversed, 0.7 × the speed, vy 2.5.
+            let chained = p.side_push > 0;
+            p.side_chain = if chained {
+                (p.side_chain + 1).min(4)
+            } else {
+                0
+            };
+            let slow = p.side_chain >= 4 && down;
+            let speed = match (p.in_water, slow) {
+                (false, false) => 3.0,
+                (false, true) => 1.0,
+                (true, false) => 2.0,
+                (true, true) => 0.1,
+            };
+            p.side_push = SIDE_PUSH_CHAIN;
+            let s = p.sensors();
+            let wx = p.x + dir * (s.wall_x + 1.0);
+            let pinned = [s.wall_y0, s.wall_y1]
+                .iter()
+                .any(|dy| self.level.cell_at(wx, p.y + dy).is_solid());
+            if pinned {
+                p.facing = -(dir as i32);
+                p.vx = -dir * speed * 0.7;
+                p.vy = 2.5;
+                p.on_ground = false;
+            } else {
+                p.vx = dir * speed;
+            }
             self.events.push(Event::Jump);
         }
     }
@@ -8477,6 +8511,41 @@ mod tests {
         run(&mut w, 0, 2);
         assert!(!w.level.solids.is_empty(), "solid once found");
         assert!(w.actors.iter().any(|a| a.kind == Kind::Mushroom) || w.player.big());
+    }
+
+    #[test]
+    fn side_spring_pushes_at_3_and_bounces_off_a_wall() {
+        let mut lvl = Level::flat(60);
+        lvl.spawns.push(spawn(Kind::SideSpring, 200.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 170.0;
+        let mut pushed = None;
+        for _ in 0..80 {
+            w.step(Input {
+                buttons: input::RIGHT,
+            });
+            if w.player.side_push == SIDE_PUSH_CHAIN {
+                pushed = Some(w.player.vx);
+                break;
+            }
+        }
+        assert_eq!(pushed, Some(-3.0));
+        assert!(w.player.on_ground, "a plain push keeps the player's state");
+
+        // pinned between the spring and a wall: bounce back at 2.1 with vy 2.5
+        let mut lvl = Level::flat(60);
+        for y in 2..6 {
+            lvl.set(10, y, Cell::Solid); // wall face at x = 176
+        }
+        lvl.spawns.push(spawn(Kind::SideSpring, 192.0, 32.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 184.0;
+        w.player.facing = 1;
+        w.step(Input::default());
+        assert_eq!(w.player.side_push, SIDE_PUSH_CHAIN);
+        assert!((w.player.vx - 2.1).abs() < 1e-5, "{}", w.player.vx);
+        assert_eq!(w.player.vy, 2.5);
+        assert_eq!(w.player.facing, 1);
     }
 
     #[test]

@@ -48,6 +48,8 @@ const SKID_DECEL: f32 = 0.12;
 const SKID_DECEL_ICE: f32 = 0.028;
 const SKID_DECEL_ICE_STAR: f32 = 0.038;
 const SKID_REACCEL: f32 = 0.25;
+/// Frames the Turn state holds the stopped player (counter +0x242c = 8) [obs].
+const SKID_PAUSE: i32 = 8;
 
 const JUMP_BASE: f32 = 3.628;
 const GRAVITY_GROUND: f32 = -0.34;
@@ -256,8 +258,12 @@ pub enum Pose {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SkidPhase {
     None,
+    /// Turn phase 0: braking to a stop.
     Braking,
-    Reaccel,
+    /// Phase 1: stopped, frames left of the 8-frame hold.
+    Pause(i32),
+    /// Phase 2: the `turned` animation (frames left) with the 0.25 re-acceleration.
+    Turned(i32),
 }
 
 #[derive(Clone, Debug)]
@@ -361,8 +367,10 @@ pub struct Player {
     cat_climbed: f32,
     cat_climb_used: bool,
     pub dive: bool,
-    /// Flung by a sideways spring: frames the push speed is held (no air control) [inf].
+    /// Sideways spring pushes: frames left in which another push counts as consecutive (10
+    /// after each push), and how many came in a row (to 4) [obs 0x71009f37e0].
     pub side_push: i32,
+    pub side_chain: i32,
     /// Stunned by a Sledge Bro's landing quake (QuakeDamage 0x4e: no movement until the
     /// 100-frame counter runs out) [obs].
     pub stun: i32,
@@ -455,6 +463,7 @@ impl Player {
             cat_climb_used: false,
             dive: false,
             side_push: 0,
+            side_chain: 0,
             stun: 0,
             roll: 0,
             roll_used: false,
@@ -468,6 +477,17 @@ impl Player {
             prop_used: false,
             prev_down: false,
             prev_spin: false,
+        }
+    }
+
+    /// Length of the `turned` animation that ends the Turn state (per-style PlayerAnmTable →
+    /// model): the pixel styles 1 frame, NSMBU 24 (`ice_turned` 29), 3D World `Turn` 12.
+    fn turned_frames(&self) -> i32 {
+        match self.style {
+            Style::WU if self.on_ice => 29,
+            Style::WU => 24,
+            Style::W3 => 12,
+            _ => 1,
         }
     }
 
@@ -706,46 +726,59 @@ impl Player {
         let star = self.star > 0;
         let (walk_max, run_max) = (t[1], self.run_max());
 
-        // skid (§2.3): reversing at |v| ≥ 2.5 brakes at 0.12, then re-accelerates at 0.25
+        // skid = the Turn state (entry 0x7100a197a0, exec 0x7100a19b40) [obs]: on the ground
+        // with the stick against the facing and |v| ≥ 2.5 (3D World: ≥ 2.0, never on ice).
+        // The player turns to face the stick, brakes to a stop (0.12; ice 0.028, ice + star
+        // 0.038), holds still for 8 frames, then re-accelerates at 0.25 toward the normal
+        // ground target until the `turned` animation ends. Letting go of the direction (or
+        // pressing back) ends it at once.
+        let skid_from = if self.style == Style::W3 {
+            2.0
+        } else {
+            SKID_ENTER
+        };
         if self.skid == SkidPhase::None
             && dir != 0
-            && self.vx != 0.0
-            && dir != self.vx.signum() as i32
-            && self.vx.abs() >= SKID_ENTER
+            && dir != self.facing
+            && self.vx.abs() >= skid_from
+            && !(self.style == Style::W3 && self.on_ice)
         {
             self.skid = SkidPhase::Braking;
+            self.facing = dir;
+        }
+        if self.skid != SkidPhase::None && dir != self.facing {
+            self.skid = SkidPhase::None;
         }
         match self.skid {
-            SkidPhase::Braking => {
-                self.facing = if dir != 0 { dir } else { self.facing };
+            SkidPhase::Braking | SkidPhase::Pause(_) => {
                 let decel = match (self.on_ice, star) {
                     (false, _) => SKID_DECEL,
                     (true, false) => SKID_DECEL_ICE,
                     (true, true) => SKID_DECEL_ICE_STAR,
                 };
+                // (the stop is seen the frame after the speed reaches 0: the state reads the
+                // speed before this frame's integration)
+                let stopped = self.vx.abs() <= f32::EPSILON;
                 self.vx = approach(self.vx, 0.0, decel);
                 self.pose = Pose::Skid;
-                if self.vx == 0.0 {
-                    self.skid = if dir != 0 {
-                        SkidPhase::Reaccel
-                    } else {
-                        SkidPhase::None
-                    };
-                }
+                self.skid = match self.skid {
+                    SkidPhase::Braking if stopped => SkidPhase::Pause(SKID_PAUSE),
+                    // the hold counter ticks before the state runs: 7 frames waiting, then
+                    // the `turned` animation starts on the 8th
+                    SkidPhase::Pause(n) if n > 1 => SkidPhase::Pause(n - 1),
+                    SkidPhase::Pause(_) => SkidPhase::Turned(self.turned_frames()),
+                    other => other,
+                };
                 return;
             }
-            SkidPhase::Reaccel => {
-                // [?] end of the second phase is not in the spec: it ends when the stick lets go
-                // or walk speed is reached in the new direction
-                let target = if dir == 0 {
-                    0.0
-                } else {
-                    dir as f32 * if run { run_max } else { walk_max }
-                };
+            SkidPhase::Turned(n) => {
+                let target = dir as f32 * if run { run_max } else { walk_max };
                 self.vx = approach(self.vx, target, SKID_REACCEL);
-                if dir == 0 || self.vx.abs() >= walk_max {
-                    self.skid = SkidPhase::None;
-                }
+                self.skid = if n > 1 {
+                    SkidPhase::Turned(n - 1)
+                } else {
+                    SkidPhase::None
+                };
                 self.pose = Pose::Walk;
                 return;
             }
@@ -832,10 +865,6 @@ impl Player {
     }
 
     fn air(&mut self, inp: Input) {
-        if self.side_push > 0 {
-            self.side_push -= 1;
-            return;
-        }
         let dir = inp.dir_x();
         if dir == 0 {
             // no direction: accel 0 → momentum preserved
@@ -1066,6 +1095,8 @@ impl Player {
                     self.skid = SkidPhase::None;
                 }
             } else {
+                // leaving the ground ends the Turn state
+                self.skid = SkidPhase::None;
                 self.air(inp);
             }
 
@@ -1085,6 +1116,9 @@ impl Player {
         }
         if self.chain_window > 0 {
             self.chain_window -= 1;
+        }
+        if self.side_push > 0 {
+            self.side_push -= 1;
         }
         if self.chain_lock > 0 {
             self.chain_lock -= 1;
@@ -1923,6 +1957,41 @@ mod tests {
         );
         assert_eq!(p.pose, Pose::Skid);
         assert!((p.vx - (RUN_MAX - SKID_DECEL)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn skid_stops_holds_8_frames_then_turns() {
+        let level = Level::flat(800);
+        let mut p = Player::new(56.0, 32.0);
+        let right = Input {
+            buttons: input::RIGHT | input::RUN,
+        };
+        let left = Input {
+            buttons: input::LEFT | input::RUN,
+        };
+        for _ in 0..200 {
+            p.step(right, &level);
+        }
+        // 3.0 / 0.12 = 25 braking frames, then 9 more frames stopped (the stop is noticed a
+        // frame late, then the 8-frame hold), then the 0.25 re-acceleration
+        let mut speeds = Vec::new();
+        for _ in 0..40 {
+            p.step(left, &level);
+            speeds.push(p.vx);
+        }
+        let first_stop = speeds.iter().position(|v| *v == 0.0).unwrap();
+        let moving_again = speeds.iter().rposition(|v| *v == 0.0).unwrap() + 1;
+        assert_eq!(moving_again - first_stop, 10);
+        assert!((speeds[moving_again] + SKID_REACCEL).abs() < 1e-6);
+        assert_eq!(p.facing, -1);
+        // letting go mid-brake ends the skid: normal deceleration from then on
+        let mut q = Player::new(56.0, 32.0);
+        for _ in 0..200 {
+            q.step(right, &level);
+        }
+        q.step(left, &level);
+        q.step(Input::default(), &level);
+        assert_ne!(q.pose, Pose::Skid);
     }
 
     #[test]
