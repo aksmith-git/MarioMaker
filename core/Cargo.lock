@@ -1289,6 +1289,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mmk-front"
+version = "0.1.0"
+dependencies = [
+ "mmk-modes",
+ "mmk-ui",
+ "serde_json",
+]
+
+[[package]]
 name = "mmk-host"
 version = "0.1.0"
 dependencies = [
@@ -1363,10 +1372,12 @@ dependencies = [
  "cpal",
  "gilrs",
  "js-sys",
+ "libc",
  "mmk-assets",
  "mmk-audio",
  "mmk-editor",
  "mmk-formats",
+ "mmk-front",
  "mmk-host",
  "mmk-import",
  "mmk-modes",
