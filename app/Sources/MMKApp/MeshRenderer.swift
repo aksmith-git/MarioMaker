@@ -243,9 +243,15 @@ final class MeshRenderer {
     }
 }
 
-/// GPU copy of an asset-cache texture (mtex formats are Metal pixel formats).
+/// GPU copy of an asset-cache or UI texture (mtex formats are Metal pixel formats). GPUs without
+/// BC support (iPhones, iPads before M1) get BCn decoded to RGBA8 by the core
+/// (`mmk_texture_decode_rgba`); MMK_CPU_TEXTURES=1 forces that path for testing.
 enum GPUTexture {
+    static let forceCPU = ProcessInfo.processInfo.environment["MMK_CPU_TEXTURES"] == "1"
+
     static func make(_ device: MTLDevice, _ t: MmkTextureInfo) -> MTLTexture? {
+        guard t.width > 0, t.height > 0 else { return nil }
+        if t.format >= 2 && (forceCPU || !device.supportsBCTextureCompression) { return decoded(device, t) }
         let srgb = t.variant == 2
         let (format, blockBytes, blockSize): (MTLPixelFormat, Int, Int) = switch t.format {
         case 1: (srgb ? .rgba8Unorm_srgb : .rgba8Unorm, 4, 1)
@@ -262,14 +268,34 @@ enum GPUTexture {
         let w = Int(t.width), h = Int(t.height)
         let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: w, height: h, mipmapped: false)
         desc.usage = .shaderRead
-        let sel = t.channel_select
-        func swz(_ c: UInt8) -> MTLTextureSwizzle {
-            switch c { case 0: .zero; case 1: .one; case 2: .red; case 3: .green; case 4: .blue; default: .alpha }
-        }
-        desc.swizzle = MTLTextureSwizzleChannels(red: swz(sel.0), green: swz(sel.1), blue: swz(sel.2), alpha: swz(sel.3))
+        desc.swizzle = swizzle(t.channel_select)
         guard let tex = device.makeTexture(descriptor: desc) else { return nil }
         let bytesPerRow = (w + blockSize - 1) / blockSize * blockBytes
         tex.replace(region: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0, withBytes: data, bytesPerRow: bytesPerRow)
         return tex
+    }
+
+    /// BCn decoded on the CPU into an RGBA8 texture (BC4/BC5 decode to linear values).
+    private static func decoded(_ device: MTLDevice, _ t: MmkTextureInfo) -> MTLTexture? {
+        let w = Int(t.width), h = Int(t.height)
+        var px = [UInt8](repeating: 0, count: w * h * 4)
+        var info = t
+        guard mmk_texture_decode_rgba(&info, &px, px.count) else { return nil }
+        let srgb = t.variant == 2 && t.format != 5 && t.format != 6
+        let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: srgb ? .rgba8Unorm_srgb : .rgba8Unorm,
+                                                            width: w, height: h, mipmapped: false)
+        desc.usage = .shaderRead
+        desc.swizzle = swizzle(t.channel_select)
+        guard let tex = device.makeTexture(descriptor: desc) else { return nil }
+        tex.replace(region: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0, withBytes: px, bytesPerRow: w * 4)
+        return tex
+    }
+
+    /// Channel select (0 zero, 1 one, 2 R, 3 G, 4 B, 5 A) → Metal swizzle.
+    static func swizzle(_ sel: (UInt8, UInt8, UInt8, UInt8)) -> MTLTextureSwizzleChannels {
+        func swz(_ c: UInt8) -> MTLTextureSwizzle {
+            switch c { case 0: .zero; case 1: .one; case 2: .red; case 3: .green; case 4: .blue; default: .alpha }
+        }
+        return MTLTextureSwizzleChannels(red: swz(sel.0), green: swz(sel.1), blue: swz(sel.2), alpha: swz(sel.3))
     }
 }

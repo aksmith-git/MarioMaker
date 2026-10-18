@@ -268,8 +268,20 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   checked in headless Edge), `scripts/build-web.sh`, `AssetSource` trait for browser-picked files.
   Open: WebAudio, asset import through the file picker into OPFS/IndexedDB (nothing uploaded),
   Gamepad API check
-- ⬜ iOS/iPadOS: the Swift app on UIKit/SwiftUI + Metal (shared renderer code), touch controls,
-  Files-app import of the owner's dump; installs over Tailscale with the existing tool
+- 🔄 iOS/iPadOS: the same Swift package cross-compiled (`swift build --triple`, core linked from
+  `core/target/aarch64-apple-ios{,-sim}/release`), bundled by `scripts/make-ios-app.sh`
+  (DECISIONS.md "iOS packaging"); `scripts/check.sh --ios` builds it for the Simulator. AppKit
+  bits split behind `#if os(macOS)`; on iOS: UIKit MTKView hosts, touch controls (d-pad, Jump /
+  Run / Spin, + / −; multitouch, sliding between buttons, hidden while a controller is
+  connected), hardware keyboards through `GCKeyboard` with the same bindings, controllers as on
+  macOS, data folder = Documents (shown in Files: the owner copies a cache made on the Mac into
+  `assets/`, or picks one and the app copies it in), Files picker for courses, settings sheet,
+  compact course list on iPhone. GPUs without BC support get BCn decoded by the core
+  (`mmk_texture_decode_rgba`; BC7 decoder moved from `shell` to `formats`). Verified on the
+  Simulator (iPad Pro 11" and iPhone 18 Pro, iOS 27): placeholder art, the real cache (found
+  through the Mac's home), CPU texture path, title screen, library. Open: signing + a run on the
+  owner's iPad (`ios-install-tailscale <app> --device ipad` once signed), tap-to-select in layout
+  menus, iCloud placeholder files in picked folders, the in-app importer on iOS
 - 🔄 Engine-drawn menus everywhere (layout player), so every platform shows the same screens:
   SMM2 title + Play menu and the SMM1 100 Mario screens in the Swift app; not yet in `mmk-play`
 

@@ -1,4 +1,6 @@
+#if os(macOS)
 import AppKit
+#endif
 import GameController
 import SwiftUI
 
@@ -19,11 +21,13 @@ enum SettingsKey {
     static let padBindings = "input.pad"
     /// Bool: the user chose to run without a game dump.
     static let usePlaceholder = "assets.placeholder"
+    /// Bool (default true, iOS): on-screen d-pad and buttons while no controller is connected.
+    static let touchControls = "input.touch"
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
             volumeMaster: 1.0, volumeMusic: 1.0, volumeSfx: 1.0,
-            integerScale: true, fullscreen: false, usePlaceholder: false,
+            integerScale: true, fullscreen: false, usePlaceholder: false, touchControls: true,
         ])
     }
 }
@@ -158,11 +162,26 @@ enum KeyName {
     ]
 
     static func of(_ code: UInt16) -> String { names[code] ?? "Key \(code)" }
+
+    /// macOS key code → USB HID usage (`GCKeyCode` raw value), so iOS hardware keyboards use the
+    /// same stored bindings.
+    static let hid: [UInt16: Int] = [
+        0: 4, 1: 22, 2: 7, 3: 9, 4: 11, 5: 10, 6: 29, 7: 27, 8: 6, 9: 25, 11: 5,              // A S D F H G Z X C V B
+        12: 20, 13: 26, 14: 8, 15: 21, 16: 28, 17: 23,                                      // Q W E R Y T
+        18: 30, 19: 31, 20: 32, 21: 33, 22: 35, 23: 34, 24: 46, 25: 38, 26: 36, 27: 45,     // 1 2 3 4 6 5 = 9 7 -
+        28: 37, 29: 39, 30: 48, 31: 18, 32: 24, 33: 47, 34: 12, 35: 19, 36: 40, 37: 15,     // 8 0 ] O U [ I P Return L
+        38: 13, 39: 52, 40: 14, 41: 51, 42: 49, 43: 54, 44: 56, 45: 17, 46: 16, 47: 55,     // J ' K ; \ , / N M .
+        48: 43, 49: 44, 50: 53, 51: 42, 53: 41,                                             // Tab Space ` Delete Esc
+        54: 231, 55: 227, 56: 225, 57: 57, 58: 226, 59: 224, 60: 229, 61: 230, 62: 228,     // modifiers
+        76: 88, 122: 58, 120: 59, 99: 60, 118: 61, 96: 62, 97: 63, 98: 64, 100: 65,         // Enter F1…F8
+        101: 66, 109: 67, 103: 68, 111: 69, 123: 80, 124: 79, 125: 81, 126: 82,             // F9…F12 ← → ↓ ↑
+    ]
 }
 
-// MARK: - Settings window
+// MARK: - Settings window (macOS) / sheet (iOS)
 
 struct SettingsView: View {
+    #if os(macOS)
     var body: some View {
         TabView {
             KeyboardSettings().tabItem { Label("Keyboard", systemImage: "keyboard") }
@@ -172,8 +191,28 @@ struct SettingsView: View {
         }
         .frame(width: 520, height: 420)
     }
+    #else
+    @Environment(\.dismiss) private var dismiss
+
+    // (hardware keyboards use the default bindings, or ones made on a Mac; no key capture here)
+    var body: some View {
+        NavigationStack {
+            TabView {
+                ControllerSettings().tabItem { Label("Controller", systemImage: "gamecontroller") }
+                DisplaySettings().tabItem { Label("Display", systemImage: "display") }
+                AudioSettings().tabItem { Label("Audio", systemImage: "speaker.wave.2") }
+            }
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+        }
+    }
+    #endif
 }
 
+#if os(macOS)
 private struct KeyboardSettings: View {
     @State private var bindings = KeyBindings.load()
     @State private var capturing: GameAction?
@@ -232,6 +271,8 @@ private struct KeyboardSettings: View {
     }
 }
 
+#endif
+
 private struct ControllerSettings: View {
     @State private var bindings = PadBindings.load()
     @State private var capturing: GameAction?
@@ -242,7 +283,7 @@ private struct ControllerSettings: View {
         Form {
             Section("Connected") {
                 if controllers.isEmpty {
-                    Text("No controller connected. Pair one in System Settings › Bluetooth.")
+                    Text(Self.pairHint)
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(controllers, id: \.self) { Text($0) }
@@ -277,6 +318,12 @@ private struct ControllerSettings: View {
         .onReceive(NotificationCenter.default.publisher(for: .GCControllerDidDisconnect)) { _ in refresh() }
         .onDisappear { timer?.invalidate(); timer = nil; capturing = nil }
     }
+
+    #if os(macOS)
+    private static let pairHint = "No controller connected. Pair one in System Settings › Bluetooth."
+    #else
+    private static let pairHint = "No controller connected. Pair one in Settings › Bluetooth; until then the on-screen controls are shown."
+    #endif
 
     private func refresh() {
         controllers = GCController.controllers().map { $0.vendorName ?? "Controller" }
@@ -323,12 +370,19 @@ private struct KeyChip: View {
 private struct DisplaySettings: View {
     @AppStorage(SettingsKey.fullscreen) private var fullscreen = false
     @AppStorage(SettingsKey.integerScale) private var integerScale = true
+    @AppStorage(SettingsKey.touchControls) private var touchControls = true
 
     var body: some View {
         Form {
+            #if os(macOS)
             Toggle("Full screen", isOn: $fullscreen)
+            #endif
             Toggle("Integer scaling (sharp pixels, letterboxed)", isOn: $integerScale)
+            #if os(macOS)
             Text("Full screen can also be toggled with ⌃⌘F.").font(.footnote).foregroundStyle(.secondary)
+            #else
+            Toggle("On-screen controls (hidden while a controller is connected)", isOn: $touchControls)
+            #endif
         }
         .formStyle(.grouped)
     }

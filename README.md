@@ -72,6 +72,7 @@ scripts/run-app.sh         # or: build and run without bundling
 | `input.keys` | JSON `{action: [key code]}` | arrows/WASD, Z/Space jump, X/Shift run, Esc/P pause, −/Tab skip (100 Mario) | input |
 | `input.pad` | JSON `{action: [button]}` | A/B jump, X/Y run, Menu pause, Options (−) skip | input |
 | `assets.placeholder` | Bool | false | user chose to run without a dump |
+| `input.touch` | Bool | true | iOS: on-screen controls (hidden while a controller is connected) |
 
 Read them with `UserDefaults.standard.double(forKey: "volume.music")` etc.; defaults are
 registered at launch (`SettingsKey.registerDefaults`).
@@ -88,6 +89,39 @@ registered at launch (`SettingsKey.registerDefaults`).
 | `MMK_UI_SCREENSHOT=<png>` [`MMK_UI_SCREENSHOT_DELAY=<s>`] [`MMK_UI_SCREEN=import\|settings`] | capture the window (UI included) and quit; with `MMK_COURSE`, `MMK_UI_PAUSE_TICKS=<n>` pauses after n ticks and `MMK_UI_SCRIPTED=1` uses the scripted run. More screens: `challenge`, `challenge-intro`/`-map`, `-walk`, `-pause`, `-clear`, `-skip`, `-card`, `-gameover`, `-ending` (`DebugCapture.swift`); `MMK_UI_TICKS=<n>` holds SMM1 layout screens at tick n; `MMK_UI_DIFFICULTY=<0-3>`, `MMK_UI_CLEARED=<n>` |
 | `MMK_UI_CACHE=<dir>` | SMM1 UI import to use; `MMK_UI_SMM1=off` = stand-in 100 Mario screens |
 | `MMK_DEBUG_MISSING_ART=1` | draw boxes for sprites whose art isn't in the cache |
+| `MMK_CPU_TEXTURES=1` | decode BC textures on the CPU, as on GPUs without BC support |
+| `MMK_TOUCH=on`, `MMK_TOUCH_HOLD=right,jump,…` | iOS: show the touch controls even with a controller connected; hold controls from launch |
+| `MMK_ORIENTATION=landscape\|portrait` | iOS: rotate at launch (Simulator captures) |
+
+## The iOS / iPadOS app
+
+The same Swift package and Rust core, built for iOS 17+ (DECISIONS.md, "iOS packaging"). Needs
+the Rust targets `aarch64-apple-ios` and `aarch64-apple-ios-sim` (the script adds them with
+rustup).
+
+```sh
+scripts/make-ios-app.sh                 # Simulator build → build/ios-sim/MMK.app (ad-hoc signed)
+xcrun simctl boot "iPad Pro 11-inch (M5)" && xcrun simctl install booted build/ios-sim/MMK.app
+xcrun simctl launch booted dev.mmk.engine
+SIMCTL_CHILD_MMK_COURSE=/path/course.zlib xcrun simctl launch booted dev.mmk.engine   # env vars: SIMCTL_CHILD_ prefix
+xcrun simctl io booted screenshot shot.png
+
+MMK_IOS_SIGN_IDENTITY="Apple Development: …" MMK_IOS_PROFILE=MMK.mobileprovision \
+  scripts/make-ios-app.sh --device      # device build → build/ios-device/MMK.app
+```
+
+- **Game data:** the importer runs on the Mac. Copy the cache folder it made (`smm2-3.0.3`, and
+  `smm1-…` / `smm2-ui-…` for the menus) with the Files app into **On My iPad › MMK › assets**, or
+  choose it on the set-up screen from anywhere Files reaches and the app copies it in. Without
+  one, **Use placeholder art**. The Simulator also finds the Mac's `~/smm-work/cache`.
+- **Courses:** **+** in the library (Files picker: course files or a folder), or copy them into
+  **On My iPad › MMK › courses**.
+- **Controls:** on-screen d-pad, Jump / Run / Spin, **+** pause (back in menus), **−** held to
+  skip a 100 Mario course; any GameController pad (they hide the touch controls); hardware
+  keyboards with the default (or Mac-made) key bindings. Settings: **More › Settings…**.
+- **Installing on the owner's iPad/iPhone over Tailscale**, once signed:
+  `ios-install-tailscale build/ios-device/MMK.app --device ipad` (the owner's tool; it installs,
+  it doesn't sign).
 
 ## Portable shell (`mmk-play`: Windows, Linux, web, macOS)
 

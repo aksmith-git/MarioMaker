@@ -2,6 +2,33 @@
 
 Newest first. Each entry: what was decided, why, and what would change it.
 
+## 2026-10-18 — iOS packaging: one Swift package, cross-compiled, bundled by a script
+The iOS / iPadOS app is the macOS Swift package built for iOS, not a second project.
+- **Build:** `swift build -c release --triple arm64-apple-ios17.0[-simulator] --sdk <sdk>`. The
+  Rust core is a plain static library per target (`cargo build -p mmk-ffi --target
+  aarch64-apple-ios` / `aarch64-apple-ios-sim`), passed with `-Xlinker -L <dir>`. SwiftPM
+  conditions can't tell the simulator from a device, so `Package.swift` keeps its link path
+  for macOS only. `scripts/make-ios-app.sh [--device]` builds both halves and writes the
+  `.app` (Info.plist, icon, ad-hoc signature for the Simulator) like `make-app.sh` does on
+  macOS. `scripts/check.sh --ios` runs it for the Simulator.
+- **Rejected:** an XCFramework + `.binaryTarget` (it would change the macOS build and needs the
+  framework rebuilt before every `swift build`); an `.xcodeproj` (hand-kept project files,
+  nothing to generate them without new tools); the `AppleProductTypes` `.iOSApplication`
+  product (Xcode / Playgrounds only, breaks `swift build`).
+- **Signing is the owner's:** device builds are signed only when `MMK_IOS_SIGN_IDENTITY` and
+  `MMK_IOS_PROFILE` are set (the profile's entitlements are applied), otherwise left unsigned.
+- **Data on iOS:** the app's Documents folder holds what Application Support/MMK holds on
+  macOS, and the Files app shows it. The importer stays on the Mac; the owner copies the cache
+  folder in, or picks it anywhere and the app copies it (copying is simpler and safer than
+  keeping security-scoped bookmarks to files the core reads lazily). In the Simulator the
+  development caches are found through the Mac's home (`SIMULATOR_HOST_HOME`).
+- **BC textures:** iPhones and iPads before M1 can't sample BCn. There the core decodes to
+  RGBA8 (`mmk_texture_decode_rgba`, shared with the portable shell, whose BC7 decoder moved to
+  `formats`).
+
+What would change it: needing App Store distribution or extensions (then an Xcode project), or
+SwiftPM gaining a simulator/device condition (then the link path moves back into the manifest).
+
 ## 2026-10-18 — 3D styles: meshes in the cache, sim sprites become mesh draws
 NSMBU (WU) and 3D World (3W) are drawn from their BFRES meshes. What the data showed first:
 - **NSMBU** enemies, items and objects are pre-rendered frames on a quad (`walk_Alb.000` …,

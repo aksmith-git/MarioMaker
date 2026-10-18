@@ -1,4 +1,6 @@
+#if os(macOS)
 import AppKit
+#endif
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -158,6 +160,9 @@ final class CourseLibrary: ObservableObject {
             var added = 0, dupes = 0, skipped = 0
             var seen = known
             let fm = FileManager.default
+            // files picked on iOS (Files app) are readable only inside a security scope
+            let scoped = urls.filter { $0.startAccessingSecurityScopedResource() }
+            defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
             try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
             for src in urls {
                 var isDir: ObjCBool = false
@@ -214,6 +219,12 @@ struct LibraryView: View {
     @State private var filter: Filter = .all
     @State private var selection: CourseEntry.ID?
     @State private var sortOrder = [KeyPathComparator(\Row.name, comparator: .localizedStandard)]
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    /// The Files picker for "Add courses" is up, and what it picks (files or a folder).
+    @State private var picking = false
+    @State private var pickTypes: [UTType] = [.item]
+    #endif
 
     /// Flattened row for the table (sortable columns).
     struct Row: Identifiable {
@@ -255,14 +266,26 @@ struct LibraryView: View {
             if library.entries.isEmpty && !library.scanning {
                 emptyState
             } else {
+                #if os(iOS)
+                if sizeClass == .compact { compactList } else { table }
+                #else
                 table
+                #endif
                 Divider()
                 detail
             }
         }
         .navigationTitle(AppIdentity.name)
+        #if os(macOS)
         .navigationSubtitle(subtitle)
         .searchable(text: $search, placement: .toolbar, prompt: "Search courses")
+        #else
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $search, prompt: "Search courses")
+        .fileImporter(isPresented: $picking, allowedContentTypes: pickTypes, allowsMultipleSelection: true) { result in
+            if case .success(let urls) = result { library.add(urls, assets: model.assets) }
+        }
+        #endif
         .toolbar {
             ToolbarItemGroup {
                 Menu {
@@ -275,8 +298,15 @@ struct LibraryView: View {
                                                                      : "line.3.horizontal.decrease.circle.fill")
                 }
                 .help("Show: \(filter.rawValue)")
+                #if os(macOS)
                 Button { addCourses() } label: { Label("Add courses…", systemImage: "plus") }
                     .help("Copy course files or folders into the library")
+                #else
+                Menu {
+                    Button("Course files…") { addCourses() }
+                    Button("A folder of courses…") { pickTypes = [.folder]; picking = true }
+                } label: { Label("Add courses…", systemImage: "plus") }
+                #endif
                 Button { model.playDemo() } label: { Label("Demo", systemImage: "gamecontroller") }
                     .help("Play the built-in test strip")
                 Button { model.showChallenge() } label: { Label("100 Mario Challenge", systemImage: "flag.checkered") }
@@ -288,9 +318,15 @@ struct LibraryView: View {
                 }
                 Menu {
                     Button("Rescan library") { library.scan(assets: model.assets) }
+                    #if os(macOS)
                     Button("Show library folder in Finder") { NSWorkspace.shared.open(library.folder) }
                     Divider()
                     Button("Import game data…") { model.showImporter() }
+                    #else
+                    Divider()
+                    Button("Game data…") { model.showImporter() }
+                    Button("Settings…") { model.showSettings = true }
+                    #endif
                 } label: { Label("More", systemImage: "ellipsis.circle") }
             }
         }
@@ -357,12 +393,35 @@ struct LibraryView: View {
             if let e = entry(ids.first) {
                 Button("Play") { model.play(e) }.disabled(!e.info.playable)
                 if !e.info.playable { Button("Play anyway (unsupported)") { model.play(e) } }
+                #if os(macOS)
                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([e.url]) }
+                #endif
             }
         } primaryAction: { ids in
             if let e = entry(ids.first), e.info.playable { model.play(e) }
         }
     }
+
+    #if os(iOS)
+    /// iPhone (compact width): one row per course; tap selects, the detail bar below plays.
+    private var compactList: some View {
+        List(rows, selection: $selection) { r in
+            HStack(spacing: 10) {
+                Image(systemName: r.record.cleared ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(r.record.cleared ? Color.green : Color.secondary.opacity(0.4))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(r.name).fontWeight(.medium).lineLimit(1)
+                    Text("\(r.style) · \(r.theme)" + (r.record.bestTimeText.map { " · best \($0)" } ?? ""))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                StatusBadge(info: r.entry.info)
+            }
+        }
+        .listStyle(.plain)
+        .environment(\.editMode, .constant(.inactive))
+    }
+    #endif
 
     private func entry(_ id: CourseEntry.ID?) -> CourseEntry? {
         library.entries.first { $0.id == id }
@@ -389,14 +448,23 @@ struct LibraryView: View {
             .padding(14)
         } else {
             HStack {
-                Text(library.unreadable.isEmpty ? "Select a course. Double-click to play."
+                Text(library.unreadable.isEmpty ? "Select a course. \(Self.playHint)"
                      : "Select a course. \(library.unreadable.count) file(s) couldn't be read: \(library.unreadable.first!.1)")
                     .foregroundStyle(.secondary).lineLimit(2)
                 Spacer()
+                #if os(iOS)
+                Text(subtitle).font(.caption).foregroundStyle(.secondary)   // (no window subtitle on iOS)
+                #endif
             }
             .padding(14)
         }
     }
+
+    #if os(macOS)
+    private static let playHint = "Double-click to play."
+    #else
+    private static let playHint = "Tap Play below."
+    #endif
 
     private func detailLine(_ e: CourseEntry, _ r: CourseRecord) -> String {
         var parts = ["Style \(e.info.style)", e.info.themeName, "\(e.info.objectCount) objects"]
@@ -427,6 +495,7 @@ struct LibraryView: View {
     }
 
     private func addCourses() {
+        #if os(macOS)
         let panel = NSOpenPanel()
         panel.title = "Add courses"
         panel.prompt = "Add"
@@ -435,6 +504,11 @@ struct LibraryView: View {
         panel.canChooseFiles = true
         guard panel.runModal() == .OK else { return }
         library.add(panel.urls, assets: model.assets)
+        #else
+        // the Files picker takes files or a folder, not both at once
+        pickTypes = [.item]
+        picking = true
+        #endif
     }
 }
 

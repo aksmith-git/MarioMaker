@@ -1,8 +1,10 @@
+#if os(macOS)
 import AppKit
 import SwiftUI
 
 /// First launch (no asset cache found), or "Import game data…" from the library: point the app at
 /// the user's own extracted game files and run the importer, or continue with placeholder art.
+/// (iOS has its own screen, CacheSetup.swift: the importer runs on the Mac.)
 struct ImportView: View {
     @EnvironmentObject private var model: AppModel
 
@@ -160,3 +162,4 @@ private struct FolderRow: View {
         if panel.runModal() == .OK { url = panel.url }
     }
 }
+#endif

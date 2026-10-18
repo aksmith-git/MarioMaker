@@ -222,27 +222,29 @@ protocol UIScene: AnyObject {
 }
 
 /// Hosts a `UIScene` full screen (16:9, letterboxed), with keyboard and controller input.
-struct UIScreenView: NSViewRepresentable {
+struct UIScreenView: MetalViewRepresentable {
     let scene: UIScene
     /// The imported UI the scene's layouts come from (SMM1 by default).
     var ui: LayoutUI? = LayoutUI.smm1
 
     func makeCoordinator() -> UIScreenRenderer { UIScreenRenderer(scene: scene, ui: ui) }
 
-    func makeNSView(context: Context) -> MTKView {
+    func makeView(context: Context) -> MTKView {
         let view = GameMTKView()
         view.device = ui?.device ?? MTLCreateSystemDefaultDevice()
         view.colorPixelFormat = .bgra8Unorm_srgb
         view.preferredFramesPerSecond = 60
         view.framebufferOnly = !DebugCapture.requested
         view.delegate = context.coordinator
+        #if os(macOS)
         let input = context.coordinator.input
         view.onWindow = { w in input.window = w }
+        #endif
         if DebugCapture.requested { DebugCapture.gameView = view }
         return view
     }
 
-    func updateNSView(_ nsView: MTKView, context: Context) { context.coordinator.scene = scene }
+    func updateView(_ view: MTKView, context: Context) { context.coordinator.scene = scene }
 }
 
 @MainActor

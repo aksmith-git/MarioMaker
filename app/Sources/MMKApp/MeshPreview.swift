@@ -23,10 +23,10 @@ enum MeshPreview {
     static var requested: Bool { env["MMK_MESH_PREVIEW"] != nil }
 }
 
-struct MeshPreviewView: NSViewRepresentable {
+struct MeshPreviewView: MetalViewRepresentable {
     func makeCoordinator() -> MeshPreviewRenderer { MeshPreviewRenderer() }
 
-    func makeNSView(context: Context) -> MTKView {
+    func makeView(context: Context) -> MTKView {
         let view = MTKView()
         view.device = context.coordinator.device
         view.colorPixelFormat = .bgra8Unorm_srgb
@@ -42,7 +42,7 @@ struct MeshPreviewView: NSViewRepresentable {
         return view
     }
 
-    func updateNSView(_ nsView: MTKView, context: Context) {}
+    func updateView(_ view: MTKView, context: Context) {}
 }
 
 @MainActor
