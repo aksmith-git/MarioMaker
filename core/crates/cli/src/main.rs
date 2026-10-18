@@ -148,6 +148,9 @@ enum Cmd {
         /// Start form: small, super, fire, raccoon, cape, propeller, cat, builder, superball.
         #[arg(long)]
         form: Option<String>,
+        /// Start speed (px/frame, signed).
+        #[arg(long, allow_hyphen_values = true)]
+        vx: Option<f32>,
     },
     /// Write the physics test courses (`<style>_<kind>.course`) used with `mmk trace`; with
     /// --title and --table, also the selected one as replacement title courses (encrypted .szs).
@@ -765,6 +768,7 @@ fn main() -> ExitCode {
             start,
             facing,
             form,
+            vx,
         } => {
             let table = read_key_table(keys);
             let Some(data) = load(&course)
@@ -797,7 +801,12 @@ fn main() -> ExitCode {
                 Some(Err(e)) => return fail("form", e),
                 None => None,
             };
-            let start = trace::Start { pos, facing, form };
+            let start = trace::Start {
+                pos,
+                facing,
+                form,
+                vx,
+            };
             match trace::run(&data, &script, &start)
                 .and_then(|csv| std::fs::write(&out, csv).map_err(|e| e.to_string()))
             {

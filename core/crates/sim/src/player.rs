@@ -470,6 +470,11 @@ pub struct Player {
     /// This frame's ground move keeps the old facing (bands and no skid): the state change
     /// that led here ran before the facing check [obs: Ryujinx trace, a long jump landing].
     keep_facing: bool,
+    /// The slope state of the collision before the last one, and frames of the weightless
+    /// hop a slide makes over a slope's top (8, gravity 0) [obs: Ryujinx trace].
+    slope_prev: Option<(usize, i32)>,
+    slide_float: u8,
+    slide_hop: bool,
     /// 3D World long jump (BroadJump, state 14: begin 0x71009d3020, exec 0x71009d3330) and the
     /// frames left of its landing (BroadJumpLand, 0x71009d3470), which stops the player dead.
     broad: bool,
@@ -578,6 +583,9 @@ impl Player {
             cje: 0,
             jump_retry: 0,
             keep_facing: false,
+            slope_prev: None,
+            slide_float: 0,
+            slide_hop: false,
             broad: false,
             broad_land: 0,
         }
@@ -1191,12 +1199,18 @@ impl Player {
             let on_slope = level
                 .slope_at(self.x)
                 .is_some_and(|(sy, _)| (self.y - sy).abs() < 6.0);
-            if on_slope && inp.held(input::DOWN) && self.held.is_none() {
+            // SMB3 slips at once; the other styles crouch for a frame first [obs: Ryujinx
+            // traces, states 5 → 21]
+            let ready = self.style == Style::M3 || self.duck || self.crouch;
+            if on_slope && inp.held(input::DOWN) && self.held.is_none() && ready {
                 self.sliding = true;
                 self.crouch = false;
             }
         }
-        if self.sliding && (!self.on_ground || self.in_water) && self.vy > 0.0 {
+        if self.on_ground {
+            self.slide_hop = false;
+        }
+        if self.sliding && (!self.on_ground || self.in_water) && self.vy > 0.0 && !self.slide_hop {
             self.sliding = false;
         }
 
@@ -1267,7 +1281,30 @@ impl Player {
                 // routine) moves the player on the take-off frame [obs: Ryujinx trace]
                 let walking = !(self.sliding || self.cape == CapeState::Slide || self.landed);
                 let before = (self.vx, self.facing);
-                if self.sliding {
+                let crest = match self.slope_prev {
+                    Some((steep, rises)) if self.slope.is_none() => {
+                        (self.vx * rises as f32 > 0.0).then_some(steep)
+                    }
+                    _ => None,
+                };
+                if let (true, Some(steep)) = (self.sliding, crest) {
+                    // sliding up over a slope's top: the speed along the slope splits into x
+                    // and y and the slide goes on through a weightless 8-frame hop
+                    // [obs: Ryujinx trace, SMB3 / SMW / NSMBU]
+                    let (c, s) = if steep >= 3 {
+                        (
+                            std::f32::consts::FRAC_1_SQRT_2,
+                            std::f32::consts::FRAC_1_SQRT_2,
+                        )
+                    } else {
+                        (0.894_400_9, 0.447_200_7)
+                    };
+                    self.vy = self.vx.abs() * s;
+                    self.vx *= c;
+                    self.on_ground = false;
+                    self.slide_float = 8;
+                    self.slide_hop = true;
+                } else if self.sliding {
                     self.slide(level);
                 } else if self.cape == CapeState::Slide {
                     self.cape_slide(level);
@@ -1395,6 +1432,9 @@ impl Player {
             // gravity (§3.2): ground uses the fixed −0.34; airborne picks a band each frame
             let g = if self.on_ground {
                 GRAVITY_GROUND
+            } else if self.slide_float > 0 {
+                self.slide_float -= 1;
+                0.0
             } else if self.broad {
                 BROAD_GRAVITY
             } else if jump || spin {
@@ -2237,6 +2277,7 @@ impl Player {
 
     /// Axis-separated movement against the tile grid using the spec's sensor points.
     fn move_and_collide(&mut self, level: &Level, s: &Sensors) {
+        self.slope_prev = self.slope;
         // horizontal: on a slope, ground speed is along the surface (x scaled by |cos θ|, §1.3)
         let cos = match self.slope {
             Some((steep, _)) if self.on_ground => {
@@ -3065,5 +3106,126 @@ mod tests {
             &level,
         );
         assert_eq!(p.jump_count, 0);
+    }
+
+    // ---- behaviour pinned by Ryujinx frame traces (`mmk trace`) ----
+
+    fn held(b: u32) -> Input {
+        Input { buttons: b }
+    }
+
+    #[test]
+    fn landing_frame_keeps_the_air_speed() {
+        let level = Level::flat(200);
+        let mut p = Player::new(56.0, 32.0);
+        for _ in 0..60 {
+            p.step(held(input::RIGHT | input::RUN), &level);
+        }
+        p.step(held(input::RIGHT | input::RUN | input::JUMP), &level);
+        while !p.on_ground {
+            p.step(held(0), &level);
+        }
+        let v = p.vx;
+        p.step(held(0), &level); // the airborne state's last frame: no friction yet
+        assert_eq!(p.vx, v);
+        p.step(held(0), &level);
+        assert!(p.vx < v);
+    }
+
+    #[test]
+    fn landing_slowly_without_a_direction_stops_dead() {
+        let level = Level::flat(200);
+        let mut p = Player::new(56.0, 32.0);
+        for _ in 0..3 {
+            p.step(held(input::RIGHT), &level);
+        }
+        assert!((p.vx - 0.3).abs() < 1e-6);
+        p.step(held(input::JUMP), &level);
+        while !p.on_ground {
+            p.step(held(0), &level);
+        }
+        p.step(held(0), &level);
+        assert_eq!(p.vx, 0.0);
+    }
+
+    #[test]
+    fn a_press_just_before_landing_jumps_three_frames_later() {
+        let level = Level::flat(200);
+        let tap_and_fall = |extra: Option<usize>| {
+            let mut p = Player::new(56.0, 32.0);
+            p.step(held(input::JUMP), &level);
+            let mut grounded = Vec::new();
+            for i in 0..60 {
+                let b = if Some(i) == extra { input::JUMP } else { 0 };
+                p.step(held(b), &level);
+                grounded.push(p.on_ground);
+            }
+            grounded
+        };
+        let base = tap_and_fall(None);
+        let t = base.iter().position(|&g| g).unwrap(); // touchdown
+        let g = tap_and_fall(Some(t - 1));
+        assert!(
+            g[t] && g[t + 1],
+            "no jump on the touchdown or the next frame"
+        );
+        assert!(!g[t + 2], "the retried press jumps 3 frames after it");
+    }
+
+    #[test]
+    fn slopes_have_flat_end_columns() {
+        let gentle = Slope {
+            left: 0,
+            bottom: 0,
+            width: 8,
+            height: 4,
+            rising: true,
+            steep: false,
+        };
+        assert_eq!(gentle.surface(8.0), 16.0);
+        assert_eq!(gentle.surface(24.0), 20.0);
+        assert_eq!(gentle.surface(120.0), 64.0);
+        assert!(!gentle.on_diagonal(8.0) && gentle.on_diagonal(24.0));
+        let steep = Slope {
+            left: 0,
+            bottom: 0,
+            width: 5,
+            height: 4,
+            rising: false,
+            steep: true,
+        };
+        assert_eq!(steep.surface(8.0), 64.0);
+        assert_eq!(steep.surface(40.0), 40.0);
+        assert_eq!(steep.surface(72.0), 16.0);
+    }
+
+    #[test]
+    fn small_mario_ducks_with_crouch_friction() {
+        let level = Level::flat(200);
+        let mut p = Player::new(56.0, 32.0);
+        for _ in 0..80 {
+            p.step(held(input::RIGHT | input::RUN), &level);
+        }
+        let v = p.vx;
+        p.step(held(input::DOWN), &level);
+        assert!(
+            (v - p.vx - 0.05).abs() < 1e-6,
+            "crouch band 4: {}",
+            v - p.vx
+        );
+    }
+
+    #[test]
+    fn w3_dash_starts_75_frames_after_moving() {
+        let level = Level::flat(400);
+        let mut p = Player::new(56.0, 32.0);
+        p.style = Style::W3;
+        // the first frame doesn't count (the speed before it is 0)
+        for _ in 0..76 {
+            p.step(held(input::RIGHT | input::RUN), &level);
+        }
+        assert!(p.dashing() && p.vx <= 2.25 + 1e-6);
+        p.step(held(input::RIGHT | input::RUN), &level);
+        assert!(p.vx > 2.25);
     }
 }

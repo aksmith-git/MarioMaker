@@ -72,6 +72,8 @@ pub struct Start {
     pub pos: Option<(f32, f32)>,
     pub facing: Option<i32>,
     pub form: Option<Form>,
+    /// Start speed (px/frame, signed), e.g. when the recorded run starts in motion.
+    pub vx: Option<f32>,
 }
 
 /// Run the script; one CSV row per frame (the state after that frame's step).
@@ -87,6 +89,9 @@ pub fn run(course: &[u8], script: &[Input], start: &Start) -> Result<String, Str
     }
     if let Some(f) = start.form {
         w.player.form = f;
+    }
+    if let Some(v) = start.vx {
+        w.player.vx = v;
     }
     w.reset_camera();
     let mut csv = String::from("frame,x,y,vx,vy,facing,ground,pose,form,input\n");
@@ -333,6 +338,7 @@ mod tests {
                     pos: None,
                     facing: None,
                     form: None,
+                    vx: None,
                 },
             )
             .unwrap();
@@ -351,6 +357,7 @@ mod tests {
                 pos: None,
                 facing: None,
                 form: None,
+                vx: None,
             },
         )
         .unwrap();
