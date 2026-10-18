@@ -1222,11 +1222,11 @@ impl Ctx<'_> {
     )> {
         let m = self.res.layout.materials.get(mat as usize)?;
         let ms = self.mats.get(mat as usize)?;
-        let (mut black, mut white) = self
-            .frame_colors
-            .get()
-            .unwrap_or((ms.black.map(to_u8), ms.white.map(to_u8)));
-        if m.texture_only {
+        let shared = self.frame_colors.get();
+        let (mut black, mut white) = shared.unwrap_or((ms.black.map(to_u8), ms.white.map(to_u8)));
+        // a window's "one material for all frames" wins over the frames' own texture-only
+        // materials (the Endless menu's map frame: dark red corners on texture-only frames) [inf]
+        if m.texture_only && shared.is_none() {
             black = [0; 4];
             white = [255; 4];
         }

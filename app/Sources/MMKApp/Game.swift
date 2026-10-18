@@ -53,6 +53,8 @@ final class GameSession: ObservableObject, Identifiable {
 
     /// Called when the player leaves the session (exit, after a clear or game over).
     var onExit: (() -> Void)?
+    /// Called when the course is cleared (Course World reports the clear to the server).
+    var onClear: (() -> Void)?
     /// The 100 Mario run this course belongs to: it owns lives, and decides what a death means.
     weak var run: ChallengeFlow?
     /// SMM1 layouts over the game for a run (pause, clear, skip countdown, intro card after a
@@ -189,6 +191,23 @@ final class GameSession: ObservableObject, Identifiable {
         }
         guard smm2Pending == nil else { return }
         switch phase {
+        case .playing:
+            // 100 Mario: hold the skip key through the countdown to skip the course
+            guard let run, run.canSkip else { break }
+            let held = debugSkipHeld || (scriptedInput == nil && input.skipHeld)
+            if held {
+                if !s.skipping { s.skipBegin() }
+                if s.skipping && s.tick - s.skipStart >= CourseScreens.skipHold {
+                    let n = s.skipPass()
+                    setPhase(.skipping)
+                    smm2Pending = (s.tick + n, { [weak self] in
+                        self?.run?.skipped()
+                        self?.exit()
+                    })
+                }
+            } else if s.skipping {
+                s.skipCancel()
+            }
         case .intro:
             // the card runs its length; confirm skips it once it has been up half a second
             if s.sinceMode >= s.introLength || (s.sinceMode > 30 && pressed.contains(.confirm)) {
@@ -218,7 +237,8 @@ final class GameSession: ObservableObject, Identifiable {
             if pressed.contains(.back) {
                 resume()
             } else if pressed.contains(.confirm) {
-                let item: PauseItem = [.resume, .restart, .exit][s.pauseSelection]
+                // a run's exit is Save & Quit
+                let item: PauseItem = [.resume, .restart, run == nil ? .exit : .saveQuit][s.pauseSelection]
                 let wait = s.pauseDecide()
                 smm2Pending = (s.tick + max(1, wait), { [weak self] in self?.choose(item) })
             }
@@ -227,10 +247,19 @@ final class GameSession: ObservableObject, Identifiable {
             if pressed.contains(.left) { s.clearSelect(0) }
             if pressed.contains(.right) { s.clearSelect(1) }
             if pressed.contains(.confirm) {
-                let again = s.clearSelection == 0
+                let left = s.clearSelection == 0
                 let wait = s.clearDecide()
                 smm2Pending = (s.tick + max(1, wait), { [weak self] in
-                    if again { self?.restart() } else { self?.exit() }
+                    guard let self else { return }
+                    if let run = self.run {
+                        // Quit (the clear is saved) / Next
+                        if left { run.saveAndQuitAfterClear() }
+                        self.exit()
+                    } else if left {
+                        self.restart()
+                    } else {
+                        self.exit()
+                    }
                 })
             }
         case .retire:
@@ -400,6 +429,21 @@ final class GameSession: ObservableObject, Identifiable {
                 s.irisIn(at: CourseScreens.layoutPoint(viewX: st.player_x, viewY: st.player_y + 12))
                 return
             }
+            if wasDying && !dying, let run {
+                // a run's death: the run decides (a life spent → the card again; none → game over)
+                timeUpShown = false
+                wasDying = dying
+                if run.died() {
+                    newAttempt()
+                    s.update(smm2Snapshot())
+                    s.showIntro(lives: Int(hud.lives))
+                    setPhase(.intro)
+                } else {
+                    s.showGameOver()
+                    setPhase(.gameOver)
+                }
+                return
+            }
             if wasDying && !dying {
                 // the engine restarted the course after the death sequence
                 timeUpShown = false
@@ -419,8 +463,10 @@ final class GameSession: ObservableObject, Identifiable {
                 let ticks = goalTicks ?? attemptTicks
                 clearTicks = ticks
                 if let courseKey { newBest = saves?.addClear(courseKey, ticks: ticks) ?? false }
+                run?.cleared(score: h.score, coins: h.coins)
+                onClear?()
                 setPhase(.cleared)
-                s.showClear(ticks: ticks)
+                s.showClear(ticks: ticks, run: run != nil)
             }
             return
         }
@@ -509,10 +555,21 @@ final class GameSession: ObservableObject, Identifiable {
     func debugClear() {
         clearTicks = 2345
         setPhase(.cleared)
+        if let s = smm2 {
+            s.showClear(ticks: 2345, run: run != nil)
+            return
+        }
         showClearOverlay()
     }
 
-    func debugCard() { showRetryCard() }
+    func debugCard() {
+        if let s = smm2 {
+            s.showIntro(lives: Int(hud.lives))
+            setPhase(.intro)
+            return
+        }
+        showRetryCard()
+    }
 
     /// Debug captures of the SMM2 screens without playing there.
     func debugSMM2(_ screen: String) {
@@ -579,6 +636,10 @@ final class GameSession: ObservableObject, Identifiable {
         // in a run, starting over counts as a death
         overlay?.clearAll()
         if let run, !run.died() {
+            if let s = smm2 {
+                s.clearAll()
+                s.showGameOver()
+            }
             setPhase(.gameOver)
             return
         }
@@ -638,7 +699,7 @@ struct GameView: View {
             case .cleared: ResultCard(title: "Course clear!", detail: clearDetail, action: session.run == nil ? "Back to library" : "Next", session: session)
             case .gameOver: ResultCard(title: "Game over", detail: "Out of lives.", action: session.run == nil ? "Back to library" : "Continue", session: session)
             }
-            if let run = session.run, session.phase == .playing, session.overlay == nil { RunBanner(run: run) }
+            if let run = session.run, session.phase == .playing, session.overlay == nil, session.smm2 == nil { RunBanner(run: run) }
         }
     }
 

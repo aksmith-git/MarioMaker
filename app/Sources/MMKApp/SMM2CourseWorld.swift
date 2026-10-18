@@ -497,11 +497,12 @@ final class CourseWorldFlow: ObservableObject, Identifiable {
     /// Endless Challenge (the app shows the Endless menu and comes back here).
     var onEndless: (() -> Void)?
 
-    init?(ui: LayoutUI, assets: EngineAssets, library: [CourseEntry], saves: SaveStore) {
+    init?(ui: LayoutUI, assets: EngineAssets, library: [CourseEntry], saves: SaveStore, selection: Int = 0) {
         self.ui = ui
         self.assets = assets
         self.library = library
         self.saves = saves
+        hubSelection = selection
         guard showHub() else { return nil }
     }
 
@@ -579,7 +580,7 @@ final class CourseWorldFlow: ObservableObject, Identifiable {
                 showList()
                 return
             }
-            _ = mmk_online_report(server, code, "play")
+            DispatchQueue.global(qos: .utility).async { _ = mmk_online_report(server, code, "play") }
         }
         guard let data = try? Data(contentsOf: url),
               case .success(let info) = CourseInfo.read(data, assets: assets),
@@ -597,6 +598,10 @@ final class CourseWorldFlow: ObservableObject, Identifiable {
             card.bestTicks = saves.record(info.key).bestTicks
             card.modeLabel = "T_Mode_Network"
             s.attachSMM2(screens, info: card, intro: true)
+        }
+        if case .server(let code) = c.source {
+            let server = UserDefaults.standard.string(forKey: SettingsKey.courseServer) ?? ""
+            s.onClear = { DispatchQueue.global(qos: .utility).async { _ = mmk_online_report(server, code, "clear") } }
         }
         s.onExit = { [weak self] in SceneFade.shared.run(.black) { self?.showList() } }
         scene = nil

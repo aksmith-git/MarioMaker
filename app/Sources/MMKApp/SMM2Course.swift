@@ -151,6 +151,8 @@ struct CourseCardInfo {
     var lives = false
     /// `Cmn_PauseMenu_00` mode label (`T_Mode_*`); nil: Story Mode / Course World by `builtIn`.
     var modeLabel: String?
+    /// The mode line's own text instead of a label (the 100 Mario Challenge's "n/total").
+    var modeText: String?
 }
 
 /// The SMM2 layouts over a library course. Hosts step it at 60 Hz (`step`) and feed it the
@@ -202,6 +204,11 @@ final class CourseScreens: UIScene {
     }()
     private var irisUntil = 0
     private var irisClosed = false
+    /// The skip countdown (`Play_SlidePassIconKey_00`) and its "Skip!" (`Play_SlidePassIcon_00`).
+    private lazy var skipKey = ui.layout("Play_SlidePassIconKey_00")
+    private lazy var skipIcon = ui.layout("Play_SlidePassIcon_00")
+    private(set) var skipping = false
+    private var skipShownUntil = 0
 
     var style: Int { Int(min(snap.status.style, 4)) }
     private var skin: String { SMM2Condition.styles[style] }
@@ -216,6 +223,8 @@ final class CourseScreens: UIScene {
         case .play:
             if tick < fadeInUntil, let f = fade { l.append(f) }
             if irisClosed || tick < irisUntil, let i = iris { l.append(i) }
+            if skipping || tick < skipShownUntil, let k = skipKey { l.append(k) }
+            if let p = skipIcon, p.isPlaying("Pass") { l.append(p) }
         case .intro: l += [fade, intro].compactMap { $0 }
         case .pause: l += [fade, pauseL].compactMap { $0 }
         case .clear: if let c = clearL { l.append(c) }
@@ -417,6 +426,41 @@ final class CourseScreens: UIScene {
         hud.hold("Type", info.lives ? 1 : 0)
     }
 
+    // MARK: skip (100 Mario: hold the skip key)
+
+    /// Ticks the skip key must be held: the three countdown steps of 32 frames [inf, as SMM1].
+    static let skipHold = 96
+
+    func skipBegin() {
+        guard let s = skipKey else { return }
+        for a in ["CountDown_00", "CountDown_01", "CountDown_02"] { s.stop(a) }
+        s.play("In", at: tick)
+        s.play("CountDown_00", at: tick)
+        s.play("CountDown_01", at: tick + 32)
+        s.play("CountDown_02", at: tick + 64)
+        skipping = true
+        skipStart = tick
+    }
+
+    private(set) var skipStart = 0
+
+    func skipCancel() {
+        guard skipping else { return }
+        skipping = false
+        skipShownUntil = 0
+    }
+
+    /// The hold is complete: "Skip!" (Pass). Returns its length in ticks.
+    func skipPass() -> Int {
+        skipping = false
+        guard let p = skipIcon else { return 1 }
+        if let s = p.message("T_Pass_00") { p.text("T_Pass_00", s) }
+        p.play("In", at: tick)
+        p.play("Loop", at: tick, loop: true)
+        p.play("Pass", at: tick)
+        return Int(max(1, p.length("Pass")))
+    }
+
     // MARK: death iris
 
     /// Layout position of a point of the 384 × 216 view (px from its bottom-left).
@@ -531,7 +575,9 @@ final class CourseScreens: UIScene {
         p.hold("Type", 3)
         p.hold("TypeCourseInfo", 1)
         let modeLabel = info.modeLabel ?? (info.builtIn ? "T_Mode_Quest" : "T_Mode_Network")
-        if let m = p.message(modeLabel) { p.text("T_Mode_00", m) }
+        if let t = info.modeText { p.text("T_Mode_00", t) } else if let m = p.message(modeLabel) { p.text("T_Mode_00", m) }
+        // a run's exit is "Quit" (save and quit) [inf]
+        if info.lives, let q = p.message("L_ExitSaveBtn_00-T_Btn_00") { p.text("L_ExitBtn_00/T_Btn_00", q) }
         p.text("T_CourseTitle_00", info.name)
         for n in ["L_MiiIcon_00", "P_GoodIcon_00", "L_GoodCount_00", "N_TagAll_00", "L_KeyBtn_00",
                   "L_OptionBtn_00", "N_PlayerInfo_01/L_Flag_00", "N_PlayerInfo_01/L_BadgeList_00"] {
@@ -609,7 +655,8 @@ final class CourseScreens: UIScene {
     static let clearParts = ["L_Btn_01", "L_Btn_00"]
     private(set) var clearSelection = 1
 
-    func showClear(ticks: Int?) {
+    /// `run`: a 100 Mario run's clear, Quit (save and quit) / Next instead of Start Over / Quit.
+    func showClear(ticks: Int?, run: Bool = false) {
         guard let c = clearL else { return }
         hudOut()
         // Type 2 with the network parts hidden. The banner (N_Cap_00: orange band, COURSE CLEAR)
@@ -630,8 +677,8 @@ final class CourseScreens: UIScene {
         c.materialWhite("P_ClearMax_00", [255, 255, 255, 255])
         // without the Comment / Tag buttons on its left the pair is centred [departure]
         if let b = c.pane("N_Btn_00") { c.setPane("N_Btn_00", translate: SIMD2(-201, b.translate.1)) }
-        if let s = c.message("0000") { c.text("L_Btn_01/T_Btn_00", s) }
-        if let s = c.message("0001") { c.text("L_Btn_00/T_Btn_00", s) }
+        if let s = c.message(run ? "0001" : "0000") { c.text("L_Btn_01/T_Btn_00", s) }
+        if let s = c.message(run ? "0004" : "0001") { c.text("L_Btn_00/T_Btn_00", s) }
         fillClearInfo(c, ticks: ticks)
         c.stop("OutContents")
         c.play("InNet", at: tick)

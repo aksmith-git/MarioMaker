@@ -190,14 +190,19 @@ final class AppModel: ObservableObject {
         case .coursebot:
             showLibrary()
         case .hundredMario:
-            showChallenge()
+            // back to the title's Play menu, on the 100 Mario button [inf]
+            showChallenge { [weak self] in
+                SceneFade.shared.run(.black) { self?.showTitle(start: .category, select: 3) }
+            }
         }
     }
 
-    /// Course World with SMM2's layouts (the library without the SMM2 UI import).
-    func showCourseWorld() {
+    /// Course World with SMM2's layouts (the library without the SMM2 UI import); `selection`:
+    /// the hub button selected (coming back from one).
+    func showCourseWorld(selection: Int = 0) {
         guard let ui = LayoutUI.smm2, let assets,
-              let flow = CourseWorldFlow(ui: ui, assets: assets, library: library.entries, saves: saves) else {
+              let flow = CourseWorldFlow(ui: ui, assets: assets, library: library.entries, saves: saves,
+                                         selection: selection) else {
             showLibrary()
             return
         }
@@ -206,18 +211,24 @@ final class AppModel: ObservableObject {
             SceneFade.shared.run(.black) { self?.showTitle(start: .category, select: 1) }
         }
         flow.onEndless = { [weak self] in
-            SceneFade.shared.run(.black) { self?.showChallenge() }
+            // the Endless menu (100 Mario rules), then back to Course World on its button
+            SceneFade.shared.run(.black) {
+                self?.showChallenge(presentation: .smm2) {
+                    SceneFade.shared.run(.black) { [weak self] in self?.showCourseWorld(selection: 3) }
+                }
+            }
         }
         screen = .courseWorld(flow)
     }
 
     func showImporter() { screen = .importer }
 
-    /// 100 Mario Challenge over the library's playable courses.
-    func showChallenge() {
+    /// 100 Mario Challenge over the library's playable courses; `onExit` (default: the library)
+    /// when the player leaves it. `presentation` nil: Settings > Game.
+    func showChallenge(presentation: ChallengeFlow.Presentation? = nil, onExit: (() -> Void)? = nil) {
         guard let assets else { return }
-        let flow = ChallengeFlow(assets: assets, library: library.entries, saves: saves)
-        flow.onExit = { [weak self] in self?.showLibrary() }
+        let flow = ChallengeFlow(assets: assets, library: library.entries, saves: saves, presentation: presentation)
+        flow.onExit = onExit ?? { [weak self] in self?.showLibrary() }
         screen = .challenge(flow)
     }
 
@@ -395,6 +406,7 @@ extension AppModel {
     var showsSwiftUIScreen: Bool {
         switch screen {
         case .importer, .library: true
+        case .challenge(let flow): flow.scene == nil && !flow.isPlaying
         default: false
         }
     }
