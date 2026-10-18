@@ -1023,7 +1023,10 @@ impl World {
             a.y = y;
             a.vx = 0.0;
             a.vy = 0.0;
-            a.timer = a.timer.max(60); // [inf] the shell doesn't wake while carried
+            // carried, the shell's wake timer doesn't run (the Carried context replaces the
+            // Shell one), and ShellWait enter (0x71005f6050) sets it back to 511 when it is let
+            // go [obs]
+            a.timer = crate::actors::SHELL_WAKE;
         }
         let sb = self.actors[i].bbox();
         let hit = self
@@ -2608,9 +2611,11 @@ impl World {
                 continue;
             }
             if a.kind == Kind::Grinder {
-                // saw: hurts on touch (radius [inf] 20 px around the centre y + 24)
+                // saw: hurts on touch — its collider is a box of half-size 22 × 22 centred 24 px
+                // above the origin (descriptor _INIT_737 0x71001ad770; actor colliders always
+                // overlap as boxes, 0x71003e6760) [obs]
                 let (cx, cy) = (a.x, a.y + 24.0);
-                let near = overlap(hurt, (cx - 20.0, cy - 20.0, cx + 20.0, cy + 20.0));
+                let near = overlap(hurt, (cx - 22.0, cy - 22.0, cx + 22.0, cy + 22.0));
                 if near && !star && self.player.hurt() {
                     self.events.push(if self.player.alive() {
                         Event::PowerDown
