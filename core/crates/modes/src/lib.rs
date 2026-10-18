@@ -8,10 +8,14 @@
 //! - [`replay`]: runs as per-frame inputs, re-simulated to verify clear times and drive ghosts.
 //! - [`challenge`]: one 100 Mario session over a local course library, tying the three together
 //!   for the app (the FFI is a thin wrapper over it).
+//! - [`endless`]: SMM2's Endless Challenge (`research/specs/endless-challenge.md`): lives, pending
+//!   1-Ups, skip, score, the run record our server keeps, the local course-pick rule and an
+//!   offline session.
 //!
 //! Deterministic: randomness comes from a caller-seeded generator so runs can be replayed.
 
 pub mod challenge;
+pub mod endless;
 pub mod hundred;
 pub mod pool;
 pub mod replay;
