@@ -539,7 +539,13 @@ Not Nintendo's network: the engine talks to an open-source server the owner can 
   `mmk server` with captures `account`, `courseworld-leaderboards`, `courseworld-course-page`,
   `-comments`, `-post`, `-maker`, `-play`, `-pause`, `-clear` · comments from the pause / clear
   screens ⬜ ·
-  upload from the editor ⬜ (no Course Maker in the front end yet) · the Swift app's FFI host ⬜
+  upload from the editor ⬜ (no Course Maker in the front end yet) · the Swift app ✅ (the same
+  screens through `mmk_front_*`; its host makes the calls on threads, records server-course runs
+  and sends them as replays — tested against a live server in `mmk-ffi`: a verified record, a
+  like, a comment; the account screen signed in from UserDefaults; macOS types from the keyboard,
+  iOS through a text prompt) · ghosts in the Swift app ⬜ (the engine snapshot draws one world) ·
+  the server times a replay to the end of the clear sequence, the clear screen to the goal touch
+  (16.35 s vs 9.18 s in one run) ⬜
 - ✅ Local multiplayer (co-op, up to 4: Mario, Luigi, Toad, Toadette as the models' _2/_3/_4
   variants): extra players run the same rules, rejoin beside player 1 [inf: bubble], any player
   clears; `mmk-play --players N` (one pad each), FFI `mmk_engine_set_players / step_players`;
