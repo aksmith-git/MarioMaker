@@ -9,6 +9,8 @@ use mmk_formats::smm1;
 use mmk_formats::smm2::{self, crypto};
 use serde_json::{Value, json};
 
+mod trace;
+
 #[derive(Parser)]
 #[command(name = "mmk", version, about = "Course tools for the engine")]
 struct Cli {
@@ -126,6 +128,38 @@ enum Cmd {
     },
     /// Convert SMM2 course data IDs to course codes (XXX-XXX-XXX) and back.
     Code { ids: Vec<String> },
+    /// Run a per-frame input script (see `trace.rs`) through the simulation on a course and write
+    /// the player's state after every frame as CSV (for frame-by-frame comparison with a trace
+    /// recorded in the original game).
+    Trace {
+        course: PathBuf,
+        inputs: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        /// Course key table for an encrypted .bcd course.
+        #[arg(long)]
+        keys: Option<PathBuf>,
+        /// Start position "x,y" (px, feet centre) instead of the course start.
+        #[arg(long)]
+        start: Option<String>,
+        /// Start facing: 1 right, -1 left.
+        #[arg(long, allow_hyphen_values = true)]
+        facing: Option<i32>,
+        /// Start form: small, super, fire, raccoon, cape, propeller, cat, builder, superball.
+        #[arg(long)]
+        form: Option<String>,
+    },
+    /// Write the physics test courses (`<style>_<kind>.course`) used with `mmk trace`; with
+    /// --title and --table, also the selected one as replacement title courses (encrypted .szs).
+    TraceCourses {
+        out: PathBuf,
+        #[arg(long)]
+        only: Option<String>,
+        #[arg(long)]
+        table: Option<PathBuf>,
+        #[arg(long)]
+        title: Option<PathBuf>,
+    },
     Simulate {
         files: Vec<PathBuf>,
         #[arg(long)]
@@ -723,6 +757,66 @@ fn main() -> ExitCode {
             assets,
             keys,
         } => missing_art(&files, &assets, keys),
+        Cmd::Trace {
+            course,
+            inputs,
+            out,
+            keys,
+            start,
+            facing,
+            form,
+        } => {
+            let table = read_key_table(keys);
+            let Some(data) = load(&course)
+                .ok()
+                .and_then(|raw| course_data(raw, table.as_ref()))
+            else {
+                return fail("course", "unreadable");
+            };
+            let script = match std::fs::read_to_string(&inputs)
+                .map_err(|e| e.to_string())
+                .and_then(|t| trace::parse_script(&t))
+            {
+                Ok(s) => s,
+                Err(e) => return fail("inputs", e),
+            };
+            let pos = match start.as_deref().map(|s| {
+                let v: Vec<f32> = s.split(',').filter_map(|t| t.trim().parse().ok()).collect();
+                if v.len() == 2 {
+                    Ok((v[0], v[1]))
+                } else {
+                    Err("--start x,y")
+                }
+            }) {
+                Some(Ok(p)) => Some(p),
+                Some(Err(e)) => return fail("start", e),
+                None => None,
+            };
+            let form = match form.as_deref().map(trace::parse_form) {
+                Some(Ok(f)) => Some(f),
+                Some(Err(e)) => return fail("form", e),
+                None => None,
+            };
+            let start = trace::Start { pos, facing, form };
+            match trace::run(&data, &script, &start)
+                .and_then(|csv| std::fs::write(&out, csv).map_err(|e| e.to_string()))
+            {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => fail("trace", e),
+            }
+        }
+        Cmd::TraceCourses {
+            out,
+            only,
+            table,
+            title,
+        } => {
+            let table = read_key_table(table);
+            match trace::write_courses(&out, only.as_deref(), table.as_ref(), title.as_deref()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => fail("trace-courses", e),
+            }
+        }
         Cmd::Code { ids } => {
             for id in ids {
                 match id.parse::<u32>() {
