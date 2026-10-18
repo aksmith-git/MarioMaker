@@ -1613,6 +1613,7 @@ impl World {
                 }
             }
         }
+        self.snuff_superballs();
         self.collect_coins();
         self.step_donuts();
         self.step_p_switch();
@@ -2283,9 +2284,17 @@ impl World {
         self.add_actor(a);
     }
 
-    /// Superball: one at a time [inf], 3 px/f forward and down (vy −3), 270 frames.
+    /// Superball (PlayerSuperBall, ctor 0x71003b79a0, Move 0x71003b8990) [obs]: one at a time
+    /// (the throw check 0x71009ed0a0 refuses while the ball's flag on the player is set),
+    /// 3 px/f forward and 3 down (0x71003b80d0), 270 frames; it bounces off floors, ceilings
+    /// and walls at the same speed (0x71003b8c30) and snuffs out on leaving the view, unless
+    /// it is above the view and coming back down.
     fn throw_superball(&mut self) {
-        if self.actors.iter().any(|a| a.kind == Kind::Superball) {
+        if self
+            .actors
+            .iter()
+            .any(|a| a.kind == Kind::Superball && a.alive())
+        {
             return;
         }
         let p = &self.player;
@@ -2322,6 +2331,20 @@ impl World {
         f.timer = FIREBALL_LIFE;
         self.add_actor(f);
         self.events.push(Event::Fireball);
+    }
+
+    /// Superballs out of the view snuff out (0x71003b8990) [obs].
+    fn snuff_superballs(&mut self) {
+        let v = self.view_rect(0.0);
+        for a in &mut self.actors {
+            if a.kind == Kind::Superball && a.alive() {
+                let inside = a.x >= v.0 && a.x <= v.2 && a.y >= v.1 && a.y <= v.3;
+                let coming_back = a.vy < 0.0 && a.y > v.3;
+                if !inside && !coming_back {
+                    a.mode = Mode::Dead;
+                }
+            }
+        }
     }
 
     fn collect_coins(&mut self) {
@@ -3514,11 +3537,14 @@ impl World {
 
     // ---------------------------------------------------------------- burners, fire bars
 
-    /// Burner flame state from the shared 372-frame counter (54-burner.md): returns the flame
-    /// length in px (0 when off). Fire 18–136 (full), FireStart 0–17 (growing), FireFinish
-    /// 137–155 (shrinking); the alternate form runs half a cycle later.
+    /// Burner flame state from the area timer's 372-frame counter, which starts at 370 and
+    /// only runs while the world isn't frozen (0x71004005e0; burner states 0x7100873fe0 read
+    /// it) [obs] (54-burner.md): returns the flame length in px (0 when off). Fire 18–136
+    /// (full), FireStart 0–17 (growing), FireFinish 137–155 (shrinking); the alternate form runs
+    /// half a cycle later.
     pub fn burner_flame(&self, alt: bool) -> f32 {
-        let t = ((self.tick as i64 + if alt { 186 } else { 0 }) % 372) as f32;
+        let c = (self.area_timer % 372 + 370) % 372;
+        let t = ((c + if alt { 186 } else { 0 }) % 372) as f32;
         if t < 18.0 {
             48.0 * (t + 1.0) / 18.0
         } else if t <= 136.0 {
@@ -3997,15 +4023,12 @@ impl World {
                 self.effects.extend(Effect::debris(bx, by, 0.0, 0.1));
             }
         }
+        // the blue POW's quake goes to every live enemy standing on something, wherever it is
+        // (the quake check runs in each enemy's update, 0x710078a9e0, with no range test; only
+        // actors near the view exist) [obs]; the red one also reaches the air, in view [inf]
         for a in &mut self.actors {
-            if a.kind.is_enemy()
-                && a.alive()
-                && (a.on_ground || red) // [inf] the red one reaches the air too
-                && a.x >= v.0
-                && a.x <= v.2
-                && a.y >= v.1
-                && a.y <= v.3
-            {
+            let in_view = a.x >= v.0 && a.x <= v.2 && a.y >= v.1 && a.y <= v.3;
+            if a.kind.is_enemy() && a.alive() && (a.on_ground || (red && in_view)) {
                 a.die_fall(px);
             }
         }
@@ -4017,23 +4040,15 @@ impl World {
     }
 
     /// A cape dive landing (stage 5) shakes the ground: the player posts the same quake event
-    /// as a POW (0x71009f5f50 → 0x7100420860, type 4) [obs]; grounded enemies in view fall.
+    /// as a POW (0x71009f5f50 → 0x7100420860, type 4) [obs]; grounded enemies fall.
     fn cape_quake(&mut self) {
         if !self.player.cape_quake {
             return;
         }
-        let v = self.view_rect(16.0);
         let px = self.player.x;
         let mut downs = 0;
         for a in &mut self.actors {
-            if a.kind.is_enemy()
-                && a.alive()
-                && a.on_ground
-                && a.x >= v.0
-                && a.x <= v.2
-                && a.y >= v.1
-                && a.y <= v.3
-            {
+            if a.kind.is_enemy() && a.alive() && a.on_ground {
                 a.die_fall(px);
                 downs += 1;
             }
@@ -4079,12 +4094,15 @@ impl World {
             if len <= 0.0 {
                 continue;
             }
-            // flame column 12 px wide starting at the block face [inf width]
+            // the flame collider (Burner init 0x7100875190) [obs]: 10 px wide, 40 px long from
+            // the block face (42 downward), centred on the block's middle; its growth while
+            // starting and shrinking follows the flame length [inf]
+            let f = len / 48.0;
             let r = match b.dir {
-                3 => (b.x - 6.0, b.y + 16.0, b.x + 6.0, b.y + 16.0 + len),
-                2 => (b.x - 6.0, b.y - len, b.x + 6.0, b.y),
-                1 => (b.x + 8.0, b.y + 2.0, b.x + 8.0 + len, b.y + 14.0),
-                _ => (b.x - 8.0 - len, b.y + 2.0, b.x - 8.0, b.y + 14.0),
+                3 => (b.x - 5.0, b.y + 16.0, b.x + 5.0, b.y + 16.0 + 40.0 * f),
+                2 => (b.x - 5.0, b.y - 42.0 * f, b.x + 5.0, b.y),
+                1 => (b.x + 8.0, b.y + 3.0, b.x + 8.0 + 40.0 * f, b.y + 13.0),
+                _ => (b.x - 8.0 - 40.0 * f, b.y + 3.0, b.x - 8.0, b.y + 13.0),
             };
             hit |= overlap(hb, r);
         }
@@ -7992,7 +8010,11 @@ mod tests {
             dir: 3,
             alt: false,
         });
-        let w = World::with_level(lvl.clone());
+        // the counter starts at 370: the flame starts two frames in
+        let mut w = World::with_level(lvl.clone());
+        w.player.x = 300.0;
+        assert_eq!(w.burner_flame(false), 0.0);
+        run(&mut w, 0, 2);
         assert!(w.burner_flame(false) > 0.0);
         // off between 156 and 371
         let mut w2 = World::with_level(lvl);
