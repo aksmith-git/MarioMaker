@@ -273,7 +273,7 @@ pub struct Renderer {
     depth: Option<(wgpu::Texture, wgpu::TextureView)>,
 }
 
-fn make_texture(
+pub(crate) fn make_texture(
     gpu: &Gpu,
     label: &str,
     format: wgpu::TextureFormat,
@@ -296,7 +296,32 @@ fn make_texture(
     })
 }
 
-fn write_rgba(gpu: &Gpu, tex: &wgpu::Texture, w: u32, h: u32, data: &[u8]) {
+/// Create a texture for a planned upload, write it, and return its view.
+pub fn upload(gpu: &Gpu, label: &str, up: &crate::texture::Upload<'_>) -> wgpu::TextureView {
+    let tex = make_texture(gpu, label, up.format, up.width, up.height);
+    gpu.queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &tex,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &up.data,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(up.bytes_per_row),
+            rows_per_image: Some(up.rows),
+        },
+        wgpu::Extent3d {
+            width: up.width,
+            height: up.height,
+            depth_or_array_layers: 1,
+        },
+    );
+    tex.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+pub(crate) fn write_rgba(gpu: &Gpu, tex: &wgpu::Texture, w: u32, h: u32, data: &[u8]) {
     gpu.queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture: tex,
@@ -672,27 +697,7 @@ impl Renderer {
             self.skipped_textures += 1;
             return;
         };
-        let tex = make_texture(gpu, &entry.name, up.format, up.width, up.height);
-        gpu.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &tex,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &up.data,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(up.bytes_per_row),
-                rows_per_image: Some(up.rows),
-            },
-            wgpu::Extent3d {
-                width: up.width,
-                height: up.height,
-                depth_or_array_layers: 1,
-            },
-        );
-        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = upload(gpu, &entry.name, &up);
         let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &self.layout,

@@ -1364,6 +1364,7 @@ dependencies = [
  "mmk-netplay",
  "mmk-online",
  "mmk-sim",
+ "mmk-ui",
  "png",
  "pollster",
  "serde_json",

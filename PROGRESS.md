@@ -259,8 +259,12 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   via the shared sound director, minimal HUD (built-in 5×7 font), pause / clear / game over,
   `--screenshot` headless smoke test. Shared front-end code moved to the new `host` crate (used by
   `ffi` too). Verified on macOS (M4 Pro, Metal): offscreen frames pixel-identical to the Swift app
-  below the HUD; `--check-textures` agrees with the GPU on every BC texture. Open: layouts
-  (layout player), the SMM font HUD, clear-condition HUD text, menus/library
+  below the HUD; `--check-textures` agrees with the GPU on every BC texture. Layouts ✅: the
+  layout player's quads drawn by `ui_layer` (port of `UILayer.swift`: two-texture combine, black /
+  white colours, per-quad blend and sampler); `mmk-play --layout NAME --ui-cache DIR [--ui-anim]
+  [--ui-text] --screenshot` matches the Swift app's MMK_UI_LAYOUT preview (SMM1 Cmn_GameOver_00,
+  SMM2 Play_Title_00 under three animation specs: ≤ 4 px off by ≤ 3 levels). Open: the SMM font
+  HUD, clear-condition HUD text, menus/library (presentation flow lives in Swift today)
 - ✅ 3D models in the portable shell: the mesh planner moved to `mmk-host::mesh` (shared with
   the Swift app); `mmk-play` skins on the CPU (works on every wgpu backend, WebGL2 included) and
   draws meshes with a depth buffer, interleaved with sprites by layer like the Swift renderer;

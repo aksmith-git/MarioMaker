@@ -48,6 +48,20 @@ mod native {
         /// Headless: render a whole course area (no HUD, actors as placed) to a PNG and exit.
         #[arg(long, value_name = "PNG")]
         map: Option<String>,
+        /// Headless: render this imported layout (SMM1 or SMM2 UI) at 1280×720 to --screenshot,
+        /// like the Swift app's MMK_UI_LAYOUT preview.
+        #[arg(long)]
+        layout: Option<String>,
+        /// With --layout: the UI import (default $MMK_UI_CACHE, else ~/smm-work/cache/smm1-v208).
+        #[arg(long)]
+        ui_cache: Option<PathBuf>,
+        /// With --layout: animations, comma-separated: Name (from 0, holding the last frame),
+        /// Name~ (looping), Name@frame (fixed); --ticks frames in.
+        #[arg(long, default_value = "")]
+        ui_anim: String,
+        /// With --layout: text replacements, pane=text;pane=text.
+        #[arg(long, default_value = "")]
+        ui_text: String,
         /// With --map: 0 main area, 1 sub-area.
         #[arg(long, default_value_t = 0)]
         map_area: usize,
@@ -133,6 +147,33 @@ mod native {
 
     pub fn run() -> Result<(), String> {
         let args = Args::parse();
+        if let Some(name) = &args.layout {
+            let dir = args
+                .ui_cache
+                .clone()
+                .or_else(|| std::env::var_os("MMK_UI_CACHE").map(PathBuf::from))
+                .or_else(|| {
+                    let d =
+                        PathBuf::from(std::env::var_os("HOME")?).join("smm-work/cache/smm1-v208");
+                    d.is_dir().then_some(d)
+                })
+                .ok_or("--layout needs --ui-cache (an SMM1 or SMM2 UI import)")?;
+            let out = args
+                .screenshot
+                .as_deref()
+                .ok_or("--layout needs --screenshot <png>")?;
+            let msg = mmk_shell::headless::layout(
+                &dir,
+                name,
+                &args.ui_anim,
+                &args.ui_text,
+                args.ticks,
+                out,
+                !args.cpu_textures,
+            )?;
+            println!("{msg}");
+            return Ok(());
+        }
         let assets_dir = match args.assets.as_deref() {
             Some("placeholder") => None,
             Some(p) => Some(PathBuf::from(p)),

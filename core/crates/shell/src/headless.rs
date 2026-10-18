@@ -311,3 +311,83 @@ pub fn check_textures(game: &Game) -> Result<String, String> {
     // differently from `mmk_formats::bcn`); BC4, BC5 and BC7 match exactly on Apple GPUs
     if worst_all > 3 { Err(text) } else { Ok(text) }
 }
+
+/// Render layout `name` from the UI import in `dir` at 1280×720 after `ticks` frames of the
+/// animations in `anims` (see `--ui-anim`), texts from `texts` (`pane=text;…`), to a PNG.
+pub fn layout(
+    dir: &std::path::Path,
+    name: &str,
+    anims: &str,
+    texts: &str,
+    ticks: u64,
+    path: &str,
+    allow_bc: bool,
+) -> Result<String, String> {
+    let mut cache = mmk_ui::UiCache::open(dir).map_err(|e| format!("{}: {e:?}", dir.display()))?;
+    let res = cache
+        .layout(name)
+        .map_err(|e| format!("layout {name}: {e:?}"))?;
+    let mut player = mmk_ui::LayoutPlayer::new(res);
+    for pair in texts.split(';').filter(|p| !p.is_empty()) {
+        if let Some((pane, text)) = pair.split_once('=') {
+            player.set_text(pane, text);
+        }
+    }
+    let t = ticks as f32;
+    for spec in anims.split(',').filter(|s| !s.is_empty()) {
+        let (anim, frame) = if let Some((a, f)) = spec.split_once('@') {
+            (a, f.parse::<f32>().map_err(|e| format!("{spec}: {e}"))?)
+        } else if let Some(a) = spec.strip_suffix('~') {
+            let len = player
+                .animation_length(a)
+                .ok_or(format!("no animation {a}"))?;
+            (a, if len > 0.0 { t % len } else { 0.0 })
+        } else {
+            let len = player
+                .animation_length(spec)
+                .ok_or(format!("no animation {spec}"))?;
+            (spec, t.min(len))
+        };
+        player.play(anim, frame);
+    }
+    let size = player.size();
+    let quads = player.draw_list();
+    let (w, h) = (1280, 720);
+    let gpu = pollster::block_on(Gpu::new(&instance(), None, allow_bc))?;
+    let mut layer = crate::ui_layer::UiLayer::new(&gpu, FORMAT);
+    layer.sync(&gpu, &cache);
+    let tex = target(&gpu, w, h);
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut enc = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("clear"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &view,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    });
+    // letterbox the layout's aspect into the target
+    let s = (w as f32 / size[0]).min(h as f32 / size[1]);
+    let (vw, vh) = (size[0] * s, size[1] * s);
+    let vp = ((w as f32 - vw) / 2.0, (h as f32 - vh) / 2.0, vw, vh);
+    layer.encode(&gpu, &mut enc, &view, vp, &quads, size);
+    let rgba = read_back(&gpu, enc, &tex);
+    write_png(path, w, h, &rgba)?;
+    Ok(format!(
+        "{path}: {name}, {} quads, {}×{} layout units",
+        quads.len(),
+        size[0],
+        size[1]
+    ))
+}

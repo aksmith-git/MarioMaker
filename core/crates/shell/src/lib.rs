@@ -20,6 +20,7 @@ pub mod render;
 pub mod session;
 pub mod source;
 pub mod texture;
+pub mod ui_layer;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod headless;
