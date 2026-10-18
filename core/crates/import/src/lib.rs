@@ -7,6 +7,7 @@
 //! lives in the user's Application Support folder.
 
 pub mod audio;
+pub mod effects;
 pub mod vfs;
 
 use std::collections::HashMap;
@@ -27,7 +28,8 @@ pub mod sprites;
 
 /// 5: mesh stage (meshes/, anims/), StaticModel.pack models of the 3D styles.
 /// 6: modes stage (story/, lessons/, eventflow/: Story Mode and Dojo data).
-pub const IMPORTER_VERSION: u32 = 6;
+/// 7: effects stage (effects/: particle effects and their links; effect textures).
+pub const IMPORTER_VERSION: u32 = 7;
 pub mod smm1;
 pub mod smm1_costumes;
 pub use smm1::{Smm1Config, Smm1Report, run_smm1};
@@ -402,6 +404,9 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
     // each style's theme music, decoded per course by the player
     audio::export_music(&cfg.romfs, &out, STYLES)?;
 
+    // 5b. particle effects and their links (after the textures: adds to textures/index.json)
+    let fx = effects::import_effects(&cfg.romfs, &out, progress)?;
+
     // 6. Story Mode and Dojo: event flows, job / build / flag tables, hub map, lesson list
     progress("modes", 0, 1);
     let modes_report = modes::import_modes(&cfg.romfs, &out)?;
@@ -413,7 +418,9 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
         "game": "SMM2",
         "build": build,
         "module_id": nso.module_id_hex(),
-        "stages": ["identify", "keys", "tables", "textures", "audio", "sprites", "meshes", "modes"],
+        "stages": ["identify", "keys", "tables", "textures", "audio", "sprites", "meshes", "effects", "modes"],
+        "effect_users": fx.users,
+        "effect_sets": fx.sets,
         "texture_styles": STYLES,
         "mesh_styles": meshes::MESH_STYLES,
         "textures": texture_count,

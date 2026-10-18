@@ -1310,6 +1310,7 @@ dependencies = [
  "mmk-audio",
  "mmk-formats",
  "mmk-sim",
+ "serde_json",
 ]
 
 [[package]]

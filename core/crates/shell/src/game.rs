@@ -34,6 +34,9 @@ pub struct Game {
     ghost_sprites: Vec<DrawSprite>,
     /// No placeholder HUD strip (the front end draws the SMM2 HUD layout over the course).
     pub no_hud: bool,
+    /// The cache's effects (empty: none imported) and this frame's quads.
+    fx_lib: Arc<mmk_host::effects::EffectLibrary>,
+    fx_frame: crate::effects::EffectFrame,
 }
 
 impl Game {
@@ -59,10 +62,22 @@ impl Game {
             let store = mmk_host::mesh::MeshStore::new(cache.root.clone());
             (!placeholder && store.available()).then_some(store)
         };
+        #[cfg(not(target_arch = "wasm32"))]
+        let fx_lib = Arc::new(if placeholder {
+            Default::default()
+        } else {
+            mmk_host::effects::EffectLibrary::load(&cache.root)
+        });
+        #[cfg(target_arch = "wasm32")]
+        let fx_lib = Arc::new(mmk_host::effects::EffectLibrary::default());
+        let mut session = Session::new(course);
+        session.effects = Some(mmk_host::effects::EffectDirector::new(fx_lib.clone()));
         Self {
+            fx_lib,
+            fx_frame: Default::default(),
             maker: None,
             editing: false,
-            session: Session::new(course),
+            session,
             placeholder,
             cache,
             meshes,
@@ -97,6 +112,8 @@ impl Game {
             let audio = self.session.audio.clone();
             let options = self.session.options;
             self.session = Session::new(Some(c));
+            self.session.effects =
+                Some(mmk_host::effects::EffectDirector::new(self.fx_lib.clone()));
             self.session.set_options(options);
             self.session.set_audio(audio);
             self.editing = false;
@@ -138,6 +155,7 @@ impl Game {
                 strip: status,
                 banner: None,
             };
+            self.fx_frame.quads.clear();
             return Scene {
                 sprites: &self.sprites,
                 camera: (w.camera_x, w.camera_y),
@@ -146,6 +164,7 @@ impl Game {
                 hud: &self.hud,
                 meshes: &self.mesh_frame,
                 ghost: &[],
+                effects: &self.fx_frame,
             };
         }
         let w = &self.session.world;
@@ -179,7 +198,16 @@ impl Game {
         } else {
             HudText::of(w, self.session.phase)
         };
+        match &mut self.session.effects {
+            Some(fx) => {
+                fx.quads(&mut self.fx_frame.quads);
+                self.fx_frame
+                    .resolve_textures(fx.player.texture_names(), &self.cache);
+            }
+            None => self.fx_frame.quads.clear(),
+        }
         Scene {
+            effects: &self.fx_frame,
             sprites: &self.sprites,
             camera: (w.camera_x, w.camera_y),
             upside_down: w.upside_down(),

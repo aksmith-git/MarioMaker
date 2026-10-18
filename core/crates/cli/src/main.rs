@@ -102,6 +102,21 @@ enum Cmd {
         /// The cache folder, e.g. ~/smm-work/cache/smm2-3.0.3
         out: PathBuf,
     },
+    /// Run only the effects stage of `import` (particle effects and their links, from the
+    /// user's own extracted RomFS) into an existing asset cache folder (`<root>/smm2-<build>`).
+    ImportEffects {
+        /// Extracted RomFS (update applied).
+        romfs: PathBuf,
+        /// The asset cache folder to add the effects to.
+        cache: PathBuf,
+    },
+    /// Write effect test courses (`fx_<style>.course`, raw course data): flat ground with
+    /// Goombas, a Koopa, coins ahead of the start, for comparing the engine's
+    /// effects with the game's on the same scripted run.
+    FxCourses {
+        #[arg(short, long, default_value = ".")]
+        out: PathBuf,
+    },
     /// Decode a BFLYT / BFLAN / BFFNT / MSBT file (Yaz0 removed) and print it as JSON.
     Lyt { file: PathBuf },
     /// Smoke-run courses headlessly with a scripted run-and-jump input: reports crashes, how far
@@ -1024,6 +1039,43 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Cmd::FxCourses { out } => match fx_courses(&out) {
+            Ok(paths) => {
+                for p in paths {
+                    println!("{}", p.display());
+                }
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("fx-courses: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Cmd::ImportEffects { romfs, cache } => {
+            let mut last = String::new();
+            let mut progress = |stage: &str, done: usize, total: usize| {
+                if stage != last || done == total {
+                    eprintln!("{stage}: {done}/{total}");
+                    last = stage.to_string();
+                }
+            };
+            match mmk_import::effects::import_effects(&romfs, &cache, &mut progress) {
+                Ok(c) => {
+                    println!(
+                        "imported {} effect users, {} emitter sets, {} textures into {}",
+                        c.users,
+                        c.sets,
+                        c.textures,
+                        cache.display()
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("import failed: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Cmd::ImportSmm2Ui {
             romfs,
             out,
@@ -1536,6 +1588,72 @@ fn gallery(
         std::fs::write(&path, data).map_err(|e| e.to_string())?;
         written.push(path);
         page += 1;
+    }
+    Ok(written)
+}
+
+/// Effect test courses, one per style (see `Cmd::FxCourses`).
+fn fx_courses(out: &std::path::Path) -> Result<Vec<PathBuf>, String> {
+    std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
+    let mut written = Vec::new();
+    for style in ["M1", "M3", "MW", "WU", "3W"] {
+        // (what the game needs to accept a course as its own, e.g. as a title course: a length,
+        // start / goal heights, the header fields of a course made in the game, no ground over
+        // the start or goal grounds)
+        let len = 120;
+        let mut ed = mmk_editor::Editor::new(style);
+        ed.set_name(&format!("Effects {style}"));
+        ed.set_theme(0);
+        ed.set_timer(500);
+        ed.set_length(len);
+        {
+            let h = &mut ed.course.header;
+            (h.year, h.month, h.day, h.hour, h.minute) = (2019, 4, 16, 16, 5);
+            h.game_version = 1;
+            h.management_flags = 1;
+            h.clear_check_time = u32::MAX;
+            h.creation_id = 1;
+            h.goal_x = (len * 10 - 95) as i16;
+        }
+        ed.course.main.header.boundary_type = 1;
+        // floor height: the game rejects a 3D World course with start height 1
+        let base: i32 = if style == "3W" { 2 } else { 1 };
+        ed.set_start_goal(base as u8, base as u8);
+        if style == "3W" {
+            for a in [&mut ed.course.main.header, &mut ed.course.sub.header] {
+                a.liquid_start_height = 1;
+                a.liquid_end_height = 1;
+            }
+            ed.course.main.header.boundary_type = 0;
+            ed.course.sub.header.boundary_type = 1;
+        }
+        let err = |e| format!("{style}: {e:?}");
+        for x in 7..=len - 12 {
+            for y in 0..base {
+                ed.paint_ground(x, y).map_err(err)?;
+            }
+        }
+        for x in [16, 26, 36] {
+            ed.place(0, x, base).map_err(err)?; // Goomba
+        }
+        ed.place(1, 46, base).map_err(err)?; // Koopa
+        for x in 54..62 {
+            ed.place(8, x, base + 1).map_err(err)?; // coins
+        }
+        for x in [70, 76] {
+            ed.place(0, x, base).map_err(err)?;
+        }
+        // courses made in the game carry the default flags in the (unused) child flags too;
+        // the game rejects objects with zero there
+        for o in &mut ed.course.main.objects.items {
+            if o.child_flags == 0 {
+                o.child_flags = 0x0600_0040;
+            }
+        }
+        let data = ed.save().map_err(|e| format!("{e:?}"))?;
+        let path = out.join(format!("fx_{style}.course"));
+        std::fs::write(&path, data).map_err(|e| e.to_string())?;
+        written.push(path);
     }
     Ok(written)
 }

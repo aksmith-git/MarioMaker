@@ -11,6 +11,7 @@ pub mod audio_out;
 /// Moved to `mmk_formats::bc7` (the Swift app decodes with it too, through `mmk-ffi`).
 pub use mmk_formats::bc7;
 pub mod clock;
+pub mod effects;
 pub mod front_course;
 pub mod game;
 pub mod hud;

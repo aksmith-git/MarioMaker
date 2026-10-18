@@ -12,3 +12,4 @@ mmk-audio = { path = "../audio" }
 mmk-formats = { path = "../formats" }
 mmk-sim = { path = "../sim" }
 flate2.workspace = true
+serde_json.workspace = true

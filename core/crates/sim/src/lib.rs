@@ -13,6 +13,7 @@ pub mod checksum;
 pub mod clear;
 pub mod exclamation;
 pub mod fmath;
+pub mod fx;
 pub mod input;
 pub mod level;
 pub mod liquid;

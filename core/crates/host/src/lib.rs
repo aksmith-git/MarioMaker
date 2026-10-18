@@ -10,6 +10,7 @@
 
 pub mod audio;
 pub mod course;
+pub mod effects;
 pub mod frame;
 pub mod mesh;
 pub mod texture;

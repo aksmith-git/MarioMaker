@@ -127,15 +127,122 @@ pub fn screenshot(
         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     let scene = game.scene();
     let sprites = scene.sprites.len();
+    let effects = scene.effects.quads.len();
     renderer.encode(&gpu, &mut enc, &view, (w, h), &scene);
     let rgba = read_back(&gpu, enc, &tex);
     write_png(path, w, h, &rgba)?;
     Ok(format!(
-        "{path}: {w}x{h}, tick {}, {sprites} sprites, {} ({:?}), BC textures {}",
+        "{path}: {w}x{h}, tick {}, {sprites} sprites, {effects} effect quads, {} ({:?}), BC textures {}",
         game.session.world.tick,
         gpu.info.name,
         gpu.info.backend,
         if gpu.bc { "on GPU" } else { "CPU-decoded" }
+    ))
+}
+
+/// Parse an input script: per line "N BUTTONS…" (N ticks holding the buttons: JUMP, RUN,
+/// SPIN, LEFT, RIGHT, UP, DOWN; "-" for none; `#` starts a comment) → one input per tick.
+pub fn parse_input_script(text: &str) -> Result<Vec<mmk_sim::Input>, String> {
+    use mmk_sim::input;
+    let mut out = Vec::new();
+    for (n, raw) in text.lines().enumerate() {
+        let line = raw.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut t = line.split_whitespace();
+        let count: usize = t
+            .next()
+            .and_then(|c| c.parse().ok())
+            .ok_or_else(|| format!("line {}: no tick count", n + 1))?;
+        let mut buttons = 0;
+        for b in t {
+            buttons |= match b.to_ascii_uppercase().as_str() {
+                "JUMP" => input::JUMP,
+                "RUN" => input::RUN,
+                "SPIN" => input::SPIN,
+                "LEFT" => input::LEFT,
+                "RIGHT" => input::RIGHT,
+                "UP" => input::UP,
+                "DOWN" => input::DOWN,
+                "-" => 0,
+                other => return Err(format!("line {}: unknown button {other}", n + 1)),
+            };
+        }
+        out.extend(std::iter::repeat_n(mmk_sim::Input { buttons }, count));
+    }
+    Ok(out)
+}
+
+/// Effect check: play `sets` (comma-separated emitter set names) side by side at mid-height of
+/// the course's first view and save the frame `frames` frames in.
+pub fn fx_preview(
+    game: &mut Game,
+    path: &str,
+    sets: &str,
+    frames: u64,
+    scale: u32,
+    allow_bc: bool,
+) -> Result<String, String> {
+    game.session.tick(mmk_sim::Input::default());
+    let names: Vec<&str> = sets.split(',').filter(|s| !s.is_empty()).collect();
+    let fx = game.session.effects.as_mut().ok_or("no effect director")?;
+    let w = &game.session.world;
+    let (vw, vh) = (VIEW.0 as f32, VIEW.1 as f32);
+    let n = names.len().max(1) as f32;
+    let mut missing = Vec::new();
+    for (k, name) in names.iter().enumerate() {
+        let Some(set) = fx.lib.sets.get(*name).cloned() else {
+            missing.push(*name);
+            continue;
+        };
+        let asset = mmk_host::effects::library::Asset {
+            set: name.to_string(),
+            scale: 1.0,
+            pos: [0.0; 3],
+            rot: [0.0; 3],
+            color: [1.0; 4],
+            rate: 1.0,
+            life: 1.0,
+            dir_vel: 1.0,
+            delay: 0,
+            duration: 0,
+        };
+        let x = w.camera_x + vw * (k as f32 + 0.5) / n;
+        fx.player
+            .play(set, &asset, x, w.camera_y + vh * 0.5, false, true);
+    }
+    for _ in 0..frames {
+        fx.player.step();
+    }
+    let gpu = pollster::block_on(Gpu::new(&instance(), None, allow_bc))?;
+    let mut renderer = Renderer::new(&gpu, FORMAT, &game.cache);
+    let (w, h) = (VIEW.0 * scale.max(1), VIEW.1 * scale.max(1));
+    let tex = target(&gpu, w, h);
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut enc = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    let no_hud = crate::hud::HudText {
+        strip: String::new(),
+        banner: None,
+    };
+    let scene = game.scene();
+    let quads = scene.effects.quads.len();
+    let scene = crate::render::Scene {
+        hud: &no_hud,
+        ..scene
+    };
+    renderer.encode(&gpu, &mut enc, &view, (w, h), &scene);
+    let rgba = read_back(&gpu, enc, &tex);
+    write_png(path, w, h, &rgba)?;
+    Ok(format!(
+        "{path}: {frames} frames, {quads} effect quads{}",
+        if missing.is_empty() {
+            String::new()
+        } else {
+            format!(", not in the cache: {}", missing.join(", "))
+        }
     ))
 }
 
