@@ -1279,3 +1279,21 @@ under `recomp/private|generated|build/`, and text that looks like disassembly or
   `research/specs/audio.md` §11: pan depth 0.5, the attenuation reference (the view's edge),
   effect sends at 1.0, limit types other than 2 needing a strictly higher priority, the Yoshi
   layer's 30-frame fade, footsteps every 9 px of walk cycle, the low-pass cutoff mapping.
+
+## 2026-10-19 — The recomp is the only version; SMCraft archived
+
+**Decision (owner):** make the static recompilation the project and archive SMCraft. Main keeps
+`recomp/`, the course server (`core/`: formats, sim, editor, modes, netplay, server, online, and
+`mmk` cut down to `server` / `register` / `upload`), the Python format reference and the docs.
+SMCraft as a whole (Swift app, portable and web shells, front end, UI, audio, importer, Story
+Mode) stays on the `smcraft-archive` branch, tag `smcraft-final`, where it builds and tests as
+before.
+
+- **Why the server stays:** the recomp's 100 Mario mod answers the game's Endless calls from it
+  (accounts, course pools, runs under the `hundred` ruleset, leaderboards). It depends on `sim`
+  and `editor` for course validation and replay checks, so those crates stay with it.
+- **What changes:** `scripts/check.sh` gates the server's Rust, the recomp's runtime compile
+  (macOS) and the guard; CI runs the server and Python jobs on Linux. The older goal's "SMCraft
+  stays as it is and keeps working" is met by the archive branch, not main.
+- **Open:** the server's verified records re-simulate replays with SMCraft's engine; recomp runs
+  need another proof (or none) before records from the recomp count as verified.

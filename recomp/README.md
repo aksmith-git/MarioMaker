@@ -5,8 +5,8 @@ dump: the game's AArch64 code is translated to C ahead of time and compiled for 
 system calls run on a native runtime, and its NVN graphics run on Metal (macOS, iOS) or Vulkan
 (Windows, Linux). SMM1's 100 Mario Challenge and Mystery Mushroom costumes come as mods.
 
-This folder is separate from SMCraft (the clean-room engine in `../core` and `../app`), which keeps
-working on its own. The approach and the projects it builds on are in `../DECISIONS.md` ("Native
+This is the repository's main project (SMCraft, the earlier clean-room engine, is archived on the
+`smcraft-archive` branch); `../core` holds the open-source course server its mods talk to. The approach and the projects it builds on are in `../DECISIONS.md` ("Native
 SMM2 port by static recompilation"); status, with evidence per platform, is in `../PROGRESS.md`
 ("Recomp"). It is a fork of [LAS Recomp](https://github.com/peiikai/LASRecomp) (MIT) — what was taken,
 left out and changed is in [UPSTREAM.md](UPSTREAM.md).

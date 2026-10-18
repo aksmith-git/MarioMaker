@@ -86,8 +86,8 @@ The engine is deterministic, so a clear can be sent as a **replay**: the inputs 
 `POST /api/courses/<code>/replay` makes the server play the replay on the course itself; the clear
 time is the replay's, not the client's word, and a best time becomes a *verified* record whose run
 anyone can fetch (`GET …/replay`) to race as a ghost. Start the server with `--verified-records`
-to accept records only this way (typed-in times then count as clears only). `mmk-play --server …
---code … --token …` sends a replay after each clear.
+to accept records only this way (typed-in times then count as clears only). Replays are
+SMCraft's engine's (archived); the recomp's runs don't send them yet.
 
 A replay is tied to the engine version that recorded it (engine updates that change how courses
 play bump it); the server refuses replays from another version.
@@ -107,26 +107,11 @@ delete their own courses with their own token.
 
 ## Online play
 
-Players join a **room** by name, up to 4 per room, all on the same course:
-
-```sh
-# desktop (each player, with their own player number)
-mmk-play level.bcd --net-relay smcraft.example.org:8640 --net-room FRIDAY \
-         --net-player 0 --net-players 2
-```
-
-In the web build: **Play online…**, or open the page with
-`?relay=wss://smcraft.example.org/relay&room=FRIDAY&player=1&players=2`.
-
-The relay forwards inputs between the room's members and tells desktop players each other's
-addresses. Peers then try to reach each other directly and stop using the relay once they can.
-Browser players always go through the relay. Whoever starts first waits for the others. Rooms
-hold no course data and expire 30 seconds after their members go quiet.
-
-For a LAN without a server: `mmk-play --net-bind 0.0.0.0:7000 --net-peer 192.168.1.20:7000
---net-player 0`.
+The relay (UDP on the HTTP port, WebSocket on the next) puts up to 4 players in a named room and
+forwards their inputs; SMCraft's players used it (see the `smcraft-archive` branch). The recomp
+doesn't use it yet.
 
 ## API
 
 The HTTP API is documented at the top of `core/crates/server/src/lib.rs`; the relay protocol at
-the top of `core/crates/netplay/src/relay.rs`. Clients in Rust use `core/crates/online`.
+the top of `core/crates/netplay/src/relay.rs`. The Rust client is `core/crates/online`.

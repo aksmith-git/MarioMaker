@@ -1,4 +1,0 @@
-module CMmk [system] {
-    header "mmk.h"
-    export *
-}
