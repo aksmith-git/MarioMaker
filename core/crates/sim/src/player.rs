@@ -341,9 +341,13 @@ pub struct Player {
     /// Wall slide: the wall's side (−1 / +1, 0 = not sliding) and frames of stick held away.
     pub wall_slide: i32,
     wall_release: i32,
-    /// Jump chain (NSMBU / 3DW): 0 single, 1 second, 2 third jump; frames since landing.
+    /// Jump chain (NSMBU / 3DW): 0 single, 1 second, 2 third jump. A landing from a jump opens
+    /// an 8-frame window (`chain_window`) and an 8-frame lock against counting twice; `in_jump`
+    /// = airborne from a jump.
     pub jump_count: u8,
-    land_timer: i32,
+    chain_window: i32,
+    chain_lock: i32,
+    in_jump: bool,
     /// Ground pound: > 0 wind-up frames left, −1 diving; `pound_landed` for the world this frame.
     pub pound: i32,
     pub pound_landed: bool,
@@ -438,7 +442,9 @@ impl Player {
             wall_slide: 0,
             wall_release: 0,
             jump_count: 0,
-            land_timer: 0,
+            chain_window: 0,
+            chain_lock: 0,
+            in_jump: false,
             pound: 0,
             pound_landed: false,
             dash: 0,
@@ -1031,23 +1037,21 @@ impl Player {
                     self.skid = SkidPhase::None;
                 } else if pressed {
                     self.sliding = false;
-                    // jump chain (§3.1): within the landing window and fast enough (NSMBU ≥ 3.0,
-                    // 3DW any speed) the counter advances; the third jump is ×1.05
-                    // [inf: window 10 frames]
-                    let fast = if self.style == Style::W3 {
-                        self.vx != 0.0
+                    // jump chain (Jump enter 0x71009f0d90, exit 0x71009f1f40) [obs]: the count
+                    // (advanced on landing) survives only inside the 8-frame window and at
+                    // |speed| ≥ 3.0 (3D World: any speed); the third jump is ×1.05
+                    let threshold = if self.style == Style::W3 {
+                        f32::EPSILON
                     } else {
-                        self.vx.abs() >= 3.0
+                        3.0
                     };
-                    self.jump_count = if self.style.has_jump_chain()
-                        && (1..=10).contains(&self.land_timer)
-                        && fast
-                        && self.jump_count < 2
+                    if !(self.style.has_jump_chain()
+                        && self.chain_window > 0
+                        && self.vx.abs() >= threshold)
                     {
-                        self.jump_count + 1
-                    } else {
-                        0
-                    };
+                        self.jump_count = 0;
+                    }
+                    self.in_jump = true;
                     self.vy = JUMP_BASE + jump_bonus(self.vx.abs());
                     if self.jump_count == 2 || self.dashing() {
                         self.vy *= 1.05;
@@ -1076,12 +1080,11 @@ impl Player {
                 self.vy = (self.vy + g).max(FALL_CAP);
             }
         }
-        // frames on the ground since the last landing (the jump-chain window)
-        if self.on_ground {
-            self.land_timer = (self.land_timer + 1).min(1000);
-        } else if self.land_timer > 0 && self.vy > 0.0 {
-            // left the ground: the window counts again from the next landing
-            self.land_timer = 0;
+        if self.chain_window > 0 {
+            self.chain_window -= 1;
+        }
+        if self.chain_lock > 0 {
+            self.chain_lock -= 1;
         }
         self.step_wall_and_pound(inp, pressed, level);
         self.step_propeller(inp, spin_pressed, vy_before);
@@ -1134,6 +1137,19 @@ impl Player {
 
         let sensors = self.sensors();
         self.move_and_collide(level, sensors);
+        // landing from a jump advances the chain count 0 → 1 → 2 → 0 and opens its window
+        if self.on_ground && self.in_jump {
+            self.in_jump = false;
+            if self.chain_lock == 0 {
+                self.chain_window = 8;
+                self.chain_lock = 8;
+                self.jump_count = if self.jump_count < 2 {
+                    self.jump_count + 1
+                } else {
+                    0
+                };
+            }
+        }
 
         if self.on_ground {
             self.stomp_chain = 0;
@@ -2252,5 +2268,54 @@ mod tests {
             &level,
         );
         assert!(p.vy < 1.0, "no second rise in the same air time: {}", p.vy);
+    }
+
+    /// NSMBU jump chain: running jumps re-pressed within 8 frames of landing count 0, 1, 2; the
+    /// third is ×1.05; a late press starts over.
+    #[test]
+    fn jump_chain_counts_on_landing_within_eight_frames() {
+        let level = Level::flat(400);
+        let mut p = Player::new(56.0, 32.0);
+        p.style = Style::WU;
+        let run = input::RIGHT | input::RUN;
+        for _ in 0..120 {
+            p.step(Input { buttons: run }, &level);
+        }
+        let mut counts = Vec::new();
+        for _ in 0..3 {
+            // press on the first grounded frame, hold until landing
+            p.step(
+                Input {
+                    buttons: run | input::JUMP,
+                },
+                &level,
+            );
+            counts.push((p.jump_count, p.vy));
+            while !p.on_ground {
+                p.step(
+                    Input {
+                        buttons: run | input::JUMP,
+                    },
+                    &level,
+                );
+            }
+            p.step(Input { buttons: run }, &level);
+        }
+        assert_eq!(
+            counts.iter().map(|c| c.0).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert!(counts[2].1 > counts[0].1 * 1.04, "third jump ×1.05");
+        // waiting past the window resets the chain
+        for _ in 0..12 {
+            p.step(Input { buttons: run }, &level);
+        }
+        p.step(
+            Input {
+                buttons: run | input::JUMP,
+            },
+            &level,
+        );
+        assert_eq!(p.jump_count, 0);
     }
 }

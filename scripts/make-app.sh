@@ -1,7 +1,7 @@
 #!/bin/sh
 # Build the Rust core + Swift app in release mode and assemble build/<Name>.app (ad-hoc signed).
-#   scripts/make-app.sh            → build/MMK.app
-#   open build/MMK.app
+#   scripts/make-app.sh            → build/SMCraft.app
+#   open build/SMCraft.app
 # The app name, bundle id and version come from app/Sources/MMKApp/Identity.swift (the one place
 # to rename the app).
 set -eu
