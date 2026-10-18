@@ -126,7 +126,7 @@ static const char *cbuf_ref(Ctx *c, int idx, int64_t off, const char *dyn, char 
     if (off + 16 > (int64_t)c->info->cbuf_size[idx]) c->info->cbuf_size[idx] = (uint32_t)((off + 16 + 255) & ~255);
     if (dyn) c->info->cbuf_dynamic |= 1u << idx;
     if (!dyn && idx < 18 && off >= 0 && (uint32_t)(off >> 4) + 1 > c->cbuf_need[idx]) c->cbuf_need[idx] = (uint32_t)(off >> 4) + 1;
-    if (dyn) sprintf(buf, "cbr(cb%d, (%s) + %lldu)", idx, dyn, (long long)off);
+    if (dyn) sprintf(buf, "cbr(cb%d, (%s) + %uu)", idx, dyn, (uint32_t)off);  // (a negative offset wraps, as on the GPU)
     else sprintf(buf, "cb%d[%lld][%lld]", idx, (long long)(off >> 4), (long long)((off >> 2) & 3));
     return buf;
 }
@@ -982,7 +982,11 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         for (int i = 0; i < n; i++) attr_store(c, d + i, addr + 4 * i);
     } else if (OPM(0xef90000000000000ull, 0xfff8000000000000ull)) {  // LD c[idx][reg + imm]
         int idx = (int)bits(w, 36, 5);
-        int64_t off = (int64_t)bits(w, 20, 16);  // unsigned (Ryujinx InstLdc.CbufOffset)
+        // The 16-bit offset is signed when added to the register (Ryujinx Imm16ToSInt): SMM2's skinning shaders read
+        // bone matrix rows at c[6][Rx - 0x10]; taken as +0xfff0 that read past the bone palette and threw the skinned
+        // parts of Mario off screen.
+        int64_t off = (int64_t)bits(w, 20, 16);
+        if (a != RZ && off >= 0x8000) off -= 0x10000;
         int sz = (int)bits(w, 48, 3);
         int n = sz == 5 ? 2 : 1;
         char rb[16];
