@@ -255,6 +255,10 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
 - ✅ Tracks: graph from track records (lines + quarter arcs), rail follower (0.75 / 1.5 px/f),
   any actor rides (lifts, seesaws, grinders, claws, items, enemies); drawn as lines · junctions,
   open ends, blocks/coins on tracks, exact track tiles ⬜ — SMB1 sample 49 → 52 playable
+  - ✅ Pass 3: the game's rail grid (record templates, end words, cell words) and its follower
+    (cell-centre walk, 2×2 bends at r 24, closed / open ends, start field), junctions 8–15
+    switched by ON/OFF — all 657 corpus riders attach, every fall is at an open end · re-catch
+    of a falling rider onto a lower track (0x7100343680) ⬜
 - ⬜ Measure object/style/theme frequency in real courses
 - ⬜ Add styles, themes, objects in that order (2.0/3.0 items need the update dump)
 
@@ -408,8 +412,10 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   Spin gets out; runs enemies over; hits damage the car (third breaks it) [inf]; "goal in a
   Koopa Troopa Car" condition. Enemy drivers ⬜ (none in the sample)
 - ✅ ! Block (119): 2×2 solid with a drawn path; a hit from below bounces it (7-frame ramp),
-  knocks out enemies on it and grows a chain of 2×2 blocks along the path [inf: the chain motion
-  wasn't decoded], restored after 600 frames
+  knocks out enemies on it and grows a chain of 2×2 blocks along the path, restored after 600 frames
+  - ✅ Pass 3: the chain as decoded — one segment per path point, a head hit slides one out
+    (3 px/f), a ground-pound-type hit sends runs to each turn; snake / track-block path codes are
+    steps into each node, end codes included · world wiring of `hit_all` (ground pound) ⬜
 - ✅ Tree (106): the trunk climbs like a vine up into the canopy, the canopy is a jump-through
   platform, reaching it knocks out the canopy item (vy 4.5) [inf: trigger]
 - ✅ Mushroom Trampoline (113): top-only platform N tiles wide; landing launches at 6.0 (4.43 with
