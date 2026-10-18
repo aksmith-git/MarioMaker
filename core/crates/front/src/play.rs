@@ -7,7 +7,7 @@
 
 use crate::host::CourseStatus;
 use crate::menu::{Buttons, Script, UiInput};
-use crate::screens::{CardInfo, CourseScreens, Mode, PAUSE_PARTS, SKIP_HOLD};
+use crate::screens::{CardInfo, CourseScreens, Mode, SKIP_HOLD};
 use crate::smm1::{RunCardInfo, RunOverlay, RunOverlayMode};
 use crate::{Cx, DrawItem};
 
@@ -127,6 +127,20 @@ pub struct CoursePlay {
 }
 
 const RESULT_GRACE: u32 = 30;
+
+/// Like (or boo) server course `code` as the signed-in account; false (with a message) when
+/// signed out or without a server.
+fn vote(cx: &mut Cx, code: Option<&str>, like: bool) -> bool {
+    let Some(code) = code else {
+        return false;
+    };
+    if !cx.online.signed_in() {
+        cx.toast("Sign in from the Course World player card to vote.");
+        return false;
+    }
+    let args = serde_json::json!({ "code": code, "like": like });
+    cx.online.call(cx.host, "vote", args).is_some()
+}
 
 impl CoursePlay {
     /// A course just loaded into the engine. With `screens`, the SMM2 layouts (`info`; the card
@@ -485,15 +499,43 @@ impl CoursePlay {
         let t = s.tick;
         match self.phase {
             Phase::Paused => {
-                let n = PAUSE_PARTS.len();
+                // top to bottom: close, (a server course) the judge row, Start Over, Exit,
+                // Settings; left / right between Boo and Like [inf]
+                let judge = s.pause_buttons() > 4;
+                let order: &[usize] = if judge {
+                    &[0, 5, 1, 2, 3]
+                } else {
+                    &[0, 1, 2, 3]
+                };
+                let n = order.len();
+                let row = if s.pause_selection == 4 {
+                    5
+                } else {
+                    s.pause_selection
+                };
+                let at = order.iter().position(|&k| k == row).unwrap_or(0);
                 if pressed.has(Buttons::UP) {
-                    s.pause_select((s.pause_selection + n - 1) % n, true);
+                    s.pause_select(order[(at + n - 1) % n], true);
                 }
                 if pressed.has(Buttons::DOWN) {
-                    s.pause_select((s.pause_selection + 1) % n, true);
+                    s.pause_select(order[(at + 1) % n], true);
+                }
+                if judge && s.pause_selection >= 4 {
+                    if pressed.has(Buttons::LEFT) {
+                        s.pause_select(4, true);
+                    }
+                    if pressed.has(Buttons::RIGHT) {
+                        s.pause_select(5, true);
+                    }
                 }
                 if pressed.has(Buttons::BACK) {
                     self.resume();
+                } else if pressed.has(Buttons::CONFIRM) && s.pause_selection >= 4 {
+                    let like = s.pause_selection == 5;
+                    s.pause_decide_sound(s.pause_selection);
+                    if vote(cx, s.info.server_code.as_deref(), like) {
+                        s.pause_voted(like);
+                    }
                 } else if pressed.has(Buttons::CONFIRM) {
                     // a run's exit is Save & Quit
                     let exit = if run.is_none() {
@@ -565,20 +607,8 @@ impl CoursePlay {
                     if s.clear_selection >= 2 {
                         // Like / Boo a server course (an account's vote replaces its last one)
                         let like = s.clear_selection == 3;
-                        let code = s.info.server_code.clone().unwrap_or_default();
-                        if !cx.online.signed_in() {
-                            s.ui_decide_sound(s.clear_selection);
-                            cx.toast("Sign in from the Course World player card to vote.");
-                        } else if cx
-                            .online
-                            .call(
-                                cx.host,
-                                "vote",
-                                serde_json::json!({ "code": code, "like": like }),
-                            )
-                            .is_some()
-                        {
-                            s.ui_decide_sound(s.clear_selection);
+                        s.ui_decide_sound(s.clear_selection);
+                        if vote(cx, s.info.server_code.as_deref(), like) {
                             s.clear_voted(like);
                         }
                         return None;

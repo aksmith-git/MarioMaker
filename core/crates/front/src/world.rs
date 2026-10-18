@@ -1535,7 +1535,7 @@ impl WorldFlow {
 
     /// Captures and tests: open a screen directly ("account", "leaderboards", the course page /
     /// comments / comment form of the list's first server course, "maker" of its uploader,
-    /// "play" it, or its "clear" screen).
+    /// "play" it, its "pause" menu or its "clear" screen).
     pub fn debug_open(&mut self, cx: &mut Cx, what: &str) -> bool {
         match what {
             "account" => {
@@ -1548,7 +1548,7 @@ impl WorldFlow {
                 }
             }
             "leaderboards" => self.go(cx, WorldGo::Leaderboards),
-            "clear" | "play" => {
+            "clear" | "play" | "pause" => {
                 let Some(c) = self.first_server_course() else {
                     return false;
                 };
@@ -1558,6 +1558,12 @@ impl WorldFlow {
                 {
                     p.debug("course-clear", cx, None);
                     // the capture's presses go to the clear screen (menu ticks)
+                    p.script = Some(std::mem::take(&mut self.script));
+                }
+                if what == "pause"
+                    && let Stage::Playing(p, _) = &mut self.stage
+                {
+                    p.auto_pause_tick = Some(1);
                     p.script = Some(std::mem::take(&mut self.script));
                 }
             }

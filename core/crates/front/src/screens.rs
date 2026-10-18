@@ -284,12 +284,45 @@ pub const OPTION_PARTS: [&str; 5] = [
     "L_CharacterBtn_03",
     "L_OKBtn_00",
 ];
+/// The judge buttons (Boo, Like) of the pause menu and the clear screen.
+pub const JUDGE_PARTS: [&str; 2] = ["L_NegativeBtn_00", "L_GoodBtn_00"];
+
+/// Show the judge buttons of `l` (the layout's own texts), with the vote `voted` (true like)
+/// keeping its pressed look (the end of its Decide) [inf].
+fn judge_buttons(l: &mut Layout, voted: Option<bool>) {
+    for (k, (b, t)) in [
+        ("L_NegativeBtn_00", "T_Negative"),
+        ("L_GoodBtn_00", "T_Good"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        for n in ["00", "01"] {
+            l.text_from(&format!("{b}/{t}_{n}"), &format!("{b}-{t}_00"));
+        }
+        let a = format!("{b}/Decide");
+        if voted == Some(k == 1) {
+            l.hold_end(&a);
+        } else {
+            l.stop(&a);
+        }
+    }
+}
+
 /// 0 Start Over (L_Btn_01, left), 1 Quit (L_Btn_00, right) [inf]; a server course's clear
 /// adds 2 Boo (`L_NegativeBtn_00`) and 3 Like (`L_GoodBtn_00`), the game's judge buttons left
 /// of them.
 pub const CLEAR_PARTS: [&str; 4] = ["L_Btn_01", "L_Btn_00", "L_NegativeBtn_00", "L_GoodBtn_00"];
 /// The clear screen's buttons from left to right (indices of [`CLEAR_PARTS`]).
 pub const CLEAR_ORDER: [usize; 4] = [2, 3, 0, 1];
+
+/// Pause button `i`: [`PAUSE_PARTS`], then 4 Boo and 5 Like ([`JUDGE_PARTS`]).
+pub fn pause_part(i: usize) -> &'static str {
+    match i {
+        0..4 => PAUSE_PARTS[i],
+        _ => JUDGE_PARTS[(i - 4).min(1)],
+    }
+}
 /// 0 Exit (L_Btn_00, left), 1 Keep playing (L_Btn_02, right).
 pub const RETIRE_PARTS: [&str; 2] = ["L_Btn_00", "L_Btn_02"];
 /// Ticks the skip key must be held: three countdown steps of 32 frames [inf, as SMM1].
@@ -339,6 +372,8 @@ pub struct CourseScreens {
     pub character: usize,
     pub clear_selection: usize,
     pub retire_selection: usize,
+    /// This play's vote on a server course (true like), shown on the pause and clear screens.
+    pub voted: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -421,6 +456,7 @@ impl CourseScreens {
             character: 0,
             clear_selection: 1,
             retire_selection: 1,
+            voted: None,
         })
     }
 
@@ -533,7 +569,7 @@ impl CourseScreens {
         let (l, pane) = match self.mode {
             Mode::Pause => (
                 self.pause_l.as_mut(),
-                format!("{}/B_Btn_00", PAUSE_PARTS[self.pause_selection]),
+                format!("{}/B_Btn_00", pause_part(self.pause_selection)),
             ),
             Mode::Options => (
                 self.options_l.as_mut(),
@@ -572,8 +608,9 @@ impl CourseScreens {
     /// A click on one of the current screen's buttons: its index.
     pub fn hit(&mut self, p: [f32; 2]) -> Option<usize> {
         let clear = self.clear_buttons();
+        let pause: Vec<&str> = (0..self.pause_buttons()).map(pause_part).collect();
         let (l, parts): (Option<&mut Layout>, &[&str]) = match self.mode {
-            Mode::Pause => (self.pause_l.as_mut(), &PAUSE_PARTS),
+            Mode::Pause => (self.pause_l.as_mut(), &pause),
             Mode::Options => (self.options_l.as_mut(), &OPTION_PARTS),
             Mode::Clear => (self.clear_l.as_mut(), &CLEAR_PARTS[..clear]),
             Mode::Retire => (self.retire_l.as_mut(), &RETIRE_PARTS),
@@ -971,10 +1008,16 @@ impl CourseScreens {
         let none = self.ui.message("GoalCondition", "None").unwrap_or_default();
         let checkpoint = self.status.checkpoint;
         let info = self.info.clone();
+        let voted = self.voted;
         let p = self.pause_l.as_mut().expect("checked");
-        // Type 3: Start Over + Exit Course, no Edit / likes / comments; TypeCourseInfo 1: the
-        // Course World information block [inf]
-        p.hold("Type", 3.0);
+        // Type 3: Start Over + Exit Course, no Edit / likes / comments; a server course: Type 2,
+        // with the judge buttons (Boo / Like); TypeCourseInfo 1: the Course World information
+        // block [inf]
+        let judge = info.server_code.is_some();
+        p.hold("Type", if judge { 2.0 } else { 3.0 });
+        if judge {
+            judge_buttons(p, voted);
+        }
         p.hold("TypeCourseInfo", 1.0);
         let label = info.mode_label.clone().unwrap_or_else(|| {
             if info.built_in {
@@ -998,8 +1041,8 @@ impl CourseScreens {
             "L_GoodCount_00",
             "N_TagAll_00",
             "L_KeyBtn_00",
-            "N_PlayerInfo_01/L_Flag_00",
-            "N_PlayerInfo_01/L_BadgeList_00",
+            "L_Flag_00",
+            "L_BadgeList_00",
         ] {
             p.show(n, false);
         }
@@ -1077,18 +1120,48 @@ impl CourseScreens {
         self.pause_select(0, false);
     }
 
+    /// How many pause buttons there are (4, or 6 with a server course's judge buttons: 4 Boo,
+    /// 5 Like).
+    pub fn pause_buttons(&self) -> usize {
+        if self.info.server_code.is_some() {
+            6
+        } else {
+            4
+        }
+    }
+
+    /// A vote in the pause menu (see [`CourseScreens::clear_voted`]).
+    pub fn pause_voted(&mut self, like: bool) {
+        self.voted = Some(like);
+        let t = self.tick;
+        let Some(p) = &mut self.pause_l else { return };
+        let (on, off) = if like {
+            ("L_GoodBtn_00", "L_NegativeBtn_00")
+        } else {
+            ("L_NegativeBtn_00", "L_GoodBtn_00")
+        };
+        p.stop(&format!("{off}/Decide"));
+        p.play(&format!("{on}/Decide"), t);
+    }
+
+    /// The pause button `i`'s decide sound alone.
+    pub fn pause_decide_sound(&self, i: usize) {
+        self.ui
+            .sound_button("Cmn_PauseMenu_00", pause_part(i), Event::Decide);
+    }
+
     pub fn pause_select(&mut self, i: usize, sound: bool) {
-        self.pause_selection = i.min(PAUSE_PARTS.len() - 1);
+        self.pause_selection = i.min(self.pause_buttons() - 1);
         if sound {
             self.ui.sound_button(
                 "Cmn_PauseMenu_00",
-                PAUSE_PARTS[self.pause_selection],
+                pause_part(self.pause_selection),
                 Event::Select,
             );
         }
-        let (sel, t) = (self.pause_selection, self.tick);
+        let (sel, t, n) = (self.pause_selection, self.tick, self.pause_buttons());
         let Some(p) = &mut self.pause_l else { return };
-        for (k, part) in PAUSE_PARTS.iter().enumerate() {
+        for (k, part) in (0..n).map(pause_part).enumerate() {
             let a = format!("{part}/Select");
             if k == sel {
                 p.play(&a, t);
@@ -1100,7 +1173,7 @@ impl CourseScreens {
 
     /// The chosen button's Decide; returns its length in ticks.
     pub fn pause_decide(&mut self) -> i32 {
-        let part = PAUSE_PARTS[self.pause_selection];
+        let part = pause_part(self.pause_selection);
         self.ui
             .sound_button("Cmn_PauseMenu_00", part, Event::Decide);
         let t = self.tick;
@@ -1232,6 +1305,7 @@ impl CourseScreens {
         }
         self.hud_out();
         let info = self.info.clone();
+        let voted = self.voted;
         let c = self.clear_l.as_mut().expect("checked");
         // Type 2 with the network parts hidden; the banner (N_Cap_00) drawn in place,
         // undistorted (the game shows a distorted capture of it) [inf]
@@ -1251,17 +1325,7 @@ impl CourseScreens {
         // a server course: Like / Boo, the game's own judge buttons [obs layout]
         c.show("N_JudgeBtn_00", judge);
         c.show("L_OrdinaryBtn_00", false);
-        for b in ["L_GoodBtn_00", "L_NegativeBtn_00"] {
-            c.stop(&format!("{b}/Decide"));
-        }
-        for (b, t) in [
-            ("L_GoodBtn_00", "T_Good"),
-            ("L_NegativeBtn_00", "T_Negative"),
-        ] {
-            for k in ["00", "01"] {
-                c.text_from(&format!("{b}/{t}_{k}"), &format!("{b}-{t}_00"));
-            }
-        }
+        judge_buttons(c, voted);
         c.set_translate("N_Cap_00", [0.0, 0.0]);
         c.show("P_InNetBG_00", true);
         // the glow lettering under the card's letter holes stays white (no frame capture) [inf]
@@ -1320,6 +1384,7 @@ impl CourseScreens {
     /// A vote on the clear screen: the button keeps its pressed look (the end of its Decide),
     /// the other one its plain look [inf].
     pub fn clear_voted(&mut self, like: bool) {
+        self.voted = Some(like);
         let Some(c) = &mut self.clear_l else { return };
         let (on, off) = if like {
             ("L_GoodBtn_00", "L_NegativeBtn_00")

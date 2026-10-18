@@ -521,7 +521,8 @@ Not Nintendo's network: the engine talks to an open-source server the owner can 
 - 🔄 Course World client: browse (SMM2 course list over the server and the library) and play ✅,
   play / clear reports ✅; in the Rust front end (`mmk-front`, 2026-10-18) ✅: account (player
   card → `Nwk_PlayerInfo_00`: create with a typed name, sign in with a token, sign out; token in
-  the host's store), like / boo on a server course's clear screen (the game's judge buttons),
+  the host's store), like / boo on a server course's clear screen and pause menu (the game's
+  judge buttons),
   comments (`Nwk_CommentViewer_00`) and posting (`Nwk_CommentPosting_00`, typed), course page
   (`Nwk_CourseListWindow_00` + `Nwk_CourseDetail_00`: likes, plays, first clear, world record),
   maker profiles (their uploaded courses), leaderboards (`Nwk_CourseListMaker_00`: maker points,
@@ -529,7 +530,8 @@ Not Nintendo's network: the engine talks to an open-source server the owner can 
   verifies (fallback: the time), the record's ghost raced from the course page, Endless runs
   reported; `mmk-play` host on threads (`--server` / `$MMK_SERVER`), tested against a local
   `mmk server` with captures `account`, `courseworld-leaderboards`, `courseworld-course-page`,
-  `-comments`, `-post`, `-maker`, `-play`, `-clear` · votes / comments from the pause menu ⬜ ·
+  `-comments`, `-post`, `-maker`, `-play`, `-pause`, `-clear` · comments from the pause / clear
+  screens ⬜ ·
   upload from the editor ⬜ (no Course Maker in the front end yet) · the Swift app's FFI host ⬜
 - ✅ Local multiplayer (co-op, up to 4: Mario, Luigi, Toad, Toadette as the models' _2/_3/_4
   variants): extra players run the same rules, rejoin beside player 1 [inf: bubble], any player

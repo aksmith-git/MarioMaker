@@ -13,6 +13,8 @@ use crate::leaderboard::LeaderboardScene;
 use crate::menu::{Buttons, Script, UiInput};
 use crate::online::Online;
 use crate::play::tests::{MockHost, with_online};
+use crate::play::{CoursePlay, PlayInput};
+use crate::screens::{CardInfo, CourseScreens};
 use crate::smm1::{ChallengeMenuScene, RunQuery, Smm1Event};
 use crate::testing::{click, press, smm1, smm2, typed};
 use crate::world::{CourseListScene, HubChoice, HubEvent, HubScene, ListEvent, Tab, hub_bound};
@@ -370,4 +372,49 @@ fn endless_runs_reach_the_server_when_signed_in() {
         host.calls[0].2,
         json!({"difficulty": "normal", "cleared": 0})
     );
+}
+
+fn play_input(b: Buttons) -> PlayInput {
+    PlayInput {
+        ui: press(b),
+        start: false,
+    }
+}
+
+#[test]
+fn pause_votes_go_to_the_server() {
+    let Some(ui) = smm2() else { return };
+    let mut host = MockHost {
+        server: true,
+        ..Default::default()
+    };
+    let (mut saves, mut online) = (Saves::default(), signed_in());
+    let info = CardInfo {
+        name: "C".into(),
+        server_code: Some("DDD-DDD-DDD".into()),
+        ..Default::default()
+    };
+    let mut p = with_online(&mut host, &mut saves, &mut online, |cx| {
+        let s = CourseScreens::new(&ui);
+        CoursePlay::new(cx, "C".into(), None, s, None, info, false, true, false)
+    });
+    with_online(&mut host, &mut saves, &mut online, |cx| {
+        p.step(&play_input(Buttons::NONE), cx, None);
+        p.pause(None);
+        for _ in 0..60 {
+            p.step(&play_input(Buttons::NONE), cx, None);
+        }
+        p.step(&play_input(Buttons::DOWN), cx, None);
+        assert_eq!(p.screens.as_ref().unwrap().pause_selection, 5, "Like");
+        p.step(&play_input(Buttons::CONFIRM), cx, None);
+        p.step(&play_input(Buttons::LEFT), cx, None);
+        assert_eq!(p.screens.as_ref().unwrap().pause_selection, 4, "Boo");
+        p.step(&play_input(Buttons::CONFIRM), cx, None);
+        p.step(&play_input(Buttons::DOWN), cx, None);
+        assert_eq!(p.screens.as_ref().unwrap().pause_selection, 1, "Start Over");
+    });
+    let votes: Vec<_> = host.calls.iter().filter(|c| c.1 == "vote").collect();
+    assert_eq!(votes[0].2, json!({"code": "DDD-DDD-DDD", "like": true}));
+    assert_eq!(votes[1].2, json!({"code": "DDD-DDD-DDD", "like": false}));
+    assert_eq!(p.screens.as_ref().unwrap().voted, Some(false));
 }

@@ -20,8 +20,9 @@ each on the game's own layout where it has one:
   ghosts are ours]. The "Cleared by / Liked by" column shows the layout's "no one yet"
   [departure: the server keeps no player lists].
 - **Likes / boos** where SMM2 has them: the judge buttons (`Cmn_GoodBtn_00` /
-  `Cmn_NegativeBtn_00`) on a server course's clear screen; the voted one keeps the end of its
-  Decide [inf]. Not yet in the pause menu.
+  `Cmn_NegativeBtn_00`) on a server course's clear screen and in its pause menu (Type 2, the
+  judge row between the close button and Start Over; ←/→ between Boo and Like [inf]); the voted
+  one keeps the end of its Decide on both screens [inf].
 - **Comments:** "View comments" opens `Nwk_CommentViewer_00` (text comments, left and right in
   turn, name and date; absolute dates because the host gives no clock for "n hours ago" [inf]);
   confirm opens `Nwk_CommentPosting_00` in its text form to type one (signed in) [inf: the game
@@ -49,7 +50,7 @@ each on the game's own layout where it has one:
   doesn't draw yet.
 **Why:** the owner's Phase 10 (accounts, likes, comments, leaderboards, records and ghosts)
 reachable from SMM2's own Course World on every platform, the server staying ours.
-**Open / would change it:** the pause menu's judge and comment buttons; the server timing a
+**Open / would change it:** the pause / clear screens' comment buttons; the server timing a
 replay to the end of the clear (`Replay::run` stops at `World::cleared`) while the clear screen
 shows the goal time, so the record shown differs from the clear screen's time; a Course Maker in
 the front end (upload); thumbnails, Miis and per-player lists if the server gains them; the
