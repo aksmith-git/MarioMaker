@@ -241,9 +241,10 @@ pub struct MmkEngine {
     director: Option<Director>,
     /// This frame's mesh draws (3D styles), see `mmk_engine_meshes`.
     meshes: Vec<mesh::MmkMeshDraw>,
-    /// (model, frame) → mesh plan, and (field model, atlas index) → tile plan; None = sprite.
-    mesh_plans: std::collections::HashMap<(&'static str, &'static str), Option<mesh::MeshPlan>>,
-    tile_plans: std::collections::HashMap<(&'static str, u32), Option<mesh::MeshPlan>>,
+    /// Sprite → mesh plans of the 3D styles (`mmk_host::mesh::MeshPlanner`).
+    planner: mesh::MeshPlanner,
+    /// This frame's 2D sprites (before conversion to `MmkSprite`).
+    draw: Vec<mmk_host::DrawSprite>,
     /// Draw the 3D styles' models as meshes (default on; `mmk_engine_set_meshes`).
     mesh_mode: bool,
 }
@@ -309,8 +310,8 @@ pub unsafe extern "C" fn mmk_engine_new(assets: *const MmkAssets) -> *mut MmkEng
             assets,
             director: None,
             meshes: Vec::new(),
-            mesh_plans: Default::default(),
-            tile_plans: Default::default(),
+            planner: Default::default(),
+            draw: Vec::new(),
             mesh_mode: true,
         }))
     })
@@ -351,8 +352,7 @@ pub unsafe extern "C" fn mmk_engine_load_course(
                 e.world = World::from_course(&course);
                 e.course = Some(course);
                 e.resolver.reset();
-                e.mesh_plans.clear();
-                e.tile_plans.clear();
+                e.planner.reset();
                 if let Some(d) = &mut e.director {
                     d.start_course(&e.world);
                 }
@@ -470,58 +470,33 @@ pub unsafe extern "C" fn mmk_engine_snapshot(engine: *mut MmkEngine, out: *mut M
             return;
         };
         let assets = unsafe { &*e.assets };
-        let mut sprites = e.world.sprites();
-        sprites.sort_by_key(|s| s.layer);
-        let style = e.world.level.style.clone();
-        e.meshes.clear();
+        let mut store = e
+            .mesh_mode
+            .then(|| assets.meshes.lock().unwrap_or_else(|p| p.into_inner()));
+        e.planner.frame(
+            &e.world,
+            &assets.cache,
+            store.as_deref_mut(),
+            &mut e.resolver,
+            &mut e.draw,
+            &mut e.meshes,
+        );
+        // missing art (placeholder mode, or not imported yet): report the sprite with
+        // MMK_TEXTURE_NONE so the app can draw a stand-in shape
         e.sprites.clear();
-        let mut store = (e.mesh_mode && mesh::mesh_style(&style))
-            .then(|| assets.meshes.lock().unwrap_or_else(|p| p.into_inner()))
-            .filter(|s| s.available());
-        let tick = e.world.tick as f32;
-        for s in sprites {
-            let key = (s.image.model, s.image.texture);
-            if let Some(store) = store.as_deref_mut() {
-                let plan = match s.image.rect {
-                    // 3D World terrain and blocks are models per field-atlas cell
-                    Some((rx, ry, _, _)) if style == "3W" && key.0.starts_with("3W_Field_") => {
-                        let idx = (ry / 16.0) as u32 * 16 + (rx / 16.0) as u32;
-                        e.tile_plans
-                            .entry((key.0, idx))
-                            .or_insert_with(|| store.plan_tile(key.0, idx))
-                            .as_ref()
-                    }
-                    Some(_) => None,
-                    None => e
-                        .mesh_plans
-                        .entry(key)
-                        .or_insert_with(|| store.plan_model(&assets.cache, &style, key.0, key.1))
-                        .as_ref(),
-                };
-                if let Some(plan) = plan {
-                    let order = e.sprites.len() as u32;
-                    let tile = s.image.rect.is_some();
-                    store.emit(&assets.cache, plan, &s, tile, tick, order, &mut e.meshes);
-                    continue;
-                }
-            }
-            // missing art (placeholder mode, or not imported yet): report the sprite with
-            // MMK_TEXTURE_NONE so the app can draw a stand-in shape
-            let d = e.resolver.resolve_one(&style, &s, &assets.cache);
-            e.sprites.push(MmkSprite {
-                texture: d.texture.unwrap_or(MMK_TEXTURE_NONE),
-                x: d.x,
-                y: d.y,
-                w: d.w,
-                h: d.h,
-                u0: d.u0,
-                v0: d.v0,
-                u1: d.u1,
-                v1: d.v1,
-                layer: d.layer,
-                flags: d.flip_x as u32,
-            });
-        }
+        e.sprites.extend(e.draw.iter().map(|d| MmkSprite {
+            texture: d.texture.unwrap_or(MMK_TEXTURE_NONE),
+            x: d.x,
+            y: d.y,
+            w: d.w,
+            h: d.h,
+            u0: d.u0,
+            v0: d.v0,
+            u1: d.u1,
+            v1: d.v1,
+            layer: d.layer,
+            flags: d.flip_x as u32,
+        }));
         *out = MmkSnapshot {
             sprites: e.sprites.as_ptr(),
             sprite_count: e.sprites.len(),
@@ -802,8 +777,8 @@ mod tests {
             assets: std::ptr::null(),
             director: None,
             meshes: Vec::new(),
-            mesh_plans: Default::default(),
-            tile_plans: Default::default(),
+            planner: Default::default(),
+            draw: Vec::new(),
             mesh_mode: true,
         };
         unsafe {

@@ -261,6 +261,10 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   `ffi` too). Verified on macOS (M4 Pro, Metal): offscreen frames pixel-identical to the Swift app
   below the HUD; `--check-textures` agrees with the GPU on every BC texture. Open: layouts
   (layout player), the SMM font HUD, clear-condition HUD text, menus/library
+- ✅ 3D models in the portable shell: the mesh planner moved to `mmk-host::mesh` (shared with
+  the Swift app); `mmk-play` skins on the CPU (works on every wgpu backend, WebGL2 included) and
+  draws meshes with a depth buffer, interleaved with sprites by layer like the Swift renderer;
+  `mmk-play --map` renders whole courses, `mmk gallery` / `mmk missing-art` check every part's art
 - 🔄 Windows and Linux builds of the shell; CI jobs on Windows + Ubuntu (clippy, tests, release
   binaries) and wasm32 on Ubuntu. Windows type-checks locally (clippy, MSVC target); not yet run
   on Windows or Linux hardware

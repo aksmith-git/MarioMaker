@@ -15,6 +15,7 @@ pub mod game;
 pub mod hud;
 pub mod input;
 pub mod maker;
+pub mod mesh;
 pub mod render;
 pub mod session;
 pub mod source;

@@ -23,6 +23,11 @@ pub struct Game {
     resolver: SpriteResolver,
     sprites: Vec<DrawSprite>,
     hud: HudText,
+    /// NSMBU / 3D World models (None without a mesh stage in the cache, or `--no-meshes`).
+    pub meshes: Option<mmk_host::mesh::MeshStore>,
+    planner: mmk_host::mesh::MeshPlanner,
+    mesh_draws: Vec<mmk_host::mesh::MmkMeshDraw>,
+    mesh_frame: crate::mesh::MeshFrame,
 }
 
 impl Game {
@@ -44,12 +49,20 @@ impl Game {
 
     /// A game on an already opened cache (the web build keeps one for every course it plays).
     pub fn with_cache(cache: Arc<Cache>, placeholder: bool, course: Option<Course>) -> Self {
+        let meshes = {
+            let store = mmk_host::mesh::MeshStore::new(cache.root.clone());
+            (!placeholder && store.available()).then_some(store)
+        };
         Self {
             maker: None,
             editing: false,
             session: Session::new(course),
             placeholder,
             cache,
+            meshes,
+            planner: Default::default(),
+            mesh_draws: Vec::new(),
+            mesh_frame: Default::default(),
             resolver: SpriteResolver::default(),
             sprites: Vec::new(),
             hud: HudText::default(),
@@ -68,6 +81,7 @@ impl Game {
             self.session.set_audio(audio);
             self.editing = false;
             self.resolver.reset();
+            self.planner.reset();
         }
     }
 
@@ -76,6 +90,7 @@ impl Game {
         if self.maker.is_some() {
             self.editing = true;
             self.resolver.reset();
+            self.planner.reset();
         }
     }
 
@@ -85,7 +100,20 @@ impl Game {
         {
             let status = m.status();
             let w = m.world();
-            self.resolver.resolve(w, &self.cache, &mut self.sprites);
+            self.planner.frame(
+                w,
+                &self.cache,
+                self.meshes.as_mut(),
+                &mut self.resolver,
+                &mut self.sprites,
+                &mut self.mesh_draws,
+            );
+            match self.meshes.as_mut() {
+                Some(store) => {
+                    crate::mesh::build(store, &self.cache, &self.mesh_draws, &mut self.mesh_frame)
+                }
+                None => self.mesh_frame.clear(),
+            }
             self.hud = HudText {
                 strip: status,
                 banner: None,
@@ -96,10 +124,24 @@ impl Game {
                 upside_down: false,
                 clear: mmk_host::clear_color(w, &self.cache),
                 hud: &self.hud,
+                meshes: &self.mesh_frame,
             };
         }
         let w = &self.session.world;
-        self.resolver.resolve(w, &self.cache, &mut self.sprites);
+        self.planner.frame(
+            w,
+            &self.cache,
+            self.meshes.as_mut(),
+            &mut self.resolver,
+            &mut self.sprites,
+            &mut self.mesh_draws,
+        );
+        match self.meshes.as_mut() {
+            Some(store) => {
+                crate::mesh::build(store, &self.cache, &self.mesh_draws, &mut self.mesh_frame)
+            }
+            None => self.mesh_frame.clear(),
+        }
         self.hud = HudText::of(w, self.session.phase);
         Scene {
             sprites: &self.sprites,
@@ -107,6 +149,7 @@ impl Game {
             upside_down: w.upside_down(),
             clear: mmk_host::clear_color(w, &self.cache),
             hud: &self.hud,
+            meshes: &self.mesh_frame,
         }
     }
 }

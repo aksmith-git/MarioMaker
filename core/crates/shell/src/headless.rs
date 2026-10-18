@@ -234,6 +234,7 @@ pub fn check_textures(game: &Game) -> Result<String, String> {
             format,
             "fs_copy",
             false,
+            None,
         )
     };
     let (srgb_pipeline, linear_pipeline) = (copy(FORMAT), copy(LINEAR));

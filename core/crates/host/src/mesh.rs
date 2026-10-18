@@ -349,8 +349,6 @@ impl MeshStore {
     }
 }
 
-// --- C API -------------------------------------------------------------------------------------
-
 // --- sim sprites → mesh draws ------------------------------------------------------------------
 
 /// Turn toward the walking direction for 3D actors in the side view: 70° from facing the
@@ -818,4 +816,70 @@ impl MeshStore {
 /// The styles drawn with 3D meshes.
 pub fn mesh_style(style: &str) -> bool {
     matches!(style, "WU" | "3W")
+}
+
+// --- one frame -----------------------------------------------------------------------------------
+
+/// Turns a world's sprites into this frame's draw lists: the sprites that stay 2D (placed, in
+/// draw order) and, for the 3D styles, the mesh draws. Remembers each sprite name's plan; `reset`
+/// when the course or cache changes.
+#[derive(Default)]
+pub struct MeshPlanner {
+    plans: HashMap<(&'static str, &'static str), Option<MeshPlan>>,
+    tiles: HashMap<(&'static str, u32), Option<MeshPlan>>,
+}
+
+impl MeshPlanner {
+    pub fn reset(&mut self) {
+        self.plans.clear();
+        self.tiles.clear();
+    }
+
+    /// `store`: the cache's meshes, or None to draw everything as sprites. Each mesh draw's
+    /// `order` is the number of 2D sprites drawn before it.
+    pub fn frame(
+        &mut self,
+        world: &mmk_sim::World,
+        cache: &Cache,
+        store: Option<&mut MeshStore>,
+        resolver: &mut crate::SpriteResolver,
+        sprites: &mut Vec<crate::DrawSprite>,
+        meshes: &mut Vec<MmkMeshDraw>,
+    ) {
+        let mut list = world.sprites();
+        list.sort_by_key(|s| s.layer);
+        let style = world.level.style.as_str();
+        sprites.clear();
+        meshes.clear();
+        let mut store = store.filter(|s| mesh_style(style) && s.available());
+        let tick = world.tick as f32;
+        for s in list {
+            let key = (s.image.model, s.image.texture);
+            if let Some(store) = store.as_deref_mut() {
+                let plan = match s.image.rect {
+                    // 3D World terrain and blocks are models per field-atlas cell
+                    Some((rx, ry, _, _)) if style == "3W" && key.0.starts_with("3W_Field_") => {
+                        let idx = (ry / 16.0) as u32 * 16 + (rx / 16.0) as u32;
+                        self.tiles
+                            .entry((key.0, idx))
+                            .or_insert_with(|| store.plan_tile(key.0, idx))
+                            .as_ref()
+                    }
+                    Some(_) => None,
+                    None => self
+                        .plans
+                        .entry(key)
+                        .or_insert_with(|| store.plan_model(cache, style, key.0, key.1))
+                        .as_ref(),
+                };
+                if let Some(plan) = plan {
+                    let order = sprites.len() as u32;
+                    let tile = s.image.rect.is_some();
+                    store.emit(cache, plan, &s, tile, tick, order, meshes);
+                    continue;
+                }
+            }
+            sprites.push(resolver.resolve_one(style, &s, cache));
+        }
+    }
 }
