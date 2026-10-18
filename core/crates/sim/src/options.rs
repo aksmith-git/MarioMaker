@@ -53,30 +53,56 @@ impl MushroomSwap {
 pub struct Options {
     /// SMM1 shell physics: the mid-air shell kick and the shell jump (see `World::touch_shell`).
     pub smm1_shell_kicks: bool,
-    /// SMM1 layering: pipes are drawn in front of the player.
-    pub pipes_over_player: bool,
+    /// SMM1 draw order (z ladder, see `World::smm1_layer`): the player passing through a pipe is
+    /// in front of blocks but behind the pipes, coins sit behind blocks, tracks in front of
+    /// pipes; in normal play the player stays in front of pipes, as in SMM2.
+    pub smm1_layering: bool,
     /// What Super Mushrooms become in SMB1-style courses.
     pub smb1_mushroom: MushroomSwap,
     /// The costume a Mystery Mushroom gives: None = a random costume at each pickup, Some(id) =
-    /// always that costume (an index into the SMM1 costume table, 0 … COSTUMES − 1).
+    /// always that costume (an SMM1 costume id, 0 … COSTUMES − 1).
     pub costume: Option<u16>,
+    /// The costumes a random pick draws from (bit per costume id; SMM1 draws among the owned
+    /// ones): hosts set the costumes they have art for ([`Options::set_costume_pool`]). Empty =
+    /// ids 0 … 99. Not a user setting, so not among [`Options::NAMES`].
+    pub costume_pool: [u32; 7],
 }
 
 impl Options {
     /// Option names, as the FFI and the command lines spell them.
     pub const NAMES: [&'static str; 4] = [
         "smm1_shell_kicks",
-        "pipes_over_player",
+        "smm1_layering",
         "smb1_mushroom",
         "costume",
     ];
+
+    /// Draw random costumes from `ids` (ids ≥ COSTUMES are ignored).
+    pub fn set_costume_pool(&mut self, ids: impl IntoIterator<Item = u16>) {
+        self.costume_pool = [0; 7];
+        for id in ids {
+            if (id as usize) < crate::player::COSTUMES {
+                self.costume_pool[id as usize / 32] |= 1 << (id % 32);
+            }
+        }
+    }
+
+    /// The costume ids a random pick draws from.
+    pub fn costume_ids(&self) -> Vec<u16> {
+        if self.costume_pool == [0; 7] {
+            return (0..100).collect();
+        }
+        (0..crate::player::COSTUMES as u16)
+            .filter(|&i| self.costume_pool[i as usize / 32] & (1 << (i % 32)) != 0)
+            .collect()
+    }
 
     /// Set an option by name. Booleans take 0/1, `smb1_mushroom` 0 off / 1 mystery / 2 weird,
     /// `costume` −1 random or a costume id. Returns false for an unknown name or value.
     pub fn set(&mut self, name: &str, value: i32) -> bool {
         match name {
             "smm1_shell_kicks" => self.smm1_shell_kicks = value != 0,
-            "pipes_over_player" => self.pipes_over_player = value != 0,
+            "smm1_layering" => self.smm1_layering = value != 0,
             "smb1_mushroom" => match MushroomSwap::from_code(value) {
                 Some(m) => self.smb1_mushroom = m,
                 None => return false,
@@ -99,7 +125,7 @@ impl Options {
     pub fn get(&self, name: &str) -> Option<i32> {
         Some(match name {
             "smm1_shell_kicks" => self.smm1_shell_kicks as i32,
-            "pipes_over_player" => self.pipes_over_player as i32,
+            "smm1_layering" => self.smm1_layering as i32,
             "smb1_mushroom" => self.smb1_mushroom.code(),
             "costume" => self.costume.map_or(-1, i32::from),
             _ => return None,
@@ -138,7 +164,7 @@ mod tests {
     #[test]
     fn default_is_smm2() {
         let o = Options::default();
-        assert!(!o.smm1_shell_kicks && !o.pipes_over_player);
+        assert!(!o.smm1_shell_kicks && !o.smm1_layering);
         assert_eq!(o.smb1_mushroom, MushroomSwap::Off);
         assert_eq!(o.costume, None);
         for n in Options::NAMES {
@@ -160,10 +186,10 @@ mod tests {
         assert!(!o.set("nonsense", 1));
         assert_eq!(o.get("nonsense"), None);
         let mut p = Options::default();
-        p.apply("pipes-over-player").unwrap();
+        p.apply("smm1-layering").unwrap();
         p.apply("smb1_mushroom=mystery").unwrap();
         p.apply("costume=random").unwrap();
-        assert!(p.pipes_over_player);
+        assert!(p.smm1_layering);
         assert_eq!(p.smb1_mushroom, MushroomSwap::Mystery);
         assert_eq!(p.costume, None);
         assert!(p.apply("smb1_mushroom=purple").is_err());

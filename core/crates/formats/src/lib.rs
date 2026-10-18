@@ -24,6 +24,7 @@ pub mod lyt;
 pub mod msbt;
 pub mod nso;
 pub mod record;
+pub mod rpx;
 pub mod smm1;
 pub mod smm2;
 pub mod xlink;

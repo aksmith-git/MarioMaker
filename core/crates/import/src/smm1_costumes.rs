@@ -1,10 +1,13 @@
-//! SMM1 costume import (Phase 11): the Mystery Mushroom costumes' art and sounds from the
-//! owner's Wii U dump → an asset cache the engine merges next to the SMM2 one.
+//! SMM1 sprite import (Phase 11): the art and sounds of the SMM1 extras — the Mystery Mushroom
+//! costumes, Lanky Mario, the Weird and Mystery Mushroom items — from the owner's Wii U dump →
+//! an asset cache the engine merges next to the SMM2 one.
 //!
 //! Sources (the update's files replace the base game's):
 //! - the costume table, `Mush/CharaMarioTable.byaml` in `Pack/Static.pack` (one entry per
-//!   costume: resource name, list number, rarity, …), then the event costumes of
-//!   `BossNfp/Boss<NNN>.pack`, in number order;
+//!   costume: resource name, list number, rarity, …), then the amiibo costumes of
+//!   `BossNfp/Boss<NNN>.pack`. Costume ids are the game's: a table costume's id is its position
+//!   in the costume name list of the owner's executable (`code/Block.rpx`, the comma-separated
+//!   list starting with `Invalid`), a `Boss<NNN>` costume's id is 100 + NNN;
 //! - art: `Model/M1_Player_Chara_<res>.szs` (a Wii U BFRES holding only textures, one per pose
 //!   frame: `wait.0`, `walk.0`…, `jump.0`, …), or `Boss/M1_Player_Chara_<res>.szs` in the boss
 //!   pack;
@@ -14,18 +17,21 @@
 //! - English names: `Cmn_CharaMarioName.msbt` in `Message/CommonMsg_<lang>.szs` (labels = resource
 //!   names), or `Boss/CharaMario_<res>_<lang>.szs` in the boss pack.
 //!
-//! Output (`<out>/costumes/`, a regular asset cache, see `mmk_assets`):
+//! - the player and item models of `Pack/StaticSkin.pack`: `M1_Player_SlimMarioMdl` (Lanky
+//!   Mario), `M1_Item_kinokofunny` (Weird Mushroom), `M1_Item_CharaKinoko` (Mystery Mushroom).
+//!
+//! Output (`<out>/sprites/`, a regular asset cache, see `mmk_assets`):
 //!
 //! ```text
-//! manifest.json               kind "costumes"; "costumes": [{ id, res, name, model, rare, list_no,
-//!                             sounds: { event: sound id } }]
-//! textures/index.json         { "SMM1_Costume_<id>": { "<frame>": { w, h } } }
-//! textures/SMM1_Costume_<id>/<frame>.mtex
-//! sprites.json                each frame's quad (24 × 24 art standing on the model origin)
+//! manifest.json               kind "smm1-sprites"; "costumes": [{ id, res, name, model, rare,
+//!                             list_no, sounds: { event: sound id } }]; "models": [...]
+//! textures/index.json         { "SMM1_Costume_<id>": { "<frame>": { w, h } }, "M1_Player_…": … }
+//! textures/<model>/<frame>.mtex
+//! sprites.json                each frame's quad (costumes: 24 × 24 standing on the origin)
 //! audio/index.json, audio/costume_<id>_<event>.bwav   (BFWAV converted to BWAV)
 //! ```
-//! Costume ids are the order above (table entries, then boss packs); the engine names a costume's
-//! model `SMM1_Costume_<id>` (three digits) and knows nothing else about it.
+//! The engine names a costume's model `SMM1_Costume_<id>` (three digits) and knows nothing else
+//! about it.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -44,9 +50,18 @@ pub fn costume_model(id: usize) -> String {
     format!("SMM1_Costume_{id:03}")
 }
 
-/// Where a 24 × 24 costume frame is drawn: centred on the model origin, its bottom row 1 px
-/// below the feet [inf: the art leaves one empty row under the feet].
-pub const COSTUME_QUAD: [f32; 4] = [-12.0, -1.0, 12.0, 23.0];
+/// Where a 24 × 24 costume frame is drawn: the costume rig `M1_Player_CharaMdl` is one quad
+/// x −12 … 12, y 0 … 24 with the origin at the feet [obs].
+pub const COSTUME_QUAD: [f32; 4] = [-12.0, 0.0, 12.0, 24.0];
+
+/// The extra models: (file stem in StaticSkin.pack, quad). Lanky Mario uses Super Mario's
+/// 16 × 32 quad, the Weird Mushroom the Super Mushroom's 16 × 16 one, the Mystery Mushroom a
+/// 24 × 24 one standing on the origin [inf].
+const EXTRA_MODELS: [(&str, [f32; 4]); 3] = [
+    ("M1_Player_SlimMarioMdl", [-8.0, 0.0, 8.0, 32.0]),
+    ("M1_Item_kinokofunny", [-8.0, 0.0, 8.0, 16.0]),
+    ("M1_Item_CharaKinoko", [-12.0, 0.0, 12.0, 24.0]),
+];
 
 #[derive(Clone, Debug, Default)]
 pub struct CostumeReport {
@@ -58,6 +73,7 @@ pub struct CostumeReport {
 
 /// One costume's files.
 struct Source {
+    id: usize,
     res: String,
     entry: Map<String, Value>,
     /// The art archive (`.szs`) bytes.
@@ -109,9 +125,16 @@ fn collect(ov: &Overlay, language: &str, report: &mut CostumeReport) -> Result<V
         })
         .transpose()?
         .flatten();
+    // the game's costume order: the name list in the executable
+    let order = costume_order(ov, table.as_ref());
+    if order.is_none() {
+        report
+            .skipped
+            .push("code/Block.rpx: no costume name list; ids follow the table".into());
+    }
     match table {
         Some(Value::Array(entries)) => {
-            for e in entries {
+            for (index, e) in entries.into_iter().enumerate() {
                 let Value::Object(entry) = e else { continue };
                 let Some(res) = entry.get("ResName").and_then(Value::as_str) else {
                     continue;
@@ -142,7 +165,12 @@ fn collect(ov: &Overlay, language: &str, report: &mut CostumeReport) -> Result<V
                         sounds.push(read(&p)?);
                     }
                 }
+                let id = order
+                    .as_ref()
+                    .and_then(|o| o.iter().position(|n| *n == res))
+                    .unwrap_or(index);
                 out.push(Source {
+                    id,
                     name: names.get(&res).cloned(),
                     res,
                     entry,
@@ -165,6 +193,9 @@ fn collect(ov: &Overlay, language: &str, report: &mut CostumeReport) -> Result<V
             continue;
         };
         let res = format!("Boss{num}");
+        let Ok(n) = num.parse::<usize>() else {
+            continue;
+        };
         let sarc = sarc_of(read(&path)?, &path)?;
         let mut sounds: Vec<Vec<u8>> = member(&sarc, &format!("Boss/CharaMario_{res}.bars"))
             .into_iter()
@@ -178,6 +209,7 @@ fn collect(ov: &Overlay, language: &str, report: &mut CostumeReport) -> Result<V
         let mut entry = Map::new();
         entry.insert("ResName".into(), json!(res));
         out.push(Source {
+            id: 100 + n,
             art: member(&sarc, &format!("Boss/M1_Player_Chara_{res}.szs")),
             res,
             entry,
@@ -185,7 +217,30 @@ fn collect(ov: &Overlay, language: &str, report: &mut CostumeReport) -> Result<V
             name,
         });
     }
+    out.sort_by_key(|s| s.id);
+    out.dedup_by_key(|s| s.id);
     Ok(out)
+}
+
+/// The costume names in id order, from the executable (`code/Block.rpx`): the comma-separated
+/// list that starts with `Invalid` and names the table's costumes.
+fn costume_order(ov: &Overlay, table: Option<&Value>) -> Option<Vec<String>> {
+    let names: Vec<&str> = table?
+        .as_array()?
+        .iter()
+        .filter_map(|e| e.get("ResName")?.as_str())
+        .collect();
+    let rpx = read(&ov.code_file("Block.rpx")?).ok()?;
+    let sections = mmk_formats::rpx::sections(&rpx).ok()?;
+    for sec in &sections {
+        for list in mmk_formats::rpx::strings_with_prefix(sec, b"Invalid, ") {
+            let order: Vec<String> = list.split(", ").skip(1).map(str::to_string).collect();
+            if names.iter().all(|n| order.iter().any(|o| o == n)) {
+                return Some(order);
+            }
+        }
+    }
+    None
 }
 
 /// Import the costumes into `<out>/costumes/`. A dump without the table or the art imports
@@ -198,13 +253,14 @@ pub(crate) fn import_costumes(
 ) -> Result<CostumeReport> {
     let mut report = CostumeReport::default();
     let sources = collect(ov, language, &mut report)?;
-    let dir = out.join("costumes");
+    let dir = out.join("sprites");
     let mut index = Map::new();
     let mut quads = Map::new();
     let mut audio = Map::new();
     let mut list = Vec::new();
-    for (id, src) in sources.iter().enumerate() {
-        progress("costumes", id, sources.len());
+    for (k, src) in sources.iter().enumerate() {
+        progress("costumes", k, sources.len());
+        let id = src.id;
         let model = costume_model(id);
         let ctx = Path::new(&src.res);
         let mut texs = Map::new();
@@ -301,6 +357,50 @@ pub(crate) fn import_costumes(
         report.costumes += 1;
     }
     progress("costumes", sources.len(), sources.len());
+    // Lanky Mario and the two items
+    let mut models = Vec::new();
+    for (stem, q) in EXTRA_MODELS {
+        let rel = format!("Model/{stem}.szs");
+        let Some(szs) = ov.pack_member("Pack/StaticSkin.pack", &rel) else {
+            report
+                .skipped
+                .push(format!("StaticSkin.pack/{rel}: not found"));
+            continue;
+        };
+        let mut texs = Map::new();
+        let mut model_quads = Map::new();
+        let sarc = sarc_of(szs, Path::new(stem))?;
+        for (member, data) in sarc.files() {
+            if !data.starts_with(b"FRES") {
+                continue;
+            }
+            for t in bfres_wiiu::textures(data).unwrap_or_default() {
+                let Ok(img) = t.decode() else {
+                    report.skipped.push(format!("{stem}/{member}/{}", t.name));
+                    continue;
+                };
+                let m = to_mtex(&img);
+                write(
+                    &dir.join(format!("textures/{stem}/{}.mtex", t.name)),
+                    &m.to_bytes(),
+                )?;
+                texs.insert(t.name.clone(), json!({ "w": m.width, "h": m.height }));
+                model_quads.insert(
+                    t.name.clone(),
+                    json!({ "rect": q, "uv": [0.0, 0.0, 1.0, 1.0], "source": "smm1" }),
+                );
+                report.textures += 1;
+            }
+        }
+        if !texs.is_empty() {
+            index.insert(stem.to_string(), Value::Object(texs));
+            quads.insert(
+                stem.to_string(),
+                json!({ "quads": Value::Object(model_quads) }),
+            );
+            models.push(stem);
+        }
+    }
     write(
         &dir.join("textures/index.json"),
         serde_json::to_string(&Value::Object(index))
@@ -323,7 +423,8 @@ pub(crate) fn import_costumes(
         &dir.join("manifest.json"),
         serde_json::to_string_pretty(&json!({
             "game": "SMM1",
-            "kind": "costumes",
+            "kind": "smm1-sprites",
+            "models": models,
             "costumes": list,
             "textures": report.textures,
             "sounds": report.sounds,
@@ -364,17 +465,18 @@ mod tests {
         });
         let r = import_costumes(&ov, &tmp.join("out"), "USen", &mut |_, _, _| {}).unwrap();
         assert_eq!((r.costumes, r.textures), (1, 2));
-        let dir = tmp.join("out/costumes");
+        let dir = tmp.join("out/sprites");
         let m: Value =
             serde_json::from_slice(&fs::read(dir.join("manifest.json")).unwrap()).unwrap();
-        assert_eq!(m["kind"], "costumes");
+        assert_eq!(m["kind"], "smm1-sprites");
+        assert_eq!(m["costumes"][0]["id"], 107);
         assert_eq!(m["costumes"][0]["res"], "Boss007");
-        assert_eq!(m["costumes"][0]["model"], "SMM1_Costume_000");
+        assert_eq!(m["costumes"][0]["model"], "SMM1_Costume_107");
         let mut cache = mmk_assets::Cache::open(&dir).unwrap();
         assert_eq!(cache.textures.len(), 2);
-        let q = cache.sprite_quad("SMM1_Costume_000", "wait.0").unwrap();
-        assert_eq!((q.x0, q.y0, q.x1, q.y1), (-12.0, -1.0, 12.0, 23.0));
-        let i = cache.texture_index("SMM1_Costume_000", "jump.0").unwrap();
+        let q = cache.sprite_quad("SMM1_Costume_107", "wait.0").unwrap();
+        assert_eq!((q.x0, q.y0, q.x1, q.y1), (-12.0, 0.0, 12.0, 24.0));
+        let i = cache.texture_index("SMM1_Costume_107", "jump.0").unwrap();
         assert_eq!(cache.texture(i).unwrap().data[..4], [200, 200, 200, 200]);
         cache.merged.clear();
         let _ = fs::remove_dir_all(&tmp);

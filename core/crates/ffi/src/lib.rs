@@ -68,8 +68,8 @@ pub struct MmkAssets {
     names: Vec<(CString, CString)>,
     /// 3D meshes and animations, loaded on demand (`mesh` module).
     meshes: std::sync::Mutex<mesh::MeshStore>,
-    /// SMM1 costume names by id (`costumes::mmk_assets_add_costumes`).
-    costume_names: Vec<CString>,
+    /// SMM1 costumes with art: (id, name) (`costumes::mmk_assets_add_smm1_sprites`).
+    costumes: Vec<(u16, CString)>,
 }
 
 #[repr(C)]
@@ -118,7 +118,7 @@ pub unsafe extern "C" fn mmk_assets_open(path: *const c_char) -> *mut MmkAssets 
                     cache,
                     names,
                     meshes,
-                    costume_names: Vec::new(),
+                    costumes: Vec::new(),
                 }))
             }
             Err(e) => {
@@ -138,7 +138,7 @@ pub extern "C" fn mmk_assets_placeholder() -> *mut MmkAssets {
         cache: Cache::default(),
         names: Vec::new(),
         meshes: Default::default(),
-        costume_names: Vec::new(),
+        costumes: Vec::new(),
     }))
 }
 
@@ -323,7 +323,15 @@ pub unsafe extern "C" fn mmk_engine_new(assets: *const MmkAssets) -> *mut MmkEng
             planner: Default::default(),
             draw: Vec::new(),
             mesh_mode: true,
-            options: Default::default(),
+            options: {
+                // random Mystery Mushroom costumes come from those the assets have art for
+                let mut o = mmk_sim::Options::default();
+                let a = unsafe { &*assets };
+                if !a.costumes.is_empty() {
+                    o.set_costume_pool(a.costumes.iter().map(|(id, _)| *id));
+                }
+                o
+            },
         }))
     })
 }

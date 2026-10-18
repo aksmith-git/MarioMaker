@@ -301,20 +301,18 @@ impl Cache {
         added
     }
 
-    /// Names of the SMM1 costumes (by costume id) from a merged costume cache (manifest kind
-    /// `costumes`), empty without one.
-    pub fn costume_names(&self) -> Vec<String> {
+    /// The SMM1 costumes with art, as (costume id, display name), from a merged SMM1 sprite
+    /// cache (manifest kind `smm1-sprites`); empty without one.
+    pub fn costumes(&self) -> Vec<(u16, String)> {
         self.merged
             .iter()
             .chain(std::iter::once(&self.manifest))
-            .filter(|m| m["kind"] == "costumes")
+            .filter(|m| m["kind"] == "smm1-sprites")
             .flat_map(|m| m["costumes"].as_array().cloned().unwrap_or_default())
-            .map(|c| {
-                c["name"]
-                    .as_str()
-                    .or(c["res"].as_str())
-                    .unwrap_or_default()
-                    .to_string()
+            .filter(|c| c["art"].as_bool().unwrap_or(true))
+            .filter_map(|c| {
+                let name = c["name"].as_str().or(c["res"].as_str()).unwrap_or_default();
+                Some((u16::try_from(c["id"].as_u64()?).ok()?, name.to_string()))
             })
             .collect()
     }

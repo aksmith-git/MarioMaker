@@ -139,9 +139,10 @@ enum Cmd {
         /// SMM1 extra: SMM1 shell physics (mid-air shell kicks, shell jumps).
         #[arg(long)]
         smm1_shell_kicks: bool,
-        /// SMM1 extra: pipes drawn in front of the player.
+        /// SMM1 extra: SMM1 draw order (the player travels between blocks and pipes, coins behind
+        /// blocks, tracks in front of pipes, …).
         #[arg(long)]
-        pipes_over_player: bool,
+        smm1_layering: bool,
         /// SMM1 extra: Super Mushrooms in SMB1-style courses become Mystery Mushrooms or Weird
         /// Mushrooms: off, mystery, weird.
         #[arg(long, value_name = "off|mystery|weird")]
@@ -758,7 +759,7 @@ fn main() -> ExitCode {
             keys,
             frames,
             smm1_shell_kicks,
-            pipes_over_player,
+            smm1_layering,
             smb1_mushroom,
             costume,
             options,
@@ -766,7 +767,7 @@ fn main() -> ExitCode {
         } => {
             let mut o = mmk_sim::Options {
                 smm1_shell_kicks,
-                pipes_over_player,
+                smm1_layering,
                 ..Default::default()
             };
             let assignments = smb1_mushroom

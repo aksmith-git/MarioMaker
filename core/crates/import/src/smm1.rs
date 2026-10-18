@@ -79,6 +79,24 @@ impl Overlay {
         self.roots.iter().map(|r| r.join(rel)).find(|p| p.is_file())
     }
 
+    /// A file of the executable's folder (`<content>/../code/<name>`), update first.
+    pub(crate) fn code_file(&self, name: &str) -> Option<PathBuf> {
+        self.roots
+            .iter()
+            .filter_map(|r| Some(r.parent()?.join("code").join(name)))
+            .find(|p| p.is_file())
+    }
+
+    /// Member `name` of pack `pack` (Yaz0 removed), looked up in the update's pack first, then
+    /// the base game's (an update pack can drop members the base pack has).
+    pub(crate) fn pack_member(&self, pack: &str, name: &str) -> Option<Vec<u8>> {
+        self.roots.iter().find_map(|r| {
+            let data = std::fs::read(r.join(pack)).ok()?;
+            let sarc = Sarc::parse(archive::unwrap(data).ok()?).ok()?;
+            archive::unwrap(sarc.get(name)?.to_vec()).ok()
+        })
+    }
+
     /// File names in `dir` across all roots (update wins), sorted.
     pub(crate) fn list(&self, dir: &str, ext: &str) -> Vec<(String, PathBuf)> {
         let mut out: BTreeMap<String, PathBuf> = BTreeMap::new();

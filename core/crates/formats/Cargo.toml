@@ -13,6 +13,5 @@ serde_json.workspace = true
 thiserror.workspace = true
 ruzstd.workspace = true
 lz4_flex.workspace = true
-
-[dev-dependencies]
+# RPX sections (Wii U executables) are zlib streams
 flate2.workspace = true

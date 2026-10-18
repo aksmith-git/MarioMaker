@@ -4,7 +4,7 @@
 //! | name | values |
 //! |---|---|
 //! | `smm1_shell_kicks` | 0 off (SMM2), 1 SMM1 mid-air shell kicks / shell jumps |
-//! | `pipes_over_player` | 0 off (SMM2), 1 pipes drawn in front of the player (SMM1) |
+//! | `smm1_layering` | 0 off (SMM2), 1 SMM1 draw order (in a pipe the player is in front of blocks, behind the pipe; coins behind blocks; tracks in front of pipes) |
 //! | `smb1_mushroom` | 0 off, 1 Super Mushrooms in SMB1 courses are Mystery Mushrooms, 2 Weird Mushrooms |
 //! | `costume` | −1 a random costume per Mystery Mushroom, else a costume id (`mmk_costume_*`) |
 //!

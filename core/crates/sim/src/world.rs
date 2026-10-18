@@ -44,9 +44,6 @@ const ITEM_SCORE: u32 = 1000;
 const BREAK_SCORE: u32 = 10;
 const MAX_LIVES: u32 = 99;
 const HURRY_SECONDS: i32 = 100;
-/// Draw layer of pipe tiles with the SMM1 layering option (`Options::pipes_over_player`): above
-/// the player (50).
-const PIPE_FRONT_LAYER: u32 = 55;
 /// Spawn zone (0x71003fbbc0, constants from 0x71000172e0) [obs]: a course object spawns when its
 /// spawn box touches the view extended by 47 px left/right and 31 px up/down (plus 1000 px
 /// vertically outside vertical areas), and is re-armed only after its box has left the view
@@ -90,6 +87,12 @@ pub enum Event {
     /// A clear-condition count went up / the condition is now met.
     ConditionCount,
     ConditionMet,
+    /// SMM1 extras: a costumed player landed, started a skid, began the taunt (their costume
+    /// sounds); Lanky Mario's float cue during a held jump.
+    Land,
+    Skid,
+    Taunt,
+    LankyFloat,
 }
 
 /// P-switch duration: [ext] about 10 s (not found in the binary).
@@ -606,6 +609,14 @@ impl World {
     }
 
     fn add_actor(&mut self, mut a: Actor) {
+        // SMM1 extras: Super Mushrooms of SMB1 courses become Weird / Mystery Mushrooms
+        if a.kind == Kind::Mushroom && self.style == crate::player::Style::M1 {
+            a.smm1_item = match self.options.smb1_mushroom {
+                crate::options::MushroomSwap::Off => 0,
+                crate::options::MushroomSwap::Weird => 1,
+                crate::options::MushroomSwap::Mystery => 2,
+            };
+        }
         a.id = self.next_id;
         self.next_id += 1;
         self.actors.push(a);
@@ -1299,7 +1310,8 @@ impl World {
             | Kind::StyleItem
             | Kind::SuperHammer => {
                 self.actors[j].mode = Mode::Dead;
-                self.collect_item(kind, ax, ay);
+                let sub = self.actors[j].smm1_item;
+                self.collect_item(kind, ax, ay, sub);
             }
             _ => {}
         }
@@ -1616,6 +1628,7 @@ impl World {
         if was_ground && !self.player.on_ground && self.player.vy > 3.0 {
             self.events.push(Event::Jump);
         }
+        self.smm1_player_events();
         self.check_hidden_blocks(prev_head);
         if prev_vy > 0.0 && self.player.vy <= 0.0 {
             self.hit_exclamation_blocks();
@@ -2613,9 +2626,9 @@ impl World {
             if a.kind.is_item() {
                 if overlap(contact, ab) {
                     let kind = a.kind;
-                    let (ax, ay) = (a.x, a.y);
+                    let (ax, ay, sub) = (a.x, a.y, a.smm1_item);
                     self.actors[i].mode = Mode::Dead;
-                    self.collect_item(kind, ax, ay);
+                    self.collect_item(kind, ax, ay, sub);
                 }
                 i += 1;
                 continue;
@@ -2900,7 +2913,8 @@ impl World {
                     (p.vy > 0.0 && head <= ay + 6.0) || (a.vy < 0.0 && ay >= head - 6.0);
                 let from_above = p.vy < 0.0 && p.y >= ay + ah * 0.5;
                 let free = p.yoshi.is_none() && p.clown.is_none() && p.car.is_none();
-                if what != 3 && from_below && p.helmet.is_none() {
+                // (a costume can't wear a shell, SMM1 costume spec §1)
+                if what != 3 && from_below && p.helmet.is_none() && p.form != Form::Costume {
                     self.actors[i].mode = Mode::Dead;
                     self.player.helmet = Some(what);
                     self.events.push(Event::PowerUp);
@@ -3160,7 +3174,8 @@ impl World {
         Kind::StyleItem
     }
 
-    fn collect_item(&mut self, kind: Kind, x: f32, y: f32) {
+    /// `smm1_item`: the Super Mushroom's SMM1 subtype (1 Weird, 2 Mystery; `Actor::smm1_item`).
+    fn collect_item(&mut self, kind: Kind, x: f32, y: f32, smm1_item: u8) {
         match kind {
             Kind::StyleItem => {
                 let form = match self.style {
@@ -3180,6 +3195,17 @@ impl World {
                 self.add_score(ITEM_SCORE, x, y + 16.0);
             }
             // the power-up sound plays for every pickup, also when the form does not change
+            Kind::Mushroom if smm1_item == 1 => {
+                // Weird Mushroom (SMB1 only): Lanky Mario from small or Super
+                self.player.power_up(Form::Lanky);
+                self.events.push(Event::PowerUp);
+                self.add_score(ITEM_SCORE, x, y + 16.0);
+            }
+            Kind::Mushroom if smm1_item == 2 => {
+                self.take_mystery_mushroom();
+                self.events.push(Event::PowerUp);
+                self.add_score(ITEM_SCORE, x, y + 16.0);
+            }
             Kind::Mushroom => {
                 self.player.power_up(Form::Super);
                 self.events.push(Event::PowerUp);
@@ -5021,6 +5047,16 @@ impl World {
     // ---------------------------------------------------------------- drawing
 
     pub fn sprites(&self) -> Vec<Sprite> {
+        let mut out = self.sprites_in_layers();
+        if self.options.smm1_layering {
+            for s in &mut out {
+                s.layer = smm1::smm1_layer(s.layer);
+            }
+        }
+        out
+    }
+
+    fn sprites_in_layers(&self) -> Vec<Sprite> {
         let mut out = Vec::new();
         let field = self.field_model;
         let (x0, x1) = (self.camera_x - TILE, self.camera_x + VIEW_W + TILE);
@@ -5086,8 +5122,8 @@ impl World {
         for t in &self.level.tiles {
             let (px, py) = (t.x as f32 * TILE, t.y as f32 * TILE);
             if visible(px, py) {
-                let layer = if t.pipe && self.options.pipes_over_player {
-                    PIPE_FRONT_LAYER
+                let layer = if t.pipe && self.options.smm1_layering {
+                    smm1::PIPE_LAYER
                 } else {
                     10
                 };
@@ -6008,6 +6044,13 @@ impl World {
                     false,
                 )
             }
+            // SMM1 extras: the Weird Mushroom's own art; the Mystery Mushroom's (24 × 24)
+            Kind::Mushroom if a.smm1_item == 1 => {
+                ("M1_Item_kinokofunny", "kinokofunny.0", 16.0, 16.0, false)
+            }
+            Kind::Mushroom if a.smm1_item == 2 => {
+                ("M1_Item_CharaKinoko", "Add_kinoko", 24.0, 24.0, false)
+            }
             Kind::Mushroom => ("M1_Item_kinoko", "wait.0", 16.0, 16.0, false),
             Kind::SuperHammer => ("M1_Item_hammer", "wait.0", 16.0, 16.0, false),
             // SMB1's Big Mushroom: one 16×16 texture drawn through a 32×32 quad
@@ -6548,6 +6591,9 @@ impl World {
             // builder outfit (3W_Player_MarioBuilder)
             Form::Cat => "M1_Player_NekoMarioMdl",
             Form::Builder => "M1_Player_BuilderMarioMdl",
+            // SMM1 extras (SMB1 only): Lanky Mario's own art; a costume is drawn below
+            Form::Lanky => "M1_Player_SlimMarioMdl",
+            Form::Costume => "M1_Player_MarioMdl",
         };
         // the multiplayer characters are the model's variants: _2 Luigi, _3 Toad, _4 Toadette
         // (star power is a palette effect in the game; not drawn yet [⬜])
@@ -6626,8 +6672,23 @@ impl World {
             Form::Cape if !p.on_ground && p.vy <= -0.99 && p.vy >= -1.01 => {
                 ("M1_Player_MantMario", "down1.0")
             }
+            // a lanky jump plays the walk animation fast (3×) in the air (SMM1 0x02683e00)
+            Form::Lanky if p.lanky_jump && !p.on_ground && p.pose == Pose::Jump => (
+                model,
+                ["walk.0", "walk.1", "walk.2"][(self.tick as usize / 2) % 3],
+            ),
             _ => (model, frame),
         };
+        let layer = if self.in_pipe() {
+            5
+        } else if self.options.smm1_layering {
+            smm1::player_layer(p)
+        } else {
+            50
+        };
+        if form == Form::Costume {
+            return Some(smm1::costume_sprite(p, layer, self.tick));
+        }
         // carrying (not in SMB1): the carry poses, named per style
         let frame = if p.held.is_some() {
             let k = ((p.walk_phase / 6.0) as usize) % 3;
@@ -6672,7 +6733,7 @@ impl World {
             flip_x: p.facing < 0,
             flip_y: false,
             // behind terrain while sliding through a pipe
-            layer: if self.in_pipe() { 5 } else { 50 },
+            layer,
         })
     }
 

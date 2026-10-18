@@ -580,6 +580,9 @@ pub struct Actor {
     /// SMM1 shell physics: a shell kicked by the mid-air wall assist — its stop point (x) and
     /// kick direction (world/smm1.rs).
     pub assist: Option<(f32, i32)>,
+    /// SMM1 extras: this Super Mushroom is a Weird Mushroom (1) or a Mystery Mushroom (2)
+    /// (`Options::smb1_mushroom`; SMM1 keeps them as Super Mushroom actors with a subtype).
+    pub smm1_item: u8,
 }
 
 impl Actor {
@@ -629,6 +632,7 @@ impl Actor {
             floor_ref: 0.0,
             w3: W3State::default(),
             assist: None,
+            smm1_item: 0,
         }
     }
 
@@ -1121,6 +1125,9 @@ impl Actor {
             Kind::TrackMount { .. } => 8.0,
             k if k.is_w3() => self.w3_size().0,
             _ if self.big => 16.0,
+            // the Weird Mushroom's contact box is 12 px wide, the Super Mushroom's 14 (SMM1
+            // 0x023c3ae4: half-width 6 for 7) [obs]
+            Kind::Mushroom if self.smm1_item == 1 => 7.0,
             _ => 8.0,
         }
     }
