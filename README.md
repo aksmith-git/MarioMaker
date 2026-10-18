@@ -1,10 +1,18 @@
 # SMCraft
 
-An open-source, native macOS (Apple Silicon) engine that plays Super Mario Maker 2 courses and
-adds Super Mario Maker 1's 100 Mario Challenge.
+An open-source engine that plays Super Mario Maker 2 courses (and Super Mario Maker's 100 Mario
+Challenge) on macOS, iOS/iPadOS, Windows, Linux and the web, with its own open-source course
+server for sharing courses, records and online play. Home: https://github.com/smcraft-git/smcraft
 
-**Status:** Phase 5 (vertical slice, SMB1 style) and 5b (native app shell) in progress: Rust core +
-Swift/Metal app that imports your own dump, lists your courses and plays SMB1-style ones.
+SMCraft contains **no Nintendo assets, text, code or keys**. It reads art, sound, layouts and
+course keys from **your own** game dump at runtime (see "Your game data" below); without one it
+plays with placeholder art. Behaviour is written from scratch, matched to the original game.
+
+**Status:** playable and in active development. All five game styles and their themes, almost
+every course part (including the 2.0 / 3.0 update enemies), the SMM2 menus, Course World over
+your library or a server, 100 Mario / Endless Challenge, a Course Maker, accounts with verified
+world records, and online co-op through relay rooms. Visual fidelity of the NSMBU and 3D World
+styles, effects, audio detail, Story Mode screens and the full maker interface are in progress.
 See [PROGRESS.md](PROGRESS.md).
 
 ## What is and isn't in this repository

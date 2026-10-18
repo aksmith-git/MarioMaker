@@ -612,8 +612,8 @@ Block.rpx v208 (private spec research/specs/smm1-extras.md).
 ## Phase 1 detail
 
 ### Done
-- Repo initialised; remote `aksmith-git/MarioMaker` (private). `.gitignore` excludes dumps, keys,
-  extracted data and `research/`.
+- Repo initialised. Public home: https://github.com/smcraft-git/smcraft (published as snapshots;
+  2026-10-18). `.gitignore` excludes dumps, keys, extracted data and `research/`.
 - Proprietary-content guard (`scripts/check_no_proprietary.py`) + tests + CI workflow + pre-commit hook.
 - Toolchain installed and pinned outside the repo — see [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md).
 - `tools/inventory.py`: identifies extracted files by magic (through Yaz0/zstd), looks inside SARCs.
