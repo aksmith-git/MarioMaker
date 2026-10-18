@@ -25,6 +25,14 @@ Captured from the macOS build, running from the owner's own dump.
 |---|---|---|
 | ![Title screen](docs/screenshots/title.jpg) | ![Mario running the title course](docs/screenshots/title-course.jpg) | ![Make and Play menu](docs/screenshots/menu.jpg) |
 
+**100 Mario Challenge mod** (in progress): SMM2's own Endless Challenge screens with 100 lives,
+courses served by our open-source server. Relabelling the screens and widening the lives counter
+are still to do.
+
+| 100 lives on the Endless menu | A course from our server, ×100 in the HUD |
+|---|---|
+| ![100 Mario Challenge menu](docs/screenshots/100mario-menu.jpg) | ![100 Mario Challenge course](docs/screenshots/100mario-course.jpg) |
+
 ## Layout
 
 | Path | What |
