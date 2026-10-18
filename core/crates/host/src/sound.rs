@@ -593,8 +593,15 @@ impl Sounds {
         true
     }
 
+    /// The theme track key; the day track where the style has no night one (3D World has no
+    /// night themes).
     fn theme_key(&self) -> String {
-        bgm_key(self.theme, self.night, self.hurry)
+        let night = bgm_key(self.theme, self.night, self.hurry);
+        if self.night && !self.lib.db.has_key(&self.music_user(), &night) {
+            bgm_key(self.theme, false, self.hurry)
+        } else {
+            night
+        }
     }
 
     /// The theme track from the top, or where it was if it is the same track.
@@ -1275,11 +1282,13 @@ pub fn course_files(db: &SoundDb, world: &World) -> Vec<String> {
     let mut waves = Vec::new();
     let music = format!("CourseSceneBGM_{style}");
     for hurry in [false, true] {
-        db.waves_of(
-            &music,
-            &bgm_key(world.level.theme, world.level.night, hurry),
-            &mut waves,
-        );
+        for night in [false, world.level.night] {
+            db.waves_of(
+                &music,
+                &bgm_key(world.level.theme, night, hurry),
+                &mut waves,
+            );
+        }
     }
     for k in map::MUSIC_KEYS {
         db.waves_of(&music, k, &mut waves);

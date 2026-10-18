@@ -65,7 +65,7 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   master/music/SFX volumes); engine maps sim events to sounds (hurry jingle → fast music, star
   music, death and clear fanfares, count-down loop); AVAudioEngine output (`MMK_MUTE=1` to
   silence); `mmk audio` CLI lists/decodes sounds to WAV · other themes' music, night music and
-  object sounds beyond the slice ⬜
+  object sounds beyond the slice ✅ (Phase 7 "Gameplay sound from the game's own sound links")
 - ✅ 5. Terrain: ground, blocks, pipes, semisolids, slopes ✅ · ice ✅ · in-course camera ✅ (4 px
   dead-zone follow, filtered vertical tracking, six vertical speed strategies, low-camera 216 px
   ceiling, full-height scroll-stop walls, course start, frozen on death, goal); autoscroll and
@@ -215,7 +215,38 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   SMB1 sample 148/150 playable (left: a Bill Blaster and a Burner on tracks)
 - ✅ Theme music per style: the importer copies every style's theme / hurry / star tracks (105
   streams); the player decodes only the course's tracks into per-course mixer slots · per-style
-  sound effects ✅ (style variants of SFX and fanfares, SMB1 fallback), sub-area music ⬜
+  sound effects ✅ (style variants of SFX and fanfares, SMB1 fallback), sub-area music ✅
+- 🔄 Gameplay sound from the game's own sound links (DECISIONS.md "Gameplay sound from the
+  game's own sound links"; private `research/specs/audio.md` §5–§11, `audio-triggers.md`):
+  - ✅ formats: SLink2 users with containers (switch / random / blend / sequence), conditions,
+    random ranges, property curves, user params, action triggers; the group tree (AGST),
+    attenuation sets (AATN / AROC / AACL)
+  - ✅ import v6: `audio/sound.json` (616 gameplay users, groups, attenuation, per-theme
+    effects, ground materials) + 2430 effect waves (`audio/se/`) + 234 streams
+    (`audio/music/`, game names); `mmk import-sound <romfs> <cache>` runs only this stage
+  - ✅ mixer: per-voice volume / pitch / pan / delay / duration / fade-in / low-pass, group
+    voice limits with priority stealing and folder limits, ducking, theme echo + reverb sends,
+    four-channel music with a fade-in layer (Yoshi drums), DSP-ADPCM music decoded while
+    playing, music position clock, final limiter
+  - ✅ director (host `sound.rs`): keys per style / theme / day-night / object; player events
+    (jump by form, triple-jump count, swim, spin, wall kick, power-up / item / damage, pipe,
+    door, head bump, pole, checkpoint, clear condition), player states (landing, splash in /
+    out, ground pound, vines, shoes, Yoshi, skid, propeller, footsteps by ground material),
+    objects (coins incl. 10/30/50, blocks, ON/OFF, P switch, 1-Up incl. 100 coins), actors
+    from their state changes (stomp with combo / big / wings, defeat, Koopa into shell, kick,
+    shell wall hit, Thwomp landing, Bill Blaster shot, out of a block); music: area theme
+    track (day / night, 3D World day only), hurry jingle → hurry track, Super Star / P switch
+    tracks with the theme track resumed at its position, star end sign at 120 frames, death /
+    clear / castle clear fanfares, sub-area music and effects, theme ambience (NSMBU / 3D
+    World), underwater filter for sounds below the water surface, 3D World distance
+    attenuation and culling, pan by screen position [inf]
+  - ✅ `mmk audio-render <course> --cache DIR --out x.wav [--log] [--only sfx|music]`:
+    headless scripted run through the same director and mixer; a rendered SMB1 jump matches
+    the game's wave exactly (correlation 1.000)
+  - ⬜ springs, note blocks (pitch by height), POW, Bob-omb, Burners, cannons, projectiles,
+    bosses' actions, keys, pink coins, objects' splashes and parachutes, star / shell / spin /
+    Yoshi kills, cape / tail / cat / hammer actions, 3D World voices, Yoshi's own sounds,
+    costume music; checks against the running game (pan, limits, effect sends)
 - ✅ Wall slide (≥ −2.0) and wall jump (vy 3.5, 2.25 away) in every style; NSMBU/3DW jump chain
   (third jump ×1.05, 10-frame window [inf]) and ground pound (wind-up, −6.0 dive, hits blocks and
   enemies below)

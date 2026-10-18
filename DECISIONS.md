@@ -773,3 +773,28 @@ renderers upload a texture when a sprite first uses it. Measured on the same cou
 - Effect when switched: 1 of the 550 sample courses ended in a different state (its trig hit a
   last-bit difference between Apple's library and musl's) — the case this prevents across
   machines. Front ends (rendering, audio) may keep using the platform functions.
+
+## 2026-10-18 — Gameplay sound from the game's own sound links
+- What each event sounds like comes from the user's own data, not from code: the importer
+  turns `SLink2/SLink2DB` (per object and style: event keys → trees of switch / random / blend /
+  sequence containers over waves, with volumes, pitches, delays, groups, priorities) plus the
+  group tree, distance sets, per-theme effects and ground materials into `audio/sound.json`,
+  and copies every wave it names (`audio/se/`, `audio/music/` by the game's names). Engine
+  code names only the database's identifiers (user bases like `Kuribo`, keys like
+  `r_damage_stamp`); the game's internal Japanese property names are renamed by the importer
+  to roles (`@style`, `@theme`, `@hour`, `@ground`) from their value domains.
+- The director plays a key from a sim event or from a state change it observes (actor modes,
+  the player's state), as the game's reaction code and action triggers do. This keeps sim
+  edits out of the sound work: no sound-specific events were added; the existing unit events
+  are matched to the actor whose state changed in the same tick (stomp, kick, defeat), and fall
+  back to a generic enemy when none did. Doors are told from pipes by the door positions.
+- Music streams stay DSP-ADPCM in memory and are decoded while they play (about a quarter of
+  their PCM size; four-channel SMW/NSMBU tracks carry the Yoshi layer); effect waves are
+  decoded to PCM per course. The course sound set only grows during a course, so a wave
+  loaded on first play doesn't cut voices.
+- Caches without `sound.json` keep the old fixed SMB1 set (`audio/index.json`). The importer
+  no longer writes the `audio/music/<style>_<theme>` copies; re-run `mmk import`.
+- Choices where the game's behaviour is not known are marked [inf] in code and in the private
+  `research/specs/audio.md` §11: pan depth 0.5, the attenuation reference (the view's edge),
+  effect sends at 1.0, limit types other than 2 needing a strictly higher priority, the Yoshi
+  layer's 30-frame fade, footsteps every 9 px of walk cycle, the low-pass cutoff mapping.
