@@ -1067,3 +1067,47 @@ renderers upload a texture when a sprite first uses it. Measured on the same cou
 - **Dojo completion** is 128 bits (stored as a hex string); only Maker Lessons set bits, Maker
   Basics sets its own flag (which also grows the title-course rotation from 8 to 10), power-up
   lessons set nothing; Nina's introduction is one flag for every lesson kind (save +0x100 bit 10).
+
+## 2026-10-18 — Native SMM2 port by static recompilation: base on LAS Recomp, borrow from the Wonder framework
+**Goal (owner):** a native port of Super Mario Maker 2 v3.0.3 for macOS, Windows, Linux, iOS/iPadOS
+and the web, built by static recompilation from the player's own dump, with SMM1's 100 Mario
+Challenge and Mystery Mushroom costumes as mods. It lives in `recomp/`; SMCraft stays as it is.
+
+**Survey** (r/decomps posts named by the owner, checked against the projects' own repos, Oct 2026):
+| Project | Method | Reuses / provides | License | Platforms |
+|---|---|---|---|---|
+| SwitchRecomp (Super Mario Odyssey) | static ARM64→C, own Horizon layer, NVN→Vulkan/OpenGL | its own runtime | not released (no code) | PC; Android announced |
+| SuperMarioWonderRecomp ("SwitchGamesRecomp") | static AArch64→C++; shared `runtime/` + per-game `games/<g>/` (Wonder, Hades) | kernel/IPC/`nn::*` HLE written for it; NVN replayed into Vulkan (MoltenVK on Mac); Maxwell shaders → SPIR-V offline with the **Ryujinx translator (MIT)**; SDK AudioRenderer in process | MIT | macOS arm64 (tested); Windows planned; Android in progress; no iOS/web |
+| LAS Recomp (Link's Awakening, 2019) | static AArch64→C (Python lifter, Capstone; Unicorn for jump tables), **recompiled on the player's machine at first launch** | own kernel/services/NVN; **native Metal** (macOS) + Vulkan (Win/Linux); envytools-based Maxwell shader translator; SDL3 | MIT | macOS arm64, Windows x64, Linux x64 (aarch64 experimental); no iOS/web |
+| SkyRecomp (Skyward Sword HD) | LAS Recomp's pipeline retargeted to another game | LAS runtime + NVN layer | MIT | Windows, Linux, macOS (Metal) |
+| HD-2D A Link to the Past (WIP) | fan remake on the SNES decompilation (not a recomp) | — | — | — |
+
+**Decision:** static recompilation, built on **LAS Recomp** (fork into `recomp/`, MIT, upstream commit
+recorded in `recomp/UPSTREAM.md`), borrowing from SuperMarioWonderRecomp where it is stronger.
+- Nothing public handles SMM2 out of the box; SwitchRecomp has no code to build on.
+- LAS Recomp has already been retargeted to a second game (SkyRecomp), so its recompiler and runtime
+  aren't welded to one title. Its SDK/NVN generation (2019) matches SMM2 v3.0.3, whose libraries are
+  tagged SDK 7.3.2 / NEX 4.6.2 (2019) — Wonder targets a 2023 SDK, and NVN is resolved by name (SMM2
+  imports 513 `nvn*` names), so the closer generation carries over more.
+- Native Metal on macOS is the best route to iOS/iPadOS (Metal, AOT — static recompilation needs
+  no JIT), with Vulkan for Windows/Linux.
+- It recompiles on the player's machine from their dump, so the repo and any release hold none of
+  the game's code — the same rule SMCraft follows.
+- Its patch/mod layer (`runtime/hle/*`, `tools/patches.py`) suits the 100 Mario and costume mods.
+- From the Wonder framework: the shared-runtime / per-game split as the layout goal, and its
+  Ryujinx-translator-based shader path (the owner asked to reuse Ryujinx, MIT) if LAS's translator
+  falls short on SMM2's shaders.
+- **Reference runtime:** Ryujinx (MIT), already set up with the owner's dump, for frame captures and
+  input-replay comparisons (the render-diff setup and the memory-reading Ryujinx built for SMCraft).
+
+**Done means evidence, per platform** (tracked in PROGRESS.md "Recomp"): boots to the title and
+plays courses; frame captures match Ryujinx on the same dump; recorded-input replays stay in sync
+with Ryujinx frame for frame (positions and outcomes).
+
+**Web:** last. A recompiled game is ~1–2 GB of generated C and uses 3–4 GB of guest memory; it needs
+wasm64 (memory64), threads (SharedArrayBuffer) and an NVN→WebGPU backend. Whether that's practical is
+decided after the native ports, with the reasons written down either way.
+
+**Rules:** no Nintendo binaries, assets, keys, recompiled output or disassembly in git —
+`scripts/check_no_proprietary.py` now also blocks native binaries, SPIR-V, AArch64 ELFs, anything
+under `recomp/private|generated|build/`, and text that looks like disassembly or recompiled code.

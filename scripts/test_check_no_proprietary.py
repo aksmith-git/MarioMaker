@@ -46,6 +46,32 @@ class CheckFileTests(unittest.TestCase):
         body = b"header_key = " + b"ab" * 32 + b"\n"
         self.assertTrue(check_file(self.write("notes.txt", body)))
 
+    def test_aarch64_elf_detected(self):
+        head = b"\x7fELF\x02\x01\x01" + b"\x00" * 11 + b"\xb7\x00" + b"\x00" * 40
+        self.assertTrue(check_file(self.write("main.bin", head)))
+
+    def test_native_binaries_and_spirv_blocked(self):
+        self.assertTrue(check_file(self.write("game.dylib", b"\x00")))
+        self.assertTrue(check_file(self.write("blob.bin", b"\xcf\xfa\xed\xfe" + b"\x00" * 16)))
+        self.assertTrue(check_file(self.write("shader.dat", b"\x03\x02\x23\x07" + b"\x00" * 16)))
+
+    def test_recomp_private_and_generated_paths_blocked(self):
+        for sub in ("recomp/private", "recomp/generated"):
+            d = self.dir / sub
+            d.mkdir(parents=True)
+            p = d / "fn.c"
+            p.write_bytes(b"int x;\n")
+            self.assertTrue(check_file(p), sub)
+
+    def test_disassembly_and_recompiled_code_detected(self):
+        asm = "".join(f"7100{i:06x}: ldr x0, [x1, #8]\n" for i in range(300)).encode()
+        self.assertTrue(check_file(self.write("dump.txt", asm)))
+        gen = "".join(f"ctx->x[{i % 31}] = ctx->x[{(i + 1) % 31}] + 1;\n" for i in range(600)).encode()
+        self.assertTrue(check_file(self.write("fn_7100.c", gen)))
+        # a normal source file mentioning a few registers in comments passes
+        ok = b"// the game keeps the speed in x8 (ldr x8, [x0, #0x10])\nfn main() {}\n"
+        self.assertEqual(check_file(self.write("note.rs", ok)), [])
+
     def test_bare_key_list_detected(self):
         body = b"ab" * 16 + b"\n" + b"cd" * 16 + b"\n"
         self.assertTrue(check_file(self.write("notes.md", body)))

@@ -1,0 +1,6 @@
+# Everything derived from the player's dump stays local (see ../scripts/check_no_proprietary.py):
+# extracted exefs/romfs, recompiled C, translated shaders, build products.
+private/
+generated/
+build/
+*.spv

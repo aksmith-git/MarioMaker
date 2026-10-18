@@ -645,6 +645,23 @@ Block.rpx v208 (private spec research/specs/smm1-extras.md).
   Bones, Magikoopa); stacking heights; SMM1 sound effects (14 built-in + recordings); Big Mushroom
   in other styles [?]
 
+### Recomp — native SMM2 v3.0.3 by static recompilation 🔄 (owner request 2026-10-18)
+Separate from SMCraft, in `recomp/`; approach in DECISIONS.md (base: LAS Recomp, MIT; Wonder
+framework ideas; Ryujinx as the reference). Nothing counts as done without the evidence below.
+- ✅ Approach chosen and recorded; proprietary-content guard extended for recomp output
+- ⬜ Toolchain: fork LAS Recomp into `recomp/` (MIT notices, upstream commit), retarget to SMM2
+  v3.0.3 (`main` + `sdk` modules), first-launch local recompilation from the player's dump
+- ⬜ Mods: 100 Mario Challenge on SMM2's Endless Challenge (100 lives, SMM1 run rules, courses from
+  our server or the local library); Mystery Mushroom costumes (model, sounds, physics swaps)
+
+| Platform | Builds | Boots to title | Plays courses | Frames match Ryujinx | Input replays in sync |
+|---|---|---|---|---|---|
+| macOS (Apple Silicon, Metal) | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| Windows (x64, Vulkan) | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| Linux (x64, Vulkan) | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| iOS / iPadOS (arm64, Metal, AOT) | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| Web (wasm + WebGPU) | ⬜ feasibility decided after the native ports | | | | |
+
 ---
 
 ## Phase 1 detail
