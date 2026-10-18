@@ -385,8 +385,10 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   Spin gets out; runs enemies over; hits damage the car (third breaks it) [inf]; "goal in a
   Koopa Troopa Car" condition. Enemy drivers ⬜ (none in the sample)
 - ✅ ! Block (119): 2×2 solid with a drawn path; a hit from below bounces it (7-frame ramp),
-  knocks out enemies on it and grows a chain of 2×2 blocks along the path [inf: the chain motion
-  wasn't decoded], restored after 600 frames
+  knocks out enemies on it and grows a chain of 2×2 blocks along the path, restored after 600 frames
+  - ✅ Pass 3: the chain as decoded — one segment per path point, a head hit slides one out
+    (3 px/f), a ground-pound-type hit sends runs to each turn; snake / track-block path codes are
+    steps into each node, end codes included · world wiring of `hit_all` (ground pound) ⬜
 - ✅ Tree (106): the trunk climbs like a vine up into the canopy, the canopy is a jump-through
   platform, reaching it knocks out the canopy item (vy 4.5) [inf: trigger]
 - ✅ Mushroom Trampoline (113): top-only platform N tiles wide; landing launches at 6.0 (4.43 with

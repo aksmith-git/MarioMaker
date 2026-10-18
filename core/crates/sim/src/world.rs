@@ -8540,17 +8540,20 @@ mod tests {
     #[test]
     fn exclamation_block_hit_from_below_grows_its_chain() {
         let mut lvl = Level::flat(60);
-        lvl.exclamations.push(((3, 4), vec![2, 2, 15]));
+        lvl.exclamations.push(((3, 4), vec![2, 2, 13]));
         let mut w = World::with_level(lvl);
         w.player.x = 4.0 * TILE;
         run(&mut w, 0, 2);
         run(&mut w, input::JUMP, 30);
-        let b = &w.exclamations[0];
-        assert!(b.emptied(), "hit from below");
-        run(&mut w, 0, 30);
-        assert_eq!(w.exclamations[0].boxes().len(), 3, "chain out to the right");
-        // the chain is solid: stand on its far end
-        w.player.x = 8.0 * TILE;
+        assert!(w.exclamations[0].timer > 0, "hit from below");
+        run(&mut w, 0, 40);
+        assert_eq!(
+            w.exclamations[0].boxes().len(),
+            2,
+            "a head hit sends one segment out"
+        );
+        // the segment is solid: stand on it
+        w.player.x = 6.0 * TILE;
         w.player.y = 6.0 * TILE + 4.0;
         run(&mut w, 0, 10);
         assert!(w.player.on_ground && (w.player.y - 6.0 * TILE).abs() < 0.5);
@@ -8669,8 +8672,8 @@ mod tests {
     #[test]
     fn track_block_follows_its_path_while_on() {
         let mut lvl = Level::flat(60);
-        // right, right, end
-        lvl.track_paths.push((0, vec![2, 2, 15]));
+        // right, then the end (entered moving right): two 2-tile steps
+        lvl.track_paths.push((0, vec![2, 13]));
         lvl.spawns.push(spawn(
             Kind::TrackBlock {
                 path: 0,
