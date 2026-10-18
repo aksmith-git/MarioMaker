@@ -1,5 +1,9 @@
-import AppKit
 import Metal
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 /// Debug: screenshot the app's own window without Screen Recording permission.
 ///
@@ -19,11 +23,12 @@ import Metal
 /// Waits, renders the main window's content (or the Settings window) into a PNG and quits.
 /// Window snapshots can't see Metal layers, so while this is set the renderer keeps a copy of its
 /// latest frame and it is drawn underneath. Combine with MMK_COURSE and MMK_UI_PAUSE_TICKS=<n>
-/// to capture the pause menu over the game.
+/// to capture the pause menu over the game. On iOS the key window is captured the same way
+/// (`xcrun simctl io booted screenshot` also works there, Metal included).
 @MainActor
 enum DebugCapture {
     static let requested = ProcessInfo.processInfo.environment["MMK_UI_SCREENSHOT"] != nil
-    static weak var gameView: NSView?
+    static weak var gameView: PlatformView?
     static var lastFrame: CGImage?
     static let freezeTicks: Int? = requested ? ProcessInfo.processInfo.environment["MMK_UI_TICKS"].flatMap(Int.init) : nil
 
@@ -73,11 +78,17 @@ enum DebugCapture {
                 }
             }
         }
-        // (RootView opens the Settings window for MMK_UI_SCREEN=settings)
+        // (RootView opens the Settings window / sheet for MMK_UI_SCREEN=settings)
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            #if os(macOS)
             let windows = NSApp.windows.filter { $0.isVisible && $0.contentView != nil }
             let target = settings ? windows.first { $0.title != AppIdentity.name } ?? windows.first
                                   : windows.first { $0.title == AppIdentity.name } ?? windows.first
+            #else
+            _ = settings   // the sheet is part of the key window
+            let target = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .flatMap(\.windows).first { $0.isKeyWindow }
+            #endif
             guard let w = target, let png = capture(w) else {
                 FileHandle.standardError.write("MMK_UI_SCREENSHOT: nothing to capture\n".data(using: .utf8)!)
                 exit(1)
@@ -86,6 +97,23 @@ enum DebugCapture {
             exit(0)
         }
     }
+
+    #if os(iOS)
+    private static func capture(_ w: UIWindow) -> Data? {
+        let game = gameView.flatMap { $0.window === w ? $0 : nil }
+        return UIGraphicsImageRenderer(bounds: w.bounds).pngData { ctx in
+            UIColor.black.setFill()
+            ctx.fill(w.bounds)
+            if let game, let frame = lastFrame {
+                UIImage(cgImage: frame).draw(in: game.convert(game.bounds, to: w))
+            }
+            // the UI over it (the Metal layer itself doesn't draw into a snapshot)
+            game?.isHidden = true
+            w.drawHierarchy(in: w.bounds, afterScreenUpdates: true)
+            game?.isHidden = false
+        }
+    }
+    #else
 
     private static func capture(_ w: NSWindow) -> Data? {
         guard let content = w.contentView else { return nil }
@@ -115,4 +143,5 @@ enum DebugCapture {
         NSGraphicsContext.restoreGraphicsState()
         return out.representation(using: .png, properties: [:])
     }
+    #endif
 }

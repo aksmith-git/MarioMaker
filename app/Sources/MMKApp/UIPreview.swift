@@ -25,10 +25,10 @@ enum UIPreview {
     }
 }
 
-struct UIPreviewView: NSViewRepresentable {
+struct UIPreviewView: MetalViewRepresentable {
     func makeCoordinator() -> UIPreviewRenderer { UIPreviewRenderer() }
 
-    func makeNSView(context: Context) -> MTKView {
+    func makeView(context: Context) -> MTKView {
         let view = MTKView()
         view.device = context.coordinator.device
         view.colorPixelFormat = .bgra8Unorm_srgb
@@ -42,7 +42,7 @@ struct UIPreviewView: NSViewRepresentable {
         return view
     }
 
-    func updateNSView(_ nsView: MTKView, context: Context) {}
+    func updateView(_ view: MTKView, context: Context) {}
 }
 
 @MainActor

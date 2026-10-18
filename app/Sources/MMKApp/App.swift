@@ -1,52 +1,76 @@
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import CMmk
 import SwiftUI
 
 @main
 struct MMKApp: App {
+    #if os(macOS)
     @NSApplicationDelegateAdaptor private var delegate: AppDelegate
+    #endif
     @StateObject private var model = AppModel()
 
     init() {
         SettingsKey.registerDefaults()
+        #if os(macOS)
         // Running as a plain executable (swift run) rather than a bundle: become a regular,
         // focused app so the window appears in front and receives keyboard input.
         NSApplication.shared.setActivationPolicy(.regular)
         DispatchQueue.main.async { NSApplication.shared.activate(ignoringOtherApps: true) }
+        #endif
     }
 
     var body: some Scene {
+        #if os(macOS)
         Window(AppIdentity.name, id: "main") {
-            if MeshPreview.requested {
-                MeshPreviewView().frame(minWidth: 768, minHeight: 432)   // MMK_MESH_PREVIEW model viewer
-            } else if UIPreview.requested {
-                UIPreviewView().frame(minWidth: 768, minHeight: 432)   // MMK_UI_LAYOUT debug view
-            } else {
-                RootView()
-                    .environmentObject(model)
-                    .frame(minWidth: 768, minHeight: 432)
-            }
+            content
         }
         .defaultSize(width: 1024, height: 640)
-        .commands {
-            CommandGroup(after: .newItem) {
-                Button("Add Courses…") { model.showLibrary(); model.addCoursesRequested = true }
-                    .keyboardShortcut("o")
-                    .disabled(model.isPlaying || model.assets == nil)
-                Button("Import Game Data…") { model.showImporter() }
-                    .disabled(model.isPlaying)
-            }
-        }
+        .commands { commands }
         Settings {
             SettingsView()
+        }
+        #else
+        // one window: the app model is shared, so a second scene would mirror the first
+        WindowGroup {
+            content
+        }
+        .commands { commands }   // iPad hardware keyboard menu
+        #endif
+    }
+
+    @ViewBuilder private var content: some View {
+        if MeshPreview.requested {
+            MeshPreviewView().minimumWindowSize()   // MMK_MESH_PREVIEW model viewer
+        } else if UIPreview.requested {
+            UIPreviewView().minimumWindowSize()   // MMK_UI_LAYOUT debug view
+        } else {
+            RootView()
+                .environmentObject(model)
+                .minimumWindowSize()
+        }
+    }
+
+    @CommandsBuilder private var commands: some Commands {
+        CommandGroup(after: .newItem) {
+            Button("Add Courses…") { model.showLibrary(); model.addCoursesRequested = true }
+                .keyboardShortcut("o")
+                .disabled(model.isPlaying || model.assets == nil)
+            Button("Import Game Data…") { model.showImporter() }
+                .disabled(model.isPlaying)
         }
     }
 }
 
+#if os(macOS)
 final class AppDelegate: NSObject, NSApplicationDelegate {
     /// One main window: closing it quits.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
+#endif
 
 /// Which screen the window shows, and the objects shared between screens.
 @MainActor
@@ -59,6 +83,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var assets: EngineAssets?
     @Published var errorMessage: String?
     @Published var addCoursesRequested = false
+    /// iOS: the Settings sheet (macOS has a Settings window).
+    @Published var showSettings = false
     /// Filter the library opens with next (the title's Story Mode → Built-in).
     @Published var libraryStartFilter: LibraryView.Filter?
     let library = CourseLibrary()
@@ -153,9 +179,14 @@ final class AppModel: ObservableObject {
         showLibrary()
     }
 
+    /// After an import (macOS) or a cache copied in (iOS): open the best cache found.
     func importFinished() {
         guard let url = AppPaths.findAssetCache() else {
+            #if os(macOS)
             errorMessage = "The import finished but no asset cache was found in \(AppPaths.assetsRoot.path)."
+            #else
+            errorMessage = "No asset cache was found in \(AppPaths.assetsRoot.path). Copy the folder made by the importer on your Mac (for example smm2-3.0.3) there."
+            #endif
             return
         }
         do {
@@ -233,14 +264,16 @@ final class AppModel: ObservableObject {
 
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
+    #if os(macOS)
     @AppStorage(SettingsKey.fullscreen) private var fullscreen = false
     @Environment(\.openSettings) private var openSettings
+    #endif
 
     var body: some View {
         Group {
             switch model.screen {
             case .importer: ImportView()
-            case .library: LibraryView(library: model.library, saves: model.saves)
+            case .library: libraryScreen
             case .game(let session): GameView(session: session).id(session.id)
             case .challenge(let flow): ChallengeView(flow: flow).id(flow.id)
             case .title(let flow): TitleView(flow: flow).id(flow.id)
@@ -251,13 +284,51 @@ struct RootView: View {
         } message: {
             Text(model.errorMessage ?? "")
         }
+        #if os(macOS)
         .background(WindowAccessor(fullscreen: $fullscreen))
         .onAppear {
             if DebugCapture.requested && ProcessInfo.processInfo.environment["MMK_UI_SCREEN"] == "settings" { openSettings() }
         }
+        #else
+        // game screens use the whole display, with the on-screen controls on top
+        .overlay { if model.showsGameScreen { TouchControls().ignoresSafeArea() } }
+        .ignoresSafeArea(edges: model.showsGameScreen ? .all : [])
+        .statusBarHidden(model.showsGameScreen)
+        .persistentSystemOverlays(model.showsGameScreen ? .hidden : .automatic)
+        .sheet(isPresented: $model.showSettings) { SettingsView() }
+        .onAppear {
+            let env = ProcessInfo.processInfo.environment
+            if DebugCapture.requested && env["MMK_UI_SCREEN"] == "settings" { model.showSettings = true }
+            // MMK_ORIENTATION=landscape / portrait: rotate at launch (simulator captures)
+            if let o = env["MMK_ORIENTATION"], let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+                scene.requestGeometryUpdate(.iOS(interfaceOrientations: o == "portrait" ? .portrait : .landscapeRight))
+            }
+        }
+        #endif
+    }
+
+    @ViewBuilder private var libraryScreen: some View {
+        #if os(macOS)
+        LibraryView(library: model.library, saves: model.saves)
+        #else
+        NavigationStack { LibraryView(library: model.library, saves: model.saves) }   // (for its toolbar)
+        #endif
     }
 }
 
+#if os(iOS)
+extension AppModel {
+    /// The game, a 100 Mario run or the title: full screen, touch controls shown.
+    var showsGameScreen: Bool {
+        switch screen {
+        case .game, .challenge, .title: true
+        case .importer, .library: false
+        }
+    }
+}
+#endif
+
+#if os(macOS)
 /// Keeps the window's full-screen state and the `display.fullscreen` setting in sync, both ways.
 private struct WindowAccessor: NSViewRepresentable {
     @Binding var fullscreen: Bool
@@ -306,3 +377,4 @@ private struct WindowAccessor: NSViewRepresentable {
         if w.styleMask.contains(.fullScreen) != want { w.toggleFullScreen(nil) }
     }
 }
+#endif

@@ -1,4 +1,3 @@
-import AppKit
 import CMmk
 import QuartzCore
 import SwiftUI
@@ -100,9 +99,8 @@ final class GameSession: ObservableObject, Identifiable {
         if let course {
             let ok = course.withUnsafeBytes { mmk_engine_load_course(e, $0.bindMemory(to: UInt8.self).baseAddress, course.count) }
             if !ok {
-                let msg = lastEngineError()
-                mmk_engine_free(e)
-                throw EngineError(msg)
+                // (self is fully initialised here, so deinit frees the engine)
+                throw EngineError(lastEngineError())
             }
         }
         if let courseKey { saves?.addAttempt(courseKey) }
@@ -113,7 +111,7 @@ final class GameSession: ObservableObject, Identifiable {
         }
         applyVolumes()
         // switching to another app pauses (not during scripted runs)
-        resignObserver = NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+        resignObserver = NotificationCenter.default.addObserver(forName: PlatformApp.resignActive, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 if let self, self.scriptedInput == nil { self.pause() }
             }
@@ -421,6 +419,12 @@ struct GameView: View {
 private struct PauseMenu: View {
     @ObservedObject var session: GameSession
 
+    #if os(macOS)
+    private static let hint = "↑↓ choose · Return / A select · Esc / B continue"
+    #else
+    private static let hint = "Tap an item, or ↑↓ and Jump · + continues"
+    #endif
+
     var body: some View {
         ZStack {
             Color.black.opacity(0.55)
@@ -441,7 +445,7 @@ private struct PauseMenu: View {
                         .onHover { if $0 { session.pauseSelection = i } }
                     }
                 }
-                Text("↑↓ choose · Return / A select · Esc / B continue")
+                Text(Self.hint)
                     .font(.caption).foregroundStyle(.white.opacity(0.6))
             }
             .padding(32)

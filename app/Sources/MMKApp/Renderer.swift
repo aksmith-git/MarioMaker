@@ -7,12 +7,12 @@ import QuartzCore
 import SwiftUI
 
 /// Hosts an MTKView inside SwiftUI, drawing one game session.
-struct MetalView: NSViewRepresentable {
+struct MetalView: MetalViewRepresentable {
     let session: GameSession
 
     func makeCoordinator() -> Renderer { Renderer(session: session) }
 
-    func makeNSView(context: Context) -> MTKView {
+    func makeView(context: Context) -> MTKView {
         let view = GameMTKView()
         view.device = context.coordinator.device
         view.colorPixelFormat = .bgra8Unorm_srgb
@@ -21,14 +21,17 @@ struct MetalView: NSViewRepresentable {
         view.preferredFramesPerSecond = 120
         view.delegate = context.coordinator
         view.framebufferOnly = context.coordinator.screenshot == nil && !DebugCapture.requested
+        #if os(macOS)
         view.onWindow = { [weak session] w in session?.input.window = w }
+        #endif
         if DebugCapture.requested { DebugCapture.gameView = view }
         return view
     }
 
-    func updateNSView(_ nsView: MTKView, context: Context) {}
+    func updateView(_ view: MTKView, context: Context) {}
 }
 
+#if os(macOS)
 /// Tells the session's input which window is the game's.
 final class GameMTKView: MTKView {
     var onWindow: ((NSWindow?) -> Void)?
@@ -39,6 +42,10 @@ final class GameMTKView: MTKView {
     }
     override var acceptsFirstResponder: Bool { true }
 }
+#else
+/// The game's MTKView (keyboards are read through GameController, touches by `TouchControls`).
+final class GameMTKView: MTKView {}
+#endif
 
 /// Draws a game session's sprite snapshot (the session steps the engine, see GameSession.frame).
 @MainActor

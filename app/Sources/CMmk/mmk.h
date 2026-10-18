@@ -79,6 +79,9 @@ MmkAssets *mmk_assets_placeholder(void);   // no textures, no keys: run without 
 void mmk_assets_free(MmkAssets *assets);
 size_t mmk_assets_texture_count(const MmkAssets *assets);
 bool mmk_assets_texture(const MmkAssets *assets, size_t index, MmkTextureInfo *out);
+// RGBA8 copy (width*height*4 bytes, channel select not applied) of a texture from
+// mmk_assets_texture / mmk_ui_texture, for GPUs without BC support. False for BC6H.
+bool mmk_texture_decode_rgba(const MmkTextureInfo *info, uint8_t *out, size_t out_len);
 
 MmkEngine *mmk_engine_new(const MmkAssets *assets);
 void mmk_engine_free(MmkEngine *engine);

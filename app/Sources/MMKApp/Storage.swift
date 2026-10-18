@@ -12,6 +12,11 @@ import Foundation
 /// `MMK_UI_CACHE`, then `assets/smm1-<build>/` here, then `~/smm-work/cache/smm1-<build>/`
 /// (DECISIONS.md, "SMM1 UI cache location"). Without one the app uses its stand-in screens.
 ///
+/// On iOS the same layout sits in the app's Documents folder, which the Files app shows as
+/// On My iPad / iPhone › <name>: the owner copies an asset cache made on the Mac into `assets/`
+/// there (or picks one anywhere and the app copies it in, `CacheCopy`), and course files into
+/// `courses/`.
+///
 /// Settings live in UserDefaults (see `SettingsKey`).
 enum AppPaths {
     /// MMK_SUPPORT_DIR=<dir> replaces the whole folder (tests, screenshots).
@@ -19,8 +24,28 @@ enum AppPaths {
         if let dir = ProcessInfo.processInfo.environment["MMK_SUPPORT_DIR"], !dir.isEmpty {
             return URL(fileURLWithPath: dir, isDirectory: true)
         }
+        #if os(macOS)
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return base.appendingPathComponent(AppIdentity.name, isDirectory: true)
+        #else
+        return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        #endif
+    }
+
+    /// Home folder holding the development caches (`~/smm-work/cache`): the user's on macOS, the
+    /// Mac's inside the iOS Simulator (so a simulator build finds the same caches), none on a
+    /// device.
+    static var devHome: URL? {
+        #if os(macOS)
+        return FileManager.default.homeDirectoryForCurrentUser
+        #else
+        return ProcessInfo.processInfo.environment["SIMULATOR_HOST_HOME"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+        #endif
+    }
+
+    /// `~/smm-work/cache` under `devHome`, if there is one.
+    private static var devCache: [URL] {
+        devHome.map { [$0.appendingPathComponent("smm-work/cache", isDirectory: true)] } ?? []
     }
 
     static var assetsRoot: URL { support.appendingPathComponent("assets", isDirectory: true) }
@@ -38,12 +63,12 @@ enum AppPaths {
         if let env = ProcessInfo.processInfo.environment["MMK_ASSETS"], !env.isEmpty {
             list.append(URL(fileURLWithPath: env, isDirectory: true))
         }
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let roots = [
-            assetsRoot,
-            home.appendingPathComponent("Library/Application Support/mmk/assets", isDirectory: true),
-            home.appendingPathComponent("smm-work/cache", isDirectory: true),
-        ]
+        var roots = [assetsRoot]
+        #if os(macOS)
+        roots.append(FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/mmk/assets", isDirectory: true))
+        #endif
+        roots += devCache
         for root in roots {
             list.append(root.appendingPathComponent(preferredBuild, isDirectory: true))
             let others = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
@@ -73,8 +98,7 @@ enum AppPaths {
         if let d = ProcessInfo.processInfo.environment["MMK_UI_CACHE"], !d.isEmpty {
             list.append(URL(fileURLWithPath: d, isDirectory: true))
         }
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        for root in [assetsRoot, home.appendingPathComponent("smm-work/cache", isDirectory: true)] {
+        for root in [assetsRoot] + devCache {
             let dirs = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
             list += dirs.filter { $0.lastPathComponent.hasPrefix("smm1-") }.sorted { $0.path > $1.path }
         }
@@ -91,8 +115,7 @@ enum AppPaths {
         if let d = ProcessInfo.processInfo.environment["MMK_UI2_CACHE"], !d.isEmpty {
             list.append(URL(fileURLWithPath: d, isDirectory: true))
         }
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        for root in [assetsRoot, home.appendingPathComponent("smm-work/cache", isDirectory: true)] {
+        for root in [assetsRoot] + devCache {
             let dirs = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
             list += dirs.filter { $0.lastPathComponent.hasPrefix("smm2-ui-") }.sorted { $0.path > $1.path }
         }

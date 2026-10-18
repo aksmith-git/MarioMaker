@@ -88,33 +88,7 @@ final class UILayer {
         }
     }
 
-    static func makeTexture(_ device: MTLDevice, _ t: MmkTextureInfo) -> MTLTexture? {
-        let srgb = t.variant == 2
-        let (format, blockBytes, blockSize): (MTLPixelFormat, Int, Int) = switch t.format {
-        case 1: (srgb ? .rgba8Unorm_srgb : .rgba8Unorm, 4, 1)
-        case 2: (srgb ? .bc1_rgba_srgb : .bc1_rgba, 8, 4)
-        case 3: (srgb ? .bc2_rgba_srgb : .bc2_rgba, 16, 4)
-        case 4: (srgb ? .bc3_rgba_srgb : .bc3_rgba, 16, 4)
-        case 5: (t.variant == 1 ? .bc4_rSnorm : .bc4_rUnorm, 8, 4)
-        case 6: (t.variant == 1 ? .bc5_rgSnorm : .bc5_rgUnorm, 16, 4)
-        case 7: (.bc6H_rgbuFloat, 16, 4)
-        case 8: (srgb ? .bc7_rgbaUnorm_srgb : .bc7_rgbaUnorm, 16, 4)
-        default: (.invalid, 0, 0)
-        }
-        guard format != .invalid, let data = t.data, t.width > 0, t.height > 0 else { return nil }
-        let w = Int(t.width), h = Int(t.height)
-        let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: w, height: h, mipmapped: false)
-        desc.usage = .shaderRead
-        let sel = t.channel_select
-        func swz(_ c: UInt8) -> MTLTextureSwizzle {
-            switch c { case 0: .zero; case 1: .one; case 2: .red; case 3: .green; case 4: .blue; default: .alpha }
-        }
-        desc.swizzle = MTLTextureSwizzleChannels(red: swz(sel.0), green: swz(sel.1), blue: swz(sel.2), alpha: swz(sel.3))
-        guard let tex = device.makeTexture(descriptor: desc) else { return nil }
-        let bytesPerRow = (w + blockSize - 1) / blockSize * blockBytes
-        tex.replace(region: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0, withBytes: data, bytesPerRow: bytesPerRow)
-        return tex
-    }
+    static func makeTexture(_ device: MTLDevice, _ t: MmkTextureInfo) -> MTLTexture? { GPUTexture.make(device, t) }
 
     private func pipeline(blend: UInt32) -> MTLRenderPipelineState? {
         if let p = pipelines[blend] { return p }

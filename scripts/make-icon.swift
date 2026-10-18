@@ -1,12 +1,15 @@
 // Draws the app's placeholder icon (original art: plain shapes, no text) as a 1024×1024 PNG.
-//   swift scripts/make-icon.swift out.png
-// Used by scripts/make-app.sh, which scales it into an .icns.
+//   swift scripts/make-icon.swift out.png [--ios]
+// Used by scripts/make-app.sh, which scales it into an .icns. --ios draws the same art full-bleed
+// and opaque (iOS rounds the corners itself), for scripts/make-ios-app.sh.
 import CoreGraphics
 import Foundation
 import ImageIO
 
 let size = 1024
-let out = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "icon_1024.png"
+let args = CommandLine.arguments.dropFirst()
+let ios = args.contains("--ios")
+let out = args.first { !$0.hasPrefix("--") } ?? "icon_1024.png"
 let space = CGColorSpace(name: CGColorSpace.sRGB)!
 guard let ctx = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0,
                           space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
@@ -17,11 +20,17 @@ func rgb(_ hex: UInt32, _ a: CGFloat = 1) -> CGColor {
             blue: CGFloat(hex & 0xFF) / 255, alpha: a)
 }
 
-// macOS icon grid: 824-px rounded square centred in the 1024 canvas, with a soft shadow
+// macOS icon grid: 824-px rounded square centred in the 1024 canvas, with a soft shadow. iOS:
+// the square scaled to fill the canvas, no corners or shadow.
 let tile = CGRect(x: 100, y: 100, width: 824, height: 824)
-let shape = CGPath(roundedRect: tile, cornerWidth: 185, cornerHeight: 185, transform: nil)
+let shape = ios ? CGPath(rect: tile, transform: nil) : CGPath(roundedRect: tile, cornerWidth: 185, cornerHeight: 185, transform: nil)
+if ios {
+    let k = CGFloat(size) / tile.width
+    ctx.scaleBy(x: k, y: k)
+    ctx.translateBy(x: -tile.minX, y: -tile.minY)
+}
 ctx.saveGState()
-ctx.setShadow(offset: CGSize(width: 0, height: -12), blur: 28, color: rgb(0x000000, 0.35))
+if !ios { ctx.setShadow(offset: CGSize(width: 0, height: -12), blur: 28, color: rgb(0x000000, 0.35)) }
 ctx.addPath(shape)
 ctx.setFillColor(rgb(0x2A7DE1))
 ctx.fillPath()

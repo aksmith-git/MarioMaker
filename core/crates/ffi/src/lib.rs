@@ -188,6 +188,44 @@ pub unsafe extern "C" fn mmk_assets_texture(
     })
 }
 
+/// Decode the texture `info` describes (from `mmk_assets_texture` or `mmk_ui_texture`) into
+/// `out`: `width × height × 4` bytes of RGBA8, top row first, channel select not applied. For
+/// GPUs without BC support (iPhones, older iPads). Returns false for BC6H, an unknown format or
+/// a short buffer.
+///
+/// # Safety
+/// `info` must be filled by one of those calls on a live handle; `out` writable for `out_len`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_texture_decode_rgba(
+    info: *const MmkTextureInfo,
+    out: *mut u8,
+    out_len: usize,
+) -> bool {
+    guard(false, || {
+        let Some(t) = (unsafe { info.as_ref() }) else {
+            return false;
+        };
+        if t.data.is_null() || out.is_null() {
+            return false;
+        }
+        let Ok(format) = mmk_assets::MtexFormat::from_code(t.format) else {
+            set_error(format!("unknown texture format {}", t.format));
+            return false;
+        };
+        let data = unsafe { std::slice::from_raw_parts(t.data, t.len) };
+        let Some(rgba) = mmk_host::texture::decode_rgba(format, data, t.width, t.height) else {
+            set_error(format!("can't decode {} texture", format.name()));
+            return false;
+        };
+        if rgba.len() > out_len {
+            set_error("output buffer too small");
+            return false;
+        }
+        unsafe { std::ptr::copy_nonoverlapping(rgba.as_ptr(), out, rgba.len()) };
+        true
+    })
+}
+
 // --- engine ----------------------------------------------------------------------------------
 
 pub struct MmkEngine {

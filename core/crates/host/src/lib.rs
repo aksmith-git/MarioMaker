@@ -6,9 +6,11 @@
 //!   placement, flips), and the theme's clear colour.
 //! - [`audio`]: the mixer handle rendered on the audio thread, and the director that turns sim
 //!   events into mixer commands.
+//! - [`texture`]: cache textures decoded to RGBA8 for GPUs without BC support (WebGL2, iPhones).
 
 pub mod audio;
 pub mod course;
 pub mod frame;
+pub mod texture;
 
 pub use frame::{DrawSprite, SpriteResolver, clear_color, place};
