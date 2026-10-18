@@ -7,6 +7,7 @@
 pub mod aes_modes;
 pub mod archive;
 pub mod audio;
+pub mod bc7;
 pub mod bcn;
 pub mod bfcpx;
 pub mod bffnt;

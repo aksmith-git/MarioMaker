@@ -83,31 +83,10 @@ pub fn swizzle(rgba: &mut [u8], sel: [u8; 4]) {
     }
 }
 
-/// Decode any supported texture to RGBA8 (None: BC6H, not decodable here).
+/// Decode any supported texture to RGBA8 (None: BC6H, not decodable here), channel select
+/// applied.
 pub fn decode_rgba(t: &Mtex) -> Option<Vec<u8>> {
-    let mut rgba = match t.format {
-        MtexFormat::Rgba8 => t.data.clone(),
-        MtexFormat::Bc7 => crate::bc7::decode(&t.data, t.width, t.height),
-        MtexFormat::Bc6h => return None,
-        f => {
-            // mmk_formats::bcn kinds: 1 BC1 … 5 BC5 (mtex codes are one higher)
-            let kind = f as u8 - 1;
-            let mut px = mmk_formats::bcn::decode(kind, &t.data, t.width, t.height);
-            if f == MtexFormat::Bc4 {
-                // the GPU reads BC4 as (r, 0, 0, 1); the tool decoder spreads r for viewing
-                for p in px.as_chunks_mut::<4>().0 {
-                    p[1] = 0;
-                    p[2] = 0;
-                }
-            }
-            px
-        }
-    };
-    let n = (t.width * t.height * 4) as usize;
-    if rgba.len() < n {
-        return None;
-    }
-    rgba.truncate(n);
+    let mut rgba = mmk_host::texture::decode_rgba(t.format, &t.data, t.width, t.height)?;
     swizzle(&mut rgba, t.channel_select);
     Some(rgba)
 }

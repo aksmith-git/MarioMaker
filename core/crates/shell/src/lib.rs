@@ -6,7 +6,8 @@
 //! unit-tested without a window or GPU; `headless` renders offscreen for smoke tests.
 
 pub mod app;
-pub mod bc7;
+/// Moved to `mmk_formats::bc7` (the Swift app decodes with it too, through `mmk-ffi`).
+pub use mmk_formats::bc7;
 pub mod clock;
 pub mod game;
 pub mod hud;
