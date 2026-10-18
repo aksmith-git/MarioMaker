@@ -192,10 +192,41 @@ cargo run --release -p mmk-shell -- --edit my-course.bin            # edit (a ne
 cargo run --release -p mmk-shell -- --edit new.bin --style M3       # new course in SMB3 style
 ```
 
-Mouse: left places the selected part (or paints ground), right erases. 1–9/0 and Tab pick the
-part, arrows scroll, Ctrl+Z / Ctrl+Y undo / redo, Ctrl+S saves. On the part under the cursor: W
-wings, B big, F alternate form, I put the selected part inside it (a block's item). T cycles
-the theme, N toggles night. Enter test-plays; E goes back to editing.
+A debug-grade UI until the SMM2 maker layouts are drawn; the strip at the bottom says what
+happened (F1 lists the keys).
+
+| Keys / mouse | Does |
+|---|---|
+| left click / drag | place the selected part, paint ground while dragging |
+| right click / drag | erase (a part, then a track piece, then ground); cancels a two-click action |
+| 1–9, 0, Tab / Shift+Tab | pick the part (the palette also has Select, Track, Door, Warp Box, Scroll Node) |
+| arrows | scroll |
+| Door / Warp Box / Track tool | click one end, then the other (tracks: straight or 45°, even length) |
+| W / F / B | wings / alternate form / big, on the part under the cursor |
+| I | put the selected palette part inside the part under the cursor (block item, pipe contents, key) |
+| = / − (Shift: height) | resize the part under the cursor (semisolids, platforms, bridges, pipes, belts, lifts, slopes, vines …) |
+| R / C | turn / recolour the pipe under the cursor (R on empty space turns new pipes) |
+| L | link pipes: L on a pipe, A to the other area, L on its pipe |
+| K | door kind under the cursor: normal → P door → key door |
+| G | put the part under the cursor on the nearest track (or take it off) |
+| O | open / close the free track end under the cursor |
+| H | draw the path of a snake block, ! block, track block or Piranha Creeper: arrows add steps, Backspace removes one, H again saves it |
+| Select tool | drag a rectangle; Ctrl+C copy, Ctrl+X cut, Ctrl+V paste at the cursor, Delete / Backspace delete, Shift+arrows move |
+| A / V / [ ] | other area / sub-area vertical or horizontal / area smaller or bigger |
+| T / N | theme / night |
+| Q | autoscroll: none, slow, normal, fast, custom (Scroll Node tool adds the nodes) |
+| , / . (Shift: ×10) | timer −/+ 10 s |
+| ; | clear condition (none, defeat the Goombas, collect the coins, as Super Mario, no damage, no landing) |
+| ' | liquid (castle lava, forest water): stays, rises or falls, rises and falls |
+| Ctrl+Z / Ctrl+Y / Ctrl+S / Ctrl+U | undo / redo / save / upload (`--server`) |
+| Esc | drop the selection or a half-done action |
+| Enter / E | test-play / back to editing |
+
+The editor follows the game's placement rules: the start and goal areas stay clear, parts don't
+overlap ground or each other (semisolids and platforms may), containers only take what the game
+allows, and the game's per-area part limits (100 enemies and gizmos, 100 power-ups, 2000 blocks
+and coins, 1 checkpoint, 4 door pairs …), size ranges and style-only parts are enforced. The editing core is `core/crates/editor`;
+`cargo run -p mmk-editor --example sample_course -- out.bin` writes a course that uses most of it.
 
 ## Online: the open-source course server
 
