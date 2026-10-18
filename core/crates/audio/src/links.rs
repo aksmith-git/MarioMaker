@@ -612,6 +612,11 @@ impl SoundDb {
                         return;
                     }
                 }
+                // an unknown property (the engine does not model it) takes the first child, the
+                // normal case in the game's data (e.g. the local player before a remote one)
+                if v.is_none() && fallback.is_none() {
+                    fallback = kids().next();
+                }
                 if let Some(j) = fallback {
                     self.walk(user, u, j, props, rng, turns, out, depth + 1);
                 }

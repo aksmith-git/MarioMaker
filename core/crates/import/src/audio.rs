@@ -211,64 +211,6 @@ pub fn all_style_sounds(styles: &[&str]) -> Vec<SoundDef> {
     v
 }
 
-/// Theme music names in the game's stream files, by course theme id (0 ground … 9 forest).
-pub const THEME_MUSIC: [&str; 10] = [
-    "Plain",
-    "UnderGround",
-    "Castle",
-    "Airship",
-    "Water",
-    "HauntedHouse",
-    "Snow",
-    "Desert",
-    "Athletic",
-    "Woods",
-];
-
-/// Copy each style's theme and star music (complete stream BWAVs) to
-/// `audio/music/<style>_<theme id>[_hurry].bwav` and `<style>_star[_hurry].bwav`, unchanged.
-/// The player decodes only the current course's tracks. Returns the number written.
-pub fn export_music(romfs: &Path, out: &Path, styles: &[&str]) -> Result<usize> {
-    let dir = romfs.join("Sound/Resource/Stream");
-    let names: Vec<String> = crate::read_dir(&dir)
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|p| Some(p.file_name()?.to_string_lossy().into_owned()))
-        .collect();
-    let find = |want: &str| {
-        names
-            .iter()
-            .find(|n| n.eq_ignore_ascii_case(&format!("{want}.bwav")))
-            .cloned()
-    };
-    let mut count = 0;
-    let mut copy = |src: Option<String>, dest: String| -> Result<()> {
-        if let Some(src) = src {
-            let bytes = read(&dir.join(&src))?;
-            if Bwav::parse(&bytes).is_ok_and(|w| w.is_complete()) {
-                write(&out.join(format!("audio/music/{dest}.bwav")), &bytes)?;
-                count += 1;
-            }
-        }
-        Ok(())
-    };
-    for s in styles {
-        for (t, name) in THEME_MUSIC.iter().enumerate() {
-            copy(find(&format!("{s}_BGM_{name}_Play")), format!("{s}_{t}"))?;
-            copy(
-                find(&format!("{s}_BGM_{name}_PlayHurry")),
-                format!("{s}_{t}_hurry"),
-            )?;
-        }
-        copy(find(&format!("{s}_BGM_Star")), format!("{s}_star"))?;
-        copy(
-            find(&format!("{s}_BGM_Star_Hurry")),
-            format!("{s}_star_hurry"),
-        )?;
-    }
-    Ok(count)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

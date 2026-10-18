@@ -2,17 +2,27 @@
 //! the [`Director`], which turns each tick's sim events and state changes into mixer commands.
 //! Shared by the FFI (`MmkAudio` is an `AudioOut`) and the portable shell.
 //!
+//! With the cache's gameplay sound database (`audio/sound.json`) the director plays the game's
+//! own sound links per style, theme and object (module [`crate::sound`]); a cache without one
+//! gets the fixed SMB1 sounds of `audio/index.json`.
+//!
 //! Threading: the game thread only holds a command sender (inside the `Director`); the mixer lives
 //! behind a mutex inside `AudioOut` and is only locked by `render` (the audio thread), so the lock
 //! is uncontended.
 
+use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 
+use mmk_audio::mixer::{MusicClock, SharedSet, shared_set};
 use mmk_audio::{Bank, Command, Mixer, OUTPUT_RATE, command_channel};
 use mmk_sim::World;
 use mmk_sim::player::Form;
 use mmk_sim::world::{Event, GoalPhase};
+
+use crate::sound::Sounds;
+pub use crate::sound::{FileReader, Library, course_files};
 
 /// Hurry-up threshold (course timer frames), as in the sim.
 const HURRY_FRAMES: i32 = 100 * 60;
@@ -22,18 +32,18 @@ const COUNT_GAP: u32 = 2;
 /// Fixed output gain: the game's sounds are mastered with a lot of headroom.
 pub const OUTPUT_GAIN: f32 = 2.0;
 
+/// Reads a file of the cache's `audio/` folder by relative path (kept for older hosts).
+pub type MusicReader = FileReader;
+
 pub struct AudioOut {
     inner: Mutex<Inner>,
     tx: SyncSender<Command>,
     bank: Arc<Bank>,
     rate: u32,
-    /// Per-course music (decoded on the game thread) and where its files are read from.
-    slots: mmk_audio::mixer::MusicSlots,
-    music: Option<MusicReader>,
+    shared: SharedSet,
+    clock: MusicClock,
+    library: Option<Arc<Library>>,
 }
-
-/// Reads `audio/music/<name>.bwav` of an asset cache (a directory, or the browser's files).
-pub type MusicReader = Box<dyn Fn(&str) -> Option<Vec<u8>> + Send + Sync>;
 
 struct Inner {
     mixer: Mixer,
@@ -49,31 +59,45 @@ impl AudioOut {
     /// A mixer rendering at `rate` Hz (the output device's rate).
     pub fn with_rate(bank: Bank, rate: u32) -> Self {
         let bank = Arc::new(bank);
-        let (tx, rx) = command_channel(256);
-        let slots = mmk_audio::mixer::music_slots();
+        let (tx, rx) = command_channel(1024);
+        let shared = shared_set();
+        let clock: MusicClock = Arc::new(AtomicU64::new(u64::MAX));
         let mut mixer = Mixer::new(bank.clone(), rate);
-        mixer.set_slots(slots.clone());
+        mixer.set_shared(shared.clone());
+        mixer.set_clock(clock.clone());
+        mixer.set_output(OUTPUT_GAIN, true);
         Self {
             inner: Mutex::new(Inner { mixer, rx }),
             tx,
             bank,
             rate,
-            slots,
-            music: None,
+            shared,
+            clock,
+            library: None,
         }
     }
 
-    /// Theme music from a cache directory (`<root>/audio/music/`).
-    pub fn with_music_dir(self, root: impl Into<std::path::PathBuf>) -> Self {
-        let dir = root.into().join("audio/music");
-        self.with_music(Box::new(move |name| {
-            std::fs::read(dir.join(format!("{name}.bwav"))).ok()
-        }))
+    /// The sound database and waves of a cache directory (`<root>/audio/`).
+    pub fn with_cache_dir(self, root: impl Into<PathBuf>) -> Self {
+        let dir = root.into().join("audio");
+        self.with_files(Box::new(move |rel| std::fs::read(dir.join(rel)).ok()))
     }
 
-    pub fn with_music(mut self, reader: MusicReader) -> Self {
-        self.music = Some(reader);
+    /// Same as [`AudioOut::with_cache_dir`] (older name).
+    pub fn with_music_dir(self, root: impl Into<PathBuf>) -> Self {
+        self.with_cache_dir(root)
+    }
+
+    /// The sound database and waves through `read` (paths relative to `audio/`; the browser
+    /// reads prefetched files).
+    pub fn with_files(mut self, read: FileReader) -> Self {
+        self.library = Library::load(read).map(Arc::new);
         self
+    }
+
+    /// Same as [`AudioOut::with_files`] (older name).
+    pub fn with_music(self, read: MusicReader) -> Self {
+        self.with_files(read)
     }
 
     pub fn rate(&self) -> u32 {
@@ -84,9 +108,25 @@ impl AudioOut {
         &self.bank
     }
 
+    pub fn library(&self) -> Option<&Arc<Library>> {
+        self.library.as_ref()
+    }
+
     /// A director sending this mixer the sounds of a world's ticks.
     pub fn director(&self) -> Director {
-        Director::new(self.tx.clone(), &self.bank)
+        match &self.library {
+            Some(lib) => Director {
+                tx: self.tx.clone(),
+                imp: Imp::Data(Box::new(Sounds::new(
+                    self.tx.clone(),
+                    lib.clone(),
+                    self.shared.clone(),
+                    self.clock.clone(),
+                    self.rate,
+                ))),
+            },
+            None => Director::new(self.tx.clone(), &self.bank),
+        }
     }
 
     /// Apply pending commands and render interleaved stereo frames into `out`.
@@ -96,9 +136,6 @@ impl AudioOut {
                 let Inner { mixer, rx } = &mut *g;
                 mixer.drain(rx);
                 mixer.render(out);
-                for s in out.iter_mut() {
-                    *s = (*s * OUTPUT_GAIN).clamp(-1.0, 1.0);
-                }
             }
             Err(_) => out.fill(0.0),
         }
@@ -109,7 +146,60 @@ impl AudioOut {
     }
 }
 
-/// Sound ids the director uses, resolved from the bank once.
+/// Maps sim events and state changes to mixer commands.
+pub struct Director {
+    tx: SyncSender<Command>,
+    imp: Imp,
+}
+
+enum Imp {
+    Data(Box<Sounds>),
+    Legacy(Legacy),
+}
+
+impl Director {
+    /// A director for the fixed SMB1 sounds of `bank` (no sound database).
+    pub fn new(tx: SyncSender<Command>, bank: &Bank) -> Self {
+        Self {
+            tx: tx.clone(),
+            imp: Imp::Legacy(Legacy::new(tx, bank)),
+        }
+    }
+
+    /// Kept for hosts that load a course's music before starting it: the director now loads
+    /// what a course needs itself in [`Director::start_course`].
+    pub fn load_music(&mut self, _out: &AudioOut, _style: &str, _theme: u8) {}
+
+    /// A course was loaded or restarted: start its music from the top.
+    pub fn start_course(&mut self, world: &World) {
+        match &mut self.imp {
+            Imp::Data(s) => s.start_course(world),
+            Imp::Legacy(l) => l.start_course(world),
+        }
+    }
+
+    /// Call after every `World::step`.
+    pub fn after_step(&mut self, world: &World) {
+        match &mut self.imp {
+            Imp::Data(s) => s.after_step(world),
+            Imp::Legacy(l) => l.after_step(world),
+        }
+    }
+
+    /// The (user, key) pairs the last tick played (data-driven director only).
+    pub fn played(&self) -> &[(String, String)] {
+        match &self.imp {
+            Imp::Data(s) => &s.log,
+            Imp::Legacy(_) => &[],
+        }
+    }
+
+    pub fn send(&self, cmd: Command) {
+        let _ = self.tx.try_send(cmd);
+    }
+}
+
+/// Sound ids of the fixed SMB1 set, resolved from the bank once.
 #[derive(Clone, Copy, Debug, Default)]
 struct Ids {
     jump_small: Option<u16>,
@@ -137,12 +227,7 @@ struct Ids {
 
 impl Ids {
     fn resolve(bank: &Bank) -> Self {
-        Self::resolve_style(bank, "M1")
-    }
-
-    /// Prefer the style's variant of each sound (`M3.coin`), else the SMB1 one.
-    fn resolve_style(bank: &Bank, style: &str) -> Self {
-        let id = |n: &str| bank.id(&format!("{style}.{n}")).or_else(|| bank.id(n));
+        let id = |n: &str| bank.id(n);
         Self {
             jump_small: id("jump_small"),
             jump_big: id("jump_big"),
@@ -161,7 +246,6 @@ impl Ids {
             fanfare_down: id("fanfare_down"),
             fanfare_clear: id("fanfare_clear"),
             fanfare_hurry: id("fanfare_hurry"),
-            // SMB1 ground music; other themes are not imported yet and use it too
             bgm: id("bgm_plain"),
             bgm_hurry: id("bgm_plain_hurry"),
             bgm_star: id("bgm_star"),
@@ -170,30 +254,8 @@ impl Ids {
     }
 }
 
-/// The music files (`audio/music/<name>.bwav`) a course of `style` and `theme` plays, in order
-/// of preference: theme track, its hurry variant, star music, star hurry. Hosts that read files
-/// asynchronously (the browser) fetch these before [`Director::load_music`].
-pub fn music_candidates(style: &str, theme: u8) -> [Vec<String>; 4] {
-    let t = theme;
-    let theme_names = |suffix: &str| {
-        vec![
-            format!("{style}_{t}{suffix}"),
-            format!("{style}_0{suffix}"),
-            format!("M1_{t}{suffix}"),
-            format!("M1_0{suffix}"),
-        ]
-    };
-    [
-        theme_names(""),
-        theme_names("_hurry"),
-        vec![format!("{style}_star"), "M1_star".into()],
-        vec![format!("{style}_star_hurry"), "M1_star_hurry".into()],
-    ]
-}
-
-/// Maps sim events and state changes to mixer commands. Pure bookkeeping, no audio state: it
-/// only remembers what it last asked for.
-pub struct Director {
+/// The SMB1-only director for caches without a sound database.
+struct Legacy {
     tx: SyncSender<Command>,
     ids: Ids,
     was_alive: bool,
@@ -205,8 +267,8 @@ pub struct Director {
     kick_alt: usize,
 }
 
-impl Director {
-    pub fn new(tx: SyncSender<Command>, bank: &Bank) -> Self {
+impl Legacy {
+    fn new(tx: SyncSender<Command>, bank: &Bank) -> Self {
         Self {
             tx,
             ids: Ids::resolve(bank),
@@ -218,39 +280,6 @@ impl Director {
             count_gap: 0,
             kick_alt: 0,
         }
-    }
-
-    /// The course's own music: its style's theme track and hurry variant, and the style's star
-    /// music, decoded from the cache's `audio/music/` into the mixer's slots. Missing tracks fall
-    /// back to the style's ground track, then SMB1's, then the bank's SMB1 ground music.
-    pub fn load_music(&mut self, out: &AudioOut, style: &str, theme: u8) {
-        self.ids = Ids::resolve_style(&out.bank, style);
-        let Some(read) = &out.music else { return };
-        let load = |names: &[String]| {
-            names.iter().find_map(|n| {
-                let bytes = read(n)?;
-                mmk_audio::Sound::from_bwav(n, &bytes).ok()
-            })
-        };
-        let [main, hurry, star, star_hurry] = music_candidates(style, theme);
-        let tracks = [load(&main), load(&hurry), load(&star), load(&star_hurry)];
-        let present: Vec<bool> = tracks.iter().map(Option::is_some).collect();
-        match out.slots.lock() {
-            Ok(mut g) => *g = tracks,
-            Err(_) => return,
-        }
-        self.send(Command::LoadSlots);
-        let slot = |k: usize, old: Option<u16>| {
-            if present[k] {
-                Some(mmk_audio::mixer::SLOT_BASE + k as u16)
-            } else {
-                old
-            }
-        };
-        self.ids.bgm = slot(0, self.ids.bgm);
-        self.ids.bgm_hurry = slot(1, self.ids.bgm_hurry);
-        self.ids.bgm_star = slot(2, self.ids.bgm_star);
-        self.ids.bgm_star_hurry = slot(3, self.ids.bgm_star_hurry);
     }
 
     fn send(&self, cmd: Command) {
@@ -289,8 +318,7 @@ impl Director {
         }
     }
 
-    /// A course was loaded or restarted: start its music from the top.
-    pub fn start_course(&mut self, world: &World) {
+    fn start_course(&mut self, world: &World) {
         self.send(Command::StopAll);
         self.was_alive = world.player.alive();
         self.star = false;
@@ -301,16 +329,13 @@ impl Director {
         self.course_music();
     }
 
-    /// Call after every `World::step`.
-    pub fn after_step(&mut self, world: &World) {
+    fn after_step(&mut self, world: &World) {
         let alive = world.player.alive();
         if alive && !self.was_alive {
-            // the death sequence ended and the course restarted
             self.start_course(world);
             return;
         }
         self.was_alive = alive;
-
         for ev in &world.events {
             match ev {
                 Event::Jump => self.sfx(if world.player.form == Form::Small {
@@ -321,15 +346,12 @@ impl Director {
                 Event::Coin => self.sfx(self.ids.coin),
                 Event::Stomp => self.sfx(self.ids.stomp),
                 Event::Kick | Event::EnemyDown => {
-                    // the game picks between two takes of the kick sound
                     self.sfx(self.ids.kick[self.kick_alt]);
                     self.kick_alt ^= 1;
                 }
-                // SMB1 uses the power-down sound for pipes; switches reuse the bump [inf]
                 Event::Bump | Event::Switch => self.sfx(self.ids.bump),
                 Event::Pipe => self.sfx(self.ids.power_down),
                 Event::Checkpoint => {}
-                // the game's count-up / condition-met sounds are not mapped yet [inf stand-ins]
                 Event::ConditionCount => self.sfx(self.ids.coin),
                 Event::ConditionMet => self.sfx(self.ids.power_up),
                 Event::Break => self.sfx(self.ids.brick_break),
@@ -362,10 +384,10 @@ impl Director {
                     }
                 }
                 Event::Clear => {}
+                #[allow(unreachable_patterns)]
+                _ => {}
             }
         }
-
-        // star music while invincible in normal play
         let star = alive && world.player.star > 0 && world.goal_phase == GoalPhase::None;
         if star && !self.star {
             self.music(
@@ -380,14 +402,11 @@ impl Director {
             self.course_music();
         }
         self.star = star;
-
-        // course-clear fanfare as the player steps off the pole and walks to the castle
         let walking = world.goal_phase == GoalPhase::Walk;
         if walking && !self.walking {
             self.music(self.ids.fanfare_clear, None);
         }
         self.walking = walking;
-
         if self.counting {
             self.count_gap += 1;
             if self.count_gap > COUNT_GAP {
@@ -534,7 +553,6 @@ mod tests {
         let mut w = World::new();
         d.start_course(&w);
         drain(&rx);
-        // goal count-down: loop starts on the first count, stops after the counts end
         w.events = vec![Event::TimeCount];
         d.after_step(&w);
         w.events.clear();
@@ -549,7 +567,6 @@ mod tests {
             played(&b, &drain(&rx)),
             ["sfx:timer_count", "stop:timer_count"]
         );
-        // death fanfare, then the course music again when the player is back
         w.events = vec![Event::Death];
         w.player.kill();
         d.after_step(&w);

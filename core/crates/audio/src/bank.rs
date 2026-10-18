@@ -1,19 +1,23 @@
-//! Decoded sounds, loaded from an asset cache's `audio/` folder.
+//! Sounds, loaded from an asset cache's `audio/` folder.
 //!
-//! `audio/index.json` (written by the importer):
+//! `audio/index.json` (written by the importer; the fixed set of SMB1 sounds used when a cache
+//! has no gameplay sound database):
 //!
 //! ```text
 //! { "<sound id>": { "file": "<id>.bwav", "gain": 0.2, "group": 1, ... }, ... }
 //! ```
 //!
-//! Each file is a BWAV; it is decoded to PCM16 once at load time (at most two channels).
+//! Each file is a BWAV. Short sounds are decoded to PCM16 once when loaded; long ones (music)
+//! can stay DSP-ADPCM and be decoded while they play ([`Sound::from_bwav_streamed`]).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use mmk_formats::audio::{Bwav, decode_interleaved};
+use mmk_formats::audio::{Bwav, Codec, decode_interleaved};
 use serde_json::Value;
+
+use crate::stream::{Adpcm, MAX_CHANNELS};
 
 #[derive(Debug, thiserror::Error)]
 pub enum BankError {
@@ -26,7 +30,15 @@ pub enum BankError {
     Invalid { path: PathBuf, detail: String },
 }
 
-/// One decoded sound: interleaved PCM16, mono or stereo.
+/// A sound's samples: decoded PCM16 (interleaved), or DSP-ADPCM decoded while it plays.
+#[derive(Clone, Debug)]
+pub enum Samples {
+    Pcm(Arc<[i16]>),
+    Adpcm(Arc<Adpcm>),
+}
+
+/// One sound: up to four channels (a stereo pair, plus a second pair the mixer fades in as a
+/// music layer).
 #[derive(Clone, Debug)]
 pub struct Sound {
     pub name: String,
@@ -39,7 +51,7 @@ pub struct Sound {
     pub gain: f32,
     /// Exclusive group (0 = none): starting a sound stops the others in its group.
     pub group: u8,
-    pub data: Arc<[i16]>,
+    pub data: Samples,
 }
 
 impl Sound {
@@ -54,7 +66,7 @@ impl Sound {
             loop_range: None,
             gain: 1.0,
             group: 0,
-            data: data.into(),
+            data: Samples::Pcm(data.into()),
         }
     }
 
@@ -73,13 +85,29 @@ impl Sound {
         self
     }
 
-    /// Decode a BWAV (all of its samples must be present).
+    /// Interleaved PCM data, if decoded.
+    pub fn pcm(&self) -> Option<&[i16]> {
+        match &self.data {
+            Samples::Pcm(d) => Some(d),
+            Samples::Adpcm(_) => None,
+        }
+    }
+
+    /// Bytes of sample data held in memory.
+    pub fn memory(&self) -> usize {
+        match &self.data {
+            Samples::Pcm(d) => d.len() * 2,
+            Samples::Adpcm(a) => a.frames() as usize * a.channels() * 8 / 14,
+        }
+    }
+
+    /// Decode a BWAV (all of its samples must be present) to PCM, up to four channels.
     pub fn from_bwav(name: &str, bytes: &[u8]) -> Result<Self, String> {
         let w = Bwav::parse(bytes).map_err(|e| e.to_string())?;
         if !w.is_complete() {
             return Err("prefetch BWAV (samples missing)".into());
         }
-        let (ch, frames, data) = decode_interleaved(&w, 2).map_err(|e| e.to_string())?;
+        let (ch, frames, data) = decode_interleaved(&w, MAX_CHANNELS).map_err(|e| e.to_string())?;
         Ok(Self {
             name: name.into(),
             rate: w.sample_rate(),
@@ -91,7 +119,45 @@ impl Sound {
                 .filter(|(s, e)| s < e),
             gain: 1.0,
             group: 0,
-            data: data.into(),
+            data: Samples::Pcm(data.into()),
+        })
+    }
+
+    /// A BWAV kept compressed and decoded while it plays (every channel must be DSP-ADPCM,
+    /// else it is decoded to PCM like [`Sound::from_bwav`]).
+    pub fn from_bwav_streamed(name: &str, bytes: Arc<[u8]>) -> Result<Self, String> {
+        let w = Bwav::parse(&bytes).map_err(|e| e.to_string())?;
+        if !w.is_complete() {
+            return Err("prefetch BWAV (samples missing)".into());
+        }
+        if w.channels.iter().any(|c| c.codec != Codec::DspAdpcm) {
+            return Self::from_bwav(name, &bytes);
+        }
+        let base = bytes.as_ptr() as usize;
+        let mut chans = Vec::new();
+        for (i, c) in w.channels.iter().take(MAX_CHANNELS).enumerate() {
+            let data = w.channel_data(i).map_err(|e| e.to_string())?;
+            chans.push((
+                data.as_ptr() as usize - base,
+                data.len(),
+                c.coefs,
+                (c.hist1, c.hist2),
+            ));
+        }
+        let frames = w.samples();
+        let a = Adpcm::new(bytes.clone(), &chans, frames);
+        Ok(Self {
+            name: name.into(),
+            rate: w.sample_rate(),
+            channels: chans.len() as u8,
+            frames,
+            loop_range: w
+                .loop_range()
+                .map(|(s, e)| (s, e.min(frames)))
+                .filter(|(s, e)| s < e),
+            gain: 1.0,
+            group: 0,
+            data: Samples::Adpcm(Arc::new(a)),
         })
     }
 }

@@ -584,6 +584,29 @@ pub fn import_sounds(romfs: &Path, out: &Path, progress: Progress) -> Result<Sou
             }
         }
         u.insert("calls".into(), Value::Array(list));
+        // state / animation triggers (which call an object's action starts)
+        let actions: Vec<Value> = x
+            .user_actions(name)
+            .map_err(fmt_err(&slink_path))?
+            .unwrap_or_default()
+            .iter()
+            .map(|t| {
+                let mut v = json!({"action": t.action, "call": t.call});
+                if let Some(a) = &t.after {
+                    v["after"] = json!(a);
+                }
+                if t.start_frame > 0 {
+                    v["start"] = json!(t.start_frame);
+                }
+                if let Some(e) = t.end_frame {
+                    v["end"] = json!(e);
+                }
+                v
+            })
+            .collect();
+        if !actions.is_empty() {
+            u.insert("actions".into(), Value::Array(actions));
+        }
         users.insert(name.clone(), Value::Object(u));
     }
     progress("sound users", names.len(), names.len());

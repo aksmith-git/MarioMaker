@@ -1,0 +1,1148 @@
+//! The data-driven sound director: the game's own sound database (`mmk_audio::links`) decides
+//! what each event sounds like for the course's game style, theme and the emitter's state; this
+//! module decides when (sim events and observed state changes), where (position → pan,
+//! distance attenuation, underwater filter) and keeps the course music state.
+//!
+//! Music rules (research/specs/audio.md §6):
+//! - the current area's theme track, day or night (`BGM_<Theme>_<Day|Night>`), from the top on
+//!   course start, restart and every area change;
+//! - hurry-up (100 s left): the hurry jingle, then the theme's hurry track from the top
+//!   [obs 0x7100b6a3c0, 0x7100b6b7f0];
+//! - Super Star and P switch: their own tracks (hurry variants after hurry-up); when they end
+//!   the theme track resumes where it was if the area, theme and hurry state are unchanged,
+//!   aligned to 1152-sample blocks, else from the top [obs 0x7100b6b7f0];
+//! - star ending: the warning sign 120 frames before the star runs out [obs 0x7100a078a0];
+//! - death / time up: the death fanfare; goal: the music stops, the pole sound, then the clear
+//!   fanfare when the player walks off;
+//! - riding Yoshi: the second channel pair of four-channel tracks (SMW / NSMBU drums) fades in
+//!   [inf].
+
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::SyncSender;
+
+use mmk_audio::links::{Layered, Play as Asset, PropList, PropValue, Rng, SoundDb, Turns};
+use mmk_audio::mixer::{GroupDef, MusicClock, NO_GROUP, SET_BASE, SharedSet, SoundSet};
+use mmk_audio::{Bus, Command, Play, Sound};
+use mmk_sim::World;
+use mmk_sim::actors::{Kind, Mode};
+use mmk_sim::world::{Event, GoalPhase};
+
+use crate::sound_map::{self as map, THEME_VALUES, bgm_key};
+
+/// Reads a file of the cache's `audio/` folder by its relative path (`se/x.bwav`).
+pub type FileReader = Box<dyn Fn(&str) -> Option<Vec<u8>> + Send + Sync>;
+
+/// The sound database and where its files are.
+pub struct Library {
+    pub db: SoundDb,
+    pub read: FileReader,
+}
+
+impl Library {
+    /// Load `sound.json` through `read` (None if the cache has no database).
+    pub fn load(read: FileReader) -> Option<Self> {
+        let bytes = read("sound.json")?;
+        let db = SoundDb::parse(&bytes).ok()?;
+        Some(Self { db, read })
+    }
+}
+
+/// The view's size in pixels.
+const VIEW_W: f32 = 384.0;
+const VIEW_H: f32 = 216.0;
+/// Pan of a sound at the screen's edge [inf: the game's mixer is set to stereo; its pan curve
+/// is not known].
+pub const PAN_DEPTH: f32 = 0.5;
+/// Low-pass amount of effects heard under water, approached by 0.04 per frame
+/// [obs 0x7100f20010: 0.4, 0.04].
+pub const WATER_LPF: f32 = 0.4;
+/// Star frames left when the ending sign plays [obs 0x7100a078a0: 120].
+pub const STAR_END_SIGN: i32 = 120;
+/// Frames of the Yoshi layer fade [inf].
+const LAYER_FADE_FRAMES: f32 = 30.0;
+/// Music resume positions are aligned to this many samples [obs 0x7100b6b7f0: 0x480].
+const RESUME_ALIGN: u32 = 0x480;
+/// Handles for loops the director stops itself.
+const H_TIMER: u32 = 1;
+const H_AMBIENT: u32 = 2;
+const H_FIRST_FREE: u32 = 16;
+
+fn theme_value(theme: u8) -> &'static str {
+    THEME_VALUES[(theme as usize).min(9)]
+}
+
+/// A sound's source: where it is and whether it is under water.
+#[derive(Clone, Copy, Debug)]
+struct Emitter {
+    x: f32,
+    y: f32,
+    water: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Snap {
+    kind: Kind,
+    mode: Mode,
+    x: f32,
+    y: f32,
+    vx: f32,
+    on_ground: bool,
+    wings: bool,
+    big: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Over {
+    None,
+    Star,
+    Switch,
+}
+
+pub struct Sounds {
+    tx: SyncSender<Command>,
+    lib: Arc<Library>,
+    shared: SharedSet,
+    clock: MusicClock,
+    rate: u32,
+    style: String,
+    /// The course set and its sound ids by wave name; the previous set is kept alive so the
+    /// audio thread never frees one.
+    set: Arc<SoundSet>,
+    old_set: Option<Arc<SoundSet>>,
+    ids: HashMap<String, u16>,
+    rng: Rng,
+    turns: Turns,
+    next_handle: u32,
+    // course and music state
+    area: usize,
+    theme: u8,
+    night: bool,
+    hurry: bool,
+    over: Over,
+    star_on: bool,
+    p_on: bool,
+    /// The theme track playing (or interrupted): its key, and where it was when interrupted.
+    track: Option<String>,
+    saved: Option<(String, u32)>,
+    fanfare: bool,
+    walking: bool,
+    counting: bool,
+    count_gap: u32,
+    was_alive: bool,
+    layer: bool,
+    coins: u32,
+    on_off: bool,
+    actors: BTreeMap<u32, Snap>,
+    water_lpf: f32,
+    /// What the last tick played (for tests and diagnostics): user, key.
+    pub log: Vec<(String, String)>,
+}
+
+impl Sounds {
+    pub fn new(
+        tx: SyncSender<Command>,
+        lib: Arc<Library>,
+        shared: SharedSet,
+        clock: MusicClock,
+        rate: u32,
+    ) -> Self {
+        Self {
+            tx,
+            lib,
+            shared,
+            clock,
+            rate,
+            style: String::new(),
+            set: Arc::new(SoundSet::default()),
+            old_set: None,
+            ids: HashMap::new(),
+            rng: Rng(0x5eed_1234),
+            turns: Turns::new(),
+            next_handle: H_FIRST_FREE,
+            area: 0,
+            theme: 0,
+            night: false,
+            hurry: false,
+            over: Over::None,
+            star_on: false,
+            p_on: false,
+            track: None,
+            saved: None,
+            fanfare: false,
+            walking: false,
+            counting: false,
+            count_gap: 0,
+            was_alive: true,
+            layer: false,
+            coins: 0,
+            on_off: true,
+            actors: BTreeMap::new(),
+            water_lpf: 0.0,
+            log: Vec::new(),
+        }
+    }
+
+    fn send(&self, c: Command) {
+        let _ = self.tx.try_send(c);
+    }
+
+    fn user(&self, base: &str) -> String {
+        format!("{}_{base}", self.style)
+    }
+
+    /// The first of `bases` the style has (as a full user name).
+    fn pick_user(&self, bases: &[&str]) -> Option<String> {
+        bases
+            .iter()
+            .map(|b| self.user(b))
+            .find(|u| self.lib.db.user(u).is_some())
+    }
+
+    /// Course-wide properties.
+    fn course_props(&self) -> PropList {
+        PropList::default()
+            .with("@style", self.style.as_str())
+            .with("@theme", theme_value(self.theme))
+            .with("@hour", if self.night { "cNight" } else { "cDay" })
+            .with("@scene", "Course")
+    }
+
+    // ---- the course sound set -------------------------------------------------------------
+
+    fn frames(&self, frames60: f32) -> u32 {
+        (frames60.max(0.0) * self.rate as f32 / 60.0) as u32
+    }
+
+    /// Waves the engine can play in a course of this style (preloaded so the first play
+    /// doesn't wait for a file).
+    fn style_waves(&self, world: &World) -> Vec<String> {
+        let db = &self.lib.db;
+        let mut w = Vec::new();
+        let player = self.user("Player");
+        for k in map::PLAYER_KEYS {
+            db.waves_of(&player, k, &mut w);
+        }
+        let obj = self.user("ObjectCommon");
+        for k in map::OBJECT_KEYS {
+            db.waves_of(&obj, k, &mut w);
+        }
+        for k in map::COMMON_KEYS {
+            db.waves_of("CourseSceneBGM_Common", k, &mut w);
+        }
+        for u in ["GoalPole", "CastleGoal"] {
+            db.waves_of(&self.user(u), "TimerCount", &mut w);
+            db.waves_of(&self.user(u), "TimerCountLast", &mut w);
+        }
+        // the course's objects (as loaded; generated ones come lazily)
+        let mut seen = Vec::new();
+        for a in &world.actors {
+            let Some(u) = self.pick_user(map::actor_users(a.kind)) else {
+                continue;
+            };
+            if seen.contains(&u) {
+                continue;
+            }
+            for k in map::ACTOR_KEYS {
+                db.waves_of(&u, k, &mut w);
+            }
+            seen.push(u);
+        }
+        w
+    }
+
+    /// A fresh set for a new style: groups from the database, the style's waves.
+    fn build_set(&mut self, world: &World) {
+        let db = &self.lib.db;
+        let groups: Vec<GroupDef> = db
+            .groups
+            .iter()
+            .map(|g| {
+                // this group, then each folder above it
+                let mut chain = Vec::new();
+                let mut id = db.group_id(&g.name);
+                while let Some(i) = id {
+                    if chain.len() > 32 {
+                        break;
+                    }
+                    chain.push(i);
+                    id = db.groups.get(i as usize).and_then(|p| p.parent);
+                }
+                GroupDef {
+                    chain,
+                    volume: g.volume,
+                    limit: g.limit,
+                    limit_type: g.limit_type,
+                    duck: g.duck.clone(),
+                }
+            })
+            .collect();
+        self.ids.clear();
+        let mut set = SoundSet {
+            sounds: Vec::new(),
+            groups,
+        };
+        for w in self.style_waves(world) {
+            if let Some(s) = self.load_wave(&w) {
+                self.ids.insert(w, SET_BASE + set.sounds.len() as u16);
+                set.sounds.push(s);
+            }
+        }
+        self.publish(set);
+    }
+
+    fn load_wave(&self, wave: &str) -> Option<Sound> {
+        let rel = self.lib.db.waves.get(wave)?;
+        let bytes = (self.lib.read)(rel)?;
+        if rel.starts_with("music/") {
+            Sound::from_bwav_streamed(wave, bytes.into()).ok()
+        } else {
+            Sound::from_bwav(wave, &bytes).ok()
+        }
+    }
+
+    fn publish(&mut self, set: SoundSet) {
+        let set = Arc::new(set);
+        if let Ok(mut g) = self.shared.lock() {
+            *g = Some(set.clone());
+        }
+        self.old_set = Some(std::mem::replace(&mut self.set, set));
+        self.send(Command::LoadSet);
+    }
+
+    /// The sound id of `wave`, loading it into the set if needed.
+    fn wave_id(&mut self, wave: &str) -> Option<u16> {
+        if let Some(&id) = self.ids.get(wave) {
+            return Some(id);
+        }
+        let s = self.load_wave(wave)?;
+        if self.set.sounds.len() >= (u16::MAX - SET_BASE) as usize {
+            return None;
+        }
+        let mut next = (*self.set).clone();
+        let id = SET_BASE + next.sounds.len() as u16;
+        next.sounds.push(s);
+        self.ids.insert(wave.to_string(), id);
+        self.publish(next);
+        Some(id)
+    }
+
+    // ---- playing -----------------------------------------------------------------------
+
+    /// Resolve `user`'s `key` with `local` properties; false if the user or key is missing.
+    fn resolve(&mut self, user: &str, key: &str, local: &PropList) -> Option<Vec<Asset>> {
+        let course = self.course_props();
+        let props = Layered(local, &course);
+        let mut out = Vec::new();
+        if !self
+            .lib
+            .db
+            .resolve(user, key, &props, &mut self.rng, &mut self.turns, &mut out)
+        {
+            return None;
+        }
+        self.log.push((user.to_string(), key.to_string()));
+        Some(out)
+    }
+
+    fn pan_gain(&self, world: &World, e: Emitter, distance: Option<&str>) -> Option<(f32, f32)> {
+        let cx = world.camera_x + VIEW_W / 2.0;
+        let pan = ((e.x - cx) / (VIEW_W / 2.0)).clamp(-1.0, 1.0) * PAN_DEPTH;
+        let mut gain = 1.0;
+        if let Some(a) = distance.and_then(|d| self.lib.db.attenuation.get(d)) {
+            let (x0, y0) = (world.camera_x, world.camera_y);
+            let dx = (x0 - e.x).max(e.x - (x0 + VIEW_W)).max(0.0);
+            let dy = (y0 - e.y).max(e.y - (y0 + VIEW_H)).max(0.0);
+            let d = (dx * dx + dy * dy).sqrt();
+            if a.cull.is_some_and(|c| d > c) {
+                return None;
+            }
+            gain = a.gain(d);
+        }
+        Some((pan, gain))
+    }
+
+    /// Play sound effects resolved from `user`/`key`; returns whether the key exists.
+    fn sfx_at(
+        &mut self,
+        world: &World,
+        user: &str,
+        key: &str,
+        local: &PropList,
+        e: Emitter,
+        handle: u32,
+    ) -> bool {
+        let Some(plays) = self.resolve(user, key, local) else {
+            return false;
+        };
+        for a in plays {
+            let Some(sound) = self.wave_id(&a.wave) else {
+                continue;
+            };
+            let Some((pan, gain)) = self.pan_gain(world, e, a.distance.as_deref()) else {
+                continue;
+            };
+            let water = if e.water && !a.dry { WATER_LPF } else { 0.0 };
+            self.send(Command::Play(Play {
+                sound,
+                bus: Bus::Sfx,
+                volume: a.volume * gain,
+                pitch: a.pitch,
+                pan,
+                delay: self.frames(a.delay),
+                duration: self.frames(a.duration),
+                fade_in: (a.fade_in.max(0.0) * self.rate as f32) as u32,
+                stop_fade: self.frames(a.stop),
+                group: a.group.unwrap_or(NO_GROUP),
+                priority: a.priority,
+                lpf: a.lpf.max(water),
+                send: 1.0,
+                handle,
+                start: 0,
+                then: None,
+            }));
+        }
+        true
+    }
+
+    fn player_emitter(world: &World) -> Emitter {
+        Emitter {
+            x: world.player.x,
+            y: world.player.y,
+            water: world.player.in_water,
+        }
+    }
+
+    fn player_props(world: &World) -> PropList {
+        let p = &world.player;
+        PropList::default()
+            .with("PlayerMode", map::player_mode(p.form))
+            .with("RideYoshi", if p.yoshi.is_some() { 1 } else { 0 })
+            .with("BodyWaterType", if p.in_water { "Water" } else { "None" })
+    }
+
+    fn player_sfx(&mut self, world: &World, key: &str, extra: &[(&str, PropValue)]) -> bool {
+        let mut props = Self::player_props(world);
+        for (k, v) in extra {
+            props.set(k, v.clone());
+        }
+        let user = self.user("Player");
+        self.sfx_at(world, &user, key, &props, Self::player_emitter(world), 0)
+    }
+
+    fn object_sfx(&mut self, world: &World, key: &str, e: Emitter) -> bool {
+        let user = self.user("ObjectCommon");
+        self.sfx_at(world, &user, key, &PropList::default(), e, 0)
+    }
+
+    fn in_water(&self, world: &World, y: f32) -> bool {
+        self.theme == 4 || world.liquid.as_ref().is_some_and(|l| y < l.y)
+    }
+
+    fn actor_sfx(
+        &mut self,
+        world: &World,
+        kind: Kind,
+        key: &str,
+        local: &PropList,
+        x: f32,
+        y: f32,
+    ) -> bool {
+        let Some(user) = self.pick_user(map::actor_users(kind)) else {
+            return false;
+        };
+        let e = Emitter {
+            x,
+            y,
+            water: self.in_water(world, y),
+        };
+        let mut props = local.clone();
+        props.set("BodyWaterType", if e.water { "Water" } else { "None" });
+        self.sfx_at(world, &user, key, &props, e, 0)
+    }
+
+    // ---- music -------------------------------------------------------------------------
+
+    fn music_user(&self) -> String {
+        format!("CourseSceneBGM_{}", self.style)
+    }
+
+    /// Start music key `key` (from `start` frames), chaining `then` after a non-looping one.
+    fn play_music(&mut self, key: &str, start: u32, then: Option<&str>) -> bool {
+        let user = self.music_user();
+        let Some(plays) = self.resolve(&user, key, &PropList::default()) else {
+            return false;
+        };
+        let Some(a) = plays.into_iter().next() else {
+            return false;
+        };
+        let Some(sound) = self.wave_id(&a.wave) else {
+            return false;
+        };
+        let then_id = then.and_then(|k| {
+            let p = self
+                .resolve(&user, k, &PropList::default())?
+                .into_iter()
+                .next()?;
+            self.wave_id(&p.wave)
+        });
+        self.send(Command::Play(Play {
+            sound,
+            bus: Bus::Music,
+            volume: a.volume,
+            delay: self.frames(a.delay),
+            group: a.group.unwrap_or(NO_GROUP),
+            priority: a.priority,
+            send: 0.0,
+            start,
+            then: then_id,
+            ..Play::music(sound)
+        }));
+        true
+    }
+
+    fn theme_key(&self) -> String {
+        bgm_key(self.theme, self.night, self.hurry)
+    }
+
+    /// The theme track from the top, or where it was if it is the same track.
+    fn course_music(&mut self) {
+        let key = self.theme_key();
+        let start = match self.saved.take() {
+            Some((k, frame)) if k == key => frame / RESUME_ALIGN * RESUME_ALIGN,
+            _ => 0,
+        };
+        self.play_music(&key, start, None);
+        self.track = Some(key);
+        self.over = Over::None;
+    }
+
+    fn save_position(&mut self) {
+        if self.over != Over::None {
+            return;
+        }
+        let (Some(track), Some(&id)) = (
+            self.track.clone(),
+            self.track
+                .as_ref()
+                .and_then(|k| {
+                    let user = self.music_user();
+                    let mut w = Vec::new();
+                    self.lib.db.waves_of(&user, k, &mut w);
+                    w.first().cloned()
+                })
+                .as_ref()
+                .and_then(|w| self.ids.get(w)),
+        ) else {
+            return;
+        };
+        let v = self.clock.load(Ordering::Relaxed);
+        if v != u64::MAX && (v >> 32) as u16 == id {
+            self.saved = Some((track, v as u32));
+        }
+    }
+
+    fn overlay_music(&mut self, which: Over) {
+        self.save_position();
+        let key = match (which, self.hurry) {
+            (Over::Star, false) => "BGM_Star",
+            (Over::Star, true) => "BGM_StarHurry",
+            (_, false) => "BGM_Switch",
+            (_, true) => "BGM_SwitchHurry",
+        };
+        self.play_music(key, 0, None);
+        self.over = which;
+    }
+
+    // ---- course lifecycle ----------------------------------------------------------------
+
+    fn set_area_audio(&mut self, world: &World) {
+        self.theme = world.level.theme;
+        self.night = world.level.night;
+        self.area = world.area;
+        let fx = self
+            .lib
+            .db
+            .effects
+            .get(&self.style)
+            .and_then(|row| row.get(self.theme as usize))
+            .cloned()
+            .unwrap_or_default();
+        let delay = fx.delay.as_ref().map(|p| mmk_audio::fx::DelayParams {
+            time: p.get("Delay").copied().unwrap_or(0.0),
+            feedback: p.get("Feedback").copied().unwrap_or(0.0),
+            lpf: p.get("Lpf").copied().unwrap_or(0.0),
+            gain: p.get("OutGain").copied().unwrap_or(0.0),
+        });
+        let reverb = fx.reverb.as_ref().map(|p| mmk_audio::fx::ReverbParams {
+            room: p.get("Room").copied().unwrap_or(-10000.0),
+            reverb: p.get("Reverb").copied().unwrap_or(-10000.0),
+            decay: p.get("DecayTime").copied().unwrap_or(1.0),
+            hf_ratio: p.get("DecayHfRatio").copied().unwrap_or(0.5),
+            predelay: p.get("ReflectionsDelay").copied().unwrap_or(0.0)
+                + p.get("ReverbDelay").copied().unwrap_or(0.0),
+            diffusion: p.get("Diffusion").copied().unwrap_or(100.0),
+        });
+        self.send(Command::SetEffects { delay, reverb });
+        // theme ambience (NSMBU / 3D World), looping until stopped
+        self.send(Command::StopHandle {
+            handle: H_AMBIENT,
+            fade: 0,
+        });
+        let e = Self::player_emitter(world);
+        self.sfx_at(
+            world,
+            "CourseSceneBGM_Common",
+            "playAmbient",
+            &PropList::default(),
+            Emitter { water: false, ..e },
+            H_AMBIENT,
+        );
+    }
+
+    /// A course was loaded or restarted: its music from the top.
+    pub fn start_course(&mut self, world: &World) {
+        self.send(Command::StopAll);
+        let style = world.level.style.clone();
+        if style != self.style || self.set.groups.is_empty() {
+            self.style = style;
+            self.build_set(world);
+        }
+        self.hurry = world.time >= 0 && world.time <= 100 * 60;
+        self.over = Over::None;
+        self.star_on = false;
+        self.p_on = false;
+        self.saved = None;
+        self.fanfare = false;
+        self.walking = false;
+        self.counting = false;
+        self.count_gap = 0;
+        self.was_alive = world.player.alive();
+        self.layer = false;
+        self.coins = world.coins;
+        self.on_off = world.on_off;
+        self.water_lpf = 0.0;
+        self.actors = snapshot(world);
+        self.send(Command::SetMusicLayer {
+            gain: 0.0,
+            frames: 0,
+        });
+        self.set_area_audio(world);
+        self.course_music();
+    }
+
+    fn stop_count(&mut self, world: &World) {
+        if self.counting {
+            self.send(Command::StopHandle {
+                handle: H_TIMER,
+                fade: 0,
+            });
+            self.counting = false;
+            let e = Self::player_emitter(world);
+            for u in ["GoalPole", "CastleGoal"] {
+                let user = self.user(u);
+                if self.sfx_at(world, &user, "TimerCountLast", &PropList::default(), e, 0) {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Call after every `World::step`.
+    #[allow(clippy::collapsible_match)]
+    pub fn after_step(&mut self, world: &World) {
+        self.log.clear();
+        let alive = world.player.alive();
+        if alive && !self.was_alive {
+            // the death sequence ended and the course restarted
+            self.start_course(world);
+            return;
+        }
+        self.was_alive = alive;
+        if world.area != self.area {
+            // through a pipe or door into the other area: its theme, effects, ambience, music
+            self.set_area_audio(world);
+            self.saved = None;
+            if self.over == Over::None && !self.fanfare {
+                self.course_music();
+            } else if self.over != Over::None {
+                let o = self.over;
+                self.over = Over::None;
+                self.overlay_music(o);
+            }
+            self.actors = snapshot(world);
+        }
+
+        let mut stomps = 0;
+        let mut kicks = 0;
+        let mut downs = 0;
+        let mut emerged = 0;
+        self.observe_actors(world, &mut stomps, &mut kicks, &mut downs, &mut emerged);
+
+        let pe = Self::player_emitter(world);
+        let events = world.events.clone();
+        let mut coin_done = false;
+        for ev in &events {
+            match ev {
+                Event::Jump => {
+                    let p = &world.player;
+                    let key = if p.in_water {
+                        "swim"
+                    } else if p.spinning {
+                        "spinjump"
+                    } else {
+                        "jump"
+                    };
+                    if !self.player_sfx(world, key, &[]) && key != "jump" {
+                        self.player_sfx(world, "jump", &[]);
+                    }
+                }
+                Event::Coin => {
+                    // a 10/30/50-coin adds its value in one tick: its own sound, once
+                    let gained = (world.coins + 100 - self.coins % 100) % 100;
+                    let big = match gained {
+                        10 => Some("playCoin10"),
+                        30 => Some("playCoin30"),
+                        50 => Some("playCoin50"),
+                        _ => None,
+                    };
+                    match big {
+                        Some(_) if coin_done => {}
+                        Some(key) => {
+                            coin_done = true;
+                            if !self.object_sfx(world, key, pe) {
+                                self.object_sfx(world, "playCoin", pe);
+                            }
+                        }
+                        None => {
+                            self.object_sfx(world, "playCoin", pe);
+                        }
+                    }
+                }
+                Event::Stomp => {
+                    if stomps > 0 {
+                        stomps -= 1;
+                    } else {
+                        self.generic_enemy(world, "r_damage_stamp");
+                    }
+                }
+                Event::Kick => {
+                    if kicks > 0 {
+                        kicks -= 1;
+                    } else {
+                        let props = PropList::default();
+                        self.actor_sfx(
+                            world,
+                            Kind::Shell { red: false },
+                            "kick",
+                            &props,
+                            pe.x,
+                            pe.y,
+                        );
+                    }
+                }
+                Event::EnemyDown => {
+                    if downs > 0 {
+                        downs -= 1;
+                    } else {
+                        self.generic_enemy(world, "r_damage");
+                    }
+                }
+                Event::Bump => {
+                    let head = world.player.head_hit.is_some()
+                        && self.player_sfx(world, "block_hit", &[("HeadHitType", "Bound".into())]);
+                    if !head {
+                        self.object_sfx(world, "block_hit", pe);
+                    }
+                }
+                Event::Break => {
+                    self.object_sfx(world, "block_break", pe);
+                }
+                Event::ItemAppear => {
+                    if emerged > 0 {
+                        emerged -= 1;
+                    } else {
+                        self.object_sfx(world, "block_out", pe);
+                    }
+                }
+                Event::PowerUp => {
+                    // a form change plays the power-up, an item without one the pickup
+                    let key = if world.player.form != mmk_sim::player::Form::Small {
+                        "r_power_up"
+                    } else {
+                        "r_get_item"
+                    };
+                    self.player_sfx(world, key, &[]);
+                }
+                Event::PowerDown => {
+                    self.player_sfx(world, "r_power_down", &[]);
+                }
+                Event::OneUp => {
+                    let key = if world.coins < self.coins {
+                        "play1UpSe_100coin"
+                    } else {
+                        "play1UpSe"
+                    };
+                    let e = pe;
+                    if !self.sfx_at(
+                        world,
+                        "CourseSceneBGM_Common",
+                        key,
+                        &PropList::default(),
+                        e,
+                        0,
+                    ) {
+                        self.sfx_at(
+                            world,
+                            "CourseSceneBGM_Common",
+                            "play1UpSe",
+                            &PropList::default(),
+                            e,
+                            0,
+                        );
+                    }
+                }
+                Event::Fireball => {
+                    if !self.player_sfx(world, "fireball", &[]) {
+                        self.player_sfx(world, "fireball_motion", &[]);
+                    }
+                }
+                Event::Death => {
+                    self.stop_count(world);
+                    self.send(Command::StopHandle {
+                        handle: H_AMBIENT,
+                        fade: 0,
+                    });
+                    self.play_music("FanfareDown", 0, None);
+                    self.fanfare = true;
+                    self.over = Over::None;
+                }
+                Event::Goal => {
+                    self.send(Command::StopMusic {
+                        fade: self.frames(8.0),
+                    });
+                    self.send(Command::StopHandle {
+                        handle: H_AMBIENT,
+                        fade: 0,
+                    });
+                    self.fanfare = true;
+                    self.player_sfx(world, "pole", &[]);
+                }
+                Event::Hurry => {
+                    self.hurry = true;
+                    self.saved = None;
+                    match self.over {
+                        Over::None if !self.fanfare => {
+                            let key = self.theme_key();
+                            if !self.play_music("BGM_Hurry", 0, Some(&key)) {
+                                self.play_music(&key, 0, None);
+                            }
+                            self.track = Some(key);
+                        }
+                        Over::None => {}
+                        o => {
+                            self.over = Over::None;
+                            self.overlay_music(o);
+                        }
+                    }
+                }
+                Event::TimeCount => {
+                    self.count_gap = 0;
+                    if !self.counting {
+                        self.counting = true;
+                        for u in ["GoalPole", "CastleGoal"] {
+                            let user = self.user(u);
+                            if self.sfx_at(
+                                world,
+                                &user,
+                                "TimerCount",
+                                &PropList::default(),
+                                pe,
+                                H_TIMER,
+                            ) {
+                                break;
+                            }
+                        }
+                    }
+                }
+                Event::Clear => {}
+                Event::Pipe => {
+                    self.player_sfx(world, "DokanIn", &[]);
+                }
+                Event::Checkpoint => {
+                    self.player_sfx(world, "r_MiddleFlag_On", &[]);
+                }
+                Event::Switch => {
+                    if world.on_off != self.on_off {
+                        self.object_sfx(world, "onoff_sw", pe);
+                    } else {
+                        // the P switch (its own user)
+                        let props = PropList::default();
+                        self.actor_sfx(world, Kind::PSwitch, "p_switch", &props, pe.x, pe.y);
+                    }
+                }
+                Event::ConditionCount => {
+                    self.object_sfx(world, "p_GoalMission_CountUp", pe);
+                }
+                Event::ConditionMet => {
+                    if !self.player_sfx(world, "p_get_missionClear", &[]) {
+                        self.object_sfx(world, "p_GoalMission_Bubble_appear", pe);
+                    }
+                }
+                #[allow(unreachable_patterns)]
+                _ => {}
+            }
+        }
+        self.coins = world.coins;
+        self.on_off = world.on_off;
+
+        // star and P-switch music
+        let normal = alive && world.goal_phase == GoalPhase::None && !self.fanfare;
+        let star = normal && world.player.star > 0;
+        let p = normal && world.p_timer > 0;
+        if star && world.player.star == STAR_END_SIGN {
+            self.sfx_at(
+                world,
+                "CourseSceneBGM_Common",
+                "playStarEndSign",
+                &PropList::default(),
+                pe,
+                0,
+            );
+        }
+        if normal {
+            if star && !self.star_on {
+                self.overlay_music(Over::Star);
+            } else if p && !self.p_on {
+                self.overlay_music(Over::Switch);
+            } else if !star && self.over == Over::Star {
+                if p {
+                    self.over = Over::None;
+                    self.overlay_music(Over::Switch);
+                } else {
+                    self.course_music();
+                }
+            } else if !p && self.over == Over::Switch {
+                if star {
+                    self.over = Over::None;
+                    self.overlay_music(Over::Star);
+                } else {
+                    self.course_music();
+                }
+            }
+        }
+        self.star_on = star;
+        self.p_on = p;
+
+        // the music's Yoshi layer
+        let riding = world.player.yoshi.is_some();
+        if riding != self.layer {
+            self.layer = riding;
+            self.send(Command::SetMusicLayer {
+                gain: if riding { 1.0 } else { 0.0 },
+                frames: self.frames(LAYER_FADE_FRAMES),
+            });
+        }
+
+        // the clear fanfare as the player steps off the pole and walks to the castle
+        let walking = world.goal_phase == GoalPhase::Walk;
+        if walking && !self.walking {
+            self.play_music("FanfareGoal", 0, None);
+        }
+        self.walking = walking;
+
+        if self.counting {
+            self.count_gap += 1;
+            if self.count_gap > 2 {
+                self.stop_count(world);
+            }
+        }
+        // underwater filter target for the player's own looping sounds is applied at start;
+        // keep the ramp value for diagnostics
+        let target = if world.player.in_water {
+            WATER_LPF
+        } else {
+            0.0
+        };
+        self.water_lpf += (target - self.water_lpf).clamp(-0.04, 0.04);
+    }
+
+    fn generic_enemy(&mut self, world: &World, key: &str) {
+        let p = &world.player;
+        let props = PropList::default()
+            .with("DownComboCount", p.stomp_chain.max(1) as i32)
+            .with("Reaction", "Die")
+            .with("Option", "None")
+            .with("ScaleLevel", "Normal");
+        self.actor_sfx(world, Kind::Goomba, key, &props, p.x, p.y);
+    }
+
+    /// Sounds from actors' state changes since the last tick (the game plays these from its
+    /// objects' states: stomped, shell kicked, defeated, out of a block, landing, firing).
+    fn observe_actors(
+        &mut self,
+        world: &World,
+        stomps: &mut usize,
+        kicks: &mut usize,
+        downs: &mut usize,
+        emerged: &mut usize,
+    ) {
+        let now = snapshot(world);
+        let chain = world.player.stomp_chain.max(1) as i32;
+        let mut todo: Vec<(Kind, &'static str, PropList, f32, f32)> = Vec::new();
+        for (id, s) in &now {
+            let props = |reaction: &str, prev: &Snap| {
+                PropList::default()
+                    .with("DownComboCount", chain)
+                    .with("Reaction", reaction)
+                    .with("Option", if prev.wings { "Wing" } else { "None" })
+                    .with("ScaleLevel", if prev.big { "Big" } else { "Normal" })
+            };
+            match self.actors.get(id) {
+                None => {
+                    if matches!(s.mode, Mode::Emerge { .. }) {
+                        let key = if s.kind.is_enemy() {
+                            "block_outy"
+                        } else {
+                            "block_out"
+                        };
+                        todo.push((s.kind, key, PropList::default(), s.x, s.y));
+                        *emerged += 1;
+                    } else if matches!(s.kind, Kind::BulletBill | Kind::BanzaiBill { .. }) {
+                        todo.push((
+                            Kind::BulletBill,
+                            "r_shoot_blaster",
+                            PropList::default(),
+                            s.x,
+                            s.y,
+                        ));
+                    }
+                }
+                Some(prev) => {
+                    let was_shell = matches!(prev.kind, Kind::Shell { .. });
+                    let is_shell = matches!(s.kind, Kind::Shell { .. });
+                    if prev.mode != Mode::Stomped && s.mode == Mode::Stomped {
+                        todo.push((s.kind, "r_damage_stamp", props("Die", prev), s.x, s.y));
+                        *stomps += 1;
+                    } else if !was_shell && is_shell && s.mode == Mode::ShellWait {
+                        // a Koopa stomped into its shell
+                        todo.push((prev.kind, "r_damage_stamp", props("Damage", prev), s.x, s.y));
+                        *stomps += 1;
+                    } else if prev.mode == Mode::ShellSlide && s.mode == Mode::ShellWait {
+                        todo.push((s.kind, "r_damage_stamp", props("Damage", prev), s.x, s.y));
+                        *stomps += 1;
+                    } else if prev.mode != Mode::ShellSlide && s.mode == Mode::ShellSlide {
+                        todo.push((s.kind, "kick", PropList::default(), s.x, s.y));
+                        *kicks += 1;
+                    } else if prev.mode != Mode::DieFall && s.mode == Mode::DieFall {
+                        todo.push((prev.kind, "r_damage", props("Die", prev), s.x, s.y));
+                        *downs += 1;
+                    } else if s.mode == Mode::ShellSlide
+                        && prev.mode == Mode::ShellSlide
+                        && prev.vx != 0.0
+                        && s.vx.signum() != prev.vx.signum()
+                    {
+                        todo.push((s.kind, "koura_hit", PropList::default(), s.x, s.y));
+                    } else if matches!(s.kind, Kind::Thwomp { .. })
+                        && s.on_ground
+                        && !prev.on_ground
+                    {
+                        todo.push((s.kind, "press", PropList::default(), s.x, s.y));
+                    }
+                }
+            }
+        }
+        self.actors = now;
+        for (kind, key, props, x, y) in todo {
+            if key == "r_shoot_blaster" {
+                // a Bill Blaster fired: the cannon's sound
+                let user = self.user("KillerHoudai");
+                let e = Emitter {
+                    x,
+                    y,
+                    water: self.in_water(world, y),
+                };
+                self.sfx_at(world, &user, "r_shoot", &PropList::default(), e, 0);
+                continue;
+            }
+            if !self.actor_sfx(world, kind, key, &props, x, y) && key == "r_damage_stamp" {
+                self.generic_enemy(world, key);
+            }
+        }
+    }
+
+    pub fn next_handle(&mut self) -> u32 {
+        self.next_handle += 1;
+        self.next_handle
+    }
+}
+
+fn snapshot(world: &World) -> BTreeMap<u32, Snap> {
+    world
+        .actors
+        .iter()
+        .map(|a| {
+            (
+                a.id,
+                Snap {
+                    kind: a.kind,
+                    mode: a.mode,
+                    x: a.x,
+                    y: a.y,
+                    vx: a.vx,
+                    on_ground: a.on_ground,
+                    wings: a.wings,
+                    big: a.big,
+                },
+            )
+        })
+        .collect()
+}
+
+/// Files (relative to `audio/`) a course of `world`'s style will read first: its sound set
+/// and the current area's theme music (hosts that read files asynchronously fetch these
+/// before the course starts).
+pub fn course_files(db: &SoundDb, world: &World) -> Vec<String> {
+    let style = &world.level.style;
+    let mut waves = Vec::new();
+    let music = format!("CourseSceneBGM_{style}");
+    for hurry in [false, true] {
+        db.waves_of(
+            &music,
+            &bgm_key(world.level.theme, world.level.night, hurry),
+            &mut waves,
+        );
+    }
+    for k in map::MUSIC_KEYS {
+        db.waves_of(&music, k, &mut waves);
+    }
+    let user = |b: &str| format!("{style}_{b}");
+    for k in map::PLAYER_KEYS {
+        db.waves_of(&user("Player"), k, &mut waves);
+    }
+    for k in map::OBJECT_KEYS {
+        db.waves_of(&user("ObjectCommon"), k, &mut waves);
+    }
+    for k in map::COMMON_KEYS {
+        db.waves_of("CourseSceneBGM_Common", k, &mut waves);
+    }
+    for a in &world.actors {
+        for b in map::actor_users(a.kind) {
+            let u = user(b);
+            if db.user(&u).is_some() {
+                for k in map::ACTOR_KEYS {
+                    db.waves_of(&u, k, &mut waves);
+                }
+                break;
+            }
+        }
+    }
+    let mut files: Vec<String> = waves
+        .iter()
+        .filter_map(|w| db.waves.get(w).cloned())
+        .collect();
+    files.sort();
+    files.dedup();
+    files
+}

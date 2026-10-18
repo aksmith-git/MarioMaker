@@ -135,6 +135,29 @@ enum Cmd {
     },
     /// Convert SMM2 course data IDs to course codes (XXX-XXX-XXX) and back.
     Code { ids: Vec<String> },
+    /// Render the sound of a headless scripted run (run right, jump) to a WAV file, through the
+    /// same sound director and mixer the players use, and print what played (frame, user, key)
+    /// with --log.
+    AudioRender {
+        /// Course file (raw / zlib course data, or .bcd with the cache's key table).
+        course: PathBuf,
+        /// Asset cache of one build (with `audio/`).
+        #[arg(long)]
+        cache: PathBuf,
+        /// Frames to run (60 per second).
+        #[arg(long, default_value_t = 1200)]
+        frames: u32,
+        #[arg(long)]
+        out: PathBuf,
+        /// Input script: "run" (run right, jump in bursts), "idle", or "walk".
+        #[arg(long, default_value = "run")]
+        script: String,
+        #[arg(long)]
+        log: bool,
+        /// Only this bus: "music" or "sfx" (the other is muted).
+        #[arg(long)]
+        only: Option<String>,
+    },
     Simulate {
         files: Vec<PathBuf>,
         #[arg(long)]
@@ -727,6 +750,21 @@ fn main() -> ExitCode {
             assets,
             keys,
         } => missing_art(&files, &assets, keys),
+        Cmd::AudioRender {
+            course,
+            cache,
+            frames,
+            out,
+            script,
+            log,
+            only,
+        } => match audio_render(&course, &cache, frames, &out, &script, log, only.as_deref()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("audio-render: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Cmd::Code { ids } => {
             for id in ids {
                 match id.parse::<u32>() {
@@ -1329,6 +1367,85 @@ fn simulate_course(course: &smm2::Course, frames: u32) -> (f32, u32, bool, u64) 
         cleared,
         w.checksum(),
     )
+}
+
+fn audio_render(
+    course: &std::path::Path,
+    cache: &std::path::Path,
+    frames: u32,
+    out: &std::path::Path,
+    script: &str,
+    log: bool,
+    only: Option<&str>,
+) -> Result<(), String> {
+    use mmk_sim::input::{self, Input};
+    let table = read_key_table(Some(cache.join("keys/course_table.bin")));
+    let raw = std::fs::read(course).map_err(|e| format!("{}: {e}", course.display()))?;
+    let data = course_data(raw, table.as_ref()).ok_or("not a course file")?;
+    let c = smm2::Course::parse(&data).map_err(|e| e.to_string())?;
+    let bank = mmk_audio::Bank::load_cache(cache).map_err(|e| e.to_string())?;
+    let audio = mmk_host::audio::AudioOut::new(bank).with_cache_dir(cache);
+    if audio.library().is_none() {
+        eprintln!("no audio/sound.json in the cache: fixed SMB1 sounds only");
+    }
+    let mut w = mmk_sim::World::from_course(&c);
+    w.lives = 9999;
+    let (music, sfx) = match only {
+        Some("music") => (1.0, 0.0),
+        Some("sfx") => (0.0, 1.0),
+        _ => (1.0, 1.0),
+    };
+    audio.send(mmk_audio::Command::SetVolumes {
+        master: 1.0,
+        music,
+        sfx,
+    });
+    let mut d = audio.director();
+    d.start_course(&w);
+    let per_frame = (audio.rate() / 60) as usize;
+    let mut pcm = Vec::with_capacity(frames as usize * per_frame * 2);
+    let mut buf = vec![0.0f32; per_frame * 2];
+    let (mut stuck, mut last_x) = (0u32, w.player.x);
+    for t in 0..frames {
+        let b = match script {
+            "idle" => 0,
+            "walk" => input::RIGHT,
+            _ => {
+                let mut b = input::RIGHT | input::RUN;
+                let long = stuck > 60 && stuck % 90 < 40;
+                if t % 40 < 24 || long {
+                    b |= input::JUMP;
+                }
+                b
+            }
+        };
+        w.step(Input { buttons: b });
+        if (w.player.x - last_x).abs() < 0.2 {
+            stuck += 1;
+        } else {
+            stuck = 0;
+        }
+        last_x = w.player.x;
+        d.after_step(&w);
+        if log {
+            for (user, key) in d.played() {
+                println!("{t}\t{user}\t{key}");
+            }
+        }
+        audio.render(&mut buf);
+        pcm.extend_from_slice(&buf);
+    }
+    std::fs::write(out, mmk_audio::wav::stereo_f32(audio.rate(), &pcm))
+        .map_err(|e| format!("{}: {e}", out.display()))?;
+    let peak = pcm.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    eprintln!(
+        "{} s of sound ({} style, theme {}), peak {peak:.2} → {}",
+        frames / 60,
+        w.level.style,
+        w.level.theme,
+        out.display()
+    );
+    Ok(())
 }
 
 fn simulate(

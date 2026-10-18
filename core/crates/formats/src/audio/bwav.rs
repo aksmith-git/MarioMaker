@@ -170,6 +170,26 @@ impl<'a> Bwav<'a> {
             .ok_or_else(|| bad(format!("data runs past the end ({n:#x} bytes needed)")))
     }
 
+    /// Channel `ch`'s raw sample data: DSP-ADPCM frames (with a last frame's padding when the
+    /// file has it) or little-endian PCM16.
+    pub fn channel_data(&self, ch: usize) -> Result<&'a [u8]> {
+        let c = self
+            .channels
+            .get(ch)
+            .ok_or_else(|| bad(format!("no channel {ch}")))?;
+        let n = c.samples_here as usize;
+        let start = c.data_offset as usize;
+        let len = channel_bytes(c.codec, n);
+        if self.data.len() < start + len {
+            return Err(bad(format!("channel {ch} data out of range")));
+        }
+        let end = match c.codec {
+            Codec::Pcm16 => start + len,
+            Codec::DspAdpcm => (start + dsp::padded_bytes_for_samples(n)).min(self.data.len()),
+        };
+        Ok(&self.data[start..end])
+    }
+
     /// Decode channel `ch` to PCM16 (the samples present in this file).
     pub fn decode_channel(&self, ch: usize) -> Result<Vec<i16>> {
         let c = self

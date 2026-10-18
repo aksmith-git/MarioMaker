@@ -46,6 +46,30 @@ fn clamp16(v: i32) -> i16 {
     v.clamp(i16::MIN as i32, i16::MAX as i32) as i16
 }
 
+/// Decode one frame (8 bytes, or fewer for a last partial frame) into `out` without
+/// allocating; returns the number of samples written (≤ 14).
+pub fn decode_frame(frame: &[u8], state: &mut DspState, out: &mut [i16; FRAME_SAMPLES]) -> usize {
+    let Some(&header) = frame.first() else {
+        return 0;
+    };
+    let room = (frame.len().saturating_sub(1) * 2).min(FRAME_SAMPLES);
+    let pair = (header >> 4) as usize & 7;
+    let scale = (header & 0xF) as u32;
+    let c1 = state.coefs[pair * 2] as i32;
+    let c2 = state.coefs[pair * 2 + 1] as i32;
+    for (i, o) in out.iter_mut().enumerate().take(room) {
+        let byte = frame[1 + i / 2];
+        let nibble = if i % 2 == 0 { byte >> 4 } else { byte & 0xF };
+        let r = ((nibble as i8) << 4 >> 4) as i32;
+        let predicted = ((r << scale) << 11) + c1 * state.hist1 as i32 + c2 * state.hist2 as i32;
+        let s = clamp16((predicted + 1024) >> 11);
+        state.hist2 = state.hist1;
+        state.hist1 = s;
+        *o = s;
+    }
+    room
+}
+
 /// Decode `samples` samples from `data` into `out` (appended). Stops early if `data` runs out; the
 /// last frame may be shorter than 8 bytes.
 pub fn decode(data: &[u8], samples: usize, state: &mut DspState, out: &mut Vec<i16>) {

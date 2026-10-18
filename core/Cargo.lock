@@ -1240,6 +1240,7 @@ dependencies = [
  "clap",
  "flate2",
  "mmk-assets",
+ "mmk-audio",
  "mmk-editor",
  "mmk-formats",
  "mmk-host",
@@ -1297,6 +1298,7 @@ dependencies = [
  "mmk-audio",
  "mmk-formats",
  "mmk-sim",
+ "serde_json",
 ]
 
 [[package]]

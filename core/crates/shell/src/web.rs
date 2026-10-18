@@ -54,6 +54,8 @@ async fn read(path: &str) -> Option<Vec<u8>> {
 struct Assets {
     cache: Arc<Cache>,
     bank: Option<Bank>,
+    /// The gameplay sound database, to know which files a course reads.
+    sounds: Option<Arc<mmk_audio::links::SoundDb>>,
     keys: Option<Vec<u8>>,
 }
 
@@ -228,6 +230,19 @@ pub async fn open_assets() -> Result<JsValue, JsValue> {
             }
         }
     }
+    // the gameplay sound database (its waves are read per course, see `play_course`)
+    let sound_db = read("audio/sound.json").await;
+    let sounds = sound_db
+        .as_deref()
+        .and_then(|b| mmk_audio::links::SoundDb::parse(b).ok())
+        .map(Arc::new);
+    if let Some(b) = sound_db {
+        with_web(|w| {
+            if let Ok(mut m) = w.music.lock() {
+                m.insert("sound.json".into(), b);
+            }
+        })?;
+    }
     let cache = source::open_cache_deferred(&files).map_err(|e| JsValue::from_str(&e))?;
     let bank = match source::open_bank(&files) {
         Ok(b) => Some(b),
@@ -244,6 +259,7 @@ pub async fn open_assets() -> Result<JsValue, JsValue> {
     let assets = Arc::new(Assets {
         cache: Arc::new(cache),
         bank,
+        sounds,
         keys: files.read(mmk_host::course::KEY_TABLE).ok(),
     });
     log(&format!("assets: browser storage, {summary}"));
@@ -309,20 +325,22 @@ pub async fn play_course(bytes: Vec<u8>) -> Result<JsValue, JsValue> {
     };
     let level = &game.session.world.level;
     let (style, theme) = (level.style.clone(), level.theme);
-    if assets.is_some() {
-        // the course's music, before the mixer asks for it
-        let mut music = HashMap::new();
-        for names in mmk_host::audio::music_candidates(&style, theme) {
-            for n in names {
-                if let Some(bytes) = read(&format!("audio/music/{n}.bwav")).await {
-                    music.insert(n, bytes);
-                    break;
-                }
+    if let Some(db) = assets.as_ref().and_then(|a| a.sounds.clone()) {
+        // the course's sounds and music, before the mixer asks for them (others are read
+        // when first played and miss that play)
+        let wanted = mmk_host::audio::course_files(&db, &game.session.world);
+        let mut have = with_web(|w| w.music.lock().map(|m| m.clone()).unwrap_or_default())?;
+        have.retain(|k, _| k == "sound.json" || wanted.contains(k));
+        for rel in wanted {
+            if !have.contains_key(&rel)
+                && let Some(bytes) = read(&format!("audio/{rel}")).await
+            {
+                have.insert(rel, bytes);
             }
         }
         with_web(|w| {
             if let Ok(mut m) = w.music.lock() {
-                *m = music;
+                *m = have;
             }
         })?;
     }
