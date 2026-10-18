@@ -20,9 +20,10 @@
 </head>
 <body>
   <header>
-    <!-- a folder: an asset cache made by `mmk import`; it is copied into this browser's own
-         storage, never uploaded -->
-    <button id="import" title="An asset cache folder (made by mmk import)">Import game data…</button>
+    <!-- a folder: an asset cache made by `mmk import` (copied), or one holding the dump's
+         extracted romfs/ + exefs/ (imported here, in a worker); either way it goes into this
+         browser's own storage and is never uploaded -->
+    <button id="import" title="An asset cache folder (mmk import), or a folder holding your dump's romfs/ and exefs/">Import game data…</button>
     <input id="folder" type="file" webkitdirectory multiple hidden>
     <select id="courses" title="Course"><option value="">Demo strip</option></select>
     <button id="open" title="SMM2 course data: .bcd, zlib (.course.zlib) or raw">Open course file…</button>

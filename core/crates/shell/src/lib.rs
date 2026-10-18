@@ -23,3 +23,5 @@ pub mod texture;
 pub mod headless;
 #[cfg(target_arch = "wasm32")]
 pub mod web;
+#[cfg(target_arch = "wasm32")]
+pub mod web_import;

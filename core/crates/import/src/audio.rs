@@ -7,14 +7,13 @@
 //! the static sound packs). The BWAV bytes are written unchanged as `audio/<id>.bwav`, and
 //! `audio/index.json` records the id → file mapping and playback parameters.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use mmk_formats::archive::{self, Sarc};
 use mmk_formats::audio::{Bars, Bwav};
 use serde_json::{Map, Value, json};
 
-use crate::{ImportError, Progress, Result, fmt_err, read, write};
+use crate::{ImportError, Progress, Result, fmt_err, is_file, read, write};
 
 /// Exclusive playback groups: a new sound in a group cuts the one playing.
 pub const GROUP_NONE: u8 = 0;
@@ -69,14 +68,8 @@ pub const M1_SOUNDS: &[SoundDef] = &[
 ];
 
 fn sorted_files(dir: &Path, ext: &str) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = fs::read_dir(dir)
-        .map(|rd| {
-            rd.filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|p| p.extension().is_some_and(|x| x == ext))
-                .collect()
-        })
-        .unwrap_or_default();
-    v.sort();
+    let mut v = crate::read_dir(dir).unwrap_or_default();
+    v.retain(|p| p.extension().is_some_and(|x| x == ext));
     v
 }
 
@@ -88,7 +81,7 @@ fn bars_sources(romfs: &Path, styles: &[&str]) -> Vec<PathBuf> {
     }
     v.push(romfs.join("Pack/StaticHighFreqSound.pack"));
     v.push(romfs.join("Pack/StaticSound.pack"));
-    v.retain(|p| p.is_file());
+    v.retain(|p| is_file(p));
     v
 }
 
@@ -121,7 +114,7 @@ pub fn import_audio(
     // 1. complete stream files
     for (i, d) in defs.iter().enumerate() {
         let p = romfs.join(format!("Sound/Resource/Stream/{}.bwav", d.game));
-        if p.is_file() {
+        if is_file(&p) {
             let bytes = read(&p)?;
             if Bwav::parse(&bytes).is_ok_and(|w| w.is_complete()) {
                 found[i] = Some((p.display().to_string(), bytes));
@@ -237,12 +230,11 @@ pub const THEME_MUSIC: [&str; 10] = [
 /// The player decodes only the current course's tracks. Returns the number written.
 pub fn export_music(romfs: &Path, out: &Path, styles: &[&str]) -> Result<usize> {
     let dir = romfs.join("Sound/Resource/Stream");
-    let names: Vec<String> = fs::read_dir(&dir)
-        .map(|rd| {
-            rd.filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
-                .collect()
-        })
-        .unwrap_or_default();
+    let names: Vec<String> = crate::read_dir(&dir)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|p| Some(p.file_name()?.to_string_lossy().into_owned()))
+        .collect();
     let find = |want: &str| {
         names
             .iter()
@@ -282,6 +274,7 @@ mod tests {
     use super::*;
     use mmk_formats::audio::bars;
     use mmk_formats::audio::bwav::{self, BuildChannel, Codec};
+    use std::fs;
 
     fn wave(samples: &[i16], rate: u32, loop_range: Option<(u32, u32)>) -> Vec<u8> {
         let data: Vec<u8> = samples.iter().flat_map(|v| v.to_le_bytes()).collect();

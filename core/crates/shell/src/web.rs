@@ -4,7 +4,8 @@
 //! courses through the functions exported here.
 //!
 //! - **Game data** lives in the browser's origin private file system (OPFS), copied there by the
-//!   page from a folder the owner picked; nothing is uploaded anywhere. Rust reads it through
+//!   page from an asset cache folder the owner picked, or imported from their dump's RomFS and
+//!   ExeFS in a worker ([`crate::web_import`]); nothing is uploaded anywhere. Rust reads it through
 //!   the page's `mmkStorage.read(path)` (a promise of the file's bytes, or null). The texture
 //!   index, sprites, sounds and key table are read when the data is opened ([`open_assets`]);
 //!   texture pixels are read when a sprite first needs them ([`pump_textures`]), and a course's

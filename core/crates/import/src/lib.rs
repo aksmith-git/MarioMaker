@@ -7,9 +7,9 @@
 //! lives in the user's Application Support folder.
 
 pub mod audio;
+pub mod vfs;
 
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use mmk_assets::{Mtex, MtexFormat, MtexVariant};
@@ -86,23 +86,35 @@ pub struct ImportReport {
 pub type Progress<'a> = &'a mut dyn FnMut(&str, usize, usize);
 
 fn read(path: &Path) -> Result<Vec<u8>> {
-    fs::read(path).map_err(|source| ImportError::Io {
+    vfs::current().read(path).map_err(|source| ImportError::Io {
         path: path.to_path_buf(),
         source,
     })
 }
 
 fn write(path: &Path, data: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|source| ImportError::Io {
-            path: parent.to_path_buf(),
+    vfs::current()
+        .write(path, data)
+        .map_err(|source| ImportError::Io {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+/// The entries of `dir`, sorted.
+fn read_dir(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = vfs::current()
+        .read_dir(dir)
+        .map_err(|source| ImportError::Io {
+            path: dir.to_path_buf(),
             source,
         })?;
-    }
-    fs::write(path, data).map_err(|source| ImportError::Io {
-        path: path.to_path_buf(),
-        source,
-    })
+    paths.sort();
+    Ok(paths)
+}
+
+fn is_file(path: &Path) -> bool {
+    vfs::current().is_file(path)
 }
 
 fn fmt_err(path: &Path) -> impl Fn(mmk_formats::Error) -> ImportError + '_ {
@@ -133,15 +145,8 @@ pub fn identify(exefs: &Path) -> Result<(Nso, String)> {
 /// Built-in course files (`Course/*.szs` → `.bcd`).
 fn builtin_bcds(romfs: &Path) -> Result<Vec<(String, Vec<u8>)>> {
     let dir = romfs.join("Course");
-    let mut paths: Vec<PathBuf> = fs::read_dir(&dir)
-        .map_err(|source| ImportError::Io {
-            path: dir.clone(),
-            source,
-        })?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "szs"))
-        .collect();
-    paths.sort();
+    let mut paths = read_dir(&dir)?;
+    paths.retain(|p| p.extension().is_some_and(|x| x == "szs"));
     let mut out = Vec::new();
     for p in paths {
         // name: archive stem (quest_012, lesson_003, title_course_data_4) [+ member if several]
@@ -206,15 +211,7 @@ fn model_name(path: &str) -> String {
 fn collect_models(romfs: &Path) -> Result<Vec<(String, Vec<u8>)>> {
     let mut models = Vec::new();
     let dir = romfs.join("Model");
-    let mut paths: Vec<PathBuf> = fs::read_dir(&dir)
-        .map_err(|source| ImportError::Io {
-            path: dir.clone(),
-            source,
-        })?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .collect();
-    paths.sort();
-    for p in paths {
+    for p in read_dir(&dir)? {
         let name = p.file_name().unwrap().to_string_lossy().to_string();
         if STYLES.iter().any(|s| name.starts_with(&format!("{s}_"))) && name.ends_with(".zs") {
             models.push((model_name(&name), read(&p)?));
@@ -222,7 +219,7 @@ fn collect_models(romfs: &Path) -> Result<Vec<(String, Vec<u8>)>> {
     }
     for style in STYLES {
         let pack_path = romfs.join(format!("Pack/{style}_Model.pack"));
-        if pack_path.is_file() {
+        if is_file(&pack_path) {
             for (name, data) in open_sarc(&pack_path)?.files() {
                 if name.ends_with(".zs") {
                     models.push((model_name(name), data.to_vec()));
@@ -231,7 +228,7 @@ fn collect_models(romfs: &Path) -> Result<Vec<(String, Vec<u8>)>> {
         }
     }
     let static_pack = romfs.join("Pack/StaticModel.pack");
-    if static_pack.is_file() {
+    if is_file(&static_pack) {
         for (name, data) in open_sarc(&static_pack)?.files() {
             let model = model_name(name);
             if name.ends_with(".zs") && meshes::wants_mesh(&model) {
@@ -263,7 +260,7 @@ fn import_models(cfg: &ImportConfig, out: &Path, progress: Progress) -> Result<M
     let mut mesh_counts = meshes::MeshCounts::default();
     for dir in ["meshes", "anims"] {
         // stale files of an earlier import would otherwise linger
-        let _ = fs::remove_dir_all(out.join(dir));
+        let _ = vfs::current().remove_dir_all(&out.join(dir));
     }
     for (i, (model, data)) in models.iter().enumerate() {
         progress("textures", i, models.len());
@@ -333,7 +330,7 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
     // 1. identify
     progress("identify", 0, 1);
     let (nso, build) = identify(&cfg.exefs)?;
-    if !cfg.romfs.join("Pack/Static.pack").is_file() {
+    if !is_file(&cfg.romfs.join("Pack/Static.pack")) {
         return Err(ImportError::Invalid(format!(
             "{} does not look like an SMM2 RomFS",
             cfg.romfs.display()

@@ -4,8 +4,10 @@
 // system (OPFS, `mmk-data/`), so it stays in this browser between visits; nothing is uploaded
 // anywhere. The wasm game reads it back through `mmkStorage.read(path)`.
 //
-// Accepted folders: an asset cache made by `mmk import` (contains manifest.json and
-// textures/index.json).
+// Accepted folders:
+// - an asset cache made by `mmk import` (contains manifest.json and textures/index.json);
+// - a folder with the extracted `romfs/` and `exefs/` of the owner's dump: imported here, in a
+//   worker running the same importer (mmk-import), straight into the browser's storage.
 
 import init, * as mmk from "./mmk-play.js";
 
@@ -144,6 +146,17 @@ function findCache(paths) {
   return best;
 }
 
+// Where `romfs/` and `exefs/main` are ("" or "<dir>/"), or null.
+function findDump(paths) {
+  for (const p of paths.keys()) {
+    if (p === "exefs/main" || p.endsWith("/exefs/main")) {
+      const dir = p.slice(0, p.length - "exefs/main".length);
+      for (const q of paths.keys()) if (q.startsWith(dir + "romfs/")) return dir;
+    }
+  }
+  return null;
+}
+
 async function importCache(paths, prefix) {
   const files = [];
   let manifest = null;
@@ -162,13 +175,82 @@ async function importCache(paths, prefix) {
   await writeFile("manifest.json", manifest);
 }
 
+async function importDump(paths, prefix) {
+  const romfs = [];
+  let main = null;
+  for (const [p, f] of paths) {
+    if (p.startsWith(prefix + "romfs/")) romfs.push([p.slice(prefix.length + 6), f]);
+    else if (p === prefix + "exefs/main") main = f;
+  }
+  status(`Importing the dump in this browser (${romfs.length} RomFS files)…`);
+  await removeData();
+  const worker = new Worker(new URL("./mmk-import-worker.js", import.meta.url), { type: "module" });
+  // the importer's output files, stored here (the worker can't wait for storage), WRITERS at a
+  // time; the manifest last, as for a copied cache
+  const queue = [];
+  let active = 0;
+  let manifest = null;
+  let writeError = null;
+  let drained = null;
+  const pump = () => {
+    while (active < WRITERS && queue.length) {
+      const [path, bytes] = queue.shift();
+      active++;
+      writeFile(path, bytes)
+        .catch((e) => (writeError ??= e))
+        .finally(() => {
+          active--;
+          pump();
+        });
+    }
+    if (!active && !queue.length && drained) drained();
+  };
+  let summary;
+  try {
+    summary = await new Promise((resolve, reject) => {
+      worker.onerror = (e) => reject(new Error(e.message || "import worker failed"));
+      worker.onmessage = ({ data }) => {
+        if (data.write) {
+          if (data.write === "manifest.json") manifest = data.bytes;
+          else queue.push([data.write, data.bytes]);
+          pump();
+        } else if (data.progress) {
+          const [stage, done, total] = data.progress;
+          status(`Importing the dump in this browser: ${stage} (${done}/${total})…`);
+          progress(done, total);
+        } else if (data.done) {
+          resolve(JSON.parse(data.done));
+        } else if (data.error) {
+          reject(new Error(data.error));
+        }
+      };
+      worker.postMessage({ romfs, main });
+    });
+  } finally {
+    worker.terminate();
+  }
+  status("Storing the last files…");
+  await new Promise((resolve) => {
+    drained = resolve;
+    pump();
+  });
+  if (writeError) throw writeError;
+  if (!manifest) throw new Error("the import wrote no manifest");
+  await writeFile("manifest.json", manifest);
+  console.log("imported in the browser:", summary);
+}
+
 async function importFolder(fileList) {
   const paths = byPath(fileList);
   const cache = findCache(paths);
-  if (cache === null) throw new Error("that folder has no asset cache (manifest.json + textures/)");
+  const dump = cache === null ? findDump(paths) : null;
+  if (cache === null && dump === null) {
+    throw new Error("that folder has no asset cache (manifest.json + textures/) and no romfs/ + exefs/main");
+  }
   ui.forget.disabled = true;
   try {
-    await importCache(paths, cache);
+    if (cache !== null) await importCache(paths, cache);
+    else await importDump(paths, dump);
     await navigator.storage.persist?.();
   } finally {
     progress(0, 0);
