@@ -410,8 +410,12 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   - ✅ selection: rectangle copy / cut / paste / move / delete (parts, ground, tracks; all or nothing)
   - ✅ settings: clear condition (category / CRC32 / magnitude), autoscroll incl. custom nodes and
     speed, liquid mode / speed / heights, timer 10–500
-  - 🔄 placement rules: overlap layers, start / goal zones, containers, style-only parts,
-    checkpoint / pink-coin / path / array limits ✅ · the game's full per-part limit table ⬜
+  - ✅ placement rules: the game's per-area part counters from v1.0.0 (100 enemies & gizmos, 100
+    power-ups, 2000 plain blocks & coins, 200 terrain parts, 1 checkpoint, 5 pink / big coins, 4
+    door and 4 warp-box pairs, 3 Bowsers, 10 path blocks, 5 snakes …; each reached exactly in the
+    sample), the validators' size ranges, style-only parts, header ranges (timer, start / goal
+    heights, area sizes, custom autoscroll main-area only); overlap layers, start / goal zones and
+    containers from the sample · v3 parts' limits (120–132) and per-part flag masks ⬜
   - ✅ shell maker UI (`mmk-play --edit <file>`): engine-drawn area, ghost preview, 40-part palette,
     keys for everything above (README) · SMM2 maker layouts ⬜
 - ⬜ Story Mode (Peach's castle jobs, built-in courses from the owner's dump), Coursebot, Lessons

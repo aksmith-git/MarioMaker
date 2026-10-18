@@ -1318,15 +1318,12 @@ fn gallery(
     // parts that aren't placeable objects of their own (header-made goal / start, track and
     // scroll nodes, sound effects)
     const SKIP: &[i16] = &[26, 27, 37, 38, 59, 89, 109];
-    // the editor offers these in 3D World only
-    const W3_ONLY: &[i16] = &[
-        50, 51, 65, 72, 85, 86, 96, 97, 106, 107, 112, 113, 114, 116, 117, 119,
-    ];
+    // (which parts a style offers: the editor's rules)
     const PAGE: i32 = 220;
     let parts: Vec<i16> = mmk_sim::level::SUPPORTED_PARTS
         .iter()
         .copied()
-        .filter(|p| !SKIP.contains(p) && (style == "3W" || !W3_ONLY.contains(p)))
+        .filter(|p| !SKIP.contains(p) && mmk_editor::rules::style_allows(style, *p))
         .collect();
     std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
     let mut written = Vec::new();
@@ -1343,10 +1340,12 @@ fn gallery(
         ed.course.header.goal_x = ((width - 10) * 10) as i16;
         for x in 0..width {
             for y in 0..2 {
-                ed.paint_ground(x, y).map_err(|e| format!("{e:?}"))?;
+                if !ed.protected(x, y) {
+                    ed.paint_ground(x, y).map_err(|e| format!("{e:?}"))?;
+                }
             }
         }
-        let mut x = 6;
+        let mut x = mmk_editor::rules::START_W + 1; // clear of the start zone
         let mut placed = 0;
         for &part in rest {
             let (w, _) = mmk_editor::default_size(part);

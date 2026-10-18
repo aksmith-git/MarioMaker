@@ -211,9 +211,9 @@ impl Editor {
             return Err(EditError::NotAllowed("not in this game style"));
         }
         self.empty_pipe(pipe);
-        self.check_limits(part, 1)?;
         let (w, h) = parts::default_size(part);
         let mut o = parts::new_object(part, 0, 0, w, h, DEFAULT_FLAGS | 0x1);
+        self.check_limits(&o, 1)?;
         (o.x, o.y) = mouth(&p);
         o.link_id = p.link_id;
         Ok(self.push_object(o))

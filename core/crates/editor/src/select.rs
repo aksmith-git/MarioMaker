@@ -293,7 +293,7 @@ impl Editor {
                 ) {
                     return Err(EditError::OutOfBounds);
                 }
-                self.check_limits(o.id, 1)?;
+                self.check_limits(&o, 1)?;
             } else {
                 self.check_new(&o)?;
                 if !self.path_slot_free(o.id) {

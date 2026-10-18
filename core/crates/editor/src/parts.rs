@@ -229,31 +229,30 @@ pub fn default_size(part: i16) -> (u8, u8) {
     row(part).map_or((1, 1), |r| (r.w, r.h))
 }
 
-/// Width and height ranges of a resizable part (None: fixed size). Pipes: width is the pipe's
-/// thickness (2) and height its length. Slopes keep their shape (gentle w = 2h, steep w = h + 1);
-/// `resize` derives the width from the height for them.
+/// Width and height ranges of a resizable part (None: fixed size), the bounds the game's course
+/// validators accept [obs: per-part validators 0x7100565410–0x710056cc80; every sample course is
+/// within them]. Pipes: width is the pipe's thickness (2) and height its length. Slopes keep their
+/// shape (gentle w = 2h, steep w = h + 1); `Editor::resize` derives the width from the height.
 pub fn resize_range(part: i16) -> Option<(RangeInclusive<u8>, RangeInclusive<u8>)> {
     Some(match part {
-        9 => (2..=2, 2..=MAX_LEN),             // pipe [corp: 2–27]
-        14 | 16 => (3..=MAX_LEN, 2..=MAX_LEN), // mushroom platform, semisolid
-        17 => (3..=MAX_LEN, 2..=2),            // bridge (deck + rail row)
-        53 => (3..=MAX_LEN, 1..=1),            // conveyor belt
-        11 => (2..=8, 1..=1),                  // lift
-        113 | 132 => (3..=8, 1..=1),           // mushroom / ON-OFF trampoline
-        91 => (3..=16, 1..=1),                 // seesaw
-        84 => (3..=12, 1..=1),                 // snake block
-        13 => (1..=1, 1..=MAX_LEN),            // Bill Blaster
-        64 => (1..=1, 2..=MAX_LEN),            // vine
-        71 => (3..=MAX_LEN, 3..=MAX_LEN),      // half-collision platform
-        106 => (4..=4, 6..=MAX_LEN),           // tree
-        87 => (4..=MAX_LEN, 2..=MAX_LEN),      // gentle slope
-        88 | 94 => (3..=MAX_LEN, 2..=MAX_LEN), // steep / conveyor slope
+        9 => (2..=2, 2..=27),        // pipe
+        16 | 71 => (3..=20, 3..=27), // semisolid, 3D World semisolid
+        14 => (3..=9, 3..=27),       // mushroom platform
+        17 => (3..=20, 2..=2),       // bridge (deck + rail row)
+        53 => (3..=9, 1..=1),        // conveyor belt
+        94 => (3..=9, 2..=8),        // conveyor slope
+        87 => (4..=26, 2..=13),      // gentle slope
+        88 => (3..=14, 2..=13),      // steep slope
+        11 | 113 => (3..=8, 1..=1),  // lift, mushroom trampoline
+        132 => (3..=8, 1..=1),       // ON/OFF trampoline (v3 part; as the mushroom one) [inf]
+        91 => (3..=15, 1..=1),       // seesaw
+        84 => (3..=12, 1..=1),       // snake block
+        13 => (1..=1, 2..=14),       // Bill Blaster
+        64 => (1..=1, 3..=27),       // vine
+        106 => (4..=4, 6..=14),      // tree
         _ => return None,
     })
 }
-
-/// Longest side a resizable part may have (bounded by the area anyway).
-pub const MAX_LEN: u8 = 168;
 
 /// Parts whose (x, y) is the centre of their bottom-left tile; all others sit on their horizontal
 /// centre. y is always the centre of the bottom row [corp: every sample course].

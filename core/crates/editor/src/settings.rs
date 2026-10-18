@@ -21,8 +21,8 @@ pub const VERT_DEFAULT: i32 = 42;
 /// Timer range in seconds [obs themes.md: 10–500; corp: all multiples of 10].
 pub const TIMER_MIN: i16 = 10;
 pub const TIMER_MAX: i16 = 500;
-/// Custom autoscroll nodes per area (4-bit node number).
-pub const SCROLL_NODES_MAX: usize = 16;
+/// Custom autoscroll nodes per area (the editor's counter limit) [obs].
+pub const SCROLL_NODES_MAX: usize = 10;
 
 /// Liquid behaviour (area header +5 / +6): mode 0 stays, 1 rises or falls, 2 rises and falls;
 /// speed 1 slow – 3 fast.
@@ -74,10 +74,16 @@ impl Editor {
         h.flags = if night { h.flags | 2 } else { h.flags & !2 };
     }
 
-    /// Height (tiles) of the start and goal ground.
+    /// Height (tiles) of the start and goal ground: start 1–25, goal 1–15 (both from 2 in 3D
+    /// World) [obs: course validator 0x710056d490].
     pub fn set_start_goal(&mut self, start_y: u8, goal_y: u8) {
-        self.course.header.start_y = start_y.clamp(1, HEIGHT_H as u8 - 4);
-        self.course.header.goal_y = goal_y.clamp(1, HEIGHT_H as u8 - 4);
+        let low = if self.course.header.game_style.as_str_lossy() == "3W" {
+            2
+        } else {
+            1
+        };
+        self.course.header.start_y = start_y.clamp(low, 25);
+        self.course.header.goal_y = goal_y.clamp(low, 15);
     }
 
     /// Main-area width in tiles (kept for older callers): `set_area_width` on area 0.
@@ -117,8 +123,8 @@ impl Editor {
         self.resize_area(w, h)?;
         let a = self.area_mut();
         a.header.orientation = vertical as u8;
-        // vertical areas have no autoscroll other than none / slow / normal / fast
-        if vertical && a.header.autoscroll_type == 4 {
+        // a sub-area has no custom autoscroll
+        if a.header.autoscroll_type == 4 {
             a.header.autoscroll_type = 0;
         }
         self.course.header.management_flags |= 0x40;
@@ -193,11 +199,11 @@ impl Editor {
 
     // ------------------------------------------------------------ autoscroll
 
-    /// Autoscroll of the current area: 0 none, 1 slow, 2 normal, 3 fast, 4 custom (horizontal
-    /// areas; the route is the custom-scroll nodes).
+    /// Autoscroll of the current area: 0 none, 1 slow, 2 normal, 3 fast, 4 custom (main area
+    /// only, the route is the custom-scroll nodes) [obs: the course validator allows 0–3 in the
+    /// sub-area].
     pub fn set_autoscroll(&mut self, kind: u8) {
-        let vertical = self.area().header.orientation != 0;
-        let kind = if kind == 4 && vertical {
+        let kind = if kind >= 4 && self.area != 0 {
             0
         } else {
             kind.min(4)
@@ -214,6 +220,9 @@ impl Editor {
     /// (flags >> 18) & 3 for the leg after it [sim 89-autoscroll-camera.md].
     pub fn add_scroll_node(&mut self, tx: i32, ty: i32, speed: u8) -> Result<usize, EditError> {
         let n = self.area().objects.iter().filter(|o| o.id == 89).count();
+        if self.area != 0 {
+            return Err(EditError::NotAllowed("custom autoscroll is main-area only"));
+        }
         if n >= SCROLL_NODES_MAX {
             return Err(EditError::Limit("custom scroll nodes"));
         }

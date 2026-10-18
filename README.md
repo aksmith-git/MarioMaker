@@ -207,7 +207,8 @@ happened (F1 lists the keys).
 
 The editor follows the game's placement rules: the start and goal areas stay clear, parts don't
 overlap ground or each other (semisolids and platforms may), containers only take what the game
-allows, part limits and style-only parts are enforced. The editing core is `core/crates/editor`;
+allows, and the game's per-area part limits (100 enemies and gizmos, 100 power-ups, 2000 blocks
+and coins, 1 checkpoint, 4 door pairs …), size ranges and style-only parts are enforced. The editing core is `core/crates/editor`;
 `cargo run -p mmk-editor --example sample_course -- out.bin` writes a course that uses most of it.
 
 ## Online: the open-source course server

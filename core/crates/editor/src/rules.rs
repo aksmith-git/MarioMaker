@@ -49,16 +49,15 @@ pub fn placeable(part: i16) -> bool {
     (0..=132).contains(&part) && !matches!(part, 7 | 26 | 27 | 37 | 38 | 59 | 69 | 93 | 109 | 118)
 }
 
-/// Parts a game style lacks. 3D World has its own set (no wings, no Bill Blasters, …) and some
-/// parts exist only there [obs: the course validators flag them per style; corp: none appear
-/// outside their style].
+/// Parts a game style lacks: the course validators' style checks [obs], plus parts no sample
+/// course ever uses in that style (45, 52, 105 never in 3D World; 97 only there) [corp].
 pub fn style_allows(style: &str, part: i16) -> bool {
     const W3_ONLY: &[i16] = &[
-        50, 51, 65, 72, 85, 86, 96, 97, 106, 107, 112, 113, 114, 116, 117, 119,
+        50, 51, 65, 71, 72, 85, 86, 93, 96, 97, 106, 107, 108, 110, 112, 113, 114, 116, 117, 119,
     ];
     const NOT_W3: &[i16] = &[
-        2, 12, 13, 17, 22, 24, 30, 31, 36, 42, 45, 47, 54, 56, 60, 62, 64, 66, 67, 70, 76, 77, 84,
-        88, 91, 94, 98, 99, 100, 104, 105, 110,
+        14, 16, 17, 23, 24, 28, 30, 31, 36, 40, 42, 43, 45, 47, 52, 54, 57, 58, 59, 61, 64, 67, 68,
+        82, 83, 91, 98, 100, 102, 104, 105,
     ];
     if style == "3W" {
         !NOT_W3.contains(&part)
@@ -89,30 +88,74 @@ pub fn check_child(container: i16, child: i16) -> Result<(), EditError> {
     }
 }
 
-/// A part limit: how many of `parts` an area (or the course) may hold.
-pub struct Limit {
-    pub parts: &'static [i16],
-    pub max: usize,
-    /// Counted over both areas.
-    pub course: bool,
-    pub what: &'static str,
+/// Per-area part counters and their limits, from the editor's placement check [obs 0x710057f940:
+/// a part is refused when its counter is at the limit; each area has its own counters, there are
+/// none per course]. Every limit is reached exactly by some sample course and never exceeded
+/// [corp]. Parts in blocks, Bill Blasters, Lakitus, trees and checkpoints aren't counted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Counter {
+    /// Enemies, gizmos, lifts, keys, springs …, and blocks or coins with wings, a parachute or a
+    /// link (track, carrier).
+    General,
+    PowerUps,
+    /// Plain blocks and coins.
+    Blocks,
+    /// Pipes, semisolids, platforms, bridges, belts, vines, slopes.
+    Terrain,
+    /// Arrow signs and one-way walls share one.
+    Signs,
+    /// Bowser and Bowser Jr. share one.
+    Bowsers,
+    /// Its own counter (part id).
+    Part(i16),
 }
 
-/// The game's part limits.
-pub const LIMITS: &[Limit] = &[
-    Limit {
-        parts: &[90],
-        max: 2,
-        course: true,
-        what: "checkpoint flags",
-    },
-    Limit {
-        parts: &[92],
-        max: 50,
-        course: true,
-        what: "pink coins",
-    },
-];
+const POWER_UPS: &[i16] = &[20, 33, 34, 35, 44, 75, 116];
+const BLOCKS: &[i16] = &[4, 5, 6, 8, 21, 22, 23, 29, 43, 63, 100, 108, 110];
+const TERRAIN: &[i16] = &[9, 14, 16, 17, 53, 64, 71, 87, 88, 94];
+
+/// The counter a placed part uses.
+pub fn counter(o: &CourseObject) -> Counter {
+    match o.id {
+        p if POWER_UPS.contains(&p) => Counter::PowerUps,
+        p if BLOCKS.contains(&p) && o.flags & (0x2 | 0x8000) == 0 && o.link_id < 0 => {
+            Counter::Blocks
+        }
+        p if TERRAIN.contains(&p) => Counter::Terrain,
+        66 | 67 => Counter::Signs,
+        62 | 98 => Counter::Bowsers,
+        p @ (55 | 70 | 72 | 77 | 84 | 85 | 86 | 89 | 90 | 92 | 97 | 104 | 107 | 119) => {
+            Counter::Part(p)
+        }
+        _ => Counter::General,
+    }
+}
+
+/// A counter's limit and the name shown when it's reached.
+pub fn limit(c: Counter) -> (usize, &'static str) {
+    match c {
+        Counter::General => (100, "enemies and gizmos"),
+        Counter::PowerUps => (100, "power-ups"),
+        Counter::Blocks => (2000, "blocks and coins"),
+        Counter::Terrain => (200, "terrain parts"),
+        Counter::Signs => (100, "signs and one-way walls"),
+        Counter::Bowsers => (3, "Bowsers"),
+        Counter::Part(p) => match p {
+            90 => (1, "checkpoint flags"),
+            104 => (1, "Angry Suns"),
+            92 => (5, "pink coins"),
+            70 => (5, "big coins"),
+            55 => (8, "doors"),
+            97 => (8, "warp boxes"),
+            77 => (5, "Boom Booms"),
+            86 => (3, "Charvaarghs"),
+            72 => (10, "Koopa Troopa Cars"),
+            84 => (5, "snake blocks"),
+            89 => (10, "scroll nodes"),
+            _ => (10, "path blocks"),
+        },
+    }
+}
 
 impl Editor {
     /// Whether a tile is in the start or goal zone of the main area: the start ground (x 0–6)
@@ -183,7 +226,7 @@ impl Editor {
             }
         }
         if skip.is_none() {
-            self.check_limits(o.id, 1)?;
+            self.check_limits(o, 1)?;
         }
         Ok(())
     }
@@ -215,24 +258,21 @@ impl Editor {
         Ok(())
     }
 
-    /// Room for `n` more of `part`?
-    pub(crate) fn check_limits(&self, part: i16, n: usize) -> Result<(), EditError> {
+    /// Room for `n` more parts like `o` in the current area?
+    pub(crate) fn check_limits(&self, o: &CourseObject, n: usize) -> Result<(), EditError> {
         if self.area().objects.len() + n > OBJECTS_MAX {
             return Err(EditError::Full);
         }
-        for l in LIMITS.iter().filter(|l| l.parts.contains(&part)) {
-            let areas: Vec<_> = if l.course {
-                self.course.areas().to_vec()
-            } else {
-                vec![self.area()]
-            };
-            let have: usize = areas
-                .iter()
-                .map(|a| a.objects.iter().filter(|o| l.parts.contains(&o.id)).count())
-                .sum();
-            if have + n > l.max {
-                return Err(EditError::Limit(l.what));
-            }
+        let c = counter(o);
+        let have = self
+            .area()
+            .objects
+            .iter()
+            .filter(|p| counter(p) == c)
+            .count();
+        let (max, what) = limit(c);
+        if have + n > max {
+            return Err(EditError::Limit(what));
         }
         Ok(())
     }
@@ -317,18 +357,35 @@ mod tests {
         let mut e = flat("M1");
         assert!(matches!(e.place(96, 10, 2), Err(EditError::NotAllowed(_))));
         e.place(90, 20, 2).unwrap();
-        e.place(90, 30, 2).unwrap();
         assert_eq!(
-            e.place(90, 40, 2),
+            e.place(90, 30, 2),
             Err(EditError::Limit("checkpoint flags"))
         );
         e.set_area(1);
+        e.place(90, 30, 0).unwrap();
+        e.set_area(0);
+        // 100 enemies per area; plain blocks have their own counter, winged ones don't
+        for i in 0..100 {
+            e.place(0, 30 + i, 2).unwrap();
+        }
         assert_eq!(
-            e.place(90, 40, 2),
-            Err(EditError::Limit("checkpoint flags"))
+            e.place(0, 150, 2),
+            Err(EditError::Limit("enemies and gizmos"))
         );
+        let b = e.place(4, 150, 6).unwrap();
+        e.toggle_flags(b, 0x2);
+        assert_eq!(
+            e.object(b).unwrap().flags & 2,
+            0,
+            "no room for a winged block"
+        );
+        assert!(e.place(55, 160, 2).is_ok(), "doors have their own counter");
         let mut w = flat("3W");
         assert!(w.place(96, 10, 2).is_ok());
-        assert!(matches!(w.place(13, 14, 2), Err(EditError::NotAllowed(_))));
+        assert!(matches!(w.place(43, 14, 2), Err(EditError::NotAllowed(_))));
+        assert!(matches!(
+            w.place_track(20, 6, 0),
+            Err(EditError::NotAllowed(_))
+        ));
     }
 }

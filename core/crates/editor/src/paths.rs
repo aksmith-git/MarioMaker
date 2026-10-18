@@ -349,7 +349,7 @@ mod tests {
         }
         assert_eq!(
             e.place(84, 30, 6),
-            Err(EditError::Limit("paths")),
+            Err(EditError::Limit("snake blocks")),
             "5 snake blocks per area"
         );
     }

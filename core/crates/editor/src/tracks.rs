@@ -124,6 +124,9 @@ impl Editor {
         let Some(e) = ends(kind) else {
             return Err(EditError::NotAllowed("track piece type"));
         };
+        if !crate::rules::style_allows(&self.course.header.game_style.as_str_lossy(), 59) {
+            return Err(EditError::NotAllowed("not in this game style"));
+        }
         if !self.in_bounds(cx, cy) || cx > 255 || cy > 255 {
             return Err(EditError::OutOfBounds);
         }

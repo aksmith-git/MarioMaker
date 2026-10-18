@@ -687,6 +687,10 @@ renderers upload a texture when a sprite first uses it. Measured on the same cou
   ground-embeddable parts such as Monty Moles and claws, everything else solid), chosen because
   that is what the sample shows; the start zone (columns 0–6 up to three rows above the start
   ground) and the goal ground are protected because no sample course puts anything there.
+- **Limits per area, as the game counts them.** The editor's part counters (general, power-ups,
+  plain blocks, terrain, and per-part ones) and their limits come from the v1.0.0 placement check;
+  a block or coin with wings or a link moves to the general counter, as in the game. There are no
+  per-course counters (the often-quoted "2 checkpoints" is 1 per area).
 - **Edits are all-or-nothing.** Paste and move check every placement and restore the course on
   failure; the UI wraps each action in one undo checkpoint and drops it when nothing changed.
 - **Editor-laid tracks are straight or 45°.** Bends and junctions in opened files are kept and

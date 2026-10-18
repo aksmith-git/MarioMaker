@@ -328,6 +328,11 @@ impl Editor {
         if bits & 0x4 != 0 && parts::forms(o.id) < 2 {
             return;
         }
+        let mut n = o.clone();
+        n.flags ^= bits;
+        if rules::counter(&n) != rules::counter(o) && self.check_limits(&n, 1).is_err() {
+            return;
+        }
         if let Some(o) = self.area_mut().objects.items.get_mut(index) {
             o.flags ^= bits;
         }
