@@ -11,6 +11,7 @@ pub mod audio_out;
 /// Moved to `mmk_formats::bc7` (the Swift app decodes with it too, through `mmk-ffi`).
 pub use mmk_formats::bc7;
 pub mod clock;
+pub mod front_course;
 pub mod game;
 pub mod hud;
 pub mod input;
@@ -22,16 +23,16 @@ pub mod source;
 pub mod texture;
 pub mod ui_layer;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub mod front_app;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod front_host;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod headless;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod ui_sound;
 #[cfg(target_arch = "wasm32")]
 pub mod web;
+#[cfg(target_arch = "wasm32")]
+pub mod web_front;
 #[cfg(target_arch = "wasm32")]
 pub mod web_import;
 #[cfg(target_arch = "wasm32")]

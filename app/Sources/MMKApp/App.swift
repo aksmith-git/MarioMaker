@@ -4,6 +4,7 @@ import AppKit
 import UIKit
 #endif
 import CMmk
+import Combine
 import SwiftUI
 
 @main
@@ -76,12 +77,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 final class AppModel: ObservableObject {
     enum Screen {
-        case importer, library, game(GameSession), challenge(ChallengeFlow), title(TitleFlow)
-        /// SMM2's opening before the title (`Boot_BootScene_00`).
-        case boot(BootScene)
-        /// Course World with SMM2's layouts (hub, courses, play).
-        case courseWorld(CourseWorldFlow)
+        /// A game session: the SMM2 front end (opening, title, Course World, 100 Mario, course
+        /// play with the SMM2 screens) when the SMM2 UI import is there, else plain play.
+        case importer, library, game(GameSession)
     }
+
+    /// The SMM2 UI import (`mmk import-smm2-ui`) the front end draws from; `MMK_UI_SMM2=off`
+    /// ignores it (the library and plain play then).
+    static let smm2UIDir: URL? =
+        ProcessInfo.processInfo.environment["MMK_UI_SMM2"] == "off" ? nil : AppPaths.findSMM2UICache()
 
     @Published var screen: Screen = .library
     @Published private(set) var assets: EngineAssets?
@@ -89,17 +93,15 @@ final class AppModel: ObservableObject {
     @Published var addCoursesRequested = false
     /// iOS: the Settings sheet (macOS has a Settings window).
     @Published var showSettings = false
-    /// Filter the library opens with next (the title's Story Mode → Built-in).
+    /// Filter the library opens with next.
     @Published var libraryStartFilter: LibraryView.Filter?
     let library = CourseLibrary()
     let saves = SaveStore()
+    private var librarySink: AnyCancellable?
 
     var isPlaying: Bool {
-        switch screen {
-        case .game, .challenge: true
-        case .courseWorld(let f): if case .playing = f.stage { true } else { false }
-        default: false
-        }
+        if case .game(let s) = screen { return s.front == nil || s.playingCourse }
+        return false
     }
 
     private let env = ProcessInfo.processInfo.environment
@@ -107,6 +109,10 @@ final class AppModel: ObservableObject {
     init() {
         AppPaths.ensureDirectories()
         if UIPreview.requested || MeshPreview.requested { return }   // debug views replace the app
+        // the front end sees library changes (a scan finishing, courses added)
+        librarySink = library.$entries.dropFirst().sink { [weak self] entries in
+            if case .game(let s) = self?.screen { s.setLibrary(entries) }
+        }
         // Smoke tests and debugging: MMK_SCREENSHOT / MMK_COURSE skip the menus and go straight
         // into the game (see Renderer for MMK_SCREENSHOT, MMK_START_X/Y below).
         if env["MMK_SCREENSHOT"] != nil || env["MMK_COURSE"] != nil {
@@ -120,32 +126,60 @@ final class AppModel: ObservableObject {
         }
         if assets == nil {
             screen = .importer
-        } else if LayoutUI.smm2 != nil && env["MMK_TITLE"] != "off" {
+        } else if Self.smm2UIDir != nil && env["MMK_TITLE"] != "off" {
             // SMM2's opening, then the title. MMK_UI_SCREEN=title / title-main / title-play
             // captures start on the title; MMK_UI_SCREEN=boot or MMK_BOOT=on force the opening,
             // MMK_BOOT=off (or Settings) leaves it out
-            let start: TitleScene.State = switch env["MMK_UI_SCREEN"] {
-            case "title-main": .main
-            case "title-play": .category
-            default: .top
-            }
             library.scan(assets: assets)
             let forced = env["MMK_BOOT"] == "on" || env["MMK_UI_SCREEN"] == "boot"
             let boot = forced || (env["MMK_BOOT"] != "off" && !DebugCapture.requested
                                   && UserDefaults.standard.bool(forKey: SettingsKey.bootOpening))
-            if boot, let ui = LayoutUI.smm2, let scene = BootScene(ui: ui, opening: env["MMK_BOOT_OPENING"]) {
-                scene.onFinished = { [weak self] in self?.bootFinished() }
-                screen = .boot(scene)
-            } else {
-                showTitle(start: start)
+            var start = frontStart()
+            start.boot = boot
+            start.titleStart = switch env["MMK_UI_SCREEN"] {
+            case "title-main": 1
+            case "title-play": 2
+            default: 0
             }
-            if case .title(let flow) = screen, let i = env["MMK_UI_SELECT"].flatMap(Int.init) {
-                flow.scene.debugSelectCategory(i)
-            }
+            if !showFront(start) { showLibrary() }
         } else {
             showLibrary()
         }
         DebugCapture.scheduleIfRequested(model: self)
+    }
+
+    /// The front end's start options from the environment (captures).
+    private func frontStart() -> GameSession.FrontStart {
+        var s = GameSession.FrontStart()
+        s.titleSelect = env["MMK_UI_SELECT"].flatMap(Int32.init) ?? -1
+        s.titleCourse = env["MMK_TITLE_COURSE"].flatMap(Int32.init) ?? -1
+        s.opening = env["MMK_BOOT_OPENING"]
+        s.script = env["MMK_UI_SCRIPT"]
+        s.titleInput = env["MMK_UI_INPUT"]
+        // captures change scenes at once (MMK_FADES=1 keeps the fades)
+        s.instantFades = DebugCapture.requested && env["MMK_FADES"] != "1"
+        return s
+    }
+
+    /// A new front end session on screen (false: it couldn't start).
+    @discardableResult
+    private func showFront(_ start: GameSession.FrontStart) -> Bool {
+        guard let assets else { return false }
+        do {
+            let s = try GameSession(assets: assets, front: start, library: library.entries)
+            s.onExit = { [weak self] in self?.showLibrary() }
+            screen = .game(s)
+            return true
+        } catch {
+            errorMessage = "\(error)"
+            return false
+        }
+    }
+
+    /// The front end session on screen, if any.
+    var frontSession: GameSession? {
+        if case .game(let s) = screen, s.front != nil { return s }
+        return nil
     }
 
     // MARK: navigation
@@ -155,81 +189,27 @@ final class AppModel: ObservableObject {
         library.scan(assets: assets)
     }
 
-    /// The SMM2 title screen (needs the SMM2 UI import; the library otherwise). `select`: the
-    /// Play-menu button selected (coming back from a mode).
-    func showTitle(start: TitleScene.State = .main, select: Int? = nil) {
-        guard let ui = LayoutUI.smm2, let flow = TitleFlow(ui: ui, assets: assets, start: start) else {
-            showLibrary()
-            return
-        }
-        flow.onChoice = { [weak self] choice in self?.titleChoice(choice) }
-        if let select { flow.scene.debugSelectCategory(select) }
-        screen = .title(flow)
+    /// The SMM2 title screen (needs the SMM2 UI import; the library otherwise). `start` 1 Make /
+    /// Play, 2 the Play menu (on button `select`).
+    func showTitle(start: UInt32 = 1, select: Int32 = -1) {
+        var s = frontStart()
+        s.titleStart = start
+        if select >= 0 { s.titleSelect = select }
+        if !showFront(s) { showLibrary() }
     }
 
-    /// The opening is over: the boot sequence changes to the title course with the black
-    /// circle [obs].
-    private func bootFinished() {
-        SceneFade.shared.run(.circleBlack) { [weak self] in self?.showTitle(start: .top) }
-    }
-
-    /// The title's Play menu: the game requests the next scene without fade parameters, which
-    /// means the 30-frame black fade [obs].
-    private func titleChoice(_ choice: TitleChoice) {
-        SceneFade.shared.run(.black) { [weak self] in self?.enter(choice) }
-    }
-
-    private func enter(_ choice: TitleChoice) {
-        switch choice {
-        case .storyMode:
-            // Story Mode's courses are the built-in ones (the jobs map isn't there yet)
-            libraryStartFilter = .builtIn
-            showLibrary()
-        case .courseWorld:
-            showCourseWorld()
-        case .coursebot:
-            showLibrary()
-        case .hundredMario:
-            // back to the title's Play menu, on the 100 Mario button [inf]
-            showChallenge { [weak self] in
-                SceneFade.shared.run(.black) { self?.showTitle(start: .category, select: 3) }
-            }
-        }
-    }
-
-    /// Course World with SMM2's layouts (the library without the SMM2 UI import); `selection`:
-    /// the hub button selected (coming back from one).
-    func showCourseWorld(selection: Int = 0) {
-        guard let ui = LayoutUI.smm2, let assets,
-              let flow = CourseWorldFlow(ui: ui, assets: assets, library: library.entries, saves: saves,
-                                         selection: selection) else {
-            showLibrary()
-            return
-        }
-        // back to the title's Play menu, Course World selected [inf]
-        flow.onExit = { [weak self] in
-            SceneFade.shared.run(.black) { self?.showTitle(start: .category, select: 1) }
-        }
-        flow.onEndless = { [weak self] in
-            // the Endless menu (100 Mario rules), then back to Course World on its button
-            SceneFade.shared.run(.black) {
-                self?.showChallenge(presentation: .smm2) {
-                    SceneFade.shared.run(.black) { [weak self] in self?.showCourseWorld(selection: 3) }
-                }
-            }
-        }
-        screen = .courseWorld(flow)
+    /// Course World with SMM2's layouts (the library without the SMM2 UI import).
+    func showCourseWorld() {
+        guard showFront(frontStart()), let s = frontSession else { return showLibrary() }
+        s.capture("courseworld")
     }
 
     func showImporter() { screen = .importer }
 
-    /// 100 Mario Challenge over the library's playable courses; `onExit` (default: the library)
-    /// when the player leaves it. `presentation` nil: Settings > Game.
-    func showChallenge(presentation: ChallengeFlow.Presentation? = nil, onExit: (() -> Void)? = nil) {
-        guard let assets else { return }
-        let flow = ChallengeFlow(assets: assets, library: library.entries, saves: saves, presentation: presentation)
-        flow.onExit = onExit ?? { [weak self] in self?.showLibrary() }
-        screen = .challenge(flow)
+    /// 100 Mario Challenge over the library's playable courses (needs the SMM2 UI import).
+    func showChallenge() {
+        guard showFront(frontStart()), let s = frontSession else { return showLibrary() }
+        s.capture("challenge", difficulty: Int(env["MMK_UI_DIFFICULTY"] ?? "") ?? 0)
     }
 
     func usePlaceholder() {
@@ -257,14 +237,21 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Play a library course: with the SMM2 screens when the import is there (no lives,
+    /// unlimited retries, as Course World), else plain play.
     func play(_ entry: CourseEntry) {
         guard let assets else { return }
+        if Self.smm2UIDir != nil, showFront(frontStart()), let s = frontSession {
+            if !s.playCourse(path: entry.url.path, name: entry.name, intro: true) {
+                errorMessage = "Couldn't start \(entry.name): \(lastEngineError())"
+                showLibrary()
+            }
+            return
+        }
         do {
             let data = try Data(contentsOf: entry.url)
             let session = try GameSession(assets: assets, course: data, title: entry.name, courseKey: entry.info.key, saves: saves)
-            // library play follows Course World / Story Mode: no lives, unlimited retries
             session.unlimitedLives = true
-            attachSMM2(session, maker: entry.meta.maker, builtIn: entry.collection == "Story Mode", intro: true)
             start(session)
         } catch {
             errorMessage = "Couldn't start \(entry.name): \(error)"
@@ -278,19 +265,6 @@ final class AppModel: ObservableObject {
         } catch {
             errorMessage = "\(error)"
         }
-    }
-
-    /// The SMM2 in-course screens over a library course, when the SMM2 UI import is there
-    /// (`MMK_UI_SMM2=off`: the drawn HUD and the SwiftUI menus).
-    private func attachSMM2(_ session: GameSession, maker: String?, builtIn: Bool, intro: Bool) {
-        guard let ui = LayoutUI.smm2, let screens = CourseScreens(ui: ui) else { return }
-        var info = CourseCardInfo()
-        info.name = session.title
-        info.maker = maker
-        info.builtIn = builtIn
-        info.lives = !session.unlimitedLives
-        if let key = session.courseKey { info.bestTicks = saves.record(key).bestTicks }
-        session.attachSMM2(screens, info: info, intro: intro)
     }
 
     private func start(_ session: GameSession) {
@@ -307,6 +281,26 @@ final class AppModel: ObservableObject {
         }
         let assets = assets ?? .placeholder()
         self.assets = assets
+        let screenshot = env["MMK_SCREENSHOT"] != nil
+        if let path = env["MMK_COURSE"], Self.smm2UIDir != nil {
+            // the SMM2 screens: the smoke test's MMK_SCREENSHOT runs straight into play; UI
+            // captures start with the course card unless MMK_UI_INTRO=0
+            guard showFront(frontStart()), let s = frontSession else { return }
+            let intro = !screenshot && env["MMK_UI_INTRO"] != "0"
+            if !s.playCourse(path: path, name: nil, intro: intro) {
+                errorMessage = "\(path): \(lastEngineError())"
+                screen = .library
+                return
+            }
+            // MMK_START_X=<px> [MMK_START_Y=<px>]: debug, start somewhere else (smoke tests)
+            if let x = env["MMK_START_X"].flatMap(Float.init) {
+                mmk_engine_debug_teleport(s.engine, x, env["MMK_START_Y"].flatMap(Float.init) ?? 32)
+            }
+            // MMK_UI_SCRIPTED=1: the smoke test's scripted run, with the menus live (UI captures)
+            if env["MMK_UI_SCRIPTED"] == "1" { s.scriptedInput = Renderer.scriptedInput }
+            DebugCapture.scheduleIfRequested(model: self)
+            return
+        }
         do {
             var data: Data?
             var title = "Demo strip"
@@ -321,18 +315,12 @@ final class AppModel: ObservableObject {
                 }
             }
             let session = try GameSession(assets: assets, course: data, title: title, courseKey: key,
-                                          saves: env["MMK_SCREENSHOT"] == nil ? saves : nil)
-            // MMK_START_X=<px> [MMK_START_Y=<px>]: debug, start somewhere else (smoke tests)
+                                          saves: screenshot ? nil : saves)
             if let x = env["MMK_START_X"].flatMap(Float.init) {
                 mmk_engine_debug_teleport(session.engine, x, env["MMK_START_Y"].flatMap(Float.init) ?? 32)
             }
             if let t = env["MMK_UI_PAUSE_TICKS"].flatMap(UInt64.init) { session.autoPauseTick = t }
             session.unlimitedLives = env["MMK_LIVES"] != "on"
-            // the SMM2 screens (the smoke test's MMK_SCREENSHOT runs straight into play; UI
-            // captures start with the course card unless MMK_UI_INTRO=0)
-            let intro = env["MMK_SCREENSHOT"] == nil && env["MMK_UI_INTRO"] != "0"
-            attachSMM2(session, maker: nil, builtIn: false, intro: intro)
-            // MMK_UI_SCRIPTED=1: the smoke test's scripted run, with the menus live (UI captures)
             if env["MMK_UI_SCRIPTED"] == "1" { session.scriptedInput = Renderer.scriptedInput }
             start(session)
         } catch {
@@ -356,14 +344,8 @@ struct RootView: View {
             case .importer: ImportView()
             case .library: libraryScreen
             case .game(let session): GameView(session: session).id(session.id)
-            case .challenge(let flow): ChallengeView(flow: flow).id(flow.id)
-            case .title(let flow): TitleView(flow: flow).id(flow.id)
-            case .boot(let scene): UIScreenView(scene: scene, ui: LayoutUI.smm2).id(ObjectIdentifier(scene))
-            case .courseWorld(let flow): CourseWorldView(flow: flow).id(flow.id)
             }
         }
-        // the scene fade over SwiftUI screens (Metal screens draw the fade layout themselves)
-        .overlay { if model.showsSwiftUIScreen { SceneFadeVeil() } }
         .alert("Error", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -401,23 +383,12 @@ struct RootView: View {
     }
 }
 
-extension AppModel {
-    /// Screens drawn by SwiftUI alone (no Metal view to draw a scene fade into).
-    var showsSwiftUIScreen: Bool {
-        switch screen {
-        case .importer, .library: true
-        case .challenge(let flow): flow.scene == nil && !flow.isPlaying
-        default: false
-        }
-    }
-}
-
 #if os(iOS)
 extension AppModel {
     /// The game, a 100 Mario run or the title: full screen, touch controls shown.
     var showsGameScreen: Bool {
         switch screen {
-        case .game, .challenge, .title, .boot, .courseWorld: true
+        case .game: true
         case .importer, .library: false
         }
     }

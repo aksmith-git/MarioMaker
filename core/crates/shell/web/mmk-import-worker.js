@@ -2,11 +2,12 @@
 // ExeFS files the owner picked, reading them synchronously (FileReaderSync, workers only) and
 // posting every output file to the page, which stores it. Nothing leaves the browser.
 //
-// Message in: { romfs: [[path under romfs/, File], ...], main: File (exefs/main) }.
+// Message in: { romfs: [[path under romfs/, File], ...], main: File (exefs/main) }. Runs the game
+// data import, then the SMM2 UI import (its files posted as "@ui/<path>").
 // Messages out: { write, bytes } per output file, { progress: [stage, done, total] },
-// { done: summary JSON } or { error }.
+// { done: summary JSON, ui: UI import summary JSON or null } or { error }.
 
-import init, { import_dump } from "./mmk-play.js";
+import init, { import_dump, import_ui } from "./mmk-play.js";
 
 // written by the importer but not used by the portable shell yet (3D models): not stored
 const SKIP = ["meshes/", "anims/"];
@@ -46,7 +47,15 @@ self.onmessage = async ({ data: { romfs, main } }) => {
         }
       },
     };
-    postMessage({ done: import_dump() });
+    const summary = import_dump();
+    // the SMM2 menus' import (written as "@ui/<path>"): optional, the game plays without it
+    let ui = null;
+    try {
+      ui = import_ui();
+    } catch (e) {
+      console.warn("SMM2 UI import:", e);
+    }
+    postMessage({ done: summary, ui });
   } catch (e) {
     postMessage({ error: String(e?.message ?? e) });
   }

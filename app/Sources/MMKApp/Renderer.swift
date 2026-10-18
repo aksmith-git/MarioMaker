@@ -147,11 +147,13 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         // fixed 60 Hz simulation (or the pause menu), independent of the display rate
         session.frame(now: CACurrentMediaTime())
+        // (the front end's menus show no course: only their layouts are drawn)
+        let showCourse = session.showsCourse
 
         var snap = MmkSnapshot()
         mmk_engine_snapshot(engine, &snap)
         var meshPtr: UnsafePointer<MmkMeshDraw>?
-        let meshCount = mmk_engine_meshes(engine, &meshPtr)
+        let meshCount = showCourse ? mmk_engine_meshes(engine, &meshPtr) : 0
         if meshCount > 0 && meshRenderer == nil {
             meshRenderer = try? MeshRenderer(device: device, assets: session.assets.handle,
                                              colorFormat: .bgra8Unorm_srgb, depthFormat: Self.depthFormat)
@@ -167,7 +169,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         // letterbox the 16:9 view into the drawable, at an integer scale when it fits
         let dw = Double(view.drawableSize.width), dh = Double(view.drawableSize.height)
         let fit = min(dw / Double(snap.view_w), dh / Double(snap.view_h))
-        let integer = UserDefaults.standard.bool(forKey: SettingsKey.integerScale)
+        let integer = showCourse && UserDefaults.standard.bool(forKey: SettingsKey.integerScale)
         let scale = fit >= 1 && integer ? floor(fit) : fit
         let vw = Double(snap.view_w) * scale, vh = Double(snap.view_h) * scale
         enc.setViewport(MTLViewport(originX: (dw - vw) / 2, originY: (dh - vh) / 2, width: vw, height: vh, znear: 0, zfar: 1))
@@ -192,7 +194,7 @@ final class Renderer: NSObject, MTKViewDelegate {
             var px: [UInt8] = [UInt8(clear >> 24), UInt8((clear >> 16) & 0xff), UInt8((clear >> 8) & 0xff), 0xff]
             sky.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &px, bytesPerRow: 4)
         }
-        if let sky = skyTexture {
+        if showCourse, let sky = skyTexture {
             var ident = SIMD4<Float>(1, 1, 0, 0)
             enc.setVertexBytes(&ident, length: 16, index: 1)
             let quad: [SIMD4<Float>] = [SIMD4(-1, -1, 0, 0), SIMD4(1, -1, 1, 0), SIMD4(1, 1, 1, 1), SIMD4(-1, -1, 0, 0), SIMD4(1, 1, 1, 1), SIMD4(-1, 1, 0, 1)]
@@ -202,7 +204,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
         enc.setVertexBytes(&xform, length: MemoryLayout<SIMD4<Float>>.size, index: 1)
 
-        let sprites = UnsafeBufferPointer(start: snap.sprites, count: snap.sprite_count)
+        let sprites = UnsafeBufferPointer(start: snap.sprites, count: showCourse ? snap.sprite_count : 0)
         var verts: [SIMD4<Float>] = []
         verts.reserveCapacity(sprites.count * 6)
         var batchStart = 0
@@ -267,7 +269,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         if mmk_engine_clear_condition(engine, &cond) { text += "    " + ClearConditionText.describe(cond) }
         let stripH = 18.0
         let tw = Int(vw), th = Int(stripH * scale)
-        let drawnHud = !session.hideHud && session.smm2 == nil   // the SMM2 HUD layout replaces it
+        let drawnHud = !session.hideHud   // (the front end draws the SMM2 HUD layout)
         if drawnHud && (text != hudText || hudSize != (tw, th)) {
             hudText = text
             hudSize = (tw, th)
@@ -286,35 +288,16 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         enc.endEncoding()
 
-        // layouts over the course in a pass of their own (the layout pipelines have no depth
-        // attachment): the 100 Mario overlays (SMM1: pause, course clear, skip countdown, intro
-        // card) or the SMM2 in-course screens (HUD, course card, pause, clear, …), a layout
-        // screen over the course (the SMM2 title over its demo course), then a scene fade
-        var groups: [(layers: [UILayout], ui: LayoutUI)] = []
-        if let o = session.overlay, let ui = SMM1UI.shared {
-            for l in o.layers { l.apply(tick: o.tick) }
-            groups.append((o.layers, ui))
-        } else if let s = session.smm2 {
-            for l in s.layers { l.apply(tick: s.tick) }
-            groups.append((s.layers, s.ui))
-        }
-        if let (scene, ui) = session.sceneOverlay {
-            let layers = scene.layers
-            for l in layers { l.apply(tick: scene.tick) }
-            groups.append((layers, ui))
-        }
-        if let fui = LayoutUI.smm2 {
-            let f = SceneFade.shared.layers
-            if !f.isEmpty { groups.append((f, fui)) }
-        }
-        if !groups.isEmpty {
+        // the front end's layouts (HUD, menus, scene fades …) over the course in a pass of their
+        // own (the layout pipelines have no depth attachment)
+        if session.hasLayouts {
             let pass2 = MTLRenderPassDescriptor()
             pass2.colorAttachments[0].texture = drawable.texture
             pass2.colorAttachments[0].loadAction = .load
             pass2.colorAttachments[0].storeAction = .store
             if let enc2 = cmd.makeRenderCommandEncoder(descriptor: pass2) {
                 enc2.setViewport(MTLViewport(originX: (dw - vw) / 2, originY: (dh - vh) / 2, width: vw, height: vh, znear: 0, zfar: 1))
-                for g in groups { g.ui.encode(enc2, layers: g.layers) }
+                session.encodeLayouts(enc2, device: device)
                 enc2.endEncoding()
             }
         }

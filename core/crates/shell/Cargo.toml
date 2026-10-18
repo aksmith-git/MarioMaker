@@ -40,8 +40,9 @@ libc = "0.2.191"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 mmk-import = { path = "../import" }
+flate2.workspace = true
 console_error_panic_hook = "0.1.7"
 js-sys = "0.3.106"
 wasm-bindgen = "0.2.129"
 wasm-bindgen-futures = "0.4.79"
-web-sys = { version = "0.3.106", features = ["Document", "Element", "HtmlCanvasElement", "Performance", "Window", "console", "WebSocket", "MessageEvent", "BinaryType"] }
+web-sys = { version = "0.3.106", features = ["Document", "Element", "HtmlCanvasElement", "Performance", "Window", "console", "WebSocket", "MessageEvent", "BinaryType", "Storage"] }

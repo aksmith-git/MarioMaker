@@ -126,6 +126,13 @@ pub struct WorldCourse {
     pub tags: Vec<u32>,
     /// Save-data key, when known before playing.
     pub key: Option<String>,
+    /// Server courses: the uploader's maker ID (None: anonymous), the world-record holder's and
+    /// the first clearer's maker IDs, and whether the record was proven by a replay (a ghost to
+    /// race).
+    pub maker_id: Option<String>,
+    pub record_holder: Option<String>,
+    pub first_clear: Option<String>,
+    pub record_verified: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -161,40 +168,60 @@ impl WorldCourse {
             playable: e.playable,
             tags: m.tags.clone(),
             key: Some(e.key.clone()),
+            maker_id: None,
+            record_holder: None,
+            first_clear: None,
+            record_verified: false,
         }
     }
 
-    /// A server search result (`mmk-online` listing JSON: code, name, maker, style, plays, …).
+    /// A server search result (`mmk_online::listing_json`: code, name, maker, style, plays,
+    /// clears, attempts, likes, description, uploaded, maker_id, record_ms, record_holder,
+    /// first_clear, record_verified; missing keys are unknown).
     pub fn server(j: &Value) -> Option<Self> {
         let code = j["code"].as_str()?.to_string();
         let n = |k: &str| j[k].as_i64();
+        let id = |k: &str| j[k].as_str().filter(|s| !s.is_empty()).map(str::to_string);
         let plays = n("plays");
         let clears = n("clears");
+        // attempts when the server counts them, else plays
+        let attempts = n("attempts").filter(|&a| a > 0).or(plays);
         Some(Self {
             id: format!("server:{code}"),
             source: Source::Server(code.clone()),
             name: j["name"].as_str().unwrap_or(&code).to_string(),
-            maker: j["maker"].as_str().map(str::to_string),
+            maker: id("maker"),
             style: j["style"].as_str().unwrap_or("M1").to_string(),
-            description: String::new(),
+            description: j["description"].as_str().unwrap_or_default().to_string(),
             plays,
             likes: n("likes"),
             clears,
-            attempts: plays,
-            clear_rate: match (plays, clears) {
-                (Some(p), Some(c)) if p > 0 => Some(c as f64 * 100.0 / p as f64),
+            attempts,
+            clear_rate: match (attempts, clears) {
+                (Some(p), Some(c)) if p > 0 => Some((c as f64 * 100.0 / p as f64).min(100.0)),
                 _ => None,
             },
             code: Some(code),
-            date: None,
+            date: n("uploaded").filter(|&d| d > 0),
             date_offset: 0,
             cleared: false,
             best_ticks: None,
-            world_record_ms: None,
+            world_record_ms: n("record_ms").filter(|&r| r > 0),
             playable: true,
             tags: Vec::new(),
             key: None,
+            maker_id: id("maker_id"),
+            record_holder: id("record_holder"),
+            first_clear: id("first_clear"),
+            record_verified: j["record_verified"].as_bool().unwrap_or(false),
         })
+    }
+
+    pub fn server_code(&self) -> Option<&str> {
+        match &self.source {
+            Source::Server(c) => Some(c),
+            Source::Library(_) => None,
+        }
     }
 
     pub fn is_server(&self) -> bool {
@@ -362,6 +389,26 @@ pub trait Host {
     fn report(&mut self, _code: &str, _what: &str) {}
     /// A course was cleared (e.g. send the replay); `ticks` its time.
     fn cleared(&mut self, _ticks: i64) {}
+    /// Start a call to the course server: the JSON actions of `mmk_online::call` (`register
+    /// {name}`, `me`, `info {code}`, `vote {code, like}`, `clear {code, time_ms}`, `comments
+    /// {code}`, `comment {code, text}`, `maker {maker_id}`, `rankings {kind, limit}`, `endless
+    /// {difficulty, cleared}`), plus two the host carries out with its engine:
+    /// `submit_replay {code}` (the replay of the run just cleared) and `ghost {code}` (download
+    /// the record's replay and race it from the next start of that course). `token`: the
+    /// signed-in account's. The answer comes back from [`Host::poll_online`] under `id`.
+    /// False: no server configured (nothing will come back).
+    fn online(&mut self, _id: u32, _action: &str, _args: &Value, _token: Option<&str>) -> bool {
+        false
+    }
+    /// The next answer of an earlier [`Host::online`] call, once it arrived.
+    fn poll_online(&mut self) -> Option<(u32, Result<Value, String>)> {
+        None
+    }
+    /// The engine's play options change play (SMM1 extras, `mmk_sim::Options::affects_play`):
+    /// replays are then neither sent nor raced.
+    fn play_options_affect_play(&self) -> bool {
+        false
+    }
     /// Small persistent values (save data, settings) by key.
     fn load_value(&mut self, key: &str) -> Option<String>;
     fn store_value(&mut self, key: &str, value: &str);

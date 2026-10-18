@@ -172,7 +172,10 @@ mod native {
         #[arg(long)]
         data_dir: Option<PathBuf>,
         /// Headless front end capture (with --screenshot, --ticks): boot, title, title-main,
-        /// title-play, courseworld, courseworld-list, storymode, challenge, challenge-map,
+        /// title-play, courseworld, courseworld-list, storymode, with --server (and
+        /// MMK_FRONT_REALTIME=1): account, courseworld-leaderboards, courseworld-course-page,
+        /// courseworld-comments, courseworld-post, courseworld-maker, courseworld-play,
+        /// courseworld-pause, courseworld-clear; challenge, challenge-map,
         /// challenge-walk, challenge-gameover, challenge-ending, challenge-pause,
         /// challenge-clear, challenge-skip, challenge-card; with --front-course: course-intro,
         /// course-pause, course-clear, course-gameover, course-timeup, course-retire,

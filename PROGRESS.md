@@ -281,9 +281,16 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   - ✅ WebAudio (cpal) through the shared sound director, started on the first gesture
   - ✅ Gamepad API (gilrs) and keyboard; course picker: built-in courses of the import, or any
     `.bcd` / zlib / raw course file
+  - ✅ SMM2 menus (`mmk-front`) when the SMM2 UI import is in storage: copied from an
+    `mmk import-smm2-ui` folder, or made by the in-page dump import (identical to the desktop
+    import, all 4528 files); the UI cache reads JSON up front (13 MB, ~0.4 s) and textures on
+    request; opening, title over its demo courses, Play menu, Course World (the library: built-in
+    courses + opened files), Story Mode, 100 Mario, course card / HUD / pause / give up; UI sounds,
+    course music, keys, mouse clicks; saves in `localStorage`. No server listing in the browser
   - checked in headless Edge (CDP: import, courses, keys, a scripted Gamepad API pad, non-silent
-    WebAudio) and headless Firefox (WebDriver BiDi). Open: Safari (OPFS `createWritable`),
-    a real controller in a browser, touch controls, mobile memory limits, menus (layout player)
+    WebAudio, the menus) and headless Firefox (WebDriver BiDi; before the menus). Open: Safari
+    (OPFS `createWritable`), a real controller in a browser, touch controls, mobile memory
+    limits, the course server from the browser (HTTP), Firefox with the menus
 - 🔄 iOS/iPadOS: the same Swift package cross-compiled (`swift build --triple`, core linked from
   `core/target/aarch64-apple-ios{,-sim}/release`), bundled by `scripts/make-ios-app.sh`
   (DECISIONS.md "iOS packaging"); `scripts/check.sh --ios` builds it for the Simulator. AppKit
@@ -303,8 +310,16 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   a library folder and the course server, Endless / SMM1-layout 100 Mario, in-course HUD / card /
   pause / settings / clear / give up / time up / game over, UI sounds) and `mmk-play` runs it by
   default (Windows, Linux, macOS); headless captures (`--front-screen`) match the Swift app's to
-  within rounding on every deterministic screen. Open: the Swift app on `mmk-front` through the
-  FFI, the web build (async UI cache), Settings screens
+  within rounding on every deterministic screen. ✅ the Swift app runs `mmk-front` too, through
+  the `mmk_front_*` C API (DECISIONS.md "The Swift app runs the Rust front end"): its own screen
+  classes (~4 500 lines) are deleted; it keeps its renderer, audio, input, touch controls and the
+  SwiftUI library / Settings. Its DebugCaptures before vs after on the 30 front-end screens of the
+  comparison set (macOS, 1024×640 window): 27 pixel-identical, course-pause 0.11 % and
+  course-settings 0.11 % of pixels (the selection frame's Loop phase), smm1-walk 0.35 % (the
+  random course name on the map's balloon); real-time navigation (hub → list → course page →
+  play) and the `MMK_SCREENSHOT` smoke test run; `scripts/check.sh --ios` builds. ✅ the web build runs
+  it too (UI cache over an in-memory file source filled from OPFS, textures on request). Open:
+  Settings screens, ghosts in the Apple app, a server listing in the browser (HTTP fetch)
 
 ### Phase 9 — SMM2 single-player like-for-like 🔄 (owner request 2026-10-18)
 - 🔄 SMM2 layouts through the same layout player (private map: `research/specs/smm2-layouts.md`):
@@ -328,12 +343,16 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
       title (Settings > Game, `MMK_BOOT`, `MMK_BOOT_OPENING`)
     - ✅ scene fades `Cmn_Fade_00` (black 30 + 30 for scene changes without parameters, black
       circle from the opening; white, blocks available) over every screen (`SceneFade`)
-    - ✅ Course World: hub `Nwk_Title_00` (background loops, Courses / Endless Challenge;
-      Leaderboards, Network Play, Ninji Speedruns, Super Worlds say they need Nintendo's
-      network), course list `Nwk_CourseListGeneral_00` (Hot / Popular / New tabs, rows with
-      style logo, maker, likes, plays, tags, date, clear mark; open row with description, world
-      record, clears / attempts, course ID, Play) over the library (dataset index statistics) and
-      the open-source course server (Settings > Game; `mmk_online_*`)
+    - ✅ Course World: hub `Nwk_Title_00` (background loops, Courses / Leaderboards / Endless
+      Challenge / the player card; Network Play, Ninji Speedruns, Super Worlds say they need
+      Nintendo's network), course list `Nwk_CourseListGeneral_00` (Hot / Popular / New tabs, rows
+      with style logo, maker, likes, plays, tags, date, clear mark; open row with description,
+      world record, clears / attempts, course ID, Play, and for server courses More info / View
+      comments) over the library (dataset index statistics) and the open-source course server
+      (Settings > Game; `mmk_online_*`); the online screens of Phase 10 in `mmk-front`
+    - ✅ clicks / taps (`FrontInput::click`) on the title, the hub, the course list (tabs, rows,
+      an open row's buttons), the online screens, the Endless menu and map, and the SMM1 100
+      Mario screens; text entry (`FrontInput::text`) for names, tokens and comments
     - ✅ 100 Mario Challenge in SMM2's Endless Challenge screens (default; SMM1's kept in
       Settings > Game): `Nwk_EndlessModeMenu_00` difficulty tabs (SMM1 unlocks), New Game /
       Continue, the map `Nwk_WorldMap_00` (ChangeMap, Telop, Mario out of the castle, walks
@@ -553,7 +572,26 @@ Not Nintendo's network: the engine talks to an open-source server the owner can 
   the player's own or banned courses, widening reported; best per difficulty feeds the
   `endless_<d>` rankings; Endless plays count in course statistics; `mmk-online` client calls
 - 🔄 Course World client: browse (SMM2 course list over the server and the library) and play ✅,
-  play / clear reports ✅; like/boo, comment, upload from the editor ⬜
+  play / clear reports ✅; in the Rust front end (`mmk-front`, 2026-10-18) ✅: account (player
+  card → `Nwk_PlayerInfo_00`: create with a typed name, sign in with a token, sign out; token in
+  the host's store), like / boo on a server course's clear screen and pause menu (the game's
+  judge buttons),
+  comments (`Nwk_CommentViewer_00`) and posting (`Nwk_CommentPosting_00`, typed), course page
+  (`Nwk_CourseListWindow_00` + `Nwk_CourseDetail_00`: likes, plays, first clear, world record),
+  maker profiles (their uploaded courses), leaderboards (`Nwk_CourseListMaker_00`: maker points,
+  clears, first clears, records, Endless per difficulty), clears sent as replays the server
+  verifies (fallback: the time), the record's ghost raced from the course page, Endless runs
+  reported; `mmk-play` host on threads (`--server` / `$MMK_SERVER`), tested against a local
+  `mmk server` with captures `account`, `courseworld-leaderboards`, `courseworld-course-page`,
+  `-comments`, `-post`, `-maker`, `-play`, `-pause`, `-clear` · comments from the pause / clear
+  screens ⬜ ·
+  upload from the editor ⬜ (no Course Maker in the front end yet) · the Swift app ✅ (the same
+  screens through `mmk_front_*`; its host makes the calls on threads, records server-course runs
+  and sends them as replays — tested against a live server in `mmk-ffi`: a verified record, a
+  like, a comment; the account screen signed in from UserDefaults; macOS types from the keyboard,
+  iOS through a text prompt) · ghosts in the Swift app ⬜ (the engine snapshot draws one world) ·
+  the server times a replay to the end of the clear sequence, the clear screen to the goal touch
+  (16.35 s vs 9.18 s in one run) ⬜
 - ✅ Local multiplayer (co-op, up to 4: Mario, Luigi, Toad, Toadette as the models' _2/_3/_4
   variants): extra players run the same rules, rejoin beside player 1 [inf: bubble], any player
   clears; `mmk-play --players N` (one pad each), FFI `mmk_engine_set_players / step_players`;

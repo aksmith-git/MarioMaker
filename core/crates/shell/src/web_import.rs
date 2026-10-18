@@ -33,6 +33,9 @@ extern "C" {
 
 /// Where the importer is told to put the cache; stripped (with the build folder) on output.
 const OUT: &str = "/out";
+/// Where the SMM2 UI importer is told to put its import; output paths there get [`UI_PREFIX`].
+const UI_OUT: &str = "/ui-out";
+const UI_PREFIX: &str = "@ui/";
 
 struct WorkerFs;
 
@@ -49,6 +52,14 @@ impl Vfs for WorkerFs {
         Ok(js_sys::Uint8Array::new(&v).to_vec())
     }
     fn write(&self, path: &Path, data: &[u8]) -> io::Result<()> {
+        // the SMM2 UI import: /ui-out/<rel> → @ui/<rel> (the page keeps it apart)
+        if let Ok(rel) = path.strip_prefix(UI_OUT) {
+            js_write(
+                &format!("{UI_PREFIX}{}", path_str(rel)),
+                js_sys::Uint8Array::from(data),
+            );
+            return Ok(());
+        }
         // /out/smm2-<build>/<rel> → <rel>
         let rel = path
             .strip_prefix(OUT)
@@ -100,6 +111,32 @@ pub fn import_dump() -> Result<JsValue, JsValue> {
         "textures": report.textures,
         "sounds": report.sounds,
         "courses": report.builtin_courses_verified,
+    });
+    Ok(JsValue::from_str(&summary.to_string()))
+}
+
+/// Run the SMM2 UI import (`mmk import-smm2-ui`: the menus' layouts, fonts, messages and
+/// sounds) over the same files; its outputs are written as `@ui/<path>`. Returns a summary
+/// (`{build, layouts, textures, fonts}`).
+#[wasm_bindgen]
+pub fn import_ui() -> Result<JsValue, JsValue> {
+    let cfg = mmk_import::smm2_ui::Smm2UiConfig {
+        romfs: PathBuf::from("/romfs"),
+        exefs: Some(PathBuf::from("/exefs")),
+        out: PathBuf::from(UI_OUT),
+        language: "USen".into(),
+    };
+    let report = mmk_import::vfs::with_vfs(Rc::new(WorkerFs), || {
+        mmk_import::run_smm2_ui(&cfg, &mut |stage, done, total| {
+            js_progress(&format!("menus: {stage}"), done as u32, total as u32)
+        })
+    })
+    .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let summary = serde_json::json!({
+        "build": report.build,
+        "layouts": report.layouts,
+        "textures": report.textures,
+        "fonts": report.fonts,
     });
     Ok(JsValue::from_str(&summary.to_string()))
 }

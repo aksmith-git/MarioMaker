@@ -4,6 +4,7 @@
 //! game [`Renderer`] where the front end puts it, the UI sounds into the output stream, and the
 //! front end's messages as a small text box.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use mmk_front::{Buttons, DrawItem, Front, FrontInput, UiKind};
@@ -12,6 +13,8 @@ use mmk_ui::{
 };
 use winit::keyboard::KeyCode;
 
+// the host: files, threads and the course server natively; the browser's storage on the web
+#[cfg(not(target_arch = "wasm32"))]
 use crate::front_host::{HostData, ShellHost};
 use crate::game::Game;
 use crate::input::Keyboard;
@@ -19,6 +22,8 @@ use crate::render::{Gpu, Renderer};
 use crate::session::FixedStep;
 use crate::ui_layer::UiLayer;
 use crate::ui_sound::UiMixer;
+#[cfg(target_arch = "wasm32")]
+use crate::web_front::{HostData, ShellHost};
 
 pub struct FrontApp {
     pub front: Front,
@@ -30,6 +35,8 @@ pub struct FrontApp {
     /// The message shown and its texture in the SMM2 import's cache.
     toast: Option<(String, Option<mmk_ui::TexRef>)>,
     toasts: u32,
+    /// Keys typed into an open text field, one handed to the front end per tick.
+    typed: VecDeque<char>,
     /// Keeps the sound playing.
     pub audio_stream: Option<crate::ui_sound::FrontAudio>,
 }
@@ -77,6 +84,7 @@ pub fn menu_input(keys: &Keyboard, pad: u32) -> FrontInput {
         start: keys.buttons() & b::START != 0 || pad & b::START != 0,
         skip: k(&[KeyCode::Minus, KeyCode::Tab]),
         click: None,
+        text: None,
     }
 }
 
@@ -91,6 +99,7 @@ impl FrontApp {
             click: None,
             toast: None,
             toasts: 0,
+            typed: VecDeque::new(),
             audio_stream: None,
         }
     }
@@ -103,6 +112,11 @@ impl FrontApp {
             data: &mut self.data,
         };
         self.front.tick(input, &mut host);
+        if self.front.course_done {
+            // a course played on its own (the web page's course picker): back to the menus
+            self.front.course_done = false;
+            self.front.capture(&mut host, "title-play", 0, 0);
+        }
         let sounds = self.front.take_sounds();
         if let Some(m) = &self.ui_audio {
             for s in &sounds {
@@ -118,8 +132,27 @@ impl FrontApp {
         let mut input = menu_input(keys, pad);
         for i in 0..n {
             input.click = if i == 0 { self.click.take() } else { None };
+            input.text = self.typed.pop_front();
             self.tick(&input, game_buttons, game);
         }
+    }
+
+    /// A key pressed while the front end has a text field open: queued as typed text
+    /// (Backspace erases, Return finishes, Esc cancels). False when no field is open (the key
+    /// is a menu key then).
+    pub fn key_text(&mut self, code: KeyCode, text: Option<&str>) -> bool {
+        if !self.front.typing() {
+            return false;
+        }
+        match code {
+            KeyCode::Backspace => self.typed.push_back('\u{8}'),
+            KeyCode::Enter | KeyCode::NumpadEnter => self.typed.push_back('\n'),
+            KeyCode::Escape => self.typed.push_back('\u{1b}'),
+            _ => self
+                .typed
+                .extend(text.unwrap_or_default().chars().filter(|c| !c.is_control())),
+        }
+        true
     }
 
     /// A click at window pixel `at` in a `size` window.
