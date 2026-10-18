@@ -2,6 +2,30 @@
 
 Newest first. Each entry: what was decided, why, and what would change it.
 
+## 2026-10-18 — SMM2 2.0/3.0 parts: own modules, behaviour from v3.0.3, test courses from the editor
+**Decision:** the 2.0/3.0 enemies, blocks and gizmos (Spike, Pokey, P Block, Dash Block,
+Mechakoopa, ON/OFF Trampoline, the Koopalings) live in `actors/v3.rs`, `actors/koopalings.rs`,
+`world/v3.rs`, `world/koopalings.rs` and `level/v3.rs`; the shared files only carry hook lines
+(Kind variants, dispatch arms, the contact / fire / shell / carry / tail / dash hooks, one
+`v3: V3State` actor field, one `v3: V3World` world field, one `v3: V3Tiles` level field). Numbers
+come from the v3.0.3 executable (specs in the private `research/specs/objects/`); as the sample
+corpus predates 2.0, every part has an editor-built test course and sim tests.
+**Choices the binary did not settle** (all marked in the code):
+- rolling spike balls / snowballs and a thrown knocked-down Mechakoopa knock out enemies they
+  run into [ext]; a carried snowball or robot hitting an enemy breaks like a carried shell [inf];
+- grabbing a Snow Pokey with Run puts a snowball in the player's hands [inf: the grab hits the
+  head and the player ends up holding it];
+- the missile's blast also knocks out enemies in its box [inf];
+- Koopalings: a Koopaling in a Clown Car is reported unsupported (its Clown context is not
+  modelled); Roy only comes up from the floor (the ≤ 33 % ceiling exits are not modelled);
+  Morton's winged feints, wing flight and parachute behaviour are not modelled; the ledge-jump
+  probe is one column one tile ahead;
+- the Mechakoopa laser and the spike-ball spin are effects the importer does not export: the beam
+  is drawn under its own name (`M1_Effect_laser`), which the cache lacks;
+- the P Switch lasts 540 frames (the course switch state's timer, 0x71016c4a48) instead of the
+  earlier [ext] 600.
+**What would change it:** frame-stepping v3.0.3 in Ryujinx (see each spec's "How to verify").
+
 ## 2026-10-18 — Name: SMCraft
 **Decision:** the project, app and window titles are **SMCraft** (owner's choice). App bundle id
 `dev.smcraft.app`; the macOS data folder becomes `Application Support/SMCraft` (an existing `MMK`

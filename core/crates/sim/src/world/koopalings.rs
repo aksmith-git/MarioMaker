@@ -179,6 +179,7 @@ impl World {
                 ));
                 // Lemmy himself stands on top of it
                 if let Some((model, tex, w, h, flip)) = a.koopaling_body_look() {
+                    let (w, h) = (w * a.v3_scale(), h * a.v3_scale());
                     out.push(Self::model_sprite(
                         model,
                         tex,

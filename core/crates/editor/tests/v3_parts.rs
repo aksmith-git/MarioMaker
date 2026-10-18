@@ -785,3 +785,61 @@ fn nsmbu_koopalings_flinch_before_the_shell() {
     run(&mut w, 2);
     assert!(koop(&w).koopaling_guarded() && koop(&w).koopaling_state() != 8);
 }
+
+// ---------------------------------------------------------------- every part, every style
+
+#[test]
+fn every_new_part_loads_and_plays_in_each_style() {
+    for (style, theme) in [("M1", 0), ("M3", 6), ("MW", 0), ("WU", 6), ("3W", 0)] {
+        let mut parts = vec![
+            part(74, 6, 2),
+            with_flags(part(74, 8, 2), 0x4),
+            part(78, 10, 2),
+        ];
+        if style == "3W" {
+            parts.extend([
+                part(79, 13, 5),
+                with_flags(part(79, 14, 5), 0x4),
+                part(80, 16, 2),
+                part(132, 20, 2),
+                with_flags(part(132, 25, 2), 0x4),
+            ]);
+        } else {
+            parts.extend([
+                mecha_part(13, 0),
+                mecha_part(15, 1),
+                mecha_part(17, 2),
+                part(120, 20, 2),
+                part(121, 23, 2),
+                part(122, 26, 2),
+                part(123, 29, 2),
+                part(124, 32, 2),
+                part(125, 35, 2),
+                part(126, 38, 2),
+            ]);
+        }
+        let c = course(&format!("all_{style}"), style, theme, &parts);
+        let mut w = World::from_course(&c);
+        w.player.invuln = 1_000_000;
+        press(&mut w, input::RIGHT | input::RUN, 600);
+        assert!(w.player.alive(), "{style}");
+    }
+}
+
+#[test]
+fn mechakoopas_hop_and_hover_in_the_night_ground_theme() {
+    let mut c = course("mecha_night", "M1", 0, &[mecha_part(16, 0)]);
+    c.main.header.flags |= 2; // night
+    let mut w = world(&c);
+    let mut top: f32 = 0.0;
+    for _ in 0..300 {
+        run(&mut w, 1);
+        top = top.max(mecha(&w).y);
+    }
+    // vy 0.8 braking 0.008/f to 0.4, then a hover: about 30 px up
+    assert!(
+        top > 32.0 + 20.0 && top < 32.0 + 60.0,
+        "hop height {}",
+        top - 32.0
+    );
+}

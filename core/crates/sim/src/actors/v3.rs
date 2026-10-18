@@ -180,6 +180,11 @@ mod mecha {
     pub const REVIVAL: u8 = 4;
     /// Winged patrol.
     pub const FLY: u8 = 5;
+    /// Night Ground hop: JumpStart, Jump, Hover, descent [obs].
+    pub const NIGHT_ST: u8 = 6;
+    pub const NIGHT_JUMP: u8 = 7;
+    pub const NIGHT_HOVER: u8 = 8;
+    pub const NIGHT_FALL: u8 = 9;
     /// Weapon controller (`v3.sub`).
     pub const READY: u8 = 0;
     pub const SIGN: u8 = 1;
@@ -253,7 +258,8 @@ impl Actor {
         match self.kind {
             Kind::Koopaling { .. } | Kind::KoopalingShot { .. } => self.koopaling_size(),
             // a Pokey is as tall as its live segments (not scaled: it has no big actor [obs])
-            Kind::Pokey { .. } => (8.0, 16.0 * self.v3.segs.len().max(1) as f32),
+            Kind::Pokey { height, .. } if self.v3.segs.is_empty() => (8.0, 16.0 * height as f32),
+            Kind::Pokey { .. } => (8.0, 16.0 * self.v3.segs.len() as f32),
             Kind::MechaMissile => (6.0 * s, 12.0 * s),
             Kind::MechaLaser => (4.0, 8.0),
             Kind::OnOffTrampoline { width, .. } => (width as f32 * 8.0, 16.0),
@@ -703,6 +709,16 @@ impl Actor {
 
     /// Centres of the live segments (bottom first): swaying ±1.5 px, odd ones the other way.
     pub fn pokey_segments(&self) -> Vec<(f32, f32)> {
+        if self.v3.segs.is_empty() {
+            // not set up yet (a course map draws actors as placed): the placed stack
+            let n = match self.kind {
+                Kind::Pokey { height, .. } => height.clamp(1, POKEY_MAX as u8) as usize,
+                _ => 0,
+            };
+            return (0..n)
+                .map(|i| (self.x, self.y + 16.0 * i as f32 + 8.0))
+                .collect();
+        }
         self.v3
             .segs
             .iter()
@@ -774,6 +790,10 @@ impl Actor {
                 self.mecha_step_down(level);
                 return None;
             }
+            mecha::NIGHT_ST..=mecha::NIGHT_FALL => {
+                self.mecha_night(level);
+                return None;
+            }
             mecha::REVIVAL => {
                 self.timer -= 1;
                 self.vx = 0.0;
@@ -805,7 +825,15 @@ impl Actor {
             }
         } else {
             self.v3.clock -= 1;
-            if self.v3.clock <= 0 && self.phase == mecha::WALK && !firing {
+            let night = level.theme == 0 && level.night;
+            if night && self.v3.clock <= 0 && self.phase == mecha::WALK && !firing {
+                // night Ground: a hop instead of the re-aim, every 60–80 frames [obs]
+                if self.on_ground {
+                    self.phase = mecha::NIGHT_ST;
+                    self.timer = 40;
+                }
+                self.v3.clock = 60 + self.rand(21) as i32;
+            } else if self.v3.clock <= 0 && self.phase == mecha::WALK && !firing {
                 self.v3.clock = 60 + self.rand(21) as i32;
                 let want = self.v3_toward();
                 if want != self.dir {
@@ -921,6 +949,54 @@ impl Actor {
                 }
                 None
             }
+        }
+    }
+
+    /// The night-Ground hop (111-mechakoopa.md "Wings, parachute, night") [obs]: JumpStart 40
+    /// frames; Jump vy 0.8 with vx 0.25 rising to 1.5 by 0.015/f and gravity −0.008 until
+    /// vy ≤ 0.4; Hover 50 frames (still once vy reaches 0); descent with x braking 0.03 and
+    /// gravity −0.03 to the ground; then it faces the player and walks on.
+    fn mecha_night(&mut self, level: &Level) {
+        match self.phase {
+            mecha::NIGHT_ST => {
+                self.vx = 0.0;
+                self.v3_fall(ENEMY_GRAVITY, MAX_FALL);
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    self.phase = mecha::NIGHT_JUMP;
+                    self.vy = 0.8;
+                    self.vx = 0.25 * self.dir as f32;
+                    self.on_ground = false;
+                }
+            }
+            mecha::NIGHT_JUMP => {
+                let v = (self.vx.abs() + 0.015).min(1.5);
+                self.vx = v * self.dir as f32;
+                self.vy -= 0.008;
+                if self.vy <= 0.4 {
+                    self.phase = mecha::NIGHT_HOVER;
+                    self.timer = 50;
+                }
+            }
+            mecha::NIGHT_HOVER => {
+                self.vy = (self.vy - 0.008).max(0.0);
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    self.phase = mecha::NIGHT_FALL;
+                }
+            }
+            _ => {
+                self.vx -= self.vx.clamp(-0.03, 0.03);
+                self.v3_fall(-0.03, MAX_FALL);
+            }
+        }
+        self.collide(level);
+        if self.wall {
+            self.vx = 0.0;
+        }
+        if self.phase == mecha::NIGHT_FALL && self.on_ground {
+            self.dir = self.v3_toward();
+            self.phase = mecha::WALK;
         }
     }
 

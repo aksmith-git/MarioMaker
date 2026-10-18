@@ -1743,6 +1743,7 @@ impl World {
         for n in born {
             self.add_actor(n);
         }
+        self.koopaling_world();
         self.step_generators();
         self.step_blasters();
         self.fire_hazards();

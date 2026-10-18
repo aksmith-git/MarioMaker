@@ -130,7 +130,7 @@ impl Actor {
     fn kl_who(&self) -> u8 {
         match self.kind {
             Kind::Koopaling { who, .. } => who,
-            _ => 0,
+            _ => u8::MAX,
         }
     }
 
@@ -1336,8 +1336,10 @@ impl Actor {
                 shot::FLAME => anim_key(&[(0, "fire.0"), (5, "fire.1")], 10, t, true),
                 _ => "effect.0",
             };
+            // ring and ball art is 24 × 24, the rest 16; NSMBU's ball is drawn at 2/3 [obs]
             let size = match what {
-                shot::BALL => 24.0,
+                shot::BALL if self.v3.style == 3 => 16.0,
+                shot::RING | shot::BALL => 24.0,
                 _ => 16.0,
             };
             let _ = h;
@@ -1424,16 +1426,28 @@ impl Actor {
                 true,
             ),
         };
+        // the SMB1 frames are 40 × 40, the shell 32 × 32 (sprite sizes are the art's)
         let s = if self.v3.pop > 1.0 { self.v3.pop } else { 1.0 };
-        Some((model, tex, 32.0 * s, 32.0 * s, face))
+        let size = if tex.starts_with("shell") { 32.0 } else { 40.0 };
+        Some((model, tex, size * s, size * s, face))
     }
 
     /// Where Lemmy's ball is drawn (centre) and its radius, while he rides it.
     pub fn lemmy_ball(&self) -> Option<(f32, f32, f32)> {
-        if self.kl_who() != who::LEMMY || self.v3.flags & fl::ON_BALL == 0 || self.v3.len <= 0.0 {
+        if self.kl_who() != who::LEMMY {
             return None;
         }
-        let r = 8.0 * self.v3.len * self.v3_scale();
+        // as placed (not set up yet) he stands on his ball too
+        let len = match self.phase {
+            0 if self.v3.style == 3 => 1.5,
+            0 => 1.0,
+            _ if self.v3.flags & fl::ON_BALL == 0 => 0.0,
+            _ => self.v3.len,
+        };
+        if len <= 0.0 {
+            return None;
+        }
+        let r = 8.0 * len * self.v3_scale();
         Some((self.x, self.y + r, r))
     }
 

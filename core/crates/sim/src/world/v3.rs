@@ -405,7 +405,6 @@ impl World {
         }
         self.v3_lasers();
         self.v3_blasts();
-        self.koopaling_world();
     }
 
     /// Lasers stay on their robot's muzzle and go when it is knocked down or gone [obs].
@@ -559,16 +558,11 @@ impl World {
                             (false, true, false) => "sambo_body.0",
                             (false, true, true) => "sambosnow_body.0",
                         };
-                        let mut s = Self::model_sprite(
-                            model,
-                            tex,
-                            cx - 16.0,
-                            cy - 8.0,
-                            32.0,
-                            32.0,
-                            false,
-                            40,
-                        );
+                        // the 2D art is 32 × 32; a mesh frame without SMB1 art is sized
+                        // against 16 px (the mesh planner's reference), i.e. game scale
+                        let w = if mesh && k + 1 != n { 16.0 } else { 32.0 };
+                        let mut s =
+                            Self::model_sprite(model, tex, cx - w / 2.0, cy - 8.0, w, w, false, 40);
                         if a.mode == Mode::DieFall {
                             s.flip_y = true;
                             s.layer = 70;
