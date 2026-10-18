@@ -370,8 +370,8 @@ hovering near the view and diving at the player; Bowser Jr. hops by a jump solve
 shift-jumps straight up, shoots 3 aimed fireballs (winged: 4 hammers), and attacks from the Clown
 Car every 150 frames. What is still a guess, and why:
 - A stomp on Bowser hurts the player, as on Spike Top (the other "Invalid" stamp).
-- A Bob-omb blast is a Shell-strength hit [?]: the explosion's attack type was not found (Bowser's
-  damage table has no explosion entry). A shell that hits a boss is spent [inf].
+- A Bob-omb blast is a Shell-strength hit [obs]: the exploding bomb's collider carries attack cc 6
+  (shell) (0x7100732640). A shell that hits a boss is spent [inf].
 - The held Key appears 8 px below the boss's centre, where the defeat is recorded [inf].
 - Clown Car steering for riders [?] (the car's 3.8 KB Chase routine is not decoded) and riders
   only flash when hit [?]. Thrown Clown Car shells use the engine's shell launch [?].
@@ -535,8 +535,9 @@ them:
 - P-switch duration 600 frames ([ext] ~10 s; not found in the binary). Dotted-line block colour
   from the alternate flag [?]. Conveyor art uses a placeholder tile until the belt model is found.
 - Simplified for now: Spike Top walks floors only (turns at ledges) instead of crawling around
-  blocks; Hammer Bro alternates a 5.5 jump with a 2.5 hop (no drop-through); Bob-omb blast radius
-  1 tile (plus) for terrain and 32 px for actors/player [inf].
+  blocks; Hammer Bro alternates a 5.5 jump with a 2.5 hop (no drop-through); Bob-omb blast:
+  a 2-tile diamond of terrain, and actors/players touching a half-18 box 8 px up (pass 3, [obs];
+  one frame here, 16 in the game).
 - Fire Bar rotation 2.8125°/frame (the shared counter's step was not located); Burner flame
   12 px wide × 48 px (texture length); one-way walls are drawn nowhere yet (no M1 texture found).
 - Seesaw rider weight = 1 per px of lever arm; Grinder hurt radius 20 px; cannon diagonal
@@ -885,3 +886,11 @@ renderers upload a texture when a sprite first uses it. Measured on the same cou
   stand-ins (small Mario, Super Mario, the Super Mushroom).
 - Options are not yet part of replays, rollback sessions or `World::checksum` input: a replay
   or an online session is only valid with all options off (⬜ carry them in both).
+
+### Pass 3 — world rules from the binary
+- Clown Car: Jump (not Down + Jump) climbs out; holding Down crouches in it. Escort Toad knocked
+  out: back after 45 frames (his balloon's flight not modelled), no run failure. Burner flames hurt
+  only at full length. Cape spin box alternates sides every 2 frames; hammer box on frames 11–17.
+  Spiny helmet knocks out what is above it whatever the player's speed; Buzzy helmet only Spike Tops
+  and Lakitu. Bill Blaster extras use one course-wide generator (fixed seed; the game's is per play).
+  Spawn boxes per kind from the actor profiles.
