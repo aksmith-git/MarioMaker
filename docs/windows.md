@@ -146,7 +146,7 @@ The release is built with zig (the compiler the package also ships) and MSYS2's 
      | File | Size | What |
      |---|---|---|
      | `smm2recomp.exe` | 2.4 MB | the runtime |
-     | `smm2recomp.dll.a` | | its import library: the seven runtime symbols the game code calls (`runtime/platform/windows_exports.def`) |
+     | `smm2recomp.dll.a` | | its import library: the eight runtime symbols the game code calls (seven runtime functions and the player-update hook) (`runtime/platform/windows_exports.def`) |
      | `smm2game.dll` | 186 MB | the game code (plus a 440 MB `.pdb`) |
 
      `smm2game.dll` is made from your dump: don't share it. The package doesn't contain it.

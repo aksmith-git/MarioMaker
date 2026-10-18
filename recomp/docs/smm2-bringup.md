@@ -138,7 +138,7 @@ generated C needs no changes: arm64 shares `generated/smm2` with macOS, and x86-
 - SDL 3.2 has no `SDL_LoadPNG` or `SDL_SavePNG`. A minimal PNG writer takes over when SDL is older than 3.4.
 - `__builtin_cpu_supports` needs libgcc's `__cpu_model`. The AVX2 check now reads CPUID directly
   (`platform/x86_cpu.h`).
-- zig's lld-link has no `--export-all-symbols`. Linker directives (`platform/windows_exports.c`) export the seven
+- zig's lld-link has no `--export-all-symbols`. Linker directives (`platform/windows_exports.c`) export the eight
   runtime symbols the game code calls, and `zig dlltool` makes the exe's import library from `windows_exports.def`.
 - zig wants `X.lib` import-library names, not MinGW's `libX.dll.a`.
 - SMM2 has no movie library, so FFmpeg is not linked (`GAME_MOVIES := 0`).
