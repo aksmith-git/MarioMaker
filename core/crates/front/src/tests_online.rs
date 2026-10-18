@@ -350,7 +350,7 @@ fn smm1_menu_clicks_choose_and_start() {
 }
 
 #[test]
-fn endless_runs_reach_the_server_when_signed_in() {
+fn completed_runs_reach_the_server_when_signed_in() {
     // (no layouts needed)
     let ui = Ui::new(UiKind::Smm2, mmk_ui::UiCache::in_memory(), None);
     let mut host = MockHost {
@@ -362,16 +362,13 @@ fn endless_runs_reach_the_server_when_signed_in() {
     let mut f = with_online(&mut host, &mut saves, &mut anon, |cx| {
         ChallengeFlow::new(cx, &ui, None, &[], Presentation::Smm2)
     });
-    with_online(&mut host, &mut saves, &mut anon, |cx| f.report_endless(cx));
+    with_online(&mut host, &mut saves, &mut anon, |cx| f.report_complete(cx));
     assert!(host.calls.is_empty(), "signed out: nothing sent");
     let mut me = signed_in();
     f.run.difficulty = 1;
-    with_online(&mut host, &mut saves, &mut me, |cx| f.report_endless(cx));
-    assert_eq!(host.calls[0].1, "endless");
-    assert_eq!(
-        host.calls[0].2,
-        json!({"difficulty": "normal", "cleared": 0})
-    );
+    with_online(&mut host, &mut saves, &mut me, |cx| f.report_complete(cx));
+    assert_eq!(host.calls[0].1, "hundred");
+    assert_eq!(host.calls[0].2, json!({"difficulty": "normal"}));
 }
 
 fn play_input(b: Buttons) -> PlayInput {

@@ -441,6 +441,7 @@ impl ChallengeFlow {
             Next::Complete => {
                 self.run.unlocked = self.run.challenge.take_unlock().map(|d| d as usize);
                 self.run.persist(cx);
+                self.report_complete(cx);
                 if self.smm2() {
                     // an endless run has no ending in SMM2: the menu, with the news [departure]
                     let mut msg = format!(
@@ -465,19 +466,18 @@ impl ChallengeFlow {
         }
     }
 
-    /// The SMM2 presentation is the Endless Challenge: each clear tells the course server the
-    /// run's courses cleared so far (`endless`; the server keeps the best per difficulty) when
-    /// signed in [inf: reported as it grows, so a run that ends any way counts].
-    pub(crate) fn report_endless(&mut self, cx: &mut Cx) {
-        if !self.smm2() || !cx.online.signed_in() {
+    /// A completed run counts on the course server's 100 Mario leaderboard of its difficulty
+    /// (`hundred_<d>`, completed runs) when signed in. The runs follow SMM1's rules on either
+    /// screens, so they stay off SMM2's Endless boards.
+    pub(crate) fn report_complete(&mut self, cx: &mut Cx) {
+        if !cx.online.signed_in() {
             return;
         }
         let difficulty = ["easy", "normal", "expert", "super_expert"][self.run.difficulty.min(3)];
-        let cleared = self.run.challenge.cleared().len();
         cx.online.call(
             cx.host,
-            "endless",
-            serde_json::json!({ "difficulty": difficulty, "cleared": cleared }),
+            "hundred",
+            serde_json::json!({ "difficulty": difficulty }),
         );
     }
 
@@ -493,8 +493,7 @@ impl ChallengeFlow {
         if let Some(p) = &mut self.playing {
             match p.step(input, cx, Some(&mut self.run)) {
                 Some(PlayEvent::Exit) => self.session_ended(cx),
-                Some(PlayEvent::Cleared) => self.report_endless(cx),
-                None => {}
+                Some(PlayEvent::Cleared) | None => {}
             }
             return None;
         }

@@ -252,6 +252,16 @@ impl Client {
         v["best"].as_u64().ok_or_else(|| format!("refused: {v}"))
     }
 
+    /// A 100 Mario run on `difficulty` completed (held by this client); the account's completed
+    /// runs on that difficulty.
+    pub fn hundred_complete(&self, difficulty: &str) -> Result<u64> {
+        let v = self.post_json(
+            &format!("/api/endless/{difficulty}"),
+            &serde_json::json!({ "ruleset": "hundred" }),
+        )?;
+        v["best"].as_u64().ok_or_else(|| format!("refused: {v}"))
+    }
+
     /// Endless Challenge: the player's four runs, best clears, lifetime skips, last difficulty.
     pub fn endless_status(&self) -> Result<EndlessStatus> {
         let v = self.get_json("/api/endless")?;
@@ -513,6 +523,7 @@ fn account_json(a: &Account) -> Value {
 /// | `maker` | `{maker_id}` | `{maker, courses}` |
 /// | `rankings` | `{kind, limit}` | `[{rank, score, maker_id, name}]` |
 /// | `endless` | `{difficulty, cleared}` | `{best}` |
+/// | `hundred` | `{difficulty}` (a completed 100 Mario run) | `{best}` (completed runs) |
 /// | `delete` | `{code}` | `{}` |
 ///
 /// Replays (bytes) go through [`Client::submit_replay`] / [`Client::record_replay`].
@@ -569,6 +580,7 @@ pub fn call(server: &str, token: Option<&str>, action: &str, args: &Value) -> Re
                 .collect(),
         ),
         "endless" => json!({ "best": c.endless(s("difficulty"), n("cleared"))? }),
+        "hundred" => json!({ "best": c.hundred_complete(s("difficulty"))? }),
         "delete" => {
             c.delete(s("code"))?;
             json!({})

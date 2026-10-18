@@ -2,7 +2,10 @@
 //! `Nwk_CourseListMaker_00` (the hub's Leaderboards button): its tabs Course Makers (our
 //! `maker_points`) and Players (courses cleared, first clears, world records, Endless Challenge
 //! high scores per difficulty, the categories of its sort button `Nwk_SortBtn_01`
-//! TypeClearCourse), rows `Nwk_MakerData_00` (rank, name, the score under its label).
+//! TypeClearCourse), rows `Nwk_MakerData_00` (rank, name, the score under its label). The
+//! Endless categories show the 100 Mario boards (`hundred_<d>`, completed runs): the runs played
+//! on SMCraft's Endless screens follow SMM1's rules, so SMM2's own Endless boards (`endless_<d>`,
+//! the recomp's) would be empty here [departure].
 //!
 //! ←/→ step through the boards (the Players tab's categories in the game's order) and ↑/↓ move
 //! along the rows; confirm opens the maker's profile. The game picks a Players category in a
@@ -26,10 +29,10 @@ pub const KINDS: [(&str, usize, Option<usize>, &str); 8] = [
     ("clears", 1, Some(0), "1001"),
     ("first_clears", 1, Some(1), "1001"),
     ("records", 1, Some(2), "1001"),
-    ("endless_easy", 1, Some(3), "1003"),
-    ("endless_normal", 1, Some(4), "1003"),
-    ("endless_expert", 1, Some(5), "1003"),
-    ("endless_super_expert", 1, Some(6), "1003"),
+    ("hundred_easy", 1, Some(3), "1003"),
+    ("hundred_normal", 1, Some(4), "1003"),
+    ("hundred_expert", 1, Some(5), "1003"),
+    ("hundred_super_expert", 1, Some(6), "1003"),
 ];
 
 const TABS: [&str; 2] = ["L_CoursePointRankBtn_00", "L_CourseRankBtn_00"];
@@ -392,7 +395,7 @@ mod tests {
         // mmk_server::Store::rankings' kinds, in the game's category order
         let kinds: Vec<&str> = KINDS.iter().map(|k| k.0).collect();
         assert_eq!(kinds[0], "maker_points");
-        assert!(kinds[4..].iter().all(|k| k.starts_with("endless_")));
+        assert!(kinds[4..].iter().all(|k| k.starts_with("hundred_")));
         let rows = Row::parse(&json!([
             {"rank": 1, "score": 12, "maker_id": "A", "name": "Ada"},
             {"rank": 2, "maker_id": "B"},

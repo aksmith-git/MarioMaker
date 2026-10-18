@@ -22,7 +22,7 @@
 //! | GET, POST | `/api/courses/<code>/comments` (POST body `{"text"}`) | comments |
 //! | DELETE | `/api/courses/<code>` | remove (the uploader, or the admin) |
 //! | POST | `/api/admin/ban/<account id>`, `/api/admin/unban/<id>` | moderation (admin token) |
-//! | POST | `/api/endless/<easy\|normal\|expert\|super_expert>` (body `{"cleared"}`) | Endless Challenge run; keeps the best |
+//! | POST | `/api/endless/<easy\|normal\|expert\|super_expert>` (body `{"cleared"}`, or `{"ruleset": "hundred"}` for a completed 100 Mario run) | a run the client held itself; keeps the best (100 Mario: counts the completion) |
 //! | GET | `/api/endless` | Endless: the four runs (`RunStatus`), best clears, lifetime skips, last difficulty |
 //! | POST | `/api/endless/<d>/start` (body optional `{"ruleset": "smm2"\|"hundred"}`) | New Game on `<d>` (wipes that run): SMM2's rules (5 lives), or SMM1's 100 Mario Challenge (100 lives, done after 8 / 16 / 16 / 6 clears, SMM1's fail-rate bands, free skips) → `{difficulty, run}` |
 //! | GET | `/api/endless/<d>/next?count=` | the run's next courses (≤ 10, by clear-rate band) → `{courses, widened, run}` |
@@ -679,6 +679,25 @@ impl Store {
         Ok(out)
     }
 
+    /// A 100 Mario run on `difficulty` completed by a client that ran it itself; the account's
+    /// completed runs on that difficulty.
+    pub fn hundred_complete(&self, difficulty: &str, who: &str) -> Result<u64, StoreError> {
+        if !ENDLESS.contains(&difficulty) {
+            return Err(StoreError::NotFound);
+        }
+        let mut g = self.inner.lock().unwrap();
+        let n = g
+            .endless
+            .entry(format!("hundred_{difficulty}"))
+            .or_default()
+            .entry(who.to_string())
+            .or_insert(0);
+        *n += 1;
+        let out = *n;
+        self.save_social(&g)?;
+        Ok(out)
+    }
+
     /// Leaderboard `kind`: maker_points (likes − boos on their courses [inf: SMM2 adds points
     /// for likes and takes them for boos; the exact weights weren't decoded]), clears (courses
     /// cleared), first_clears, records (world records held), endless_<d> (Endless best clears),
@@ -965,7 +984,12 @@ pub fn handle(
             Some(a) => {
                 let v: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
                 let n = v["cleared"].as_u64().unwrap_or(0);
-                match store.endless(difficulty, &a.maker_id, n) {
+                let r = if v["ruleset"] == "hundred" {
+                    store.hundred_complete(difficulty, &a.maker_id)
+                } else {
+                    store.endless(difficulty, &a.maker_id, n)
+                };
+                match r {
                     Ok(best) => json(200, json!({ "difficulty": difficulty, "best": best })),
                     Err(e) => store_err(e),
                 }
