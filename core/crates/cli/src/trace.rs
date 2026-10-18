@@ -118,8 +118,9 @@ pub fn course_names() -> Vec<String> {
     v
 }
 
-/// Build one test course. Every course starts on a one-tile floor (start height 1) with a long
-/// flat run to the right; the kind adds the feature under test further along.
+/// Build one test course. Every course starts on the start ground with a long flat floor to
+/// the right (one tile high; two in 3D World, whose start ground can't be lower); the kind adds
+/// the feature under test further along.
 pub fn build_course(name: &str) -> Result<Vec<u8>, String> {
     let (style, kind) = name.split_once('_').ok_or("name is <style>_<kind>")?;
     if !STYLES.contains(&style) || !KINDS.contains(&kind) {
@@ -127,12 +128,14 @@ pub fn build_course(name: &str) -> Result<Vec<u8>, String> {
     }
     let err = |x: mmk_editor::EditError| format!("{x:?}");
     let len = 120;
+    // floor height in tiles: the game rejects a 3D World course with start height 1
+    let base: i32 = if style == "3W" { 2 } else { 1 };
     let mut e = Editor::new(style);
     e.set_name("Physics");
     e.set_theme(if kind == "water" { 4 } else { 0 });
     e.set_timer(500);
     e.set_length(len);
-    e.set_start_goal(1, 1);
+    e.set_start_goal(base as u8, base as u8);
     // header fields a course made in the game has (the game rejects a course without them and
     // plays a blank one instead) [obs: the game's own title courses, checked in an emulator]
     {
@@ -147,45 +150,69 @@ pub fn build_course(name: &str) -> Result<Vec<u8>, String> {
         h.goal_x = (len * 10 - 95) as i16;
     }
     e.course.main.header.boundary_type = 1;
+    if style == "3W" {
+        // as in the game's own 3D World courses: both liquid heights 1, boundary types 0 / 1
+        for a in [&mut e.course.main.header, &mut e.course.sub.header] {
+            a.liquid_start_height = 1;
+            a.liquid_end_height = 1;
+        }
+        e.course.main.header.boundary_type = 0;
+        e.course.sub.header.boundary_type = 1;
+    }
     // the start ground covers x < 7 and the goal ground the last 11 columns; ground overlapping
     // either makes the game reject the course
     let floor = |e: &mut Editor, x0: i32, x1: i32| -> Result<(), String> {
         for x in x0.max(7)..=x1.min(len - 12) {
-            e.paint_ground(x, 0).map_err(err)?;
+            for y in 0..base {
+                e.paint_ground(x, y).map_err(err)?;
+            }
         }
         Ok(())
     };
+    // rows above the floor
+    let up = |y: i32| y + base - 1;
     match kind {
-        "flat" | "water" => floor(&mut e, 0, len - 1)?,
-        "items" => {
-            floor(&mut e, 0, len - 1)?;
-        }
+        "flat" | "water" | "items" => floor(&mut e, 0, len - 1)?,
         "wall" => {
             // floor, then a 12-tall wall at x 40 and a second one at x 46 (a 5-wide shaft for
             // wall jumps), a low ceiling at x 20..26, 3 tiles up
             floor(&mut e, 0, len - 1)?;
             for y in 1..=12 {
-                e.paint_ground(40, y).map_err(err)?;
-                e.paint_ground(46, y).map_err(err)?;
+                e.paint_ground(40, up(y)).map_err(err)?;
+                e.paint_ground(46, up(y)).map_err(err)?;
             }
             for x in 20..=26 {
-                e.paint_ground(x, 3).map_err(err)?;
+                e.paint_ground(x, up(3)).map_err(err)?;
             }
         }
         "slope" => {
-            // flat to x 24; a gentle slope up (8×4) from x 24, a plateau, a steep slope down
-            floor(&mut e, 0, len - 1)?;
-            e.place_sized(87, 24, 1, 8, 4, mmk_editor::DEFAULT_FLAGS)
-                .map_err(err)?;
-            for x in 32..=39 {
-                for y in 1..=4 {
+            // all four slope kinds with their bottom row in the floor's top row (a slope's low
+            // end is a tile above its bottom row): floor to x 23, gentle up (8×4), plateau,
+            // steep down (5×4), floor x 45..49, steep up, plateau, gentle down; orientation
+            // (bits 20–21): 0 rises to the right, 3 falls
+            let rise = mmk_editor::DEFAULT_FLAGS;
+            let fall = mmk_editor::DEFAULT_FLAGS | (3 << 20);
+            let row = base - 1;
+            floor(&mut e, 0, 23)?;
+            e.place_sized(87, 24, row, 8, 4, rise).map_err(err)?;
+            for x in (32..=39).chain(55..=59) {
+                for y in 0..=up(3) {
                     e.paint_ground(x, y).map_err(err)?;
                 }
             }
-            e.place_sized(88, 40, 1, 5, 4, mmk_editor::DEFAULT_FLAGS | (1 << 20))
-                .map_err(err)?;
+            e.place_sized(88, 40, row, 5, 4, fall).map_err(err)?;
+            floor(&mut e, 45, 49)?;
+            e.place_sized(88, 50, row, 5, 4, rise).map_err(err)?;
+            e.place_sized(87, 60, row, 8, 4, fall).map_err(err)?;
+            floor(&mut e, 68, len - 1)?;
         }
         _ => unreachable!(),
+    }
+    // under a slope's bottom row in 3D World (base 2): fill the floor row below it
+    if base == 2 && kind == "slope" {
+        for x in (24..=31).chain(40..=44).chain(50..=54).chain(60..=67) {
+            e.paint_ground(x, 0).map_err(err)?;
+        }
     }
     e.save().map_err(err)
 }

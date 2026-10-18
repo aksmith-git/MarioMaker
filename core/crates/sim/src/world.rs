@@ -6674,7 +6674,11 @@ impl World {
             y: p.y,
             w: 16.0,
             h,
-            flip_x: p.facing < 0,
+            flip_x: if p.style == crate::player::Style::M1 && !p.on_ground && !p.in_water {
+                p.drawn_facing < 0
+            } else {
+                p.facing < 0
+            },
             flip_y: false,
             // behind terrain while sliding through a pipe
             layer: if self.in_pipe() { 5 } else { 50 },
@@ -7841,12 +7845,20 @@ mod tests {
     }
 
     #[test]
-    fn wall_jumps_in_every_style_and_ground_pounds_in_nsmbu() {
+    fn wall_jumps_in_nsmbu_and_3dw_and_ground_pounds_in_nsmbu() {
         let mut lvl = Level::flat(40);
         for y in 2..12 {
             lvl.set(12, y, Cell::Solid);
         }
+        // SMB1 (and SMB3, SMW): no wall slide
+        let mut w = World::with_level(lvl.clone());
+        w.player.x = 11.0 * TILE + 4.0;
+        w.player.y = 120.0;
+        w.player.on_ground = false;
+        run(&mut w, input::RIGHT, 20);
+        assert_eq!(w.player.wall_slide, 0, "no wall slide in SMB1");
         let mut w = World::with_level(lvl);
+        w.style = crate::player::Style::WU;
         w.player.x = 11.0 * TILE + 4.0;
         w.player.y = 120.0;
         w.player.on_ground = false;

@@ -253,6 +253,9 @@ impl Editor {
         o.width = w;
         o.height = h;
         o.flags = flags;
+        // a part without a child still carries the default flags in its child slot (as in the
+        // game's own courses); the game rejects a course whose objects have 0 there
+        o.child_flags = DEFAULT_FLAGS;
         o.id = part;
         o.child_id = -1;
         o.link_id = -1;

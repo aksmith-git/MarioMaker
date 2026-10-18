@@ -102,25 +102,27 @@ impl Slope {
         px >= x0 && px < x0 + self.width as f32 * TILE
     }
 
-    /// Surface height (px) at x. Gentle: straight line over the full width. Steep: 45° with a
-    /// half-tile flat at each end ([inf]: the extra column of the (n+1)×n footprint).
+    /// Surface height (px) at x. Both kinds have a flat column at each end: the low one a tile
+    /// above the bottom row, the high one at the top; between them the diagonal rises 1:1
+    /// (steep, (n+1)×n) or 1:2 (gentle, 2n×n) [obs: Ryujinx traces of the player walking over
+    /// all four kinds; the bottom row is a solid base].
     pub fn surface(&self, px: f32) -> f32 {
         let (x0, w, h) = (
             self.left as f32 * TILE,
             self.width as f32 * TILE,
             self.height as f32 * TILE,
         );
-        let mut t = ((px - x0) / w).clamp(0.0, 1.0);
-        if !self.rising {
-            t = 1.0 - t;
-        }
-        let rise = if self.steep {
-            let d = t * w - TILE / 2.0;
-            d.clamp(0.0, h)
-        } else {
-            t * h
-        };
-        self.bottom as f32 * TILE + rise
+        // distance from the low end
+        let u = if self.rising { px - x0 } else { x0 + w - px }.clamp(0.0, w);
+        let along = (u - TILE).clamp(0.0, (w - 2.0 * TILE).max(0.0));
+        let rise = if self.steep { along } else { along / 2.0 };
+        self.bottom as f32 * TILE + TILE + rise.min((h - TILE).max(0.0))
+    }
+
+    /// x lies over the diagonal (not one of the flat end columns).
+    pub fn on_diagonal(&self, px: f32) -> bool {
+        let x0 = self.left as f32 * TILE;
+        px > x0 + TILE && px < x0 + (self.width - 1) as f32 * TILE
     }
 
     /// Steepness index for the slope physics tables (player-physics.md §5.2). The player's

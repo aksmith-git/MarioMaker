@@ -303,8 +303,10 @@ pub struct Player {
     pub y: f32,
     pub vx: f32,
     pub vy: f32,
-    /// +1 right, −1 left
+    /// +1 right, −1 left. Follows the stick in the air too (player +0x26c) [obs: Ryujinx trace].
     pub facing: i32,
+    /// Facing as drawn: SMB1 keeps the take-off facing on screen while airborne (§2.6).
+    pub drawn_facing: i32,
     pub on_ground: bool,
     pub pose: Pose,
     /// Distance walked (px), drives the walk animation.
@@ -431,6 +433,22 @@ pub struct Player {
     prop_used: bool,
     prev_down: bool,
     prev_spin: bool,
+    /// Touched down in the last frame's collision: this frame still runs the air routine (the
+    /// Jump/Fall state's execute sees the ground and only switches to Walk at its end), so the
+    /// landing frame keeps the air speed [obs: Ryujinx trace, state +0x3f8 changes with its
+    /// counter at 0].
+    landed: bool,
+    /// SMW Landing state (mode 3): frames the landing holds the speed with no movement routine
+    /// (Landing begin 0x71009f2990 / exec 0x71009f2d00) [obs].
+    land_hold: u8,
+    /// The air routine's last target speed and rate (+0x278 / +0x284): states that skip the
+    /// movement routine keep integrating toward them.
+    air_move: (f32, f32),
+    /// Ducking (Down on the ground; small Mario too, whose pose doesn't change): crouch friction
+    /// and no steering. `duck_end`: frames of CrouchEnd (crouch friction kept 2 frames after
+    /// Down is let go) [obs: Ryujinx trace, states 5 → 6 → 1].
+    duck: bool,
+    duck_end: u8,
     /// Climbing a vine: its centre x and the side the player hangs on (−1 left, +1 right).
     pub climbing: Option<(f32, i32)>,
     /// Frames before a vine can be grabbed again (after jumping off).
@@ -445,6 +463,7 @@ impl Player {
             vx: 0.0,
             vy: 0.0,
             facing: 1,
+            drawn_facing: 1,
             on_ground: true,
             pose: Pose::Wait,
             walk_phase: 0.0,
@@ -524,6 +543,11 @@ impl Player {
             prop_used: false,
             prev_down: false,
             prev_spin: false,
+            landed: false,
+            land_hold: 0,
+            air_move: (0.0, 0.0),
+            duck: false,
+            duck_end: 0,
         }
     }
 
@@ -818,9 +842,9 @@ impl Player {
             self.skid = SkidPhase::Braking;
             self.facing = dir;
         }
-        if self.skid != SkidPhase::None && dir != self.facing {
-            self.skid = SkidPhase::None;
-        }
+        // letting go (or pressing back) ends the Turn state, but only after this frame's move:
+        // the exec sets the phase's target and rate before its stick check (0x7100a19b40) [obs]
+        let leaving = self.skid != SkidPhase::None && dir != self.facing;
         match self.skid {
             SkidPhase::Braking | SkidPhase::Pause(_) => {
                 let decel = match (self.on_ice, star) {
@@ -834,6 +858,7 @@ impl Player {
                 self.vx = approach(self.vx, 0.0, decel);
                 self.pose = Pose::Skid;
                 self.skid = match self.skid {
+                    _ if leaving => SkidPhase::None,
                     SkidPhase::Braking if stopped => SkidPhase::Pause(SKID_PAUSE),
                     // the hold counter ticks before the state runs: 7 frames waiting, then
                     // the `turned` animation starts on the 8th
@@ -846,7 +871,7 @@ impl Player {
             SkidPhase::Turned(n) => {
                 let target = dir as f32 * if run { run_max } else { walk_max };
                 self.vx = approach(self.vx, target, SKID_REACCEL);
-                self.skid = if n > 1 {
+                self.skid = if n > 1 && !leaving {
                     SkidPhase::Turned(n - 1)
                 } else {
                     SkidPhase::None
@@ -907,7 +932,7 @@ impl Player {
 
         let ice = self.on_ice;
         let (target, table) = if dir == 0 {
-            let table = match (self.crouch, ice) {
+            let table = match (self.crouch || self.duck || self.duck_end > 0, ice) {
                 (false, false) => &GROUND_IDLE,
                 (true, false) => &GROUND_CROUCH,
                 (false, true) => &ICE_IDLE,
@@ -938,8 +963,12 @@ impl Player {
 
     fn air(&mut self, inp: Input) {
         let dir = inp.dir_x();
+        if dir != 0 {
+            self.facing = dir;
+        }
         if dir == 0 {
             // no direction: accel 0 → momentum preserved
+            self.air_move = (0.0, 0.0);
         } else {
             let run = inp.held(input::RUN);
             let t = self.thresholds();
@@ -970,6 +999,7 @@ impl Player {
                 band(self.vx, face, t)
             };
             self.vx = approach(self.vx, target, table[b]);
+            self.air_move = (target, table[b]);
         }
         let cap = self.thresholds()[3].max(self.run_max());
         self.vx = self.vx.clamp(-cap, cap); // hard air cap
@@ -1113,7 +1143,28 @@ impl Player {
                 self.crouch = want;
             }
         }
-        let inp = if self.crouch && self.on_ground {
+        if self.on_ground {
+            let want = inp.held(input::DOWN)
+                && !self.sliding
+                && self.cat_slide == 0
+                && self.held.is_none()
+                && (self.crouch || !self.big());
+            if self.duck && !want {
+                // CrouchEnd runs its crouch-friction move until its animation ends, plus the
+                // frame it hands over to Walk: pixel styles 1 + 1, NSMBU 2 + 1 [obs: Ryujinx]
+                self.duck_end = match self.style {
+                    Style::WU | Style::W3 => 3,
+                    _ => 2,
+                };
+            } else if want {
+                self.duck_end = 0;
+            }
+            self.duck = want;
+        } else {
+            self.duck = false;
+            self.duck_end = 0;
+        }
+        let inp = if (self.crouch || self.duck || self.duck_end > 0) && self.on_ground {
             Input {
                 buttons: inp.buttons & !(input::LEFT | input::RIGHT),
             }
@@ -1134,16 +1185,42 @@ impl Player {
                 self.vy = 3.5;
             }
             if self.on_ground {
+                // a jump leaves Walk at the start of the frame: the Jump state's execute (air
+                // routine) moves the player on the take-off frame [obs: Ryujinx trace]
+                let walking = !(self.sliding || self.cape == CapeState::Slide || self.landed);
+                let before = (self.vx, self.facing);
                 if self.sliding {
                     self.slide(level);
                 } else if self.cape == CapeState::Slide {
                     self.cape_slide(level);
+                } else if self.landed {
+                    // the airborne state's last frame (see `landed`), then the Landing state's
+                    // begin: no direction held and |speed| ≤ 0.3 stops dead; SMW then holds
+                    // the speed for 4 more frames, the other styles go on walking
+                    let dir = inp.dir_x();
+                    self.dash = if run && dir != 0 { self.dash + 1 } else { 0 };
+                    self.air(inp);
+                    if dir == 0 && self.vx.abs() <= 0.3 {
+                        self.vx = 0.0;
+                    } else if self.style == Style::MW {
+                        self.land_hold = 4;
+                    }
+                } else if self.land_hold > 0 {
+                    // no movement routine: the speed keeps moving toward the air routine's
+                    // last target at its last rate [obs: Ryujinx trace, SMW]
+                    self.land_hold -= 1;
+                    self.vx = approach(self.vx, self.air_move.0, self.air_move.1);
                 } else {
                     self.ground(inp);
                 }
+                self.duck_end = self.duck_end.saturating_sub(1);
                 if spin_pressed && self.form == Form::Propeller {
                     // the propeller launch replaces the spin jump
                 } else if spin_pressed && self.style.can_spin() && self.held.is_none() {
+                    if walking {
+                        (self.vx, self.facing) = before;
+                        self.air(inp);
+                    }
                     // spin jump (player-physics.md §2.6): vy 3.228, 4.5 in 3D World
                     self.vy = if self.style == Style::W3 { 4.5 } else { 3.228 };
                     self.spinning = true;
@@ -1152,6 +1229,10 @@ impl Player {
                     self.on_ground = false;
                     self.skid = SkidPhase::None;
                 } else if pressed {
+                    if walking {
+                        (self.vx, self.facing) = before;
+                        self.air(inp);
+                    }
                     self.sliding = false;
                     // jump chain (Jump enter 0x71009f0d90, exit 0x71009f1f40) [obs]: the count
                     // (advanced on landing) survives only inside the 8-frame window and at
@@ -1188,7 +1269,7 @@ impl Player {
             // gravity (§3.2): ground uses the fixed −0.34; airborne picks a band each frame
             let g = if self.on_ground {
                 GRAVITY_GROUND
-            } else if jump {
+            } else if jump || spin {
                 GRAVITY_HELD[vy_band(self.vy)]
             } else {
                 GRAVITY_RELEASED[vy_band(self.vy)]
@@ -1209,7 +1290,7 @@ impl Player {
         if self.chain_lock > 0 {
             self.chain_lock -= 1;
         }
-        self.step_wall_and_pound(inp, pressed, level);
+        self.step_wall_and_pound(inp, pressed, level, vy_before);
         self.step_propeller(inp, spin_pressed, vy_before);
         // NSMBU flutter (yoshi.md §4): falling faster than 2.0 with jump held, Yoshi flutters —
         // gravity turns upward (+0.2, +0.07 above −1.0) until vy > 2.4 or jump is released;
@@ -1263,7 +1344,12 @@ impl Player {
         self.x += self.wind;
 
         let sensors = self.sensors();
+        let airborne = !self.on_ground;
         self.move_and_collide(level, sensors);
+        self.landed = airborne && self.on_ground;
+        if !self.on_ground {
+            self.land_hold = 0;
+        }
         self.ceiling = self.head_hit.is_some() || self.head_solid.is_some();
         // the cape lands: a dive (stage 5) shakes the ground (0x71009f5f50), any other glide
         // slides to a stop (MantSlide); the climb just ends
@@ -1319,6 +1405,9 @@ impl Player {
         }
         if self.fire_pose > 0 && !self.crouch {
             self.pose = Pose::Fire;
+        }
+        if !(self.style == Style::M1 && !self.on_ground && !self.in_water) {
+            self.drawn_facing = self.facing;
         }
         if self.y < -2.0 * TILE {
             self.kill(); // fell into a pit
@@ -1515,12 +1604,12 @@ impl Player {
             && level.cell_at(x, self.y + s.wall_y1).is_solid()
     }
 
-    /// Wall slide / wall jump (§3.3, every style): falling against a wall with the stick toward
+    /// Wall slide / wall jump (§3.3, NSMBU and 3D World): falling against a wall with the stick toward
     /// it slides at ≥ −2.0; jump → vy 3.5 and 2.25 px/f away; 15 frames of stick held away let go.
     /// Ground pound (NSMBU / 3DW, HipAttack): Down in the air → a wind-up with no speed or gravity
     /// for the `hip_start` animation (NSMBU 9 frames, 3D World 24) plus 5 frames, then a dive
     /// that starts at −6.0 (fall cap −6.0) until landing [obs].
-    fn step_wall_and_pound(&mut self, inp: Input, pressed: bool, level: &Level) {
+    fn step_wall_and_pound(&mut self, inp: Input, pressed: bool, level: &Level, vy_before: f32) {
         let down = inp.held(input::DOWN);
         let down_pressed = down && !self.prev_down;
         self.prev_down = down;
@@ -1591,7 +1680,12 @@ impl Player {
             return;
         }
         let dir = inp.dir_x();
-        let able = self.held.is_none() && self.shoe.is_none() && self.vy <= 0.0;
+        // wall slide / wall jump exist only in NSMBU and 3D World (0x7100a1e0c0 tests the
+        // style) and start only while falling (0x7100a0e010) [obs; Ryujinx trace: none in SMW]
+        let able = matches!(self.style, Style::WU | Style::W3)
+            && self.held.is_none()
+            && self.shoe.is_none()
+            && vy_before < 0.0;
         if self.wall_slide == 0 && able && dir != 0 && self.wall_at(level, dir) {
             self.wall_slide = dir;
             self.wall_release = 0;
@@ -1601,7 +1695,9 @@ impl Player {
             if !self.wall_at(level, w) {
                 self.wall_slide = 0;
             } else if pressed {
-                self.vy = 3.5;
+                // wall jump (0x7100a1e810): vy 3.5 through the jump entry, whose first-frame
+                // gravity comes from the vy = 0 band with jump held (−0.08) [obs: Ryujinx trace]
+                self.vy = 3.5 + GRAVITY_HELD[vy_band(0.0)];
                 self.vx = -w as f32 * 2.25;
                 self.facing = -w;
                 self.wall_slide = 0;
@@ -1615,8 +1711,10 @@ impl Player {
                 } else {
                     self.wall_release = 0;
                 }
-                self.vy = self.vy.max(-2.0);
-                self.facing = w;
+                // WallSlide: fixed gravity −0.34 (entry 0x7100a0e010 sets it, the band table
+                // isn't used), max fall −2.0; the player faces away from the wall [obs: trace]
+                self.vy = (vy_before + GRAVITY_GROUND).max(-2.0);
+                self.facing = -w;
             }
         }
     }
@@ -1937,25 +2035,27 @@ impl Player {
         } else {
             (1.125, 0.03, 0.025, 0.025, 0.004, 0.02, 1.5, 0.03)
         };
+        // (0x7100a123a0) [obs]: the target is ±c0 or 0; above the cap the speed moves toward
+        // that target at c7; otherwise the rate is picked by comparing |v| with |target|, so
+        // with no direction any motion slows at the "idle >" rate
         let dir = inp.dir_x();
         let v = self.vx;
-        if v.abs() > row.6 {
-            self.vx = approach(v, row.6 * v.signum(), row.7);
-        } else if dir == 0 {
-            let a = if v.abs() <= row.0 { row.4 } else { row.5 };
-            self.vx = approach(v, 0.0, a);
-        } else {
+        let target = row.0 * dir as f32;
+        if dir != 0 {
             self.facing = dir;
-            let target = row.0 * dir as f32;
-            let a = if v != 0.0 && v.signum() as i32 != dir {
-                row.1
-            } else if v.abs() <= row.0 {
-                row.2
-            } else {
-                row.3
-            };
-            self.vx = approach(v, target, a);
         }
+        let a = if v.abs() > row.6 {
+            row.7
+        } else if dir == 0 {
+            if v.abs() <= 0.0 { row.4 } else { row.5 }
+        } else if v * target < 0.0 {
+            row.1
+        } else if v.abs() <= target.abs() {
+            row.2
+        } else {
+            row.3
+        };
+        self.vx = approach(v, target, a);
         if self.on_ground {
             self.pose = if self.vx == 0.0 {
                 Pose::Wait
@@ -2022,7 +2122,8 @@ impl Player {
                 } else {
                     ((wx / TILE).floor() + 1.0) * TILE
                 };
-                self.x = tile_edge - dir * (s.wall_x + 0.001);
+                // flush with the tile edge, as the game resolves walls [obs: Ryujinx trace]
+                self.x = tile_edge - dir * s.wall_x;
                 if self.vx * dir > 0.0 {
                     self.vx = 0.0;
                 }
@@ -2098,6 +2199,10 @@ impl Player {
             let mut landed = None;
             for fx in [-s.foot_x, s.foot_x] {
                 let (px, py) = (self.x + fx, self.y);
+                // a slope's columns are probed at the feet centre only (below)
+                if level.slope_at(px).is_some() {
+                    continue;
+                }
                 let top = ((py / TILE).floor() + 1.0) * TILE;
                 let cell = level.cell_at(px, py);
                 let ok = cell.is_solid() || (cell == Cell::SemiTop && prev_y >= top - 0.01);
@@ -2105,17 +2210,16 @@ impl Player {
                     landed = Some(landed.map_or(top, |t: f32| t.max(top)));
                 }
             }
-            // slope surfaces under either foot (and the centre, for the slope state)
+            // slopes: the surface under the feet centre (the game stands the player on it at
+            // that point; the slope state only on the diagonal) [obs: Ryujinx trace]
             let mut on_slope: Option<&Slope> = None;
-            for fx in [-s.foot_x, 0.0, s.foot_x] {
-                if let Some((surf, slope)) = level.slope_at(self.x + fx) {
-                    let reach = if was_on_ground { SLOPE_SNAP } else { 0.0 };
-                    let can_land = self.y <= surf + reach && prev_y >= surf - SLOPE_SNAP;
-                    if can_land && landed.is_none_or(|t| surf >= t) {
-                        landed = Some(surf);
-                        if fx == 0.0 || on_slope.is_none() {
-                            on_slope = Some(slope);
-                        }
+            if let Some((surf, slope)) = level.slope_at(self.x) {
+                let reach = if was_on_ground { SLOPE_SNAP } else { 0.0 };
+                let can_land = self.y <= surf + reach && prev_y >= surf - SLOPE_SNAP;
+                if can_land && landed.is_none_or(|t| surf >= t) {
+                    landed = Some(surf);
+                    if slope.on_diagonal(self.x) {
+                        on_slope = Some(slope);
                     }
                 }
             }
@@ -2273,12 +2377,16 @@ mod tests {
         assert_eq!(moving_again - first_stop, 10);
         assert!((speeds[moving_again] + SKID_REACCEL).abs() < 1e-6);
         assert_eq!(p.facing, -1);
-        // letting go mid-brake ends the skid: normal deceleration from then on
+        // letting go mid-brake ends the skid after that frame's braking (the Turn state sets
+        // its rate before checking the stick): normal deceleration from then on
         let mut q = Player::new(56.0, 32.0);
         for _ in 0..200 {
             q.step(right, &level);
         }
         q.step(left, &level);
+        let v = q.vx;
+        q.step(Input::default(), &level);
+        assert!((v - q.vx - SKID_DECEL).abs() < 1e-6);
         q.step(Input::default(), &level);
         assert_ne!(q.pose, Pose::Skid);
     }
@@ -2304,18 +2412,19 @@ mod tests {
 
     #[test]
     fn walks_up_and_down_a_slope() {
-        // flat ground with a gentle "/" slope from tile 10 (2 wide, 1 high) onto a raised plateau
+        // flat ground (2 rows) with a gentle "/" slope whose bottom row is the floor's top row
+        // (its low end is flush with the floor) up onto a raised plateau
         let mut level = Level::flat(60);
         level.add_test_slope(
             Slope {
                 left: 10,
-                bottom: 2,
-                width: 4,
-                height: 2,
+                bottom: 1,
+                width: 6,
+                height: 3,
                 rising: true,
                 steep: false,
             },
-            14,
+            16,
             4,
         );
         let mut p = Player::new(56.0, 32.0);
