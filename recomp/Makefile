@@ -1,0 +1,243 @@
+# Recomp build (forked from LAS Recomp's Makefile; see UPSTREAM.md).
+#
+#   make smm2                      the whole pipeline for Super Mario Maker 2 v3.0.3 from your own dump:
+#                                  set up the game files, recompile main + sdk to C, build, (then `make run-smm2`)
+#   make GAME=smm2 <target>        one step: setup | gen | all | run | runtime-objs | clean-gen
+#
+# The shared runtime is runtime/ (kernel, IPC, services, NVN on Metal / Vulkan, platform layers) and the recompiler
+# is tools/. A game is games/<game>/: game.mk (identity, modules, dump layout) and its own glue code.
+# Everything made from the dump goes to private/ (game files), generated/ (recompiled C) and build/; git ignores
+# them and ../scripts/check_no_proprietary.py blocks them. They may be symlinks to another disk.
+#
+# macOS: Homebrew clang/SDL3/FFmpeg, Metal renderer.  Linux: clang + Vulkan.  Windows: MSYS2 UCRT64 + Vulkan.
+UNAME := $(shell uname -s)
+comma := ,
+ifneq ($(filter MINGW% MSYS% CYGWIN% Windows_NT,$(UNAME) $(OS)),)
+PLATFORM := windows
+else ifeq ($(UNAME),Linux)
+PLATFORM := linux
+else
+PLATFORM := macos
+endif
+
+GAME     ?= smm2
+GAMEDIR  := games/$(GAME)
+include $(GAMEDIR)/game.mk
+
+# Game files (set up by `make setup` from the dump), recompiled code, build products: one folder each per game.
+DATA     ?= private/$(GAME)
+GAMEFILES := $(DATA)/extracted
+GEN      ?= generated/$(GAME)
+B        ?= build/$(GAME)
+
+ifeq ($(PLATFORM),linux)
+HOSTARCH := $(patsubst arm64,aarch64,$(shell uname -m))
+ARCH     ?= $(HOSTARCH)
+ifneq ($(ARCH),$(HOSTARCH))
+CROSS    := --target=$(ARCH)-linux-gnu $(if $(SYSROOT),--sysroot=$(SYSROOT))
+GEN      := generated/$(GAME)-$(ARCH)
+B        := build/$(GAME)-$(ARCH)
+endif
+GENSIMD  := --simd $(if $(filter aarch64,$(ARCH)),asm,c)
+endif
+
+MACOS_MIN ?=
+DEPS      ?=
+MINFLAG  := $(if $(MACOS_MIN),-mmacosx-version-min=$(MACOS_MIN))
+CC       := clang $(MINFLAG) $(CROSS)
+CXX      := clang++ $(MINFLAG) $(CROSS)
+IMGUI    := third_party/imgui
+GENFLAGS := -O1 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibility=hidden -Iruntime
+GAMEDEFS := -DGAME_TITLE_ID=$(GAME_TITLE_ID)ull -DGAME_ID='"$(GAME_ID)"' -DGAME_TITLE='"$(GAME_TITLE)"' -DGAME_BUNDLE_ID='"$(GAME_BUNDLE_ID)"'
+
+GEN_SRC  := $(wildcard $(GEN)/main/*.c) $(wildcard $(GEN)/sdk/*.c)
+GEN_OBJ  := $(patsubst %.c,$(B)/obj/%.o,$(patsubst $(GEN)/%,%,$(GEN_SRC))) $(B)/obj/tools/gamelib_entry.o
+RT_SRC   := $(wildcard runtime/*.c) $(wildcard runtime/hle/*.c) $(wildcard runtime/services/*.c) \
+            $(wildcard runtime/nvn/*.c) $(wildcard runtime/nvn/maxwell/*.c) runtime/platform/$(PLATFORM).c \
+            $(GAME_SRC)
+RT_HDRS  := $(wildcard runtime/*.h) $(wildcard runtime/platform/*.h) $(wildcard runtime/nvn/*.h) \
+            $(wildcard runtime/nvn/maxwell/*.h) $(wildcard runtime/nvn/vulkan/*.h) $(wildcard runtime/ui/*.h) \
+            $(GAMEDIR)/game.mk
+UI_SRC   := $(wildcard runtime/ui/*.mm)
+UI_OBJ   := $(patsubst runtime/%.mm,$(B)/rt/%.o,$(UI_SRC))
+IMGUI_OBJ := $(B)/imgui/imgui.o $(B)/imgui/imgui_draw.o $(B)/imgui/imgui_tables.o $(B)/imgui/imgui_widgets.o \
+             $(B)/imgui/imgui_impl_sdl3.o
+
+ifeq ($(PLATFORM),macos)
+SDL      := $(or $(DEPS),/opt/homebrew/opt/sdl3)
+FFMPEG   := $(or $(DEPS),/opt/homebrew/opt/ffmpeg)
+EXE      := $(B)/$(GAME_ID)recomp
+DEPINC   := -I$(SDL)/include -I$(FFMPEG)/include
+LDFLAGS  := -L$(SDL)/lib -lSDL3 -Wl,-rpath,$(SDL)/lib -L$(FFMPEG)/lib -lavformat -lavcodec -lavutil -lswscale -Wl,-rpath,$(FFMPEG)/lib \
+            -framework CoreFoundation -framework Foundation -framework Metal -framework MetalFX -framework QuartzCore -framework AppKit -framework ImageIO -framework CoreGraphics -framework UniformTypeIdentifiers
+BACKEND_SRC := $(wildcard runtime/nvn/*.m)
+BACKEND_OBJ := $(patsubst runtime/%.m,$(B)/rt/%.o,$(BACKEND_SRC))
+IMGUI_OBJ += $(B)/imgui/imgui_impl_metal.o
+UIFLAGS  := -fobjc-arc
+GAMELIB  := $(B)/$(GAME_ID)game.dylib
+GAMELIB_LDFLAGS := -dynamiclib -undefined dynamic_lookup  # (the runtime functions it calls: the app's own)
+GAMELIB_SHARED := -shared -Wl,-undefined,dynamic_lookup
+else ifeq ($(PLATFORM),linux)
+EXE      := $(B)/$(GAME_ID)recomp
+DEPINC   := $(if $(DEPS),-I$(DEPS)/include)
+ifeq ($(ARCH),x86_64)
+GENARCH  ?= -march=x86-64-v3  # AVX2 + FMA for the lifted FP/SIMD code (checked at startup)
+endif
+GENFLAGS += $(GENARCH) -fPIC
+OSFLAGS  := -Wno-format
+SHADERC  ?= -lshaderc
+LDFLAGS  := -fuse-ld=lld -rdynamic $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
+            -lvulkan $(SHADERC) -lpthread -ldl -lm
+BACKEND_SRC := $(wildcard runtime/nvn/vulkan/*.c) $(wildcard runtime/nvn/vulkan/*.cpp)
+BACKEND_OBJ := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/%.o,$(BACKEND_SRC)))
+IMGUI_OBJ += $(B)/imgui/imgui_impl_vulkan.o
+UIFLAGS  := -x c++
+GAMELIB  := $(B)/$(GAME_ID)game.so
+GAMELIB_LDFLAGS := -shared -fuse-ld=lld
+GAMELIB_SHARED := -shared
+else
+EXE      := $(B)/$(GAME_ID)recomp.exe
+DEPINC   := $(if $(DEPS),-I$(DEPS)/include)
+OSFLAGS  := -D_FILE_OFFSET_BITS=64 -D_POSIX_THREAD_SAFE_FUNCTIONS -D_CRT_RAND_S -DWIN32_LEAN_AND_MEAN -DNOMINMAX
+GENARCH  ?= -march=x86-64-v3
+GENFLAGS += -D_FILE_OFFSET_BITS=64 $(GENARCH)
+LDFLAGS  := -fuse-ld=lld -Wl,--stack,16777216 $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
+            -lvulkan-1 -lwinmm -lole32 -lshell32 -lcomdlg32 -luuid -lshaderc_shared
+BACKEND_SRC := $(wildcard runtime/nvn/vulkan/*.c) $(wildcard runtime/nvn/vulkan/*.cpp)
+BACKEND_OBJ := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/%.o,$(BACKEND_SRC)))
+IMGUI_OBJ += $(B)/imgui/imgui_impl_vulkan.o
+UIFLAGS  := -x c++ $(OSFLAGS)
+GAMELIB  := $(B)/$(GAME_ID)game.dll
+LDFLAGS  += -Wl,--export-all-symbols -Wl,--out-implib,$(B)/$(GAME_ID)recomp.dll.a
+GAMELIB_LDFLAGS := -shared -fuse-ld=lld $(B)/$(GAME_ID)recomp.dll.a
+GAMELIB_SHARED := -shared
+endif
+
+# GAMELIB_ID: what the game code library is built from (the generator, the headers it is compiled against, the
+# flags). A library with another id is never loaded.
+GAMELIB_SRCS := tools/gen.py tools/lifter.py tools/analyze.py tools/nso.py tools/passes.py tools/patches.py \
+                tools/simd_c.py tools/gamelib_entry.c $(GAME_HLE) $(wildcard $(GAME_PATCHES)) \
+                runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/gamelib.h
+GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(GENFLAGS)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
+
+RT_OBJ   := $(patsubst %.c,$(B)/rt/%.o,$(patsubst runtime/%,%,$(RT_SRC)))
+RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Iruntime/nvn $(DEPINC) $(OSFLAGS) $(GAMEDEFS)
+CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime/nvn $(DEPINC) $(GAMEDEFS)
+
+all: $(EXE) $(if $(GEN_SRC),$(GAMELIB))
+
+$(B)/obj/%.o: $(GEN)/%.c runtime/cpu.h
+	@mkdir -p $(dir $@)
+	@$(CC) $(GENFLAGS) -c $< -o $@
+
+$(B)/obj/tools/gamelib_entry.o: tools/gamelib_entry.c $(GAMELIB_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) $(GENFLAGS) -DGAMELIB_ID='"$(GAMELIB_ID)"' $(GAMEDEFS) -c $< -o $@
+$(B)/rt/gamelib.o: $(GAMELIB_SRCS)
+$(B)/rt/gamelib.o: RTFLAGS += -DGAMELIB_ID='"$(GAMELIB_ID)"'
+$(B)/rt/gamebuild.o: $(GAMELIB_SRCS) Makefile
+$(B)/rt/gamebuild.o: RTFLAGS += -DGAMELIB_ID='"$(GAMELIB_ID)"' -DGAMELIB_CFLAGS='"$(strip $(filter-out -Iruntime,$(GENFLAGS)))"' \
+                                -DGAMELIB_SHARED='"$(GAMELIB_SHARED)"'
+
+$(B)/rt/%.o: runtime/%.c $(RT_HDRS)
+	@mkdir -p $(dir $@)
+	$(CC) $(RTFLAGS) -c $< -o $@
+
+# a game's own glue (games/<game>/*.c), compiled like the runtime
+$(B)/rt/games/%.o: games/%.c $(RT_HDRS)
+	@mkdir -p $(dir $@)
+	$(CC) $(RTFLAGS) -c $< -o $@
+
+# SMAA (third_party/smaa, MIT): the reference shader as a C string for runtime/nvn/smaa_data.c
+$(B)/inc/smaa_hlsl.inc: third_party/smaa/SMAA.hlsl
+	@mkdir -p $(dir $@)
+	LC_ALL=C tr -d '\r' < $< | LC_ALL=C tr '\200-\377' '?' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/"/' -e 's/$$/\\n"/' > $@
+$(B)/rt/nvn/smaa_data.o: $(B)/inc/smaa_hlsl.inc
+$(B)/rt/nvn/smaa_data.o: RTFLAGS += -I$(B)/inc -Ithird_party/smaa/Textures
+
+$(B)/rt/%.o: runtime/%.cpp $(RT_HDRS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(OSFLAGS) -c $< -o $@
+
+$(B)/rt/%.o: runtime/%.m $(RT_HDRS)
+	@mkdir -p $(dir $@)
+	$(CC) $(RTFLAGS) -fobjc-arc -c $< -o $@
+
+# linked to a temp file, then renamed over: a copy still running keeps its (old) file
+$(EXE): $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ) $(IMGUI_OBJ)
+	@mkdir -p $(dir $@)link
+	$(CXX) -o $(dir $@)link/$(notdir $@) $^ $(LDFLAGS)
+	mv -f $(dir $@)link/$(notdir $@) $@
+
+# its id file (<library>.id) says what it was built from without loading it (runtime/gamelib.c)
+$(GAMELIB): $(GEN_OBJ) | $(EXE)
+	$(CC) $(GAMELIB_LDFLAGS) -o $@.tmp $^
+	mv -f $@.tmp $@
+	echo $(GAMELIB_ID) > $@.id
+
+$(B)/rt/ui/%.o: runtime/ui/%.mm $(RT_HDRS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(UIFLAGS) -c $< -o $@
+
+$(B)/imgui/%.o: $(IMGUI)/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(B)/imgui/imgui_impl_%.o: $(IMGUI)/backends/imgui_impl_%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(B)/imgui/imgui_impl_metal.o: $(IMGUI)/backends/imgui_impl_metal.mm
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -fobjc-arc -c $< -o $@
+
+# ------------------------------------------------------------------ the pipeline
+# Python for the recompiler: tools/venv (made by `make venv`: capstone, unicorn, lz4)
+PY := $(firstword $(wildcard tools/venv/bin/python) $(wildcard tools/venv/Scripts/python.exe))
+venv:
+	@[ -n "$(PY)" ] || python3 -m venv tools/venv
+	tools/venv/bin/pip install -q lz4 capstone unicorn
+
+# Game files from the dump: games/<game>/setup.py checks them and lays them out in $(GAMEFILES) (exefs/ and romfs/;
+# an update's romfs over the base game's, as links). Paths come from DUMP_* (game.mk defaults; override on the
+# command line).
+setup:
+	$(if $(PY),,$(error run `make venv` first))
+	$(PY) $(GAMEDIR)/setup.py $(SETUP_ARGS) --out $(GAMEFILES)
+
+# Recompile every module to C (AArch64 -> C, on this machine, from the player's own files).
+gen:
+	$(if $(PY),,$(error run `make venv` first))
+	cd tools && ../$(PY) gen.py sdk ../$(GAMEFILES)/exefs/sdk 0x7004000000 ../$(GEN)/sdk --hle ../$(GAME_HLE) $(GENSIMD)
+	cd tools && ../$(PY) gen.py main ../$(GAMEFILES)/exefs/main 0x7000000000 ../$(GEN)/main \
+	    $(if $(wildcard $(GAME_PATCHES)),--patches ../$(GAME_PATCHES)) $(GENSIMD)
+
+clean-gen:
+	rm -rf $(GEN) $(B)/obj
+
+# Run from the data folder (saves, settings and shader caches go there); RUN_ARGS / env vars as the runtime reads them
+run: all
+	cd $(DATA) && $(CURDIR)/$(EXE) extracted $(RUN_ARGS)
+
+gen-objs: $(GEN_OBJ)
+
+# Runtime objects only (no generated code, no link): quick compile check, needs no game files
+runtime-objs: $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ)
+
+# Recompiler unit tests (no game files)
+test-tools:
+	cd tools && ../$(PY) test_lift.py
+
+# One command per game: `make smm2` = setup + gen + build. (Then `make run-smm2`.)
+smm2:
+	$(MAKE) GAME=smm2 setup
+	$(MAKE) GAME=smm2 gen
+	$(MAKE) GAME=smm2 -j$(JOBS) all
+run-smm2:
+	$(MAKE) GAME=smm2 run
+JOBS ?= $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+
+build/test_shaders: tools/test_shaders.m runtime/nvn/maxwell/translate.c runtime/nvn/maxwell/shader.h
+	clang -O1 -fobjc-arc -framework Metal -framework Foundation -o $@ tools/test_shaders.m runtime/nvn/maxwell/translate.c
+
+.PHONY: all venv setup gen clean-gen run gen-objs runtime-objs test-tools smm2 run-smm2

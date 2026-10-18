@@ -8,10 +8,51 @@ system calls run on a native runtime, and its NVN graphics run on Metal (macOS, 
 This folder is separate from SMCraft (the clean-room engine in `../core` and `../app`), which keeps
 working on its own. The approach and the projects it builds on are in `../DECISIONS.md` ("Native
 SMM2 port by static recompilation"); status, with evidence per platform, is in `../PROGRESS.md`
-("Recomp").
+("Recomp"). It is a fork of [LAS Recomp](https://github.com/peiikai/LASRecomp) (MIT) — what was taken,
+left out and changed is in [UPSTREAM.md](UPSTREAM.md).
 
 **Nothing from the game is in this repository.** You supply your own dump; the recompiled code,
 translated shaders and extracted data are generated on your machine into `private/`, `generated/`
 and `build/`, which git ignores and the repo's proprietary-content check blocks.
 
-Build instructions follow once the macOS bring-up lands.
+## Layout
+
+| Path | What |
+|---|---|
+| `tools/` | the recompiler: `gen.py` (a whole NSO module -> C), `lifter.py`, `simd_c.py`, `nso.py`, tests |
+| `runtime/` | the shared runtime: loader, dispatcher, kernel, IPC + services, NVN on Metal / Vulkan, platform layers |
+| `games/smm2/` | the game's glue: `game.mk` (identity, dump paths), `setup.py` (lays out the dump), patches, HLE list |
+| `third_party/` | Dear ImGui (overlay menu), SMAA |
+| `docs/` | findings from the bring-up (names and behaviour only, no game code) |
+| `private/`, `generated/`, `build/` | made from your dump (ignored; may be symlinks to another disk) |
+
+## Building (macOS, Apple Silicon)
+
+Requirements: Xcode command line tools (clang), Homebrew `sdl3` and `ffmpeg`, Python 3 (3.12+). About 0.7 GB of
+disk for the generated C and 1 GB for the build.
+
+You need your own extracted dump: the base game's RomFS and the v3.0.3 update's ExeFS (`main`, `sdk`, `rtld`,
+`main.npdm`) and RomFS. By default `make` looks in `~/smm-work/extracted/` (`smm2-romfs`, `smm2-v303-exefs`,
+`smm2-v303-romfs`); pass `DUMP_BASE_ROMFS=`, `DUMP_UPDATE_EXEFS=`, `DUMP_UPDATE_ROMFS=` for other places.
+
+    make -C recomp venv        # once: tools/venv with capstone, unicorn, lz4
+    make -C recomp smm2        # setup (checks the v3.0.3 build ids, links the RomFS), recompile, build
+    make -C recomp run-smm2    # play: runs build/smm2/smm2recomp from private/smm2 (saves, settings, caches there)
+
+`make smm2` runs three steps you can also run alone (`make -C recomp GAME=smm2 setup | gen | all`): `setup` lays
+the files out in `private/smm2/extracted/` (exefs copied, romfs as links: the update's files over the base
+game's, nothing duplicated), `gen` recompiles `sdk` and `main` to C in `generated/smm2/` (about a minute), and
+`all` builds the runtime (`build/smm2/smm2recomp`) and the game code library (`build/smm2/smm2game.dylib`, about
+1,000 C files: 10-20 minutes the first time).
+
+`make -C recomp GAME=smm2 runtime-objs` compiles the runtime alone (no game files needed).
+
+## Running
+
+Keyboard (LAS Recomp's defaults, remappable in the overlay's Controls tab): WASD left stick, arrows d-pad,
+K/J/L/I = A/B/X/Y, Q/E = L/R, 1/3 = ZL/ZR, Enter / Backspace = Plus / Minus. F1 or Esc opens the overlay menu.
+
+Useful environment variables (inherited from LAS Recomp): `LARECOMP_WINDOW_SHOT=<frame>` saves the window at
+that frame (`LARECOMP_SHOT_PATH=<png>`, `LARECOMP_EXIT_AFTER_SHOT=1`), `LARECOMP_SCREENSHOT_EVERY=<n>`,
+`LARECOMP_TRACE_SVC=1`, `LARECOMP_LOG_FILES=1` (RomFS files as they are read). `RECOMP_MOD_DIR=<dir>` serves files
+from `<dir>/romfs/` over the game's.
