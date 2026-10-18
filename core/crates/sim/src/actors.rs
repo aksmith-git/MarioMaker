@@ -2558,7 +2558,7 @@ impl Actor {
     /// flies up (vy 2.5, slowing 0.1/frame), then sways down at 0.5 px/f swinging ±20 px; a
     /// placed one hovers where it is. Phases: 0 new, 1 rising, 2 swaying, 3 hovering.
     fn step_style_item(&mut self, level: &Level) {
-        if level.style == "3W" {
+        if level.style == "3W" || level.style == "M1" {
             // Super Bell: the ItemDefault preset, i.e. it walks like a mushroom
             // (44-style-powerup.md) [?: bounce height]
             self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);

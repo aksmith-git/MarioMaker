@@ -83,6 +83,15 @@ pub const SUPER: Sensors = Sensors {
     wall_y1: 19.0,
     wall_x: 7.9,
 };
+/// Mega Mario (class 3, §6.1): wide feet and wall probes, Super height.
+pub const MEGA: Sensors = Sensors {
+    foot_x: 9.9,
+    head_x: 8.0,
+    head_y: 27.0,
+    wall_y0: 4.0,
+    wall_y1: 19.0,
+    wall_x: 11.9,
+};
 pub const SUPER_CROUCH: Sensors = Sensors {
     foot_x: 4.9,
     head_x: 2.0,
@@ -110,6 +119,9 @@ pub enum Form {
     Builder,
     /// SMB1 Superball Flower (the Fire Flower's 0x4 form in SMB1): throws bouncing superballs.
     Superball,
+    /// SMB1 Big Mushroom (part 44 in SMB1): a double-size Mario (32×32 art) who defeats enemies
+    /// he touches and breaks bricks he runs into [inf: from the SMM1 item].
+    Mega,
 }
 
 /// Invincibility after taking damage (§7).
@@ -480,6 +492,9 @@ impl Player {
     }
 
     pub fn sensors(&self) -> &'static Sensors {
+        if self.form == Form::Mega {
+            return &MEGA;
+        }
         match (self.big(), self.crouch) {
             (false, _) => &SMALL_M1,
             (true, false) => &SUPER,
@@ -489,6 +504,10 @@ impl Player {
 
     /// Body box A (§6.2), the hurt box: (x0, y0, x1, y1).
     pub fn hurt_box(&self) -> (f32, f32, f32, f32) {
+        if self.form == Form::Mega {
+            // body shape 4 (§6.2)
+            return (self.x - 12.0, self.y, self.x + 12.0, self.y + 24.0);
+        }
         let (hw, h) = match (self.big(), self.crouch) {
             (false, false) => (4.0, 14.0),
             (false, true) => (4.0, 7.0),
@@ -500,6 +519,9 @@ impl Player {
 
     /// Body box B (§6.2), the wider contact box used for items and coins.
     pub fn contact_box(&self) -> (f32, f32, f32, f32) {
+        if self.form == Form::Mega {
+            return (self.x - 12.0, self.y, self.x + 12.0, self.y + 28.0);
+        }
         let (hw, h) = match (self.big(), self.crouch) {
             (false, false) => (6.0, 18.0),
             (false, true) => (6.0, 10.0),
@@ -1153,6 +1175,7 @@ impl Player {
                 Form::Cat => 6,
                 Form::Builder => 7,
                 Form::Superball => 8,
+                Form::Mega => 9,
             },
             shoe: self.shoe.is_some() && !self.shoe_karon,
             karon_shell: self.shoe.is_some() && self.shoe_karon,

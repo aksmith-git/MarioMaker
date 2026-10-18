@@ -1559,6 +1559,7 @@ impl World {
         }
         self.side_springs();
         self.shake_trees();
+        self.mega_breaks_bricks();
         if let Some((tx, ty)) = self.player.head_hit {
             self.head_hit(tx, ty);
         }
@@ -1986,6 +1987,29 @@ impl World {
                     let x = self.actors[i].x;
                     self.actors[i].die_fall(x);
                 }
+            }
+        }
+    }
+
+    /// Big Mario breaks the bricks he walks into [inf].
+    fn mega_breaks_bricks(&mut self) {
+        let p = &self.player;
+        if p.form != Form::Mega || p.vx.abs() < 0.5 {
+            return;
+        }
+        let dir = p.vx.signum();
+        let tx = ((p.x + dir * 13.0) / TILE).floor() as i32;
+        let (y0, y1) = (
+            ((p.y + 4.0) / TILE).floor() as i32,
+            ((p.y + 19.0) / TILE).floor() as i32,
+        );
+        for ty in y0..=y1 {
+            if self
+                .blocks
+                .get(tx, ty)
+                .is_some_and(|b| b.kind == BlockKind::Brick)
+            {
+                self.hit_block(tx, ty, true, HitPower::Break);
             }
         }
     }
@@ -2802,7 +2826,20 @@ impl World {
                         | Kind::BoomBoom { .. }
                         | Kind::BowserJr { .. }
                 );
-            if (star && a.kind != Kind::EnemyFire) || slide_hit {
+            // Big Mario knocks out what he touches [inf], bosses and the indestructible aside
+            let mega_hit = self.player.form == Form::Mega
+                && !matches!(
+                    a.kind,
+                    Kind::Thwomp { .. }
+                        | Kind::Boo
+                        | Kind::RingBoo { .. }
+                        | Kind::AngrySun { .. }
+                        | Kind::EnemyFire
+                        | Kind::Bowser { .. }
+                        | Kind::BoomBoom { .. }
+                        | Kind::BowserJr { .. }
+                );
+            if (star && a.kind != Kind::EnemyFire) || slide_hit || mega_hit {
                 let px = p.x;
                 self.actors[i].die_fall(px);
                 let n = self.player.stomp_chain;
@@ -2964,12 +3001,9 @@ impl World {
         }
     }
 
-    /// The style power-up as an item: SMB1 keeps the mushroom (its Big Mushroom isn't in yet).
+    /// The style power-up as an item (each style's own: Big Mushroom, Leaf, …).
     fn style_item(&self) -> Kind {
-        match self.style {
-            crate::player::Style::M1 => Kind::Mushroom,
-            _ => Kind::StyleItem,
-        }
+        Kind::StyleItem
     }
 
     fn collect_item(&mut self, kind: Kind, x: f32, y: f32) {
@@ -2979,6 +3013,7 @@ impl World {
                     crate::player::Style::MW => Form::Cape,
                     crate::player::Style::WU => Form::Propeller,
                     crate::player::Style::W3 => Form::Cat,
+                    crate::player::Style::M1 => Form::Mega,
                     _ => Form::Raccoon,
                 };
                 self.player.power_up(form);
@@ -5706,6 +5741,10 @@ impl World {
             }
             Kind::Mushroom => ("M1_Item_kinoko", "wait.0", 16.0, 16.0, false),
             Kind::SuperHammer => ("M1_Item_hammer", "wait.0", 16.0, 16.0, false),
+            // SMB1's Big Mushroom: one 16×16 texture drawn through a 32×32 quad
+            Kind::StyleItem if self.style == crate::player::Style::M1 => {
+                ("M1_Item_special", "Add_special.0", 16.0, 16.0, false)
+            }
             Kind::StyleItem => (
                 "M1_Item_special",
                 ["wait.0", "wait.1", "wait.2"][(self.tick as usize / 8) % 3],
@@ -6233,6 +6272,7 @@ impl World {
             Form::Super | Form::Cape | Form::Propeller => "M1_Player_SpMarioMdl",
             Form::Fire => "M1_Player_FireMarioMdl",
             Form::Superball => "M1_Player_SpBallMarioMdl",
+            Form::Mega => "M1_Player_MegaMarioMdl",
             Form::Raccoon => "M1_Player_TnkMarioMdl",
             // 3D World only: the mesh path draws the cat suit (3W_Player_MarioClimb) and the
             // builder outfit (3W_Player_MarioBuilder)
@@ -6335,7 +6375,8 @@ impl World {
         } else {
             model
         };
-        let h = if small || p.pose == Pose::Dead {
+        // (Mega Mario's art is 16×16 drawn through a 32×32 quad)
+        let h = if small || p.pose == Pose::Dead || form == Form::Mega {
             16.0
         } else {
             32.0
@@ -7465,6 +7506,7 @@ mod tests {
     #[test]
     fn super_leaf_gives_tail_attack_and_p_meter_flight() {
         let mut lvl = Level::flat(200);
+        lvl.style = "M3".into();
         lvl.spawns.push(spawn(Kind::StyleItem, 80.0, 32.0));
         lvl.spawns.push(spawn(Kind::Goomba, 300.0, 32.0));
         let mut w = World::with_level(lvl);
@@ -8477,6 +8519,41 @@ mod tests {
             ball.vx,
             ball.vy
         );
+    }
+
+    #[test]
+    fn big_mushroom_makes_big_mario() {
+        let mut lvl = Level::flat(80);
+        lvl.spawns.push(spawn(Kind::StyleItem, 120.0, 32.0));
+        lvl.spawns.push(spawn(Kind::Goomba, 500.0, 32.0));
+        lvl.set(30, 2, Cell::Solid);
+        lvl.blocks.push(BlockPlacement {
+            x: 30,
+            y: 2,
+            kind: BlockKind::Brick,
+            contents: None,
+        });
+        let mut w = World::with_level(lvl);
+        w.player.x = 40.0;
+        run(&mut w, input::RIGHT | input::RUN, 90);
+        run(&mut w, 0, 60);
+        assert_eq!(w.player.form, Form::Mega, "picked up the Big Mushroom");
+        assert_eq!(w.player.hurt_box().2 - w.player.hurt_box().0, 24.0);
+        // walks through a brick and over a Goomba
+        run(&mut w, input::RIGHT, 360);
+        assert!(w.blocks.get(30, 2).is_none(), "the brick broke");
+        assert!(
+            w.actors
+                .iter()
+                .all(|a| a.kind != Kind::Goomba || !a.alive()),
+            "the Goomba was knocked out: {} {:?}",
+            w.player.x,
+            w.actors
+                .iter()
+                .find(|a| a.kind == Kind::Goomba)
+                .map(|a| (a.x, a.mode))
+        );
+        assert_eq!(w.player.form, Form::Mega);
     }
 
     #[test]

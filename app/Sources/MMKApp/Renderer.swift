@@ -452,6 +452,7 @@ enum ClearConditionText {
         case 26: return "\(mark) goal in a " + (c.target == 2 ? "Spiny" : "Buzzy") + " helmet"
         case 27: return "\(mark) goal in a Dry Bones Shell"
         case 28: return "\(mark) goal as Superball Mario"
+        case 29: return "\(mark) goal as Big Mario"
         default: return "⚑ condition not supported"
         }
     }

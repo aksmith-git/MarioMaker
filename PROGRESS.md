@@ -343,6 +343,9 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   Boo circle (8 Boos, 52 px), Blooper Nanny (4 babies on her path), Sledge Bro (hover, hip-drop,
   landing quake stuns), Superball Flower (SMB1: ball reflects at 3 px/f, 270 f, collects coins),
   red POW (breaks on-screen bricks [ext]); the coverage check now reports any unhandled 0x4 form
+- ✅ Big Mushroom / Big Mario (SMB1 part 44): the item walks like a mushroom; Big Mario has the
+  class-3 sensors (feet ±9.9, wall 11.9) and body box (±12), drawn 32×32, knocks out what he
+  touches and breaks bricks he walks into [inf]; "goal as Big Mario" condition
 - ✅ Winged Hidden Blocks: invisible flying blocks revealed by a bump — built-ins 180/180
 - ✅ Super Hammer / Builder Mario (116): item walks like a mushroom [inf]; Run swings the hammer
   (hits enemies and breaks blocks in front), air swing falls ≤ 1.5 and |vx| ≤ 1.125; "goal as
