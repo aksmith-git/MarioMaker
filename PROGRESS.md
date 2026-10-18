@@ -242,6 +242,9 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
 - ✅ Bowser Jr.: 3 HP + fireball counter, wait / walk ±24 / fire / hammer / hop / shift jump →
   hover → hip drop, DamageDown → shell slide; Clown Car riders for all three [inf] — SMB1 sample
   77 → 97 playable
+- ✅ Bosses pass 3 (from the binary): shell slide / wakeup, Clown Car steering + ride heights,
+  Jr.'s clown damage and thrown Koopas, Pom Pom's throw / hide / Lapse + homing shuriken, NSMBU
+  anim lengths, boss Key → key event · Bob-omb blast type, Pom Pom decoys ⬜
 - ✅ Lava Bubble (hide / cosine rise / fall), Monty Mole (buried, mound, leap, chase), Angry Sun
   (corner wait, spin, half-ellipse swoop) and Moon (wipes on-screen enemies)
 - ✅ Tracks: graph from track records (lines + quarter arcs), rail follower (0.75 / 1.5 px/f),

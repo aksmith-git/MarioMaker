@@ -506,6 +506,17 @@ Car every 150 frames. What is still a guess, and why:
 What would change this: decoding the Clown Car Chase state, the boss Shell context, BulletPunpun /
 Punpun's Throw and Lapse states, or Ryujinx measurements.
 
+Pass 3 (bosses): those were decoded, and the NSMBU / 3D World animation lengths read from the
+models with their EnemyModelParams play rates. Now settled: NSMBU breath 104 / turn rates; Bowser's
+16-frame speed-history mean for the flame; Bowser Jr.'s wind-ups (SMB3 / SMW 4, NSMBU 25), view test
+(his own box vs the view), arc test, the Shell context (200-frame slide at up to 1.6, brake-turns,
+its own hit rules, ShellWakeup's hop), the Clown Car Chase steering (0.02 / 1.0 within ±320 px) and
+ride heights, Bowser Jr.'s Clown DamageDown and the Koopa Troopas he throws; Pom Pom's whole throw /
+hide / Lapse cycle and the homing shuriken (3W model art); a defeated boss's Key is a key event for
+the player (counted at once). Still open: the Bob-omb explosion's attack type, the shell's own side
+of hitting a boss, the obstacle / gap jumps (Bowser chase, the shell slide's step hop), Boom Boom
+leaving the car when hit (needs a separate car actor), Pom Pom's decoys.
+
 ## 2026-10-18 — SMM1 UI: JSON + `.mtex` cache, layout player in its own crate
 - **Cache form:** `mmk import-smm1` writes each layout as JSON (parsed BFLYT + its BFLAN
   animations + texture list), textures as untiled `.mtex` (same format as the SMM2 cache, so the

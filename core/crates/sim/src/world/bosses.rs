@@ -3,7 +3,7 @@
 //! in actors/bosses.rs; HP always changes through `Actor::boss_hit`.
 
 use super::{Event, SCORE_TABLE, World, overlap};
-use crate::actors::{Actor, BossAttack, BossHit, Kind, Mode};
+use crate::actors::{Actor, BossAttack, BossHit, Mode};
 use crate::render::Sprite;
 
 impl World {
@@ -64,25 +64,28 @@ impl World {
         false
     }
 
-    /// A boss that was just defeated drops the Key it held (child object 95) 8 px below its
-    /// centre, where the boss helper records the defeat (0x71006116d0) [inf: that the Key
-    /// appears at that record, and without motion of its own, is not traced].
+    /// A boss defeated while holding a Key (child object 95) hands it over at once: the boss
+    /// helper (0x71006116d0, HP < 1) marks the Key collected and queues a key event of kind 1
+    /// for the attacking player at its hitbox centre − 8 px — the queue the Key's own touch
+    /// uses (area +0xe8, 0x7100896ab0). The area update then counts the key for the player
+    /// and launches the flying key (Appear → Waft → Chase into the trail), or, with no lock
+    /// left to open, a Drop key that is not counted (95-key.md). The engine counts it at once,
+    /// as for a touched Key [the flying key is not drawn: the engine has no such actor].
     pub(super) fn boss_keys(&mut self) {
-        let mut keys = Vec::new();
         for a in &mut self.actors {
             if a.kind.is_boss() && matches!(a.mode, Mode::DieFall | Mode::Dead) && a.take_boss_key()
             {
-                keys.push((a.x, a.y + a.height() / 2.0 - 8.0));
+                self.keys += 1;
+                self.events.push(Event::OneUp);
             }
-        }
-        for (x, y) in keys {
-            self.add_actor(Actor::new(Kind::Key, x, y));
         }
     }
 
     /// Koopa Clown Cars under the bosses riding them, animated as the car's wait_ftp (4 textures,
-    /// 2 frames each) [inf placement: the rider's feet sit in the bowl, 16 px (×2) above the
-    /// car's bottom; the engine merges car and rider, the game links two actors].
+    /// 2 frames each). The car places its rider (0x71006d6ca0) at the car's origin plus the
+    /// rider's ride height (`Actor::clown_ride_height`), so the car is drawn that far below
+    /// the boss; the engine merges car and rider (the game links two actors) and takes the car
+    /// as big when the rider is [inf: the car's own size comes from its placement].
     pub(super) fn clown_sprites(&self, out: &mut Vec<Sprite>) {
         for a in &self.actors {
             if !a.kind.is_boss() || !a.kind.boss_clown() || a.mode != Mode::Normal {
@@ -94,7 +97,7 @@ impl World {
                 "M1_Enemy_koopaclown",
                 tex,
                 a.x - 16.0 * s,
-                a.y - 16.0 * s,
+                a.y - a.clown_ride_height(&self.level.style),
                 32.0 * s,
                 32.0 * s,
                 a.dir > 0,
@@ -105,8 +108,11 @@ impl World {
 }
 
 /// A sliding shell meeting a boss: the boss takes a Shell hit (attack 6) and the shell is spent
-/// [inf: it is knocked away; the shell's own side of the collision is not traced]. Returns None when neither is a boss hit by a sliding shell; otherwise the
-/// score to award, if the boss was defeated.
+/// [inf: it is knocked away. The Default Shell context's hit slots (0x68 / 0x88) are empty
+/// (0x71005e4f10 / 0x71005e4f50), so the shell's fate is decided inside the shared
+/// enemy-vs-enemy handler 0x710072bca0 (15 KB), whose shell-versus-ReactOnly branch was not
+/// traced]. Returns None when neither is a boss hit by a sliding shell; otherwise the score to
+/// award, if the boss was defeated.
 pub(super) fn boss_shell_hit(a: &mut Actor, b: &mut Actor) -> Option<Option<(u32, f32, f32)>> {
     let (shell, boss) = if a.mode == Mode::ShellSlide && b.kind.is_boss() {
         (a, b)
@@ -306,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn a_star_knocks_a_boss_off_and_its_key_drops() {
+    fn a_star_knocks_a_boss_off_and_its_key_goes_to_the_player() {
         let mut lvl = Level::flat(60);
         let held = Kind::Bowser {
             key: true,
@@ -321,11 +327,11 @@ mod tests {
         run(&mut w, 0, 1);
         let b = w.actors.iter().find(|a| a.kind.is_boss()).unwrap();
         assert_eq!(b.mode, Mode::DieFall);
-        assert_eq!(w.actors.iter().filter(|a| a.kind == Kind::Key).count(), 1);
-        // dropped once; walking into it collects it
-        run(&mut w, 0, 5);
+        // the key event counts it for the player at once, and only once
         assert_eq!(w.keys, 1);
         assert!(w.actors.iter().all(|a| a.kind != Kind::Key));
+        run(&mut w, 0, 5);
+        assert_eq!(w.keys, 1);
     }
 
     #[test]
