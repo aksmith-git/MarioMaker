@@ -141,6 +141,27 @@ cargo run --release -p mmk-shell -- --check-textures        # GPU vs CPU BCn dec
 Keys: arrows/WASD move, Z/Space jump, X/Shift run, Esc/P/Enter pause, R restart. Gamepads:
 d-pad/left stick, south/east jump, west/north run, Start pause.
 
+### In a browser
+
+```sh
+scripts/build-web.sh                          # needs wasm-bindgen-cli at the Cargo.lock version
+python3 -m http.server -b 127.0.0.1 -d core/target/web 8000   # then open http://127.0.0.1:8000
+```
+
+Desktop Chromium (Chrome, Edge) or Firefox; WebGPU, or WebGL2 where it's missing. The page
+starts on the demo strip with placeholder art. **Import game data…** takes a folder:
+
+- an asset cache made by `mmk import` (e.g. `~/smm-work/cache/smm2-3.0.3`): copied in about
+  15 s; or
+- a folder holding your dump's extracted `romfs/` and `exefs/`: imported in the page by the same
+  importer as `mmk import` (about 35 s, needs about 1.5 GB of memory while it runs).
+
+Either way the result goes into the browser's own storage for this site (the origin private
+file system, about 1.3 GB) and stays there for the next visit; nothing is uploaded anywhere.
+**Remove game data** deletes it. Then pick a built-in course from the list, or **Open course
+file…** (`.bcd`, `.course.zlib` or raw course data). Sound starts on the first click or key
+press (browsers block it before that).
+
 ### Course Maker (`mmk-play --edit`)
 
 ```sh

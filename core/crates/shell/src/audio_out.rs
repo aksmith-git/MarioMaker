@@ -1,12 +1,14 @@
-//! Sound output through cpal (Core Audio, WASAPI, ALSA): the device's callback pulls frames from
-//! the shared mixer (`mmk_host::audio::AudioOut`), which the session's director feeds.
+//! Sound output through cpal (Core Audio, WASAPI, ALSA; WebAudio in the browser): the device's
+//! callback pulls frames from the shared mixer (`mmk_host::audio::AudioOut`), which the session's
+//! director feeds. In the browser the callback runs on the page's main thread (cpal schedules
+//! WebAudio buffers ahead), and the stream may only start after a user gesture (`web`).
 
 use std::sync::Arc;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
 use mmk_audio::Bank;
-use mmk_host::audio::AudioOut;
+use mmk_host::audio::{AudioOut, MusicReader};
 
 /// A running output stream (sound stops when it is dropped).
 pub struct AudioStream {
@@ -17,8 +19,16 @@ pub struct AudioStream {
 /// Frames rendered per mixer call; the callback loops for larger buffers.
 const CHUNK: usize = 1024;
 
-/// Open the default output device and play `bank` through a mixer at the device's rate.
-pub fn start(bank: Bank) -> Result<AudioStream, String> {
+/// An open output stream and its sample rate.
+pub struct Output {
+    pub stream: cpal::Stream,
+    pub rate: u32,
+}
+
+/// Open the default output device; `render` fills interleaved stereo frames at the returned
+/// rate. The stream is created playing (a browser keeps it suspended until a gesture resumes it,
+/// see [`Output::play`]).
+pub fn open(render: impl FnMut(&mut [f32]) + Send + 'static) -> Result<Output, String> {
     let host = cpal::default_host();
     let device = host
         .default_output_device()
@@ -27,23 +37,50 @@ pub fn start(bank: Bank) -> Result<AudioStream, String> {
         .default_output_config()
         .map_err(|e| format!("audio output: {e}"))?;
     let config = supported.config();
-    let out = Arc::new(AudioOut::with_rate(bank, config.sample_rate));
+    let rate = config.sample_rate;
     let stream = match supported.sample_format() {
-        SampleFormat::F32 => build::<f32>(&device, config, out.clone()),
-        SampleFormat::I16 => build::<i16>(&device, config, out.clone()),
-        SampleFormat::U16 => build::<u16>(&device, config, out.clone()),
-        SampleFormat::I32 => build::<i32>(&device, config, out.clone()),
+        SampleFormat::F32 => build::<f32>(&device, config, render),
+        SampleFormat::I16 => build::<i16>(&device, config, render),
+        SampleFormat::U16 => build::<u16>(&device, config, render),
+        SampleFormat::I32 => build::<i32>(&device, config, render),
         f => return Err(format!("unsupported audio sample format {f:?}")),
     }?;
-    stream.play().map_err(|e| format!("audio output: {e}"))?;
+    let out = Output { stream, rate };
+    out.play()?;
     crate::app::log(&format!(
         "sound: {} Hz, {} channels, {:?}",
-        config.sample_rate,
+        rate,
         config.channels,
         supported.sample_format()
     ));
+    Ok(out)
+}
+
+impl Output {
+    /// Start (or, in a browser, resume) the stream.
+    pub fn play(&self) -> Result<(), String> {
+        self.stream.play().map_err(|e| format!("audio output: {e}"))
+    }
+}
+
+/// Open the default output device and play `bank` (plus the course music `music` reads, if
+/// given) through a mixer at the device's rate.
+pub fn start(bank: Bank, music: Option<MusicReader>) -> Result<AudioStream, String> {
+    // the mixer needs the device's rate, which is only known once the stream is open
+    let slot: Arc<std::sync::OnceLock<Arc<AudioOut>>> = Arc::default();
+    let feed = slot.clone();
+    let output = open(move |buf| match feed.get() {
+        Some(out) => out.render(buf),
+        None => buf.fill(0.0),
+    })?;
+    let mut out = AudioOut::with_rate(bank, output.rate);
+    if let Some(m) = music {
+        out = out.with_music(m);
+    }
+    let out = Arc::new(out);
+    let _ = slot.set(out.clone());
     Ok(AudioStream {
-        _stream: stream,
+        _stream: output.stream,
         out,
     })
 }
@@ -51,7 +88,7 @@ pub fn start(bank: Bank) -> Result<AudioStream, String> {
 fn build<T: SizedSample + FromSample<f32>>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
-    out: Arc<AudioOut>,
+    mut render: impl FnMut(&mut [f32]) + Send + 'static,
 ) -> Result<cpal::Stream, String> {
     let channels = config.channels.max(1) as usize;
     // interleaved stereo scratch, allocated once: the callback must not allocate
@@ -63,7 +100,7 @@ fn build<T: SizedSample + FromSample<f32>>(
                 for frames in data.chunks_mut(CHUNK * channels) {
                     let n = frames.len() / channels;
                     let buf = &mut scratch[..n * 2];
-                    out.render(buf);
+                    render(buf);
                     for (f, lr) in frames.chunks_mut(channels).zip(buf.as_chunks::<2>().0) {
                         for (c, s) in f.iter_mut().enumerate() {
                             // mono devices get the mix of both; extra channels stay silent
@@ -78,7 +115,7 @@ fn build<T: SizedSample + FromSample<f32>>(
                     }
                 }
             },
-            |e| eprintln!("mmk-play: audio: {e}"),
+            |e| crate::app::log(&format!("audio: {e}")),
             None,
         )
         .map_err(|e| format!("audio output: {e}"))

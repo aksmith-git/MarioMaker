@@ -226,7 +226,9 @@ mod native {
         };
         let mute = args.mute || std::env::var("MMK_MUTE").as_deref() == Ok("1");
         let audio = match (&source, mute) {
-            (Some(s), false) => match source::open_bank(s).and_then(mmk_shell::audio_out::start) {
+            (Some(s), false) => match source::open_bank(s)
+                .and_then(|bank| mmk_shell::audio_out::start(bank, source::music_reader(s)))
+            {
                 Ok(a) => Some(a),
                 Err(e) => {
                     log(&format!("sound off: {e}"));

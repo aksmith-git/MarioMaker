@@ -15,6 +15,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+use mmk_host::audio::AudioOut;
+
 use crate::game::Game;
 use crate::input::{Keyboard, Pads, combine};
 use crate::render::{Gpu, Renderer, VIEW};
@@ -87,6 +89,12 @@ impl Gfx {
         })
     }
 
+    /// Draw another game's assets from now on.
+    fn set_game(&mut self, info: &GameInfo) {
+        self.renderer.set_cache(&info.cache);
+        self.renderer.draw_missing = info.draw_missing;
+    }
+
     fn resize(&mut self, w: u32, h: u32) {
         if w > 0 && h > 0 {
             self.config.width = w;
@@ -145,9 +153,14 @@ pub struct GameInfo {
     pub draw_missing: bool,
 }
 
-/// Events sent to the loop from async setup.
+/// Events sent to the loop from async setup and (web) from the page.
 pub enum UserEvent {
     Gfx(Result<Box<Gfx>, String>),
+    /// Play this game instead (the web page opened the owner's assets or picked a course).
+    Game(Box<Game>),
+    /// Sound output for this and later games (the web page got its first user gesture, or new
+    /// assets brought a new sound bank).
+    Sound(Arc<AudioOut>),
 }
 
 pub struct App {
@@ -172,6 +185,8 @@ pub struct App {
     /// Keeps sound playing (native builds).
     #[cfg(not(target_arch = "wasm32"))]
     pub audio: Option<crate::audio_out::AudioStream>,
+    /// Sound output handed to games that arrive later (`UserEvent::Game`).
+    sound: Option<Arc<AudioOut>>,
 }
 
 pub fn log(msg: &str) {
@@ -201,6 +216,22 @@ impl App {
             ctrl: false,
             #[cfg(not(target_arch = "wasm32"))]
             audio: None,
+            sound: None,
+        }
+    }
+
+    /// Switch to `game` (keeping the window, GPU and sound output).
+    fn replace_game(&mut self, mut game: Game) {
+        if self.sound.is_some() {
+            game.session.set_audio(self.sound.clone());
+        }
+        self.game = game;
+        self.keys.clear();
+        self.last = None;
+        let info = self.info();
+        if let Some(g) = &mut self.gfx {
+            g.set_game(&info);
+            g.window.request_redraw();
         }
     }
 
@@ -249,6 +280,12 @@ impl App {
             .collect();
         let input = combine(&self.keys, pads);
         let actions = self.keys.take_actions();
+        // the browser reads texture files asynchronously: start the reads the last frame asked
+        // for, and hold the game (briefly) while they are on their way
+        #[cfg(target_arch = "wasm32")]
+        let loading = crate::web::pump_textures(&self.game.cache);
+        #[cfg(not(target_arch = "wasm32"))]
+        let loading = false;
         if self.game.editing {
             // arrows / WASD scroll the maker view
             if let Some(m) = self.game.maker.as_mut() {
@@ -262,7 +299,7 @@ impl App {
                     m.scroll(dx as f32 * speed, dy as f32 * speed);
                 }
             }
-        } else {
+        } else if !loading {
             self.game.session.frame(dt, input, actions);
         }
         if let Some(gfx) = &mut self.gfx {
@@ -419,6 +456,11 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Gfx(g) => self.installed(g, event_loop),
+            UserEvent::Game(g) => self.replace_game(*g),
+            UserEvent::Sound(out) => {
+                self.game.session.set_audio(Some(out.clone()));
+                self.sound = Some(out);
+            }
         }
     }
 

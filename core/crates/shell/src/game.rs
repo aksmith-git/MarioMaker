@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use mmk_assets::Cache;
+use mmk_formats::smm2::Course;
 use mmk_host::{DrawSprite, SpriteResolver};
 
 use crate::hud::HudText;
@@ -38,16 +39,21 @@ impl Game {
             })?),
             None => None,
         };
-        Ok(Self {
+        Ok(Self::with_cache(Arc::new(cache), assets.is_none(), course))
+    }
+
+    /// A game on an already opened cache (the web build keeps one for every course it plays).
+    pub fn with_cache(cache: Arc<Cache>, placeholder: bool, course: Option<Course>) -> Self {
+        Self {
             maker: None,
             editing: false,
             session: Session::new(course),
-            placeholder: assets.is_none(),
-            cache: Arc::new(cache),
+            placeholder,
+            cache,
             resolver: SpriteResolver::default(),
             sprites: Vec::new(),
             hud: HudText::default(),
-        })
+        }
     }
 
     /// What to draw now.

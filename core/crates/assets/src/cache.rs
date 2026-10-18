@@ -2,7 +2,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use serde_json::Value;
 
@@ -34,6 +35,21 @@ pub struct TextureEntry {
     pub height: u32,
     path: PathBuf,
     data: OnceLock<Option<Mtex>>,
+    /// Deferred caches: the pixels were asked for (see [`Cache::take_requests`]).
+    requested: AtomicBool,
+}
+
+/// Where a cache's texture pixels come from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Pixels {
+    /// All read up front ([`Cache::load`]).
+    #[default]
+    Loaded,
+    /// Read from `root` on the file system when first used ([`Cache::open`]).
+    Disk,
+    /// Handed over later by the host ([`Cache::load_deferred`]): a browser reads its storage
+    /// asynchronously, so a first use only records the request.
+    Deferred,
 }
 
 /// A loaded cache. Textures are kept in a stable order (sorted by model, then name) so indices
@@ -41,8 +57,9 @@ pub struct TextureEntry {
 #[derive(Debug, Default)]
 pub struct Cache {
     pub root: PathBuf,
-    /// Read texture pixels from `root` when first asked for (`open`); else they were all loaded.
-    lazy: bool,
+    pixels: Pixels,
+    /// Deferred caches: textures asked for and not yet handed to the host.
+    wanted: Mutex<Vec<usize>>,
     pub manifest: Value,
     pub textures: Vec<TextureEntry>,
     by_name: HashMap<(String, String), usize>,
@@ -78,16 +95,25 @@ impl Cache {
     /// Open a cache directory. Texture pixels are read when first used ([`Cache::texture`]):
     /// a cache of every style holds thousands of textures and a course draws a few hundred.
     pub fn open(root: impl AsRef<Path>) -> Result<Self, CacheError> {
-        Self::build(root, &|p| std::fs::read(p), true)
+        Self::build(root, &|p| std::fs::read(p), Pixels::Disk)
     }
 
-    /// Open a cache through `read` instead of the file system (e.g. files the user picked in a
-    /// browser). `root` is only joined with relative paths and passed back to `read`.
+    /// Open a cache through `read` instead of the file system (tests, small caches). `root` is
+    /// only joined with relative paths and passed back to `read`. Every texture is read now.
     pub fn load(root: impl AsRef<Path>, read: ReadFn) -> Result<Self, CacheError> {
-        Self::build(root, read, false)
+        Self::build(root, read, Pixels::Loaded)
     }
 
-    fn build(root: impl AsRef<Path>, read: ReadFn, lazy: bool) -> Result<Self, CacheError> {
+    /// Like [`Cache::load`], but no texture pixels are read: [`Cache::texture`] returns None and
+    /// records the request until the host has read the file (asynchronously, e.g. from a
+    /// browser's storage) and handed it over with [`Cache::provide`]. The manifest, texture
+    /// index and sprites are read through `read` now.
+    pub fn load_deferred(root: impl AsRef<Path>, read: ReadFn) -> Result<Self, CacheError> {
+        Self::build(root, read, Pixels::Deferred)
+    }
+
+    fn build(root: impl AsRef<Path>, read: ReadFn, pixels: Pixels) -> Result<Self, CacheError> {
+        let lazy = pixels != Pixels::Loaded;
         let root = root.as_ref().to_path_buf();
         let read_json = |path: &Path| parse_json(path, &read_with(read, path)?);
         let manifest = read_json(&root.join("manifest.json"))?;
@@ -108,7 +134,8 @@ impl Cache {
                     let dim = |k: &str| info[k].as_u64().unwrap_or(0) as u32;
                     let data = OnceLock::new();
                     let (mut width, mut height) = (dim("w"), dim("h"));
-                    if !lazy || width == 0 {
+                    // (a deferred cache can't read now: a texture without a size stays 0 × 0)
+                    if !lazy || (width == 0 && pixels == Pixels::Disk) {
                         let texture = Mtex::parse(&read_with(read, &path)?).map_err(|source| {
                             CacheError::Mtex {
                                 path: path.clone(),
@@ -127,6 +154,7 @@ impl Cache {
                         height,
                         path,
                         data,
+                        requested: AtomicBool::new(false),
                     });
                 }
             }
@@ -150,7 +178,8 @@ impl Cache {
         };
         Ok(Self {
             root,
-            lazy,
+            pixels,
+            wanted: Mutex::new(Vec::new()),
             manifest,
             textures,
             by_name,
@@ -176,12 +205,24 @@ impl Cache {
     }
 
     /// The pixels of texture `i`, read on first use for a lazily opened cache (None if the file
-    /// is missing or unreadable).
+    /// is missing or unreadable). A deferred cache returns None until the host has provided
+    /// them (see [`Cache::texture_pending`]).
     pub fn texture(&self, i: usize) -> Option<&Mtex> {
         let e = self.textures.get(i)?;
+        if self.pixels == Pixels::Deferred {
+            if let Some(t) = e.data.get() {
+                return t.as_ref();
+            }
+            if !e.requested.swap(true, Ordering::Relaxed)
+                && let Ok(mut w) = self.wanted.lock()
+            {
+                w.push(i);
+            }
+            return None;
+        }
         e.data
             .get_or_init(|| {
-                if !self.lazy {
+                if self.pixels != Pixels::Disk {
                     return None;
                 }
                 std::fs::read(&e.path)
@@ -189,6 +230,39 @@ impl Cache {
                     .and_then(|b| Mtex::parse(&b).ok())
             })
             .as_ref()
+    }
+
+    /// Deferred caches: texture `i`'s pixels haven't been provided yet (asked for or not).
+    pub fn texture_pending(&self, i: usize) -> bool {
+        self.pixels == Pixels::Deferred
+            && self.textures.get(i).is_some_and(|e| e.data.get().is_none())
+    }
+
+    /// Deferred caches: the textures asked for since the last call, with their file paths
+    /// relative to the cache root (`textures/<model>/<name>.mtex`).
+    pub fn take_requests(&self) -> Vec<(usize, String)> {
+        let wanted = match self.wanted.lock() {
+            Ok(mut w) => std::mem::take(&mut *w),
+            Err(_) => return Vec::new(),
+        };
+        wanted
+            .into_iter()
+            .map(|i| {
+                let e = &self.textures[i];
+                (i, format!("textures/{}/{}.mtex", e.model, e.name))
+            })
+            .collect()
+    }
+
+    /// Deferred caches: hand over the file of texture `i` (None: it couldn't be read, so the
+    /// texture stays missing). False if it was provided before or doesn't parse.
+    pub fn provide(&self, i: usize, bytes: Option<&[u8]>) -> bool {
+        let Some(e) = self.textures.get(i) else {
+            return false;
+        };
+        let t = bytes.and_then(|b| Mtex::parse(b).ok());
+        let parsed = t.is_some();
+        e.data.set(t).is_ok() && parsed
     }
 
     /// Index of a texture by model and texture name.
@@ -228,5 +302,50 @@ mod tests {
         assert_eq!(c.anim("M", "walk").unwrap().texture_at(10), Some("walk.1"));
         assert!(c.anim("M", "walk_ftp").is_some());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A deferred cache records the first request of each texture and takes the pixels later.
+    #[test]
+    fn deferred_textures_are_requested_once_then_provided() {
+        let files: HashMap<&str, Vec<u8>> = [
+            ("/c/manifest.json", b"{}".to_vec()),
+            (
+                "/c/textures/index.json",
+                br#"{"M":{"a":{"w":4,"h":4},"b":{"w":4,"h":4}}}"#.to_vec(),
+            ),
+        ]
+        .into();
+        let read = |p: &Path| {
+            files
+                .get(p.to_str().unwrap())
+                .cloned()
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+        };
+        let c = Cache::load_deferred("/c", &read).unwrap();
+        assert_eq!((c.textures[0].width, c.textures.len()), (4, 2));
+        assert!(c.texture_pending(0));
+        assert!(c.texture(0).is_none() && c.texture(0).is_none() && c.texture(1).is_none());
+        assert_eq!(
+            c.take_requests(),
+            [
+                (0, "textures/M/a.mtex".into()),
+                (1, "textures/M/b.mtex".into())
+            ]
+        );
+        assert!(c.take_requests().is_empty());
+        let t = Mtex {
+            format: crate::MtexFormat::Rgba8,
+            variant: crate::MtexVariant::Srgb,
+            width: 4,
+            height: 4,
+            channel_select: [2, 3, 4, 5],
+            data: vec![7; 64],
+        };
+        assert!(c.provide(0, Some(&t.to_bytes())));
+        assert!(!c.provide(0, Some(&t.to_bytes())), "only once");
+        assert!(!c.provide(1, None));
+        assert_eq!(c.texture(0).unwrap().data, t.data);
+        assert!(c.texture(1).is_none() && !c.texture_pending(1));
+        assert!(c.take_requests().is_empty());
     }
 }
