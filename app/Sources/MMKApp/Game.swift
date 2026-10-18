@@ -11,8 +11,9 @@ final class GameSession: ObservableObject, Identifiable {
         case playing, paused, cleared, gameOver
         /// 100 Mario with the SMM1 layouts: the intro card after a death, the skip's Pass animation.
         case card, skipping
-        /// SMM2 layouts: the course card (start, after a death), "You gave up..." after Exit Course.
-        case intro, retire
+        /// SMM2 layouts: the course card (start, after a death), "You gave up..." after Exit Course,
+        /// the pause menu's Settings window.
+        case intro, retire, options
     }
 
     enum PauseItem: String, CaseIterable {
@@ -21,6 +22,7 @@ final class GameSession: ObservableObject, Identifiable {
         case restart = "Restart course"
         case saveQuit = "Save & Quit"
         case exit = "Exit to library"
+        case settings = "Settings"
     }
 
     /// Pause menu entries: a challenge run can skip and Save & Quit, and a restart costs a life.
@@ -85,6 +87,8 @@ final class GameSession: ObservableObject, Identifiable {
     private var smm2Accumulator = 0.0
     /// An SMM2 button's Decide animation runs, then this happens (at the screens' tick).
     private var smm2Pending: (at: Int, action: () -> Void)?
+    /// Debug: scripted menu presses collected since the last menu update.
+    private var scripted: MenuInput = []
     private var timeUpShown = false
     /// No lives: deaths restart the course without a game over (library, Course World, Story
     /// Mode — SMM2 has no lives there; DECISIONS.md "Course World without lives").
@@ -127,6 +131,8 @@ final class GameSession: ObservableObject, Identifiable {
             if let h = audio?.handle { mmk_engine_set_audio(e, h) }
         }
         applyVolumes()
+        // player 1's character (the pause menu's Settings)
+        mmk_engine_set_character(e, UInt32(max(0, min(3, UserDefaults.standard.integer(forKey: SettingsKey.character)))))
         // switching to another app pauses (not during scripted runs)
         resignObserver = NotificationCenter.default.addObserver(forName: PlatformApp.resignActive, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -238,9 +244,32 @@ final class GameSession: ObservableObject, Identifiable {
                 resume()
             } else if pressed.contains(.confirm) {
                 // a run's exit is Save & Quit
-                let item: PauseItem = [.resume, .restart, run == nil ? .exit : .saveQuit][s.pauseSelection]
+                let item: PauseItem = [.resume, .restart, run == nil ? .exit : .saveQuit, .settings][s.pauseSelection]
                 let wait = s.pauseDecide()
                 smm2Pending = (s.tick + max(1, wait), { [weak self] in self?.choose(item) })
+            }
+        case .options:
+            let i = s.optionSelection
+            if pressed.contains(.left) { s.optionsSelect(i == 4 ? s.character : max(0, i - 1)) }
+            if pressed.contains(.right) { s.optionsSelect(i == 4 ? s.character : min(3, i + 1)) }
+            if pressed.contains(.down) { s.optionsSelect(4) }
+            if pressed.contains(.up) && i == 4 { s.optionsSelect(s.character) }
+            if pressed.contains(.back) {
+                s.hideOptions()
+                setPhase(.paused)
+            } else if pressed.contains(.confirm) {
+                let before = s.character
+                let (wait, close) = s.optionsDecide()
+                if s.character != before {
+                    UserDefaults.standard.set(s.character, forKey: SettingsKey.character)
+                    mmk_engine_set_character(engine, UInt32(s.character))
+                }
+                if close {
+                    smm2Pending = (s.tick + wait, { [weak self] in
+                        self?.smm2?.hideOptions()
+                        self?.setPhase(.paused)
+                    })
+                }
             }
         case .cleared:
             guard s.clearReady else { break }
@@ -319,12 +348,15 @@ final class GameSession: ObservableObject, Identifiable {
                 var first = true
                 while smm2Accumulator >= Self.tick {
                     smm2Accumulator -= Self.tick
+                    // debug captures: MMK_UI_SCRIPT presses while a menu is up
+                    if s.mode != .play { scripted.formUnion(DebugInput.step()) }
                     smm2Tick(s, pressed: first ? pressed : [])
                     first = false
                 }
             }
             s.update(smm2Snapshot())
-            smm2Menu(s, pressed: pressed)
+            smm2Menu(s, pressed: pressed.union(scripted))
+            scripted = []
         }
         if let (scene, _) = sceneOverlay {
             if let freeze = DebugCapture.freezeTicks {
@@ -373,7 +405,7 @@ final class GameSession: ObservableObject, Identifiable {
             }
         case .gameOver where overlay != nil && run != nil:
             exit()   // the run shows Cmn_GameOver_00 as its own screen
-        case .card, .skipping, .intro, .retire:
+        case .card, .skipping, .intro, .retire, .options:
             break    // driven by overlayTick / smm2Tick
         case .cleared, .gameOver:
             // a short beat so a held jump doesn't skip the screen
@@ -587,6 +619,9 @@ final class GameSession: ObservableObject, Identifiable {
         case "course-retire":
             pause()
             choose(.exit)
+        case "course-settings":
+            pause()
+            choose(.settings)
         case "course-death":
             s.showIntro(lives: max(0, Int(hud.lives) - 1))
             setPhase(.intro)
@@ -680,6 +715,9 @@ final class GameSession: ObservableObject, Identifiable {
             }
         case .skip: run?.skipped(); exit()
         case .saveQuit: run?.saveAndQuit(); exit()
+        case .settings:
+            smm2?.showOptions(character: UserDefaults.standard.integer(forKey: SettingsKey.character))
+            setPhase(.options)
         }
     }
 }
@@ -693,7 +731,7 @@ struct GameView: View {
         ZStack {
             MetalView(session: session)
             switch session.phase {
-            case .playing, .card, .skipping, .intro, .retire: EmptyView()
+            case .playing, .card, .skipping, .intro, .retire, .options: EmptyView()
             case _ where session.overlay != nil || session.smm2 != nil: EmptyView()   // layouts, drawn by the Renderer
             case .paused: PauseMenu(session: session)
             case .cleared: ResultCard(title: "Course clear!", detail: clearDetail, action: session.run == nil ? "Back to library" : "Next", session: session)

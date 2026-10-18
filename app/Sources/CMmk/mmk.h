@@ -119,6 +119,8 @@ typedef struct {
     uint32_t _pad;
 } MmkPlayStatus;                                                       // 48 bytes
 void mmk_engine_play_status(const MmkEngine *engine, MmkPlayStatus *out);
+// Player 1's character: 0 Mario, 1 Luigi, 2 Toad, 3 Toadette
+void mmk_engine_set_character(MmkEngine *engine, uint32_t character);
 // Background clear colour 0xRRGGBBAA (theme sky; black when the theme has no background art)
 uint32_t mmk_engine_clear_color(const MmkEngine *engine);
 // View flags: bit 0 = draw upside down (underground night)

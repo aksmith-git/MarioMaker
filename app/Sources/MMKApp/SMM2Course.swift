@@ -159,7 +159,7 @@ struct CourseCardInfo {
 /// engine's state (`update`); `GameSession` decides when each screen appears.
 @MainActor
 final class CourseScreens: UIScene {
-    enum Mode: Equatable { case play, intro, pause, clear, retire, gameOver }
+    enum Mode: Equatable { case play, intro, pause, options, clear, retire, gameOver }
 
     let ui: LayoutUI
     let hud: UILayout
@@ -184,6 +184,7 @@ final class CourseScreens: UIScene {
     private lazy var retireL = ui.layout("Play_CourseRetire_00")
     private lazy var timeUpL = ui.layout("Play_TimeUp_00")
     private lazy var gameOverL = ui.layout("Play_GameOver_00")
+    private lazy var optionsL = ui.layout("Cmn_OptionWindow_00")
     /// The game's selection frame, sized to the selected button's bounding pane (as on the title).
     private lazy var cursor: UILayout? = {
         let c = ui.layout("Cmn_Cursor_00")
@@ -227,6 +228,7 @@ final class CourseScreens: UIScene {
             if let p = skipIcon, p.isPlaying("Pass") { l.append(p) }
         case .intro: l += [fade, intro].compactMap { $0 }
         case .pause: l += [fade, pauseL].compactMap { $0 }
+        case .options: l += [fade, pauseL, optionsL].compactMap { $0 }
         case .clear: if let c = clearL { l.append(c) }
         case .retire: if let r = retireL { l.append(r) }
         case .gameOver: if let g = gameOverL { l.append(g) }
@@ -258,6 +260,7 @@ final class CourseScreens: UIScene {
     private var cursorTarget: (UILayout, String)? {
         switch mode {
         case .pause: pauseL.map { ($0, "\(Self.pauseParts[pauseSelection])/B_Btn_00") }
+        case .options: optionsL.map { ($0, "\(Self.optionParts[optionSelection])/B_Btn_00") }
         case .clear where clearReady: clearL.map { ($0, "\(Self.clearParts[clearSelection])/B_Btn_00") }
         case .retire where retireReady: retireL.map { ($0, "\(Self.retireParts[retireSelection])/B_Btn_00") }
         default: nil
@@ -564,8 +567,9 @@ final class CourseScreens: UIScene {
 
     // MARK: pause (`Cmn_PauseMenu_00`)
 
-    /// Pause items top to bottom: the close button (continue), Start Over / Retry, Exit Course.
-    static let pauseParts = ["L_CloseBtn_00", "L_RetryBtn_00", "L_ExitBtn_00"]
+    /// Pause items top to bottom: the close button (continue), Start Over / Retry, Exit Course,
+    /// Settings.
+    static let pauseParts = ["L_CloseBtn_00", "L_RetryBtn_00", "L_ExitBtn_00", "L_OptionBtn_00"]
     private(set) var pauseSelection = 0
 
     func showPause() {
@@ -580,9 +584,11 @@ final class CourseScreens: UIScene {
         if info.lives, let q = p.message("L_ExitSaveBtn_00-T_Btn_00") { p.text("L_ExitBtn_00/T_Btn_00", q) }
         p.text("T_CourseTitle_00", info.name)
         for n in ["L_MiiIcon_00", "P_GoodIcon_00", "L_GoodCount_00", "N_TagAll_00", "L_KeyBtn_00",
-                  "L_OptionBtn_00", "N_PlayerInfo_01/L_Flag_00", "N_PlayerInfo_01/L_BadgeList_00"] {
+                  "N_PlayerInfo_01/L_Flag_00", "N_PlayerInfo_01/L_BadgeList_00"] {
             p.visible(n, false)
         }
+        if let s = p.message("L_OptionBtn_00-T_Btn_00") { p.text("L_OptionBtn_00/T_Btn_00", s) }
+        p.visible("L_OptionBtn_00/L_NewIcon_00", false)
         if let m = info.maker, !m.isEmpty {
             p.visible("N_PlayerInfo_00", nil)
             p.text("T_PlayerName_00", m)
@@ -647,6 +653,68 @@ final class CourseScreens: UIScene {
         closing = (p, tick + Int(max(1, p.length("Out"))))
         hudIn()
         setMode(.play)
+    }
+
+    // MARK: settings (`Cmn_OptionWindow_00`, from the pause menu)
+
+    /// The window's items: the four characters, then OK.
+    static let optionParts = ["L_CharacterBtn_00", "L_CharacterBtn_01", "L_CharacterBtn_02", "L_CharacterBtn_03", "L_OKBtn_00"]
+    private(set) var optionSelection = 0
+    private(set) var character = 0
+
+    /// The settings window over the pause menu: `Type` 1, the offline variant (no network,
+    /// parental or comment rows) [obs layout]; its character row; the course-making controls row
+    /// (no editor here) and the player controls row (the app's Settings bind the buttons) are
+    /// hidden [departure].
+    func showOptions(character c: Int) {
+        guard let o = optionsL else { return }
+        character = max(0, min(3, c))
+        o.hold("Type", 1)
+        for n in ["N_EditMode_00", "N_PlayerSetting_00", "L_HelpBtn_00", "L_RuleBtn_00"] { o.visible(n, false) }
+        for label in ["L_Window_00-T_Index_00", "T_Character_00", "L_OKBtn_00-T_Btn_00", "L_CharacterBtn_00-T_Btn_00",
+                      "L_CharacterBtn_01-T_Btn_00", "L_CharacterBtn_02-T_Btn_00", "L_CharacterBtn_03-T_Btn_00"] {
+            if let s = o.message(label) { o.text(label.replacingOccurrences(of: "-", with: "/"), s) }
+        }
+        for (k, part) in Self.optionParts.prefix(4).enumerated() {
+            o.hold("\(part)/Toggle", k == character ? o.length("\(part)/Toggle") : 0)
+        }
+        o.stop("Out")
+        o.play("In", at: tick)
+        setMode(.options)
+        optionsSelect(character)
+    }
+
+    func optionsSelect(_ i: Int) {
+        guard let o = optionsL else { return }
+        optionSelection = max(0, min(Self.optionParts.count - 1, i))
+        for (k, part) in Self.optionParts.enumerated() {
+            if k == optionSelection { o.play("\(part)/Select", at: tick) } else { o.hold("\(part)/Select", 0) }
+        }
+    }
+
+    /// Confirm on the selected item: a character becomes the chosen one (Toggle); returns the
+    /// Decide's length, and whether it was OK (the window closes).
+    func optionsDecide() -> (Int, Bool) {
+        guard let o = optionsL else { return (0, true) }
+        let part = Self.optionParts[optionSelection]
+        o.play("\(part)/Decide", at: tick)
+        if optionSelection < 4 && optionSelection != character {
+            o.stop("\(Self.optionParts[character])/Toggle")
+            o.play("\(Self.optionParts[character])/Toggle", at: tick, from: o.length("\(part)/Toggle"), to: 0, speed: -1)
+            character = optionSelection
+            o.play("\(part)/Toggle", at: tick)
+        }
+        return (Int(max(1, o.length("\(part)/Decide"))), optionSelection == 4)
+    }
+
+    /// Back to the pause menu.
+    func hideOptions() {
+        guard mode == .options, let o = optionsL else { return }
+        o.stop("In")
+        o.play("Out", at: tick)
+        closing = (o, tick + Int(max(1, o.length("Out"))))
+        setMode(.pause)
+        pauseSelect(Self.pauseParts.count - 1)
     }
 
     // MARK: course clear (`Play_CourseClear_00`)

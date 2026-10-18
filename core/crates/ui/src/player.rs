@@ -1340,7 +1340,10 @@ impl Ctx<'_> {
         self.quad(mat, sets, rect, mtx, color, None, out);
     }
 
-    /// A window's content quad, always with the content material's own colours.
+    /// A window's content quad, with the content material's own colours — unless that material
+    /// is texture-only (no colours of its own) and the window has "one material for all
+    /// frames": then the frames' shared colours (SMM2's dark name balloons, `W_Text_00` of
+    /// `Cmn_CharacterBtn_00`: white text on a texture-only content between dark frames) [inf].
     fn content_quad(
         &self,
         w: &Window,
@@ -1349,7 +1352,17 @@ impl Ctx<'_> {
         color: [[u8; 4]; 4],
         out: &mut Vec<Quad>,
     ) {
-        let saved = self.frame_colors.replace(None);
+        let texture_only = self
+            .res
+            .layout
+            .materials
+            .get(w.content.material as usize)
+            .is_some_and(|m| m.texture_only);
+        let saved = if texture_only {
+            self.frame_colors.get()
+        } else {
+            self.frame_colors.replace(None)
+        };
         self.quad(
             w.content.material,
             &w.content.tex_coords,
