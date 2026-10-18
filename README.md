@@ -186,10 +186,21 @@ Our own self-hostable server; it never talks to Nintendo's network.
 
 ```sh
 cargo run --release -p mmk-cli -- server --dir ./server-data --addr 0.0.0.0:8640
-cargo run --release -p mmk-cli -- upload my-course.bin --server http://localhost:8640 --maker me
+cargo run --release -p mmk-cli -- register Ada --server http://localhost:8640   # prints a token
+export MMK_TOKEN=…                                                              # the token
+cargo run --release -p mmk-cli -- upload my-course.bin --server http://localhost:8640
 cargo run --release -p mmk-cli -- search "castle" --server http://localhost:8640 --sort popular
 cargo run --release -p mmk-cli -- download ABC-DEF-GHJ --server http://localhost:8640
+cargo run --release -p mmk-cli -- like ABC-DEF-GHJ --server http://localhost:8640
+cargo run --release -p mmk-cli -- rankings records --server http://localhost:8640
 ```
 
-The API is described at the top of `core/crates/server/src/lib.rs`. Clients use
+The same server relays online play (up to 4 players per room, desktop and browser together):
+
+```sh
+cargo run --release -p mmk-shell -- level.bcd --net-relay localhost:8640 --net-room FRIDAY --net-player 0
+```
+
+[docs/self-hosting.md](docs/self-hosting.md) covers ports, HTTPS, accounts, moderation and online
+play. The API is described at the top of `core/crates/server/src/lib.rs`. Clients use
 `core/crates/online`, which also feeds 100 Mario runs from a server.
