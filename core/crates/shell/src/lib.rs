@@ -1,11 +1,13 @@
 //! Portable shell: plays a course with the Rust core on every platform the Swift app can't reach
 //! (Windows, Linux, web) and on macOS too. winit window and loop, wgpu renderer (Metal, Vulkan,
-//! DX12, GL, WebGPU/WebGL2), gilrs gamepads, cpal audio (native).
+//! DX12, GL, WebGPU/WebGL2), gilrs gamepads (Gamepad API in browsers), cpal audio (WebAudio in
+//! browsers).
 //!
 //! Platform-neutral parts (session, input mapping, HUD, texture planning, asset sources) are
 //! unit-tested without a window or GPU; `headless` renders offscreen for smoke tests.
 
 pub mod app;
+pub mod audio_out;
 pub mod bc7;
 pub mod clock;
 pub mod game;
@@ -17,8 +19,6 @@ pub mod session;
 pub mod source;
 pub mod texture;
 
-#[cfg(not(target_arch = "wasm32"))]
-pub mod audio_out;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod headless;
 #[cfg(target_arch = "wasm32")]

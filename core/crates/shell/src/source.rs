@@ -1,6 +1,8 @@
-//! Where the owner's asset cache comes from. Native builds read a directory; the web build will
-//! read files the owner picks in the browser (kept in OPFS/IndexedDB, never uploaded), so every
-//! read goes through [`AssetSource`] rather than `std::fs`.
+//! Where the owner's asset cache comes from. Native builds read a directory; the web build reads
+//! the copy the owner imported into the browser's storage (OPFS, never uploaded), so every read
+//! goes through [`AssetSource`] rather than `std::fs`. The browser reads asynchronously: the web
+//! build fills a [`MemorySource`] with the index files and opens the cache deferred
+//! ([`open_cache_deferred`]), handing texture files over as they arrive (`web`).
 
 use std::collections::HashMap;
 use std::io;
@@ -98,9 +100,28 @@ pub fn open_cache(source: &dyn AssetSource) -> Result<Cache, String> {
     Ok(cache)
 }
 
+/// Open the asset cache's index through `source` and leave the texture pixels to the host,
+/// which reads them later and hands them over (`Cache::take_requests` / `Cache::provide`): the
+/// browser's storage only reads asynchronously, and a whole cache doesn't fit in memory.
+pub fn open_cache_deferred(source: &dyn AssetSource) -> Result<Cache, String> {
+    let mut cache = Cache::load_deferred(ROOT, &|p| source.read(&relative(p)))
+        .map_err(|e| format!("{}: {e}", source.describe()))?;
+    cache.root = PathBuf::from(source.describe());
+    Ok(cache)
+}
+
 /// Load the cache's sounds (an error if it has none: the game then runs silently).
 pub fn open_bank(source: &dyn AssetSource) -> Result<Bank, String> {
     Bank::load_cache_with(ROOT, &|p| source.read(&relative(p))).map_err(|e| e.to_string())
+}
+
+/// Course music (`audio/music/<name>.bwav`) read from the source's directory when a course
+/// starts. None for sources without one (the web build prefetches the files, see `web`).
+pub fn music_reader(source: &dyn AssetSource) -> Option<mmk_host::audio::MusicReader> {
+    let dir = source.dir()?.join("audio/music");
+    Some(Box::new(move |name| {
+        std::fs::read(dir.join(format!("{name}.bwav"))).ok()
+    }))
 }
 
 /// The course key table (for encrypted `.bcd` courses).
@@ -122,6 +143,8 @@ mod tests {
         m.insert("textures/index.json", b"{}".to_vec());
         let c = open_cache(&m).unwrap();
         assert!(c.textures.is_empty());
+        assert!(open_cache_deferred(&m).unwrap().textures.is_empty());
+        assert!(music_reader(&m).is_none());
         assert_eq!(c.root, PathBuf::from("test files"));
         assert!(open_bank(&m).is_err(), "no audio/index.json");
         assert!(

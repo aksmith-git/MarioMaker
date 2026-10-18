@@ -11,5 +11,5 @@ cd "$root/core"
 cargo build --release -p mmk-shell --target wasm32-unknown-unknown
 wasm-bindgen --target web --no-typescript --out-dir "$out" \
   target/wasm32-unknown-unknown/release/mmk-play.wasm
-cp crates/shell/web/index.html "$out/"
+cp crates/shell/web/*.html crates/shell/web/*.js "$out/"
 echo "web build: $out"

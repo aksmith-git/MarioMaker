@@ -435,6 +435,19 @@ impl Renderer {
         }
     }
 
+    /// Draw from another asset cache (the web build opens the owner's after starting on
+    /// placeholder art); its textures upload when first used, as at start.
+    pub fn set_cache(&mut self, cache: &Arc<Cache>) {
+        if Arc::ptr_eq(&self.cache, cache) {
+            return;
+        }
+        self.cache = cache.clone();
+        self.textures = (0..cache.textures.len())
+            .map(|_| TexState::Pending)
+            .collect();
+        self.skipped_textures = 0;
+    }
+
     /// Upload cache texture `i` if it hasn't been yet (pixels are read from the cache now).
     pub fn ensure(&mut self, gpu: &Gpu, i: usize) {
         if !matches!(self.textures.get(i), Some(TexState::Pending)) {
@@ -446,6 +459,10 @@ impl Renderer {
             .texture(i)
             .and_then(|t| crate::texture::plan(t, gpu.bc));
         let Some(up) = up else {
+            if self.cache.texture_pending(i) {
+                // a browser cache: the pixels are on their way (`web::pump_textures`)
+                return;
+            }
             self.textures[i] = TexState::Skipped;
             self.skipped_textures += 1;
             return;

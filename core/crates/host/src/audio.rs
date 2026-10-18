@@ -170,6 +170,27 @@ impl Ids {
     }
 }
 
+/// The music files (`audio/music/<name>.bwav`) a course of `style` and `theme` plays, in order
+/// of preference: theme track, its hurry variant, star music, star hurry. Hosts that read files
+/// asynchronously (the browser) fetch these before [`Director::load_music`].
+pub fn music_candidates(style: &str, theme: u8) -> [Vec<String>; 4] {
+    let t = theme;
+    let theme_names = |suffix: &str| {
+        vec![
+            format!("{style}_{t}{suffix}"),
+            format!("{style}_0{suffix}"),
+            format!("M1_{t}{suffix}"),
+            format!("M1_0{suffix}"),
+        ]
+    };
+    [
+        theme_names(""),
+        theme_names("_hurry"),
+        vec![format!("{style}_star"), "M1_star".into()],
+        vec![format!("{style}_star_hurry"), "M1_star_hurry".into()],
+    ]
+}
+
 /// Maps sim events and state changes to mixer commands. Pure bookkeeping, no audio state: it
 /// only remembers what it last asked for.
 pub struct Director {
@@ -211,21 +232,8 @@ impl Director {
                 mmk_audio::Sound::from_bwav(n, &bytes).ok()
             })
         };
-        let t = theme;
-        let theme_names = |suffix: &str| {
-            vec![
-                format!("{style}_{t}{suffix}"),
-                format!("{style}_0{suffix}"),
-                format!("M1_{t}{suffix}"),
-                format!("M1_0{suffix}"),
-            ]
-        };
-        let tracks = [
-            load(&theme_names("")),
-            load(&theme_names("_hurry")),
-            load(&[format!("{style}_star"), "M1_star".into()]),
-            load(&[format!("{style}_star_hurry"), "M1_star_hurry".into()]),
-        ];
+        let [main, hurry, star, star_hurry] = music_candidates(style, theme);
+        let tracks = [load(&main), load(&hurry), load(&star), load(&star_hurry)];
         let present: Vec<bool> = tracks.iter().map(Option::is_some).collect();
         match out.slots.lock() {
             Ok(mut g) => *g = tracks,
