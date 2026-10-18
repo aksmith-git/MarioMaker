@@ -143,6 +143,18 @@ mod native {
         /// Course Maker style for a new course (M1, M3, MW, WU, 3W).
         #[arg(long, default_value = "M1")]
         style: String,
+        /// Debug, with --screenshot: drive the player with this input script ("N BUTTONS…" per
+        /// line: N ticks holding JUMP / RUN / SPIN / LEFT / RIGHT / UP / DOWN, "-" for none)
+        /// and save a screenshot at each of --shot-ticks (`<png stem>_<tick>.png`).
+        #[arg(long)]
+        input_script: Option<PathBuf>,
+        /// With --input-script: the ticks to save (comma-separated).
+        #[arg(long, default_value = "")]
+        shot_ticks: String,
+        /// Debug, with --screenshot: play these emitter sets (comma-separated, imported effect
+        /// names) side by side over the course and save their frame --ticks frames in.
+        #[arg(long)]
+        fx_set: Option<String>,
         /// Debug: start the player at this x (px), and y (default 32).
         #[arg(long)]
         start_x: Option<f32>,
@@ -441,6 +453,49 @@ mod native {
                 &mut game,
                 path,
                 args.map_area,
+                args.scale,
+                !args.cpu_textures,
+            )?;
+            println!("{msg}");
+            return Ok(());
+        }
+        if let (Some(path), Some(script)) = (&args.screenshot, &args.input_script) {
+            let text = std::fs::read_to_string(script)
+                .map_err(|e| format!("{}: {e}", script.display()))?;
+            let inputs = mmk_shell::headless::parse_input_script(&text)?;
+            let mut ticks: Vec<u64> = args
+                .shot_ticks
+                .split(',')
+                .filter_map(|t| t.trim().parse().ok())
+                .collect();
+            ticks.sort_unstable();
+            let stem = path.strip_suffix(".png").unwrap_or(path);
+            let mut done = 0u64;
+            for t in ticks {
+                while done < t {
+                    let input = inputs.get(done as usize).copied().unwrap_or_default();
+                    game.session.tick(input);
+                    done += 1;
+                }
+                let out = format!("{stem}_{t}.png");
+                let msg = mmk_shell::headless::screenshot(
+                    &mut game,
+                    &out,
+                    0,
+                    args.scale,
+                    false,
+                    !args.cpu_textures,
+                )?;
+                println!("{msg}");
+            }
+            return Ok(());
+        }
+        if let (Some(path), Some(sets)) = (&args.screenshot, &args.fx_set) {
+            let msg = mmk_shell::headless::fx_preview(
+                &mut game,
+                path,
+                sets,
+                args.ticks,
                 args.scale,
                 !args.cpu_textures,
             )?;
