@@ -365,6 +365,16 @@ pub struct Course {
     pub sub: Area,
 }
 
+/// Two courses are equal when they write the same bytes.
+impl PartialEq for Course {
+    fn eq(&self, other: &Self) -> bool {
+        match (self.to_bytes(), other.to_bytes()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
 impl Course {
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() != COURSE_SIZE {

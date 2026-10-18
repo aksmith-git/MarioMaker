@@ -145,7 +145,9 @@ impl Maker {
         match what {
             'w' => self.editor.toggle_flags(i, 0x2),
             'f' => self.editor.toggle_flags(i, 0x4),
-            'b' => self.editor.toggle_big(i),
+            'b' => {
+                let _ = self.editor.toggle_big(i);
+            }
             'i' => match self.tool().1 {
                 Tool::Part(p) => self.editor.set_child(i, p, 0),
                 Tool::Ground => self.editor.set_child(i, -1, 0),
