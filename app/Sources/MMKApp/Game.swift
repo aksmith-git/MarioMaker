@@ -131,6 +131,12 @@ final class GameSession: ObservableObject, Identifiable {
             if let h = audio?.handle { mmk_engine_set_audio(e, h) }
         }
         applyVolumes()
+        // SMM1 extras from Settings (off by default)
+        let d = UserDefaults.standard
+        mmk_engine_set_option(e, "smm1_shell_kicks", d.bool(forKey: SettingsKey.smm1ShellKicks) ? 1 : 0)
+        mmk_engine_set_option(e, "smm1_layering", d.bool(forKey: SettingsKey.smm1Layering) ? 1 : 0)
+        mmk_engine_set_option(e, "smb1_mushroom", Int32(d.integer(forKey: SettingsKey.smb1Mushroom)))
+        mmk_engine_set_option(e, "costume", d.object(forKey: SettingsKey.costume) == nil ? -1 : Int32(d.integer(forKey: SettingsKey.costume)))
         // player 1's character (the pause menu's Settings)
         mmk_engine_set_character(e, UInt32(max(0, min(3, UserDefaults.standard.integer(forKey: SettingsKey.character)))))
         // switching to another app pauses (not during scripted runs)

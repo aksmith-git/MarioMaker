@@ -77,6 +77,21 @@ impl Options {
         "costume",
     ];
 
+    /// Whether these options change how a course plays (not just how it looks). Replays and
+    /// online play assume SMM2 rules, so hosts skip replays and turn these off online.
+    pub fn affects_play(&self) -> bool {
+        self.smm1_shell_kicks || self.smb1_mushroom != MushroomSwap::Off
+    }
+
+    /// The same options with only the look-only ones kept (for replays and online play).
+    pub fn look_only(&self) -> Self {
+        Self {
+            smm1_shell_kicks: false,
+            smb1_mushroom: MushroomSwap::Off,
+            ..*self
+        }
+    }
+
     /// Draw random costumes from `ids` (ids ≥ COSTUMES are ignored).
     pub fn set_costume_pool(&mut self, ids: impl IntoIterator<Item = u16>) {
         self.costume_pool = [0; 7];

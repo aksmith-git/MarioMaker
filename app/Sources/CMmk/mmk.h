@@ -148,6 +148,20 @@ bool mmk_online_report(const char *server, const char *code, const char *what); 
 size_t mmk_online_call(const char *server, const char *token, const char *action, const char *args,
                        char *buf, size_t cap);
 
+// SMM1 extras (options are off by default; core/crates/ffi/src/options.rs, costumes.rs).
+// Options: smm1_shell_kicks 0/1, smm1_layering 0/1, smb1_mushroom 0 off / 1 mystery / 2 weird,
+// costume -1 random or an SMM1 costume id. mmk_engine_option returns INT32_MIN for unknown names.
+bool mmk_engine_set_option(MmkEngine *engine, const char *name, int32_t value);
+int32_t mmk_engine_option(const MmkEngine *engine, const char *name);
+// The SMM1 sprite cache (`<smm1 cache>/sprites`, made by mmk import-smm1): costumes, Lanky Mario.
+// Add to the assets before reading the texture count or creating engines; returns textures added.
+uint32_t mmk_assets_add_smm1_sprites(MmkAssets *assets, const char *path);
+uint32_t mmk_assets_costume_count(const MmkAssets *assets);
+int32_t mmk_assets_costume_id(const MmkAssets *assets, uint32_t index);
+const char *mmk_assets_costume_name(const MmkAssets *assets, uint32_t index);
+bool mmk_audio_add_smm1_sprites(MmkAudio *audio, const char *path);
+void mmk_engine_use_costumes(MmkEngine *engine, const MmkAssets *assets);
+
 // Blocks until done; run off the main thread. update_* may be NULL. Writes <out_root>/smm2-<build>/.
 bool mmk_import_run(const char *romfs, const char *exefs, const char *update_romfs,
                     const char *update_exefs, const char *out_root,
