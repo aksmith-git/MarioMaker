@@ -11,11 +11,14 @@
 //! - [`coursebot`]: the Coursebot's 120 My Courses + 60 Downloaded slots (slot table, metadata,
 //!   Downloaded stats), the course-number space and the scene-change reasons of its screens;
 //!   [`coursebot::CoursebotStore`] keeps the files over a pluggable blob store.
+//! - [`dojo`]: Yamamura's Dojo lesson list (from the owner's imported `lessons/index.json`),
+//!   lesson starts and the saved completion marks / Maker Basics / Nina flags.
 //!
 //! Deterministic: randomness comes from a caller-seeded generator so runs can be replayed.
 
 pub mod challenge;
 pub mod coursebot;
+pub mod dojo;
 pub mod hundred;
 pub mod pool;
 pub mod replay;
