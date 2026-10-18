@@ -23,6 +23,9 @@ import UIKit
 /// (MMK_UI_INTRO=0 skips it); MMK_UI_PAUSE_TICKS=<n> pauses; MMK_UI_SCREEN=course-clear,
 /// course-gameover, course-timeup, course-retire, course-death (the card after a death) shows
 /// that screen MMK_UI_COURSE_AT=<s> seconds in (default half the delay).
+/// SMM2 front end: boot (the opening; MMK_BOOT_OPENING=<InDefault…> picks one), courseworld,
+/// courseworld-list; MMK_UI_SCRIPT=<tick>:<button>,… presses menu buttons at global UI ticks
+/// (SMM2Menus.swift).
 ///
 /// Waits, renders the main window's content (or the Settings window) into a PNG and quits.
 /// Window snapshots can't see Metal layers, so while this is set the renderer keeps a copy of its
@@ -80,6 +83,13 @@ enum DebugCapture {
                     }
                 default: break
                 }
+            }
+        }
+        if let screen = env["MMK_UI_SCREEN"], screen.hasPrefix("courseworld") {
+            // SMM2 Course World (after the library scan): courseworld (hub), courseworld-list
+            DispatchQueue.main.asyncAfter(deadline: .now() + min(1, delay / 2)) {
+                model.showCourseWorld()
+                if screen == "courseworld-list", case .courseWorld(let f) = model.screen { f.showList() }
             }
         }
         if let screen = env["MMK_UI_SCREEN"], screen.hasPrefix("course-") {

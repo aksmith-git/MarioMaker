@@ -131,6 +131,14 @@ bool mmk_course_info(const MmkAssets *assets, const uint8_t *data, size_t len, M
 // SMM2 course code "XXX-XXX-XXX" of a server data id; returns its length (cap 0 sizes it)
 size_t mmk_smm2_course_code(uint32_t data_id, char *buf, size_t cap);
 
+// The open-source course server (core/crates/ffi/src/online.rs; blocking, off the main thread).
+// JSON array of listings {code, name, maker, style, theme, plays, clears, likes, difficulty};
+// returns its length (cap 0 sizes it), 0 on error (mmk_last_error). sort: new / popular / hard.
+size_t mmk_online_search(const char *server, const char *query, const char *sort, uint32_t offset,
+                         uint32_t limit, char *buf, size_t cap);
+bool mmk_online_download(const char *server, const char *code, const char *path);
+bool mmk_online_report(const char *server, const char *code, const char *what); // play / clear / like
+
 // Blocks until done; run off the main thread. update_* may be NULL. Writes <out_root>/smm2-<build>/.
 bool mmk_import_run(const char *romfs, const char *exefs, const char *update_romfs,
                     const char *update_exefs, const char *out_root,

@@ -19,4 +19,6 @@ mmk-formats = { path = "../formats" }
 mmk-modes = { path = "../modes" }
 mmk-ui = { path = "../ui" }
 mmk-host = { path = "../host" }
+mmk-online = { path = "../online" }
+serde_json.workspace = true
 flate2.workspace = true

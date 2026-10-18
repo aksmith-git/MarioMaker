@@ -79,6 +79,8 @@ final class AppModel: ObservableObject {
         case importer, library, game(GameSession), challenge(ChallengeFlow), title(TitleFlow)
         /// SMM2's opening before the title (`Boot_BootScene_00`).
         case boot(BootScene)
+        /// Course World with SMM2's layouts (hub, courses, play).
+        case courseWorld(CourseWorldFlow)
     }
 
     @Published var screen: Screen = .library
@@ -95,6 +97,7 @@ final class AppModel: ObservableObject {
     var isPlaying: Bool {
         switch screen {
         case .game, .challenge: true
+        case .courseWorld(let f): if case .playing = f.stage { true } else { false }
         default: false
         }
     }
@@ -152,13 +155,15 @@ final class AppModel: ObservableObject {
         library.scan(assets: assets)
     }
 
-    /// The SMM2 title screen (needs the SMM2 UI import; the library otherwise).
-    func showTitle(start: TitleScene.State = .main) {
+    /// The SMM2 title screen (needs the SMM2 UI import; the library otherwise). `select`: the
+    /// Play-menu button selected (coming back from a mode).
+    func showTitle(start: TitleScene.State = .main, select: Int? = nil) {
         guard let ui = LayoutUI.smm2, let flow = TitleFlow(ui: ui, assets: assets, start: start) else {
             showLibrary()
             return
         }
         flow.onChoice = { [weak self] choice in self?.titleChoice(choice) }
+        if let select { flow.scene.debugSelectCategory(select) }
         screen = .title(flow)
     }
 
@@ -189,9 +194,21 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Course World (the library until its SMM2 screens are there).
+    /// Course World with SMM2's layouts (the library without the SMM2 UI import).
     func showCourseWorld() {
-        showLibrary()
+        guard let ui = LayoutUI.smm2, let assets,
+              let flow = CourseWorldFlow(ui: ui, assets: assets, library: library.entries, saves: saves) else {
+            showLibrary()
+            return
+        }
+        // back to the title's Play menu, Course World selected [inf]
+        flow.onExit = { [weak self] in
+            SceneFade.shared.run(.black) { self?.showTitle(start: .category, select: 1) }
+        }
+        flow.onEndless = { [weak self] in
+            SceneFade.shared.run(.black) { self?.showChallenge() }
+        }
+        screen = .courseWorld(flow)
     }
 
     func showImporter() { screen = .importer }
@@ -331,6 +348,7 @@ struct RootView: View {
             case .challenge(let flow): ChallengeView(flow: flow).id(flow.id)
             case .title(let flow): TitleView(flow: flow).id(flow.id)
             case .boot(let scene): UIScreenView(scene: scene, ui: LayoutUI.smm2).id(ObjectIdentifier(scene))
+            case .courseWorld(let flow): CourseWorldView(flow: flow).id(flow.id)
             }
         }
         // the scene fade over SwiftUI screens (Metal screens draw the fade layout themselves)
@@ -387,7 +405,7 @@ extension AppModel {
     /// The game, a 100 Mario run or the title: full screen, touch controls shown.
     var showsGameScreen: Bool {
         switch screen {
-        case .game, .challenge, .title, .boot: true
+        case .game, .challenge, .title, .boot, .courseWorld: true
         case .importer, .library: false
         }
     }

@@ -19,6 +19,7 @@ pub mod condition;
 pub mod course_info;
 pub mod import;
 pub mod mesh;
+pub mod online;
 pub mod play_status;
 pub mod ui;
 

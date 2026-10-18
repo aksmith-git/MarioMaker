@@ -1267,8 +1267,10 @@ dependencies = [
  "mmk-host",
  "mmk-import",
  "mmk-modes",
+ "mmk-online",
  "mmk-sim",
  "mmk-ui",
+ "serde_json",
 ]
 
 [[package]]
