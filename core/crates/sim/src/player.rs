@@ -128,6 +128,12 @@ pub enum Form {
     /// SMB1 Big Mushroom (part 44 in SMB1): a double-size Mario (32×32 art) who defeats enemies
     /// he touches and breaks bricks he runs into [inf: from the SMM1 item].
     Mega,
+    /// SMM1 Weird Mushroom (SMB1 only, `Options::smb1_mushroom`): Lanky ("Slim") Mario — Super
+    /// Mario's body and moves with a jump launch 0.5 px/f higher (SMM1 form 3, 0x026c0cc0).
+    Lanky,
+    /// SMM1 Mystery Mushroom (SMB1 only): a costume (`Player::costume`) on small Mario's body and
+    /// physics (SMM1 form 7, size class 1).
+    Costume,
 }
 
 /// Invincibility after taking damage (§7).
@@ -153,6 +159,22 @@ pub const DOWN_FALL_FRAMES: i32 = 140;
 /// held-jump gravity then gives the higher bounce [obs]. Players stomping players use 4.128 /
 /// 3.628 (0x71009ce0e0).
 pub const STOMP_BOUNCE: f32 = 3.9095;
+/// Lanky Mario's extra jump launch (SMM1 0x026c0cc0, constant 0x100d052c) [obs].
+pub const LANKY_JUMP_BONUS: f32 = 0.5;
+/// Frames after a lanky jump at which the "float" cue sounds if the player still rises with
+/// jump held (SMM1 0x026c1470: timer 20, cue at 1, vy > 1.0) [obs].
+pub const LANKY_FLOAT_TIMER: i32 = 20;
+/// Player cues for sounds (`Player::cues`): landed, started a skid, began the costume taunt.
+pub const CUE_LAND: u8 = 1;
+pub const CUE_SKID: u8 = 2;
+pub const CUE_APPEAL: u8 = 4;
+/// The costume taunt (SMM1 "appeal": hold Up standing; the appeal pose runs 120 frames)
+/// [obs pose length; inf the hold count].
+pub const APPEAL_FRAMES: i32 = 120;
+pub const APPEAL_HOLD: i32 = 8;
+/// SMM1 costume ids: 0 … 99 the named costumes, 100 + n the amiibo costumes `Boss<n>`
+/// (0 … 98) [obs: the costume enum, Block.rpx 0x1019add0].
+pub const COSTUMES: usize = 199;
 
 /// Who is steering the player.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -433,6 +455,18 @@ pub struct Player {
     prev_spin: bool,
     /// Climbing a vine: its centre x and the side the player hangs on (−1 left, +1 right).
     pub climbing: Option<(f32, i32)>,
+    /// SMM1 costume id while `form` is `Costume` (an index into the imported costume table).
+    pub costume: u16,
+    /// Lanky Mario: airborne from a lanky jump (drawn running in the air), the float-cue timer,
+    /// and whether the cue sounded this frame.
+    pub lanky_jump: bool,
+    pub lanky_timer: i32,
+    pub float_cue: bool,
+    /// Costume taunt: frames of the appeal pose left, and how long Up has been held.
+    pub appeal: i32,
+    up_hold: i32,
+    /// Sound cues of this frame (`CUE_*`).
+    pub cues: u8,
     /// Frames before a vine can be grabbed again (after jumping off).
     climb_lock: i32,
 }
@@ -450,6 +484,13 @@ impl Player {
             walk_phase: 0.0,
             slope: None,
             form: Form::Small,
+            costume: 0,
+            lanky_jump: false,
+            lanky_timer: 0,
+            float_cue: false,
+            appeal: 0,
+            up_hold: 0,
+            cues: 0,
             control: Control::Normal,
             invuln: 0,
             star: 0,
@@ -569,7 +610,7 @@ impl Player {
     }
 
     pub fn big(&self) -> bool {
-        self.form != Form::Small
+        !matches!(self.form, Form::Small | Form::Costume)
     }
 
     pub fn sensors(&self) -> &'static Sensors {
@@ -669,7 +710,8 @@ impl Player {
                     timer: CHANGE_FRAMES,
                     from: f,
                 };
-                self.form = if f == Form::Super {
+                // SMM1 (0x026b04e8): Lanky and costumes drop to small, like Super
+                self.form = if matches!(f, Form::Super | Form::Lanky | Form::Costume) {
                     Form::Small
                 } else {
                     Form::Super
@@ -697,8 +739,11 @@ impl Player {
 
     /// Collect a power-up (20-super-mushroom.md: form changes only upward).
     pub fn power_up(&mut self, to: Form) -> bool {
-        // a mushroom only grows a small player; other power-ups replace the current form
-        let up = to != self.form && (to != Form::Super || self.form == Form::Small);
+        // a mushroom only grows a small player; other power-ups replace the current form; a
+        // Weird Mushroom only takes a small or Super player (SMM1 0x026b34a4)
+        let up = to != self.form
+            && (to != Form::Super || self.form == Form::Small)
+            && (to != Form::Lanky || matches!(self.form, Form::Small | Form::Super));
         if up && self.control == Control::Normal {
             // small + Fire Flower goes straight to Fire (the block swap to a mushroom happens at
             // spawn time)
@@ -709,6 +754,53 @@ impl Player {
             self.form = to;
         }
         up
+    }
+
+    /// The costume taunt: Up held standing still on the ground for `APPEAL_HOLD` frames starts
+    /// the 120-frame appeal pose; moving, jumping or leaving the ground ends it.
+    fn step_appeal(&mut self, inp: Input) {
+        let idle = self.on_ground
+            && inp.dir_x() == 0
+            && !inp.held(input::JUMP)
+            && !self.crouch
+            && self.vx.abs() < 0.01;
+        if !idle {
+            self.appeal = 0;
+            self.up_hold = 0;
+            return;
+        }
+        if self.appeal > 0 {
+            self.appeal -= 1;
+            return;
+        }
+        if inp.held(input::UP) {
+            self.up_hold += 1;
+            if self.up_hold == APPEAL_HOLD {
+                self.appeal = APPEAL_FRAMES;
+                self.cues |= CUE_APPEAL;
+            }
+        } else {
+            self.up_hold = 0;
+        }
+    }
+
+    /// Take a Mystery Mushroom: costume `id` (SMM1 0x026b34a4: refused only for the costume
+    /// already worn). Returns true if the form changed.
+    pub fn put_on_costume(&mut self, id: u16) -> bool {
+        if self.form == Form::Costume && self.costume == id {
+            return false;
+        }
+        if self.control != Control::Normal {
+            return false;
+        }
+        self.control = Control::Change {
+            timer: CHANGE_FRAMES,
+            from: self.form,
+        };
+        self.form = Form::Costume;
+        self.costume = id;
+        self.crouch = false;
+        true
     }
 
     /// Bounce off an enemy.
@@ -816,6 +908,7 @@ impl Player {
             && !(self.style == Style::W3 && self.on_ice)
         {
             self.skid = SkidPhase::Braking;
+            self.cues |= CUE_SKID;
             self.facing = dir;
         }
         if self.skid != SkidPhase::None && dir != self.facing {
@@ -952,7 +1045,11 @@ impl Player {
             } else {
                 t[1]
             } * dir as f32;
-            // SMB1 keeps the take-off facing in the air (§2.6); bands use the movement facing
+            // SMB1 keeps the take-off facing in the air (§2.6), except a costume (SMM1 action
+            // table: it turns in the air); bands use the movement facing
+            if self.form == Form::Costume {
+                self.facing = dir;
+            }
             let table = match (run, star) {
                 (false, false) => &AIR_DIR,
                 (true, false) => &AIR_DIR_RUN,
@@ -984,6 +1081,8 @@ impl Player {
             inp
         };
         self.head_hit = None;
+        self.cues = 0;
+        let was_ground = self.on_ground;
         self.head_solid = None;
         self.throw = false;
         if !self.step_control() {
@@ -1108,7 +1207,11 @@ impl Player {
 
         // crouch: big forms on the ground with Down held (kept through a crouch jump)
         if self.on_ground {
-            let want = self.big() && inp.held(input::DOWN) && !self.sliding && self.cat_slide == 0;
+            // (a costume can crouch though small, SMM1 action table)
+            let want = (self.big() || self.form == Form::Costume)
+                && inp.held(input::DOWN)
+                && !self.sliding
+                && self.cat_slide == 0;
             if want != self.crouch && (want || self.can_stand(level)) {
                 self.crouch = want;
             }
@@ -1171,6 +1274,11 @@ impl Player {
                     self.vy = JUMP_BASE + jump_bonus(self.vx.abs());
                     if self.jump_count == 2 || self.dashing() {
                         self.vy *= 1.05;
+                    }
+                    if self.form == Form::Lanky {
+                        self.vy += LANKY_JUMP_BONUS;
+                        self.lanky_jump = true;
+                        self.lanky_timer = LANKY_FLOAT_TIMER;
                     }
                     if self.low_gravity {
                         self.vy = (self.vy * 0.7).min(2.7);
@@ -1264,6 +1372,15 @@ impl Player {
 
         let sensors = self.sensors();
         self.move_and_collide(level, sensors);
+        if self.on_ground && !was_ground {
+            self.cues |= CUE_LAND;
+        }
+        if self.form == Form::Costume {
+            self.step_appeal(inp);
+        } else {
+            self.appeal = 0;
+            self.up_hold = 0;
+        }
         self.ceiling = self.head_hit.is_some() || self.head_solid.is_some();
         // the cape lands: a dive (stage 5) shakes the ground (0x71009f5f50), any other glide
         // slides to a stop (MantSlide); the climb just ends
@@ -1299,6 +1416,21 @@ impl Player {
             self.stomp_chain = 0;
             if self.vy <= 0.0 {
                 self.spinning = false;
+            }
+        }
+        // Lanky jump: the rising flag ends at vy ≤ 1.0 or when jump is let go; the float cue
+        // sounds when the 20-frame timer reaches 1 with the flag still up (SMM1 0x026c1470)
+        self.float_cue = false;
+        if self.form != Form::Lanky || (self.on_ground && self.vy <= 0.0) || self.in_water {
+            self.lanky_jump = false;
+            self.lanky_timer = 0;
+        }
+        if self.lanky_timer > 0 {
+            if !jump || self.vy <= 1.0 {
+                self.lanky_timer = -1; // flag down: no cue this jump
+            } else {
+                self.lanky_timer -= 1;
+                self.float_cue = self.lanky_timer == 1;
             }
         }
         if self.crouch {
@@ -1340,6 +1472,8 @@ impl Player {
                 Form::Builder => 7,
                 Form::Superball => 8,
                 Form::Mega => 9,
+                Form::Lanky => 10,
+                Form::Costume => 11,
             },
             shoe: self.shoe.is_some() && !self.shoe_karon,
             karon_shell: self.shoe.is_some() && self.shoe_karon,

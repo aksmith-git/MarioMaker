@@ -58,7 +58,9 @@ pub enum Command {
 /// Sounds loaded per course (theme music is too large to keep every track decoded): the game
 /// thread decodes into these slots, then sends [`Command::LoadSlots`].
 pub type MusicSlots = Arc<std::sync::Mutex<[Option<Sound>; SLOTS]>>;
-pub const SLOTS: usize = 4;
+pub const SLOTS: usize = 12;
+/// Slots 0 … 3 hold the course music; 4 … 11 the sounds of the SMM1 costume being worn.
+pub const MUSIC_SLOTS: usize = 4;
 /// Sound id of music slot 0.
 pub const SLOT_BASE: u16 = 0xFF00;
 
@@ -219,10 +221,20 @@ impl Mixer {
             Command::LoadSlots => {
                 // never block the audio thread: if the game thread holds the lock, keep the old
                 if let Some(Ok(g)) = self.shared_slots.as_ref().map(|s| s.try_lock()) {
-                    // voices playing a slot sound stop first (its data is about to change)
+                    // voices playing a slot sound whose data changes stop first
+                    let same = |a: &Option<Sound>, b: &Option<Sound>| match (a, b) {
+                        (Some(a), Some(b)) => Arc::ptr_eq(&a.data, &b.data),
+                        (None, None) => true,
+                        _ => false,
+                    };
                     for v in &mut self.voices {
-                        if v.is_some_and(|v| v.sound >= SLOT_BASE) {
-                            *v = None;
+                        if let Some(voice) = v
+                            && voice.sound >= SLOT_BASE
+                        {
+                            let k = (voice.sound - SLOT_BASE) as usize;
+                            if k >= SLOTS || !same(&self.slots[k], &g[k]) {
+                                *v = None;
+                            }
                         }
                     }
                     self.slots = g.clone();

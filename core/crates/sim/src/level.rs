@@ -71,6 +71,8 @@ pub struct TileDraw {
     pub atlas: u32,
     /// bit 0: mirror horizontally, bit 1: mirror vertically
     pub flip: u8,
+    /// Part of a pipe (drawn in front of the player with the SMM1 layering option).
+    pub pipe: bool,
 }
 
 impl TileDraw {
@@ -606,6 +608,7 @@ impl Level {
             let (x, y) = (g.x as i32, g.y as i32);
             lvl.set(x, y, Cell::Solid);
             lvl.tiles.push(TileDraw {
+                pipe: false,
                 flip: 0,
                 x,
                 y,
@@ -996,6 +999,7 @@ impl Level {
                         0x7E
                     };
                     lvl.tiles.push(TileDraw {
+                        pipe: false,
                         x: tx,
                         y: ty + dy,
                         atlas,
@@ -1018,6 +1022,7 @@ impl Level {
                 for dx in 0..w {
                     lvl.set(tx + dx, ty, Cell::Solid);
                     lvl.tiles.push(TileDraw {
+                        pipe: false,
                         x: tx + dx,
                         y: ty,
                         atlas: 49, // [inf] placeholder art (bridge) until the belt model is found
@@ -1337,6 +1342,7 @@ impl Level {
                             }
                         };
                         lvl.tiles.push(TileDraw {
+                            pipe: false,
                             flip: 0,
                             x: tx + dx,
                             y: y_top,
@@ -1404,6 +1410,7 @@ impl Level {
             let row = (lo / TILE).floor() as i32;
             for y in sl.bottom..row {
                 self.tiles.push(TileDraw {
+                    pipe: false,
                     flip: 0,
                     x,
                     y,
@@ -1423,6 +1430,7 @@ impl Level {
                 }
             };
             self.tiles.push(TileDraw {
+                pipe: false,
                 flip: 0,
                 x,
                 y: row,
@@ -1454,7 +1462,13 @@ impl Level {
                     }
                 };
                 self.set(x, y, Cell::Solid);
-                self.tiles.push(TileDraw { x, y, atlas, flip });
+                self.tiles.push(TileDraw {
+                    x,
+                    y,
+                    atlas,
+                    flip,
+                    pipe: true,
+                });
             }
         }
     }
@@ -1474,6 +1488,7 @@ impl Level {
                 self.set(x, y, Cell::Solid);
                 let id = if y == height - 1 { 10 } else { 12 }; // top edge / interior
                 self.tiles.push(TileDraw {
+                    pipe: false,
                     flip: 0,
                     x,
                     y,

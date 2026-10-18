@@ -83,7 +83,9 @@ impl Game {
         };
         if let Ok(c) = mmk_formats::smm2::Course::parse(&bytes) {
             let audio = self.session.audio.clone();
+            let options = self.session.options;
             self.session = Session::new(Some(c));
+            self.session.set_options(options);
             self.session.set_audio(audio);
             self.editing = false;
             self.resolver.reset();

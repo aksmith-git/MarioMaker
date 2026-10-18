@@ -63,9 +63,13 @@ impl Output {
     }
 }
 
-/// Open the default output device and play `bank` (plus the course music `music` reads, if
-/// given) through a mixer at the device's rate.
-pub fn start(bank: Bank, music: Option<MusicReader>) -> Result<AudioStream, String> {
+/// Open the default output device and play `bank` (plus the course music `music` reads, and the
+/// SMM1 costume sounds of an SMM1 sprite cache, if given) through a mixer at the device's rate.
+pub fn start(
+    bank: Bank,
+    music: Option<MusicReader>,
+    smm1_sprites: Option<std::path::PathBuf>,
+) -> Result<AudioStream, String> {
     // the mixer needs the device's rate, which is only known once the stream is open
     let slot: Arc<std::sync::OnceLock<Arc<AudioOut>>> = Arc::default();
     let feed = slot.clone();
@@ -76,6 +80,9 @@ pub fn start(bank: Bank, music: Option<MusicReader>) -> Result<AudioStream, Stri
     let mut out = AudioOut::with_rate(bank, output.rate);
     if let Some(m) = music {
         out = out.with_music(m);
+    }
+    if let Some(dir) = smm1_sprites {
+        out = out.with_costume_dir(dir);
     }
     let out = Arc::new(out);
     let _ = slot.set(out.clone());

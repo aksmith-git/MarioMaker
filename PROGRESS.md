@@ -497,15 +497,40 @@ Not Nintendo's network: the engine talks to an open-source server the owner can 
 - ✅ Accounts without Nintendo services; moderation for self-hosters (`--admin-token`: ban/unban,
   delete any course)
 
-### Phase 11 — SMM1 extras, each behind a setting ⬜ (owner request 2026-10-18)
-From the owner's SMM1 (Wii U) dump, as options layered on SMM2 play:
-- ⬜ Costumes (Mystery Mushroom): costume characters, their walk/jump art and sounds, the 100 Mario
-  costume rewards
-- ⬜ Lanky Mario (Weird Mushroom): the tall form and its floatier jump
-- ⬜ Pipes drawn over the player (SMM1 layering), as a display setting
-- ⬜ Mid-air shell kicks / shell jumps (SMM1 physics quirk), as a physics setting
-- ⬜ Other SMM1-only behaviours worth offering (to survey: SMM1 sound effects, Big Mushroom in all
-  styles, …)
+### Phase 11 — SMM1 extras, each behind a setting 🔄 (owner request 2026-10-18)
+From the owner's SMM1 (Wii U) dump, as engine options layered on SMM2 play (`mmk_sim::Options`,
+all off = SMM2; FFI `mmk_engine_set_option`, `mmk-play` / `mmk simulate` flags). Rules from
+Block.rpx v208 (private spec research/specs/smm1-extras.md).
+- ✅ Mid-air shell kicks / shell jumps (`smm1_shell_kicks`): SMM1's flat 10 px falling stomp
+  window, still shells kicked without a bounce, the kicker's 16 / 8 / 4 no-hit windows and the
+  5-frame contact window, the 4.0 catch-up re-kick, and the mid-air wall assist (hop 3.51855, the
+  shell parks a tile short of the wall) — the "shell jump"
+- ✅ SMM1 draw order (`smm1_layering`): SMM1 draws the player in front of pipes in play (the
+  "pipes over the player" memory is the editor, and pipe travel); the option applies SMM1's
+  depth ladder: passing through a pipe the player is in front of blocks but behind the pipe,
+  coins behind blocks, tracks over pipes, the vine / pole / death depths
+- ✅ Lanky Mario (`smb1_mushroom=weird`, SMB1 courses' Super Mushrooms become Weird Mushrooms):
+  Super's body, jump launch +0.5 (≈ 6.3-tile standing jump), float cue, SMM1 pickup/damage rules,
+  the narrower item box; art imported (`M1_Player_SlimMarioMdl`, `M1_Item_kinokofunny`)
+- ✅ Costumes (`smb1_mushroom=mystery`, `costume` = id or random): small Mario's body and physics,
+  crouch, air turn, Up taunt, no helmets, Sonic's spin; costume ids as SMM1's; random pick from the
+  costumes with art; art (115 costumes, 24 × 24 frames) and sounds (jump/jump2, power-up, taunt,
+  landing, skid, death and clear jingles) imported by `mmk import-smm1` into `<cache>/sprites`
+- ⬜ Swift Settings toggles and the costume picker (FFI ready; app being rewritten separately)
+- ⬜ Options in replays / online play (replays and rollback sessions don't carry options yet: keep
+  them off for records)
+- ⬜ 100 Mario costume rewards (rules in smm1-100mario-code.md §7) and costume ownership
+- ⬜ Lanky Mario's float-cue and jump sounds (`M1_HEN_JUMP*`: not imported); pickup freeze length
+  for costumes [?]; Inkling squid frames while swimming; the random Weird Mushroom easter egg
+  (1 in 20, pity at 100; its gates are not understood)
+- ⬜ SMM2 mode fixes found on the way (fidelity log): still-shell stomps shouldn't bounce, SMM2's
+  kicker windows and wall assist
+- ⬜ Other SMM1-only behaviours (surveyed, research/specs/smm1-extras-misc.md §B): per-enemy pipe
+  spawn intervals (Goomba 140, others 180, no pipe colours); SMM1 spawn caps; Clown Car weight
+  classes; attack reactions (shells vs Lava Bubbles, Blooper stomps, Fish Bones in lava, star vs
+  Munchers); helmet reactions; behaviour presets (Green Koopa, Spike Top, pipe Blooper, Dry
+  Bones, Magikoopa); stacking heights; SMM1 sound effects (14 built-in + recordings); Big Mushroom
+  in other styles [?]
 
 ---
 
