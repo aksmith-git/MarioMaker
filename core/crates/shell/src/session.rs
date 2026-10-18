@@ -89,6 +89,8 @@ pub struct Session {
         mmk_netplay::Session<mmk_sim::World>,
         Box<dyn mmk_netplay::Link>,
     )>,
+    /// Engine options (SMM1 extras, `--option`), kept across restarts.
+    pub options: mmk_sim::Options,
 }
 
 impl Session {
@@ -116,7 +118,14 @@ impl Session {
             replay: mmk_modes::replay::Replay::new(),
             cleared_replay: None,
             net: None,
+            options: Default::default(),
         }
+    }
+
+    /// Use these engine options now and after every restart.
+    pub fn set_options(&mut self, options: mmk_sim::Options) {
+        self.options = options;
+        self.world.set_options(options);
     }
 
     /// Attach sound output (None detaches): the course music starts.
@@ -199,6 +208,7 @@ impl Session {
             Some(c) => World::from_course(c),
             None => World::new(),
         };
+        self.world.set_options(self.options);
         if let Some(d) = &mut self.director {
             d.start_course(&self.world);
         }
@@ -268,6 +278,12 @@ impl Session {
     /// Play online from here: `players` players (2–4), we are player `me` (0-based).
     pub fn go_online(&mut self, link: Box<dyn mmk_netplay::Link>, players: usize, me: usize) {
         let n = players.clamp(2, mmk_netplay::relay::MAX_ROOM);
+        // every peer plays by SMM2 rules (the options aren't exchanged)
+        if self.world.options.affects_play() {
+            crate::app::log("online: SMM1 play options are off for online play");
+            let o = self.world.options.look_only();
+            self.world.set_options(o);
+        }
         self.world.set_players(n);
         let net = mmk_netplay::Session::new(self.world.clone(), n, me.min(n - 1));
         self.net = Some((net, link));
@@ -342,7 +358,12 @@ impl Session {
         }
         self.was_dying = dying;
         if h.cleared {
-            if self.recording && self.world.others.is_empty() && self.phase != Phase::Cleared {
+            // a replay means SMM2 rules: none with options that change play
+            if self.recording
+                && self.world.others.is_empty()
+                && self.phase != Phase::Cleared
+                && !self.world.options.affects_play()
+            {
                 self.cleared_replay = Some(std::mem::take(&mut self.replay));
             }
             self.set_phase(Phase::Cleared, input.buttons);

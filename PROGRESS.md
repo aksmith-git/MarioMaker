@@ -437,12 +437,29 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   ×1.05 jump while dashing
 - ⬜ Every part (0–132, incl. 2.0/3.0 items from the update dump), Yoshi, shoes, clown cars,
   power-ups per style, Koopalings, Master Sword, etc.
-- 🔄 Course Maker (editor): core crate `editor` ✅ (place / erase parts with default sizes, child items,
-  flags, ground painting auto-tiled from a corpus-derived table, theme / night / timer / autoscroll /
-  style / name / length, undo-redo, save; tests play the saved course in the sim) · maker UI, copy,
-  sub-area links, pipes/doors, paths, tracks ⬜ · first maker UI ✅ in the portable shell
-  (`mmk-play --edit <file>`): engine-drawn course, ghost preview, 24-part palette, place/erase with
-  the mouse, scroll, undo/redo, save, Enter test-play / E back · SMM2 maker layouts ⬜
+- 🔄 Course Maker (editor): core crate `editor` — each step tested by saving the course, re-opening
+  it byte-identically and playing it in the sim (`unsupported_features` empty):
+  - ✅ parts: place / erase / resize (semisolid, mushroom platform, bridge, pipe, belt, lift, slopes,
+    vine, Bill Blaster, seesaw, trampolines, snake block, tree) with sizes, forms and composition from
+    the game's editor part table; big parts stored doubled; child items; ground auto-tiled
+  - ✅ both areas: main / sub switching, sub-area theme / night / vertical (48 wide, 28–168 tall in 7s),
+    area sizes (24–240), goal follows the right edge
+  - ✅ links: pipes (length / direction / colour, main↔sub warp ids, contents), door pairs (normal,
+    P, key), warp box pairs, link ids shared with tracks — encoded like the sample courses
+  - ✅ tracks (straight + 45°, corpus end codes, open / closed ends, parts on tracks: 0x400 + piece
+    link id) · snake block / ! block / track block / Piranha Creeper paths · ⬜ laying bends and
+    junctions, clear pipes, Lakitu-cloud / clown-car / claw riders (kept when editing a file)
+  - ✅ selection: rectangle copy / cut / paste / move / delete (parts, ground, tracks; all or nothing)
+  - ✅ settings: clear condition (category / CRC32 / magnitude), autoscroll incl. custom nodes and
+    speed, liquid mode / speed / heights, timer 10–500
+  - ✅ placement rules: the game's per-area part counters from v1.0.0 (100 enemies & gizmos, 100
+    power-ups, 2000 plain blocks & coins, 200 terrain parts, 1 checkpoint, 5 pink / big coins, 4
+    door and 4 warp-box pairs, 3 Bowsers, 10 path blocks, 5 snakes …; each reached exactly in the
+    sample), the validators' size ranges, style-only parts, header ranges (timer, start / goal
+    heights, area sizes, custom autoscroll main-area only); overlap layers, start / goal zones and
+    containers from the sample · v3 parts' limits (120–132) and per-part flag masks ⬜
+  - ✅ shell maker UI (`mmk-play --edit <file>`): engine-drawn area, ghost preview, 40-part palette,
+    keys for everything above (README) · SMM2 maker layouts ⬜
 - ⬜ Story Mode (Peach's castle jobs, built-in courses from the owner's dump), Coursebot, Lessons
 - 🔄 Endless Challenge: its menus and map present the 100 Mario Challenge (above); SMM2's own
   endless rules ⬜
@@ -485,15 +502,40 @@ Not Nintendo's network: the engine talks to an open-source server the owner can 
 - ✅ Accounts without Nintendo services; moderation for self-hosters (`--admin-token`: ban/unban,
   delete any course)
 
-### Phase 11 — SMM1 extras, each behind a setting ⬜ (owner request 2026-10-18)
-From the owner's SMM1 (Wii U) dump, as options layered on SMM2 play:
-- ⬜ Costumes (Mystery Mushroom): costume characters, their walk/jump art and sounds, the 100 Mario
-  costume rewards
-- ⬜ Lanky Mario (Weird Mushroom): the tall form and its floatier jump
-- ⬜ Pipes drawn over the player (SMM1 layering), as a display setting
-- ⬜ Mid-air shell kicks / shell jumps (SMM1 physics quirk), as a physics setting
-- ⬜ Other SMM1-only behaviours worth offering (to survey: SMM1 sound effects, Big Mushroom in all
-  styles, …)
+### Phase 11 — SMM1 extras, each behind a setting 🔄 (owner request 2026-10-18)
+From the owner's SMM1 (Wii U) dump, as engine options layered on SMM2 play (`mmk_sim::Options`,
+all off = SMM2; FFI `mmk_engine_set_option`, `mmk-play` / `mmk simulate` flags). Rules from
+Block.rpx v208 (private spec research/specs/smm1-extras.md).
+- ✅ Mid-air shell kicks / shell jumps (`smm1_shell_kicks`): SMM1's flat 10 px falling stomp
+  window, still shells kicked without a bounce, the kicker's 16 / 8 / 4 no-hit windows and the
+  5-frame contact window, the 4.0 catch-up re-kick, and the mid-air wall assist (hop 3.51855, the
+  shell parks a tile short of the wall) — the "shell jump"
+- ✅ SMM1 draw order (`smm1_layering`): SMM1 draws the player in front of pipes in play (the
+  "pipes over the player" memory is the editor, and pipe travel); the option applies SMM1's
+  depth ladder: passing through a pipe the player is in front of blocks but behind the pipe,
+  coins behind blocks, tracks over pipes, the vine / pole / death depths
+- ✅ Lanky Mario (`smb1_mushroom=weird`, SMB1 courses' Super Mushrooms become Weird Mushrooms):
+  Super's body, jump launch +0.5 (≈ 6.3-tile standing jump), float cue, SMM1 pickup/damage rules,
+  the narrower item box; art imported (`M1_Player_SlimMarioMdl`, `M1_Item_kinokofunny`)
+- ✅ Costumes (`smb1_mushroom=mystery`, `costume` = id or random): small Mario's body and physics,
+  crouch, air turn, Up taunt, no helmets, Sonic's spin; costume ids as SMM1's; random pick from the
+  costumes with art; art (115 costumes, 24 × 24 frames) and sounds (jump/jump2, power-up, taunt,
+  landing, skid, death and clear jingles) imported by `mmk import-smm1` into `<cache>/sprites`
+- ⬜ Swift Settings toggles and the costume picker (FFI ready; app being rewritten separately)
+- ⬜ Options in replays / online play (replays and rollback sessions don't carry options yet: keep
+  them off for records)
+- ⬜ 100 Mario costume rewards (rules in smm1-100mario-code.md §7) and costume ownership
+- ⬜ Lanky Mario's float-cue and jump sounds (`M1_HEN_JUMP*`: not imported); pickup freeze length
+  for costumes [?]; Inkling squid frames while swimming; the random Weird Mushroom easter egg
+  (1 in 20, pity at 100; its gates are not understood)
+- ⬜ SMM2 mode fixes found on the way (fidelity log): still-shell stomps shouldn't bounce, SMM2's
+  kicker windows and wall assist
+- ⬜ Other SMM1-only behaviours (surveyed, research/specs/smm1-extras-misc.md §B): per-enemy pipe
+  spawn intervals (Goomba 140, others 180, no pipe colours); SMM1 spawn caps; Clown Car weight
+  classes; attack reactions (shells vs Lava Bubbles, Blooper stomps, Fish Bones in lava, star vs
+  Munchers); helmet reactions; behaviour presets (Green Koopa, Spike Top, pipe Blooper, Dry
+  Bones, Magikoopa); stacking heights; SMM1 sound effects (14 built-in + recordings); Big Mushroom
+  in other styles [?]
 
 ---
 

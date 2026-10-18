@@ -2764,6 +2764,25 @@ impl Actor {
             .collect()
     }
 
+    /// The stalk's solid boxes (x0, y0, x1, y1): each grown piece is two 16-px-thick boxes, from
+    /// its entry side to its centre and from its centre to its exit side (an L at corners)
+    /// [obs: stalk terrain colliders, type 0x12; the half-tile base box isn't modelled, inf].
+    pub fn creeper_solids(&self, codes: &[u8]) -> Vec<(f32, f32, f32, f32)> {
+        let pieces = creeper_pieces(codes);
+        let n = (self.w3.node.max(0) as usize).min(pieces.len());
+        let half = CREEP_CELL / 4.0;
+        let mut out = Vec::with_capacity(2 * n);
+        for (k, &(entry, exit)) in pieces.iter().enumerate().take(n) {
+            let (cx, cy) = self.creeper_centre(&pieces, k);
+            for (d, sign) in [(entry, -1.0), (exit, 1.0)] {
+                let (dx, dy) = DIRS[d as usize];
+                let (mx, my) = (cx + sign * dx * half, cy + sign * dy * half);
+                out.push((mx - half, my - half, mx + half, my + half));
+            }
+        }
+        out
+    }
+
     /// Plays piece `k` from its start (or its end when going back).
     fn creeper_enter_piece(&mut self, k: i32, back: bool) {
         self.w3.node = k;

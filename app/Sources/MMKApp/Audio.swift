@@ -22,6 +22,9 @@ final class AudioOutput {
             return nil
         }
         handle = h
+        if let smm1 = AppPaths.findSMM1Cache() {
+            mmk_audio_add_smm1_sprites(h, smm1.appendingPathComponent("sprites").path)
+        }
         scratch = .allocate(capacity: scratchFrames * 2)
         scratch.initialize(repeating: 0, count: scratchFrames * 2)
 

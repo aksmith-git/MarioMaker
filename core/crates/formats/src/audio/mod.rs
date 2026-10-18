@@ -3,9 +3,11 @@
 pub mod bars;
 pub mod bwav;
 pub mod dsp;
+pub mod fwav;
 
 pub use bars::Bars;
 pub use bwav::{Bwav, Codec};
+pub use fwav::Fwav;
 
 /// Decode every channel of a BWAV to interleaved PCM16 with at most `max_channels` channels.
 /// Returns (channels, samples per channel, interleaved data).

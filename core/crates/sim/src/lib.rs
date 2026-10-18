@@ -16,6 +16,7 @@ pub mod fmath;
 pub mod input;
 pub mod level;
 pub mod liquid;
+pub mod options;
 pub mod player;
 pub mod render;
 pub mod snake;
@@ -24,5 +25,6 @@ pub mod warp;
 pub mod world;
 
 pub use input::Input;
+pub use options::{MushroomSwap, Options};
 pub use render::{Sprite, SpriteImage};
 pub use world::{Event, Hud, World};

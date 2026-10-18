@@ -27,6 +27,7 @@ pub mod sprites;
 /// 5: mesh stage (meshes/, anims/), StaticModel.pack models of the 3D styles.
 pub const IMPORTER_VERSION: u32 = 5;
 pub mod smm1;
+pub mod smm1_costumes;
 pub use smm1::{Smm1Config, Smm1Report, run_smm1};
 pub mod smm2_font;
 pub mod smm2_ui;

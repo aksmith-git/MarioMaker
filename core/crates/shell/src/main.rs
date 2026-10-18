@@ -204,6 +204,57 @@ mod native {
         start_x: Option<f32>,
         #[arg(long, default_value_t = 32.0)]
         start_y: f32,
+        /// SMM1 extra: SMM1 shell physics (mid-air shell kicks, shell jumps).
+        #[arg(long)]
+        smm1_shell_kicks: bool,
+        /// SMM1 extra: SMM1 draw order (the player travels between blocks and pipes, coins behind
+        /// blocks, tracks in front of pipes, …).
+        #[arg(long)]
+        smm1_layering: bool,
+        /// SMM1 extra: Super Mushrooms in SMB1-style courses become Mystery Mushrooms
+        /// (costumes) or Weird Mushrooms (Lanky Mario): off, mystery, weird.
+        #[arg(long, value_name = "off|mystery|weird")]
+        smb1_mushroom: Option<String>,
+        /// SMM1 extra: the Mystery Mushroom costume (an id of the SMM1 costume table, or
+        /// "random", the default).
+        #[arg(long, value_name = "ID|random")]
+        costume: Option<String>,
+        /// Any engine option as NAME=VALUE (repeatable; see `mmk_sim::Options`).
+        #[arg(long = "option", value_name = "NAME=VALUE")]
+        options: Vec<String>,
+        /// SMM1 extras art: costumes, Lanky Mario, Weird/Mystery Mushrooms (`mmk import-smm1`
+        /// output's sprites/ folder; "none" to skip). Default: $MMK_SMM1_SPRITES, else
+        /// ~/smm-work/cache/smm1-v208/sprites if it exists.
+        #[arg(long, value_name = "DIR")]
+        smm1_sprites: Option<String>,
+    }
+
+    fn default_smm1_sprites() -> Option<PathBuf> {
+        if let Ok(p) = std::env::var("MMK_SMM1_SPRITES") {
+            return (!p.is_empty() && p != "none").then(|| PathBuf::from(p));
+        }
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+        let p = PathBuf::from(home).join("smm-work/cache/smm1-v208/sprites");
+        p.join("manifest.json").is_file().then_some(p)
+    }
+
+    /// The engine options from the command line.
+    fn engine_options(args: &Args) -> Result<mmk_sim::Options, String> {
+        let mut o = mmk_sim::Options {
+            smm1_shell_kicks: args.smm1_shell_kicks,
+            smm1_layering: args.smm1_layering,
+            ..Default::default()
+        };
+        if let Some(m) = &args.smb1_mushroom {
+            o.apply(&format!("smb1_mushroom={m}"))?;
+        }
+        if let Some(c) = &args.costume {
+            o.apply(&format!("costume={c}"))?;
+        }
+        for a in &args.options {
+            o.apply(a)?;
+        }
+        Ok(o)
     }
 
     fn default_assets() -> Option<PathBuf> {
@@ -493,6 +544,26 @@ mod native {
             None => None,
         };
         let mut game = Game::load(source_ref, if args.edit { None } else { course.as_deref() })?;
+        let smm1_sprites = match args.smm1_sprites.as_deref() {
+            Some("none") => None,
+            Some(p) => Some(PathBuf::from(p)),
+            None => default_smm1_sprites(),
+        };
+        if let Some(dir) = smm1_sprites.clone().filter(|_| assets_dir.is_some())
+            && let Some(cache) = Arc::get_mut(&mut game.cache)
+        {
+            match mmk_assets::Cache::open(&dir) {
+                Ok(c) => {
+                    cache.merge(c);
+                    log(&format!(
+                        "SMM1 sprites: {} ({} costumes)",
+                        dir.display(),
+                        cache.costumes().len()
+                    ));
+                }
+                Err(e) => log(&format!("SMM1 sprites: {e}")),
+            }
+        }
         let ghost = match (&args.ghost_file, args.ghost, &args.code, &args.server) {
             (Some(p), _, _, _) => {
                 Some(std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?)
@@ -580,6 +651,12 @@ mod native {
             )),
             None => log("assets: none, drawing placeholder boxes"),
         }
+        let mut options = engine_options(&args)?;
+        let costumes = game.cache.costumes();
+        if !costumes.is_empty() {
+            options.set_costume_pool(costumes.iter().map(|(id, _)| *id));
+        }
+        game.session.set_options(options);
         if args.players > 1 {
             game.session.world.set_players(args.players);
         }
@@ -681,9 +758,9 @@ mod native {
         };
         let mute = args.mute || std::env::var("MMK_MUTE").as_deref() == Ok("1");
         let audio = match (&source, mute) {
-            (Some(s), false) => match source::open_bank(s)
-                .and_then(|bank| mmk_shell::audio_out::start(bank, source::music_reader(s)))
-            {
+            (Some(s), false) => match source::open_bank(s).and_then(|bank| {
+                mmk_shell::audio_out::start(bank, source::music_reader(s), smm1_sprites.clone())
+            }) {
                 Ok(a) => Some(a),
                 Err(e) => {
                     log(&format!("sound off: {e}"));

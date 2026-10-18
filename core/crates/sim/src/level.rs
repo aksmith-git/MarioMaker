@@ -71,6 +71,8 @@ pub struct TileDraw {
     pub atlas: u32,
     /// bit 0: mirror horizontally, bit 1: mirror vertically
     pub flip: u8,
+    /// Part of a pipe (drawn in front of the player with the SMM1 layering option).
+    pub pipe: bool,
 }
 
 impl TileDraw {
@@ -606,6 +608,7 @@ impl Level {
             let (x, y) = (g.x as i32, g.y as i32);
             lvl.set(x, y, Cell::Solid);
             lvl.tiles.push(TileDraw {
+                pipe: false,
                 flip: 0,
                 x,
                 y,
@@ -644,11 +647,11 @@ impl Level {
             .values()
             .map(|c| (c.head.index, c.nodes.iter().map(|n| n.direction).collect()))
             .collect();
-        lvl.tracks = crate::track::Tracks::new(
+        lvl.tracks = crate::track::Tracks::with_ends(
             area.tracks
                 .iter()
                 .filter(|t| t.x != 0 || t.y != 0 || t.r#type != 0 || t.k0 != 0)
-                .map(|t| (t.x, t.y, t.r#type)),
+                .map(|t| (t.x, t.y, t.r#type, t.k0, t.k1)),
         );
 
         // tile-like objects: (x, y) is the centre of the bottom-left tile [toost LevelDrawer
@@ -996,6 +999,7 @@ impl Level {
                         0x7E
                     };
                     lvl.tiles.push(TileDraw {
+                        pipe: false,
                         x: tx,
                         y: ty + dy,
                         atlas,
@@ -1018,6 +1022,7 @@ impl Level {
                 for dx in 0..w {
                     lvl.set(tx + dx, ty, Cell::Solid);
                     lvl.tiles.push(TileDraw {
+                        pipe: false,
                         x: tx + dx,
                         y: ty,
                         atlas: 49, // [inf] placeholder art (bridge) until the belt model is found
@@ -1089,9 +1094,10 @@ impl Level {
                 continue;
             }
             if o.id == 84 {
-                // snake block: path from the snake section (index = extended data & 0xF), head on
-                // the left when extended data bit 0x10 ("start from the other end") is set
-                let idx = (o.extended_data & 0xF) as u8;
+                // snake block: path from the snake section (extended data & 0xF is its index + 1:
+                // every sample course stores it so [obs corpus, 65 areas]), head on the left when
+                // extended data bit 0x10 ("start from the other end") is set
+                let idx = ((o.extended_data & 0xF) as u8).wrapping_sub(1);
                 let codes: Vec<u16> = area
                     .snake_blocks
                     .slots
@@ -1336,6 +1342,7 @@ impl Level {
                             }
                         };
                         lvl.tiles.push(TileDraw {
+                            pipe: false,
                             flip: 0,
                             x: tx + dx,
                             y: y_top,
@@ -1403,6 +1410,7 @@ impl Level {
             let row = (lo / TILE).floor() as i32;
             for y in sl.bottom..row {
                 self.tiles.push(TileDraw {
+                    pipe: false,
                     flip: 0,
                     x,
                     y,
@@ -1422,6 +1430,7 @@ impl Level {
                 }
             };
             self.tiles.push(TileDraw {
+                pipe: false,
                 flip: 0,
                 x,
                 y: row,
@@ -1453,7 +1462,13 @@ impl Level {
                     }
                 };
                 self.set(x, y, Cell::Solid);
-                self.tiles.push(TileDraw { x, y, atlas, flip });
+                self.tiles.push(TileDraw {
+                    x,
+                    y,
+                    atlas,
+                    flip,
+                    pipe: true,
+                });
             }
         }
     }
@@ -1473,6 +1488,7 @@ impl Level {
                 self.set(x, y, Cell::Solid);
                 let id = if y == height - 1 { 10 } else { 12 }; // top edge / interior
                 self.tiles.push(TileDraw {
+                    pipe: false,
                     flip: 0,
                     x,
                     y,

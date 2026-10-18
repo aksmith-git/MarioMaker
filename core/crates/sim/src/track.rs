@@ -8,8 +8,11 @@
 //! the right; types 4–7 are bends between the same corner points as the diagonals: an 8-px
 //! straight lead, a quarter circle of radius 24 px (the rail follower's arc radius,
 //! 0x7100340720) [obs], and another 8-px lead (which way each bulges is a guess [inf]). Pieces sharing an end point are joined.
-//! Junctions (types 8–15) are rare and not built yet. A rider reaching a free end turns back
-//! (closed end); open ends, where the rider falls off, are not told apart yet [?].
+//! Junctions (types 8–15) are rare and not built yet. A rider reaching a free end turns back at a
+//! closed end (end code 0x70–0x77) and leaves the track at an open one (0x80–0x87, the closed
+//! cap + 0x10) [obs: reverse vs FallDown in the follower 0x7100340720; codes per corpus and the
+//! editor]. The record's k0 belongs to the end at centre + (1, 0) / (0, 1) / (−1, 1) / (1, 1)
+//! for types 0–3, k1 to the other end.
 
 use std::collections::HashMap;
 
@@ -104,6 +107,13 @@ impl Piece {
 pub struct Tracks {
     pieces: Vec<Piece>,
     nodes: HashMap<(i32, i32), Vec<(usize, usize)>>,
+    /// Free ends whose code says riders fall off there.
+    open: std::collections::HashSet<(i32, i32)>,
+}
+
+/// An end code (low 12 bits of k0 / k1) that marks an open end.
+pub fn is_open_end(code: u16) -> bool {
+    (0x80..0x88).contains(&(code & 0xFFF))
 }
 
 fn key(p: (f32, f32)) -> (i32, i32) {
@@ -111,14 +121,35 @@ fn key(p: (f32, f32)) -> (i32, i32) {
 }
 
 impl Tracks {
-    /// Build from track records: (x, y, type) with 255 meaning −1.
+    /// Build from track records: (x, y, type) with 255 meaning −1 (all ends closed).
     pub fn new(records: impl IntoIterator<Item = (u8, u8, u8)>) -> Self {
+        Self::with_ends(records.into_iter().map(|(x, y, ty)| (x, y, ty, 0, 0)))
+    }
+
+    /// Build from track records with their end codes: (x, y, type, k0, k1).
+    pub fn with_ends(records: impl IntoIterator<Item = (u8, u8, u8, u16, u16)>) -> Self {
         let mut t = Tracks::default();
-        for (x, y, ty) in records {
+        for (x, y, ty, k0, k1) in records {
             let x = if x == 255 { -1 } else { x as i32 };
             let y = if y == 255 { -1 } else { y as i32 };
             let c = ((x + 1) as f32 * TILE + 8.0, (y + 1) as f32 * TILE + 8.0);
             let at = |dx: f32, dy: f32| (c.0 + dx * TILE, c.1 + dy * TILE);
+            // which end each code belongs to (types 0–3)
+            let k0_end = match ty {
+                0 => Some((1.0, 0.0)),
+                1 => Some((0.0, 1.0)),
+                2 => Some((-1.0, 1.0)),
+                3 => Some((1.0, 1.0)),
+                _ => None,
+            };
+            if let Some((dx, dy)) = k0_end {
+                if is_open_end(k0) {
+                    t.open.insert(key(at(dx, dy)));
+                }
+                if is_open_end(k1) {
+                    t.open.insert(key(at(-dx, -dy)));
+                }
+            }
             let seg = match ty {
                 0 => Seg::Line {
                     a: at(-1.0, 0.0),
@@ -240,6 +271,8 @@ pub struct Rail {
     /// +1 toward the piece's end 1, −1 toward end 0.
     dir: f32,
     pub speed: f32,
+    /// Ran past an open end: the rider has left the track.
+    pub off: bool,
 }
 
 impl Rail {
@@ -259,6 +292,7 @@ impl Rail {
             s,
             dir: if dot < -1e-3 { -1.0 } else { 1.0 },
             speed: if winged { SPEED_WINGED } else { SPEED },
+            off: false,
         })
     }
 
@@ -301,6 +335,11 @@ impl Rail {
                     self.piece = i;
                     self.s = s;
                     self.dir = dir;
+                }
+                None if tracks.open.contains(&p.ends[end]) => {
+                    // open end: off the track
+                    self.off = true;
+                    break;
                 }
                 None => self.dir = -self.dir, // closed end: turn back
             }
@@ -375,5 +414,30 @@ mod tests {
             assert!((d - 1.5).abs() < 0.05, "{d}");
             prev = p;
         }
+    }
+
+    #[test]
+    fn open_ends_let_the_rider_off_and_closed_ends_turn_it_back() {
+        // one horizontal piece: k0 (its right end) open, k1 (left) closed
+        let t = Tracks::with_ends([(10, 10, 0, 0x81, 0x70)]);
+        let y = 11.0 * 16.0 + 8.0;
+        // start heading right (start field 1 = right)
+        let mut r = Rail::attach(&t, 11.0 * 16.0 + 8.0, y, 1, false).unwrap();
+        for _ in 0..200 {
+            r.step(&t);
+            if r.off {
+                break;
+            }
+        }
+        assert!(r.off, "left at the open right end");
+        assert!(r.point(&t).0 > 12.0 * 16.0, "at the right end");
+        // the same piece with both ends closed: it keeps bouncing
+        let closed = Tracks::with_ends([(10, 10, 0, 0x71, 0x70)]);
+        let mut r = Rail::attach(&closed, 11.0 * 16.0 + 8.0, y, 1, false).unwrap();
+        for _ in 0..500 {
+            r.step(&closed);
+        }
+        assert!(!r.off);
+        assert!(is_open_end(0x87) && !is_open_end(0x77) && !is_open_end(0x104));
     }
 }
