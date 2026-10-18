@@ -55,6 +55,9 @@ class CheckFileTests(unittest.TestCase):
         self.assertTrue(check_file(self.write("blob.bin", b"\xcf\xfa\xed\xfe" + b"\x00" * 16)))
         self.assertTrue(check_file(self.write("shader.dat", b"\x03\x02\x23\x07" + b"\x00" * 16)))
 
+    def test_player_trace_records_blocked(self):
+        self.assertTrue(check_file(self.write("walk.bin", b"TRC1" + b"\x00" * 32)))
+
     def test_recomp_private_and_generated_paths_blocked(self):
         for sub in ("recomp/private", "recomp/generated"):
             d = self.dir / sub

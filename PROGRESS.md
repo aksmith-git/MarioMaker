@@ -74,7 +74,19 @@ framework ideas; Ryujinx as the reference). Nothing counts as done without the e
   (not exactly alignable: Ryujinx grabs are wall-clock timed). Ryujinx against itself: 0.3-1.8 %.
   Evidence: `recomp/private/smm2/evidence/r1/final_*` (`_side_by_side.png`, `_diff.png`, `_recomp.png`; private,
   not in git)
-- ⬜ R2: play a course by input injection; input-replay comparison against Ryujinx
+- ✅ R2 (macOS): plays courses by input injection, and input replays stay in sync with Ryujinx frame for frame
+  (2026-10-19). The game now gets input (`nn::hid::GetNpadStates` answered by the runtime; before, it saw none,
+  keyboard included); `RECOMP_PAD_SCRIPT` plays the Ryujinx trace tooling's scripts on the game's own clock (one frame
+  per player update); `RECOMP_TRACE_OUT` records the player at the same instruction as the Ryujinx trace build;
+  `tools/replay_sync.py` runs both and compares. What it took and how: `recomp/docs/smm2-bringup.md` ("Input replays")
+  - Replays: 31 sessions, 456 tests (flat, wall, slope, water, items and power-up forms in all five styles, plus
+    two runs on the game's own title course with enemies): 221,189 of 221,189 player updates identical in position,
+    speed, facing and state, bit for bit; the whole 12 KB player object identical apart from one word holding a heap
+    address. No divergence, so no recomp bug to fix
+  - Plays: the game's own title course from the start to the goal (Koopa Car, enemies, coins; 1,911 updates, identical
+    in both runtimes); Course Maker test play reached through the menus (L + R, Make, −) on the presented-frame clock
+  Evidence: `recomp/private/smm2/evidence/r2/` (per-course tables `results/*.md`, traces of both runtimes, sessions,
+  screenshots; private, not in git)
 - 🔄 Mods: 100 Mario Challenge on SMM2's Endless Challenge (100 lives, SMM1 run rules, courses from
   our server or the local library); Mystery Mushroom costumes (model, sounds, physics swaps)
   - ✅ Server side: Endless runs take a ruleset at `/start` (`smm2`, or `hundred`: 100 lives capped
@@ -86,7 +98,7 @@ framework ideas; Ryujinx as the reference). Nothing counts as done without the e
 
 | Platform | Builds | Boots to title | Plays courses | Frames match Ryujinx | Input replays in sync |
 |---|---|---|---|---|---|
-| macOS (Apple Silicon, Metal) | ✅ | ✅ title rendered, 60 fps | ⬜ | 🔄 title, 5 courses / 4 styles: 2.5-4.8 % px >24, 0.13-1.15 % >96 | ⬜ |
+| macOS (Apple Silicon, Metal) | ✅ | ✅ title rendered, 60 fps | ✅ title course to the goal, Course Maker test play | 🔄 title, 5 courses / 4 styles: 2.5-4.8 % px >24, 0.13-1.15 % >96 | ✅ 221,189 / 221,189 updates identical (31 sessions) |
 | Windows (x64, Vulkan) | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
 | Linux (x64, Vulkan) | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
 | iOS / iPadOS (arm64, Metal, AOT) | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |

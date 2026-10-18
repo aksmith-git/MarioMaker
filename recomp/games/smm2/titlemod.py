@@ -5,8 +5,9 @@
 
 Use the folder as a Ryujinx LayeredFS mod (<root>/mods/contents/01009b90006dc000/<name>/romfs; copies, not links).
 The recomp picks its course with SMM2_SEED instead (games/smm2/seed.c: 4 -> 00, 2 -> 01, 1 -> 02, 6 -> 05,
-3 -> 06, 10 -> 07; 08 and 09 only come up once the save unlocks them): with this mod (RECOMP_MOD_DIR) a course
-other than the slot's own crashes the recomp while loading the title scene (docs/smm2-bringup.md, open issues).
+3 -> 06, 10 -> 07; 08 and 09 only come up once the save unlocks them): a course other than the slot's own ends
+both runtimes while the title scene loads (the game's behaviour: Ryujinx does it too when made to pick that slot;
+docs/smm2-bringup.md, open issues), so with this mod Ryujinx works only while it happens to pick slot N.
 """
 import argparse
 import os
