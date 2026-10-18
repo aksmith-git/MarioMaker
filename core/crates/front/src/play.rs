@@ -554,12 +554,35 @@ impl CoursePlay {
                     return None;
                 }
                 if pressed.has(Buttons::LEFT) {
-                    s.clear_select(0, true);
+                    let n = s.clear_neighbour(s.clear_selection, false);
+                    s.clear_select(n, true);
                 }
                 if pressed.has(Buttons::RIGHT) {
-                    s.clear_select(1, true);
+                    let n = s.clear_neighbour(s.clear_selection, true);
+                    s.clear_select(n, true);
                 }
                 if pressed.has(Buttons::CONFIRM) {
+                    if s.clear_selection >= 2 {
+                        // Like / Boo a server course (an account's vote replaces its last one)
+                        let like = s.clear_selection == 3;
+                        let code = s.info.server_code.clone().unwrap_or_default();
+                        if !cx.online.signed_in() {
+                            s.ui_decide_sound(s.clear_selection);
+                            cx.toast("Sign in from the Course World player card to vote.");
+                        } else if cx
+                            .online
+                            .call(
+                                cx.host,
+                                "vote",
+                                serde_json::json!({ "code": code, "like": like }),
+                            )
+                            .is_some()
+                        {
+                            s.ui_decide_sound(s.clear_selection);
+                            s.clear_voted(like);
+                        }
+                        return None;
+                    }
                     let left = s.clear_selection == 0;
                     let wait = s.clear_decide();
                     self.pending = Some((t + wait.max(1), Pending::Clear { left }));

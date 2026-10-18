@@ -26,6 +26,10 @@ pub mod play;
 pub mod screens;
 pub mod smm1;
 pub mod sound;
+#[cfg(test)]
+pub(crate) mod testing;
+#[cfg(test)]
+mod tests_online;
 pub mod title;
 pub mod world;
 
@@ -555,8 +559,8 @@ impl Front {
 
     /// Captures: jump to a screen the way the Swift app's `MMK_UI_SCREEN` does: boot, title,
     /// title-main, title-play, courseworld, courseworld-list, the online screens (account,
-    /// courseworld-leaderboards, courseworld-course-page / -comments / -post / -maker of the
-    /// list's first server course), challenge, challenge-map,
+    /// courseworld-leaderboards, courseworld-course-page / -comments / -post / -maker / -play /
+    /// -clear of the list's first server course), challenge, challenge-map,
     /// challenge-walk, challenge-gameover, challenge-ending (`difficulty`, `cleared` for the
     /// walk). Returns false for an unknown name.
     pub fn capture(
@@ -613,7 +617,9 @@ impl Front {
             "courseworld-course-page"
             | "courseworld-comments"
             | "courseworld-post"
-            | "courseworld-maker" => {
+            | "courseworld-maker"
+            | "courseworld-play"
+            | "courseworld-clear" => {
                 self.show_world(host, ListKind::World, 0);
                 self.apply(host, Go::World(WorldGo::List));
                 let what = &screen["courseworld-".len()..];

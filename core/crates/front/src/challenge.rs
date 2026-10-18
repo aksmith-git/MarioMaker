@@ -465,6 +465,22 @@ impl ChallengeFlow {
         }
     }
 
+    /// The SMM2 presentation is the Endless Challenge: each clear tells the course server the
+    /// run's courses cleared so far (`endless`; the server keeps the best per difficulty) when
+    /// signed in [inf: reported as it grows, so a run that ends any way counts].
+    pub(crate) fn report_endless(&mut self, cx: &mut Cx) {
+        if !self.smm2() || !cx.online.signed_in() {
+            return;
+        }
+        let difficulty = ["easy", "normal", "expert", "super_expert"][self.run.difficulty.min(3)];
+        let cleared = self.run.challenge.cleared().len();
+        cx.online.call(
+            cx.host,
+            "endless",
+            serde_json::json!({ "difficulty": difficulty, "cleared": cleared }),
+        );
+    }
+
     /// Run a deferred step (after its fade covered the screen).
     pub fn go(&mut self, cx: &mut Cx, g: ChallengeGo) {
         match g {
@@ -475,8 +491,10 @@ impl ChallengeFlow {
 
     pub fn step(&mut self, input: &PlayInput, cx: &mut Cx) -> Option<ChallengeEvent> {
         if let Some(p) = &mut self.playing {
-            if p.step(input, cx, Some(&mut self.run)) == Some(PlayEvent::Exit) {
-                self.session_ended(cx);
+            match p.step(input, cx, Some(&mut self.run)) {
+                Some(PlayEvent::Exit) => self.session_ended(cx),
+                Some(PlayEvent::Cleared) => self.report_endless(cx),
+                None => {}
             }
             return None;
         }

@@ -5,7 +5,7 @@
 //! "100 Mario screens: SMM1 layouts").
 
 use crate::layout::{Layout, Ui};
-use crate::menu::{Buttons, UiInput};
+use crate::menu::{Buttons, UiInput, hit};
 use crate::{DrawItem, push_layout};
 
 /// What the intro card shows.
@@ -338,7 +338,10 @@ impl ChallengeMenuScene {
             self.leaving = None;
         }
         self.maps[self.difficulty].as_ref()?;
-        let p = input.pressed;
+        let mut p = input.pressed;
+        if let Some(c) = input.click {
+            p = p | self.click(c, q);
+        }
         if p.has(Buttons::LEFT) || p.has(Buttons::RIGHT) {
             let right = p.has(Buttons::RIGHT);
             let d = if right {
@@ -346,19 +349,7 @@ impl ChallengeMenuScene {
             } else {
                 self.difficulty.saturating_sub(1)
             };
-            if d != self.difficulty && self.prepare(d, q).is_some() {
-                let tick = self.tick;
-                if let Some(mut m) = self.maps[self.difficulty].take() {
-                    m.layout.play(if right { "OutL" } else { "OutR" }, tick);
-                    self.leaving = Some((m, tick + 32));
-                }
-                self.difficulty = d;
-                self.refresh(d, q);
-                if let Some(n) = &mut self.maps[d] {
-                    n.layout.play(if right { "InR" } else { "InL" }, tick);
-                }
-                self.update_tabs(q);
-            }
+            self.switch_to(d, q);
             return None;
         }
         let d = self.difficulty;
@@ -390,6 +381,65 @@ impl ChallengeMenuScene {
             });
         }
         None
+    }
+
+    /// Tests: where start button `part` of the current map is drawn.
+    #[cfg(test)]
+    pub(crate) fn start_button_center(&mut self, part: &str) -> Option<[f32; 2]> {
+        let m = self.maps[self.difficulty].as_mut()?;
+        m.layout.apply(self.tick);
+        m.layout.rect(&format!("{part}/B_Btn_00")).map(|r| r.center)
+    }
+
+    /// Slide over to difficulty `d`'s map (the maps' Out / In towards the tab).
+    fn switch_to(&mut self, d: usize, q: &dyn RunQuery) {
+        if d == self.difficulty || self.prepare(d, q).is_none() {
+            return;
+        }
+        let right = d > self.difficulty;
+        let tick = self.tick;
+        if let Some(mut m) = self.maps[self.difficulty].take() {
+            m.layout.play(if right { "OutL" } else { "OutR" }, tick);
+            self.leaving = Some((m, tick + 32));
+        }
+        self.difficulty = d;
+        self.refresh(d, q);
+        if let Some(n) = &mut self.maps[d] {
+            n.layout.play(if right { "InR" } else { "InL" }, tick);
+        }
+        self.update_tabs(q);
+    }
+
+    /// A click: a difficulty tab (its map slides in), Continue / New Game (focuses and
+    /// decides it). The buttons to add as if pressed.
+    fn click(&mut self, c: [f32; 2], q: &dyn RunQuery) -> Buttons {
+        let tick = self.tick;
+        let tabs: Vec<String> = TABS.iter().map(|t| format!("{t}/B_Btn_00")).collect();
+        if let Some(d) = hit(&mut self.title, tick, &tabs, c) {
+            self.switch_to(d, q);
+            return Buttons::NONE;
+        }
+        let d = self.difficulty;
+        let starts = [
+            "L_StartBtn_01/B_Btn_00".to_string(),
+            "L_StartBtn_00/B_Btn_00".to_string(),
+        ];
+        let Some(m) = &mut self.maps[d] else {
+            return Buttons::NONE;
+        };
+        match hit(&mut m.layout, tick, &starts, c) {
+            Some(0) if q.can_continue(d) => {
+                self.focus = 0;
+                self.update_buttons(q);
+                Buttons::CONFIRM
+            }
+            Some(1) => {
+                self.focus = 1;
+                self.update_buttons(q);
+                Buttons::CONFIRM
+            }
+            _ => Buttons::NONE,
+        }
     }
 
     pub fn draw(&mut self, out: &mut Vec<DrawItem>) {
@@ -563,7 +613,8 @@ impl MapIntroScene {
             self.finished = true;
             return Some(Smm1Event::BackToSelect);
         }
-        if input.pressed.has(Buttons::CONFIRM) {
+        // a click / tap skips ahead as confirm does [inf]
+        if input.pressed.has(Buttons::CONFIRM) || input.click.is_some() {
             if self.card_start.is_some_and(|c| tick >= c) {
                 self.finished = true;
                 return Some(Smm1Event::Play);
@@ -621,8 +672,8 @@ impl GameOverScene {
         }
         let end = self.layout.ticks("OneTime", 60);
         let p = input.pressed;
-        if self.tick >= end || (self.tick > 60 && (p.has(Buttons::CONFIRM) || p.has(Buttons::BACK)))
-        {
+        let go = p.has(Buttons::CONFIRM) || p.has(Buttons::BACK) || input.click.is_some();
+        if self.tick >= end || (self.tick > 60 && go) {
             self.done = true;
             return Some(Smm1Event::BackToSelect);
         }
@@ -718,7 +769,9 @@ impl EndingScene {
         if self.done {
             return None;
         }
-        let confirm = input.pressed.has(Buttons::CONFIRM) || input.pressed.has(Buttons::BACK);
+        let confirm = input.pressed.has(Buttons::CONFIRM)
+            || input.pressed.has(Buttons::BACK)
+            || input.click.is_some();
         if self.tick < self.credits_start {
             if confirm && self.tick > 30 {
                 self.credits_start = self.tick;

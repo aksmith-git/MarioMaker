@@ -17,7 +17,7 @@
 //!   run's last clear goes back to the menu with the unlock message [departure].
 
 use crate::layout::{Layout, Ui};
-use crate::menu::{Buttons, MenuCursor, UiInput};
+use crate::menu::{Buttons, MenuCursor, UiInput, hit};
 use crate::smm1::{RUN_LENGTHS, RunQuery};
 use crate::sound::Event;
 use crate::{DrawItem, push_layout};
@@ -313,7 +313,11 @@ impl EndlessMenuScene {
             });
         }
         if self.tick >= self.busy_until && self.started.is_none() {
-            ev = ev.or(self.handle(input.pressed, q));
+            let mut pressed = input.pressed;
+            if let Some(p) = input.click {
+                pressed = pressed | self.click(p, q);
+            }
+            ev = ev.or(self.handle(pressed, q));
         }
         let alpha = if self.started.is_some() { 0.0 } else { 1.0 };
         let tick = self.tick;
@@ -331,6 +335,49 @@ impl EndlessMenuScene {
             }
         }
         ev
+    }
+
+    /// A click: a difficulty tab (chooses it), New Game / Continue (decides it). The buttons to
+    /// add as if pressed.
+    fn click(&mut self, p: [f32; 2], q: &dyn RunQuery) -> Buttons {
+        let tick = self.tick;
+        let tabs: Vec<String> = TABS.iter().map(|t| format!("{t}/B_Btn_00")).collect();
+        if let Some(d) = hit(&mut self.board().layout, tick, &tabs, p) {
+            self.on_tabs = true;
+            self.choose(d, q);
+            return Buttons::NONE;
+        }
+        let can_continue = q.unlocked(self.difficulty) && q.can_continue(self.difficulty);
+        let starts = [
+            "L_StartBtn_00/B_Btn_00".to_string(),
+            "L_StartBtn_01/B_Btn_00".to_string(),
+        ];
+        if let Some(b) = hit(self.board().button_layer(), tick, &starts, p)
+            && (b == 0 || can_continue)
+        {
+            self.on_tabs = false;
+            self.button = b;
+            self.refresh(q);
+            return Buttons::CONFIRM;
+        }
+        Buttons::NONE
+    }
+
+    /// Change to difficulty `d` (the tab's Select, the map's change) [inf].
+    fn choose(&mut self, d: usize, q: &dyn RunQuery) {
+        if d == self.difficulty {
+            self.refresh(q);
+            return;
+        }
+        let tick = self.tick;
+        self.difficulty = d;
+        self.ui.sound_button(NAME, TABS[d], Event::Decide);
+        let l = &mut self.board().layout;
+        l.play(&format!("{}/Select", TABS[d]), tick);
+        // the map fades over to the other difficulty's (ChangeOut / ChangeIn) [inf]
+        l.play("ChangeOut", tick);
+        l.play("ChangeIn", tick + 5);
+        self.refresh(q);
     }
 
     fn handle(&mut self, p: Buttons, q: &dyn RunQuery) -> Option<EndlessEvent> {
@@ -364,14 +411,7 @@ impl EndlessMenuScene {
                 if d == self.difficulty {
                     return None;
                 }
-                self.difficulty = d;
-                ui.sound_button(NAME, TABS[d], Event::Decide);
-                let l = &mut self.board().layout;
-                l.play(&format!("{}/Select", TABS[d]), tick);
-                // the map fades over to the other difficulty's (ChangeOut / ChangeIn) [inf]
-                l.play("ChangeOut", tick);
-                l.play("ChangeIn", tick + 5);
-                self.refresh(q);
+                self.choose(d, q);
             } else if can_continue {
                 self.button = if right { 1 } else { 0 };
                 let b = format!("L_StartBtn_0{}", self.button);
@@ -613,7 +653,15 @@ impl EndlessMapScene {
         if ev.is_some() || self.leaving {
             return ev;
         }
-        let p = input.pressed;
+        let mut p = input.pressed;
+        if let Some(c) = input.click {
+            let quit = [format!("{MAP}/L_EndBtn_00/B_Btn_00")];
+            p = p | if hit(&mut self.board.layout, tick, &quit, c).is_some() {
+                Buttons::BACK
+            } else {
+                Buttons::CONFIRM
+            };
+        }
         if p.has(Buttons::BACK) {
             // Quit on the map: the run stays saved for Continue
             self.leaving = true;

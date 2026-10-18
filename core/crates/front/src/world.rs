@@ -474,7 +474,7 @@ impl CourseListScene {
     }
 
     /// The slot showing course `i` (line 1 is the first visible one).
-    fn row_pane(&self, i: i64) -> String {
+    pub(crate) fn row_pane(&self, i: i64) -> String {
         Self::slot_pane(i - self.first + 1)
     }
 
@@ -1040,6 +1040,8 @@ struct Sending {
     code: String,
     ms: i64,
     replay: bool,
+    /// The record before this clear (ms), to tell a new one.
+    before: Option<i64>,
 }
 
 /// The clears of server courses on their way to the server (see the module notes).
@@ -1063,7 +1065,10 @@ impl ClearSender {
                         .online
                         .maker_id()
                         .is_some_and(|m| !m.is_empty() && v["record_holder"].as_str() == Some(m));
-                    if mine && v["record_ms"].as_i64() == Some(s.ms) {
+                    // (the server times a replay to the end of the clear, the clear screen to
+                    // the goal: compare with the record before, not with our time)
+                    let ms = v["record_ms"].as_i64().unwrap_or(0);
+                    if mine && ms > 0 && s.before.is_none_or(|b| ms < b) {
                         cx.toast(if v["record_verified"].as_bool() == Some(true) {
                             "New world record! (verified from your replay)"
                         } else {
@@ -1090,7 +1095,8 @@ impl ClearSender {
     }
 
     /// Tell the server about a clear of a server course (see the module notes).
-    pub fn send(&mut self, cx: &mut Cx, code: &str, ticks: Option<i64>) {
+    /// `before`: the course's record when the play started (ms).
+    pub fn send(&mut self, cx: &mut Cx, code: &str, ticks: Option<i64>, before: Option<i64>) {
         let ms = ticks.map_or(0, |t| t * 1000 / 60);
         if !cx.online.signed_in() {
             cx.host.report(code, "clear");
@@ -1109,6 +1115,7 @@ impl ClearSender {
                 code: code.to_string(),
                 ms,
                 replay: !affects,
+                before,
             }),
             None => cx.host.report(code, "clear"),
         }
@@ -1463,7 +1470,7 @@ impl WorldFlow {
                 Some(PlayEvent::Cleared) => {
                     if let Source::Server(code) = &c.source {
                         let (code, ticks) = (code.clone(), p.clear_ticks);
-                        self.sending.send(cx, &code, ticks);
+                        self.sending.send(cx, &code, ticks, c.world_record_ms);
                     }
                 }
                 None => {}
@@ -1526,7 +1533,8 @@ impl WorldFlow {
     }
 
     /// Captures and tests: open a screen directly ("account", "leaderboards", the course page /
-    /// comments of the list's first server course, "maker" of its uploader).
+    /// comments / comment form of the list's first server course, "maker" of its uploader,
+    /// "play" it, or its "clear" screen).
     pub fn debug_open(&mut self, cx: &mut Cx, what: &str) -> bool {
         match what {
             "account" => {
@@ -1539,6 +1547,19 @@ impl WorldFlow {
                 }
             }
             "leaderboards" => self.go(cx, WorldGo::Leaderboards),
+            "clear" | "play" => {
+                let Some(c) = self.first_server_course() else {
+                    return false;
+                };
+                self.start(cx, c);
+                if what == "clear"
+                    && let Stage::Playing(p, _) = &mut self.stage
+                {
+                    p.debug("course-clear", cx, None);
+                    // the capture's presses go to the clear screen (menu ticks)
+                    p.script = Some(std::mem::take(&mut self.script));
+                }
+            }
             "page" | "comments" | "maker" | "post" => {
                 let Some(c) = self.first_server_course() else {
                     return false;
@@ -1664,14 +1685,14 @@ mod tests {
         // signed out: an anonymous clear report
         let mut anon = Online::default();
         with_online(&mut host, &mut saves, &mut anon, |cx| {
-            sender.send(cx, "AAA", Some(600))
+            sender.send(cx, "AAA", Some(600), None)
         });
         assert_eq!(host.reports, [("AAA".to_string(), "clear".to_string())]);
         assert!(host.calls.is_empty());
         // signed in: the replay; refused, a plain clear with the time (600 ticks = 10 s)
         let mut me = signed_in();
         with_online(&mut host, &mut saves, &mut me, |cx| {
-            sender.send(cx, "AAA", Some(600))
+            sender.send(cx, "AAA", Some(600), None)
         });
         assert_eq!(host.calls[0].1, "submit_replay");
         assert_eq!(host.calls[0].3.as_deref(), Some("t"));
@@ -1693,7 +1714,7 @@ mod tests {
         // SMM1 play options: a clear without a time, never a replay
         host.affects_play = true;
         with_online(&mut host, &mut saves, &mut me, |cx| {
-            sender.send(cx, "BBB", Some(60))
+            sender.send(cx, "BBB", Some(60), None)
         });
         assert_eq!(host.calls[2].1, "clear");
         assert_eq!(host.calls[2].2["time_ms"], 0);
