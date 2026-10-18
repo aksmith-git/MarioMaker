@@ -1,160 +1,46 @@
-# SMCraft
+# SMM2 Recomp
 
-An open-source engine that plays Super Mario Maker 2 courses (and Super Mario Maker's 100 Mario
-Challenge) on macOS, iOS/iPadOS, Windows, Linux and the web, with its own open-source course
-server for sharing courses, records and online play. Home: https://github.com/smcraft-git/smcraft
+A native port of **Super Mario Maker 2 v3.0.3**, built by **static recompilation** of your own
+dump: the game's AArch64 code is translated to C ahead of time on your machine and compiled for
+it, its system calls run on a native runtime, and its graphics run on Metal (macOS, iOS) or Vulkan
+(Windows, Linux). SMM1's **100 Mario Challenge** (on SMM2's Endless Challenge, against an
+open-source course server instead of Nintendo's) and **Mystery Mushroom costumes** come as mods.
 
-SMCraft contains **no Nintendo assets, text, code or keys**. It reads art, sound, layouts and
-course keys from **your own** game dump at runtime (see "Your game data" below); without one it
-plays with placeholder art. Behaviour is written from scratch, matched to the original game.
+**Nothing from the game is in this repository**: no code, assets, text, keys or recompiled output.
+You supply your own dump; everything made from it is generated on your machine into gitignored
+folders, and `scripts/check_no_proprietary.py` blocks it in CI and in a pre-commit hook.
 
-**Status:** playable and in active development. All five game styles and their themes, almost
-every course part (including the 2.0 / 3.0 update enemies), the SMM2 menus, Course World over
-your library or a server, 100 Mario / Endless Challenge, a Course Maker, accounts with verified
-world records, and online co-op through relay rooms. Visual fidelity of the NSMBU and 3D World
-styles, effects, audio detail, Story Mode screens and the full maker interface are in progress.
-See [PROGRESS.md](PROGRESS.md).
+**Status** (evidence per platform in [PROGRESS.md](PROGRESS.md)): on macOS (Apple Silicon) the game
+boots and renders its title screen at 60 fps; title frames are within 2.5–4.8 % of pixels of
+Ryujinx's. Playing courses with input replays checked frame by frame against Ryujinx, the 100
+Mario mod, the Windows / Linux builds, iOS and costumes are in progress. Approach and the projects
+it builds on (a fork of [LAS Recomp](https://github.com/peiikai/LASRecomp), MIT): the recomp entry
+in [DECISIONS.md](DECISIONS.md).
 
-## What is and isn't in this repository
+## Layout
 
-This repo contains only original code, original placeholder art, docs and tooling.
-
-- No Nintendo code, assets, text, audio, executables or keys are committed, ever.
-  `scripts/check_no_proprietary.py` enforces this in CI and as a pre-commit hook.
-- The original game's assets are extracted at first launch from **your own** dump of the games.
-- Without a dump, the engine runs on placeholder assets.
-
-Reverse-engineering notes live in a private, gitignored `research/` folder. They are used as a
-behavioural reference only; the engine is a clean implementation.
-
-## Development setup
-
-```sh
-scripts/install-hooks.sh                         # pre-commit guard against proprietary files
-python3 -m unittest scripts/test_check_no_proprietary.py
-pip install -r requirements.txt && python -m unittest discover -s tests -t .
-python -m smmfmt path/to/course   # summarise a course (.bcd needs --table, see docs/formats/smm2-course.md)
-```
-
-Tooling for working with your own dumps is described in [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md).
-
-## The macOS app
-
-Requires macOS 14+, Apple Silicon, Xcode 27 (Swift 6.4) and Rust 1.99.0 (`core/rust-toolchain.toml`).
-
-```sh
-scripts/make-app.sh        # Rust core + Swift release build → build/SMCraft.app (ad-hoc signed, own icon)
-open build/SMCraft.app
-scripts/run-app.sh         # or: build and run without bundling
-```
-
-The app is called SMCraft; the name, bundle id and version live only in
-`app/Sources/MMKApp/Identity.swift` (the bundle script reads them from there).
-
-- **First launch:** if no asset cache is found the app asks for the **RomFS** and **ExeFS** folders
-  extracted from your own dump (plus, optionally, the update's RomFS/ExeFS) and imports them into
-  `~/Library/Application Support/SMCraft/assets/<build>/`. Or choose **Use placeholder art** to play
-  without a dump (coloured boxes; encrypted `.bcd` courses need imported data for their key).
-- **Library** (home screen): every course file in `~/Library/Application Support/SMCraft/courses/`.
-  **Add courses…** (⌘O) copies `.course.zlib`, `.bcd` or raw course files, or whole folders of
-  them, into it. Search, filter (playable / cleared), sort; double-click or **Play**. Courses in
-  styles the engine doesn't support yet are marked **Not yet supported**.
-- **SMM2 front end** (with the owner's SMM2 UI import, `mmk import-smm2-ui`): the game's opening
-  at launch (Settings > Game turns it off), the title (any button → Make / Play → Story Mode,
-  Course World, Coursebot, 100 Mario Challenge), fades between screens, and the game's menu
-  sounds. **Course World**: the hub (Courses, Endless Challenge; the network-only buttons say
-  so) and the course list (Hot / Popular / New; confirm opens a course, Play starts it) over the
-  library and, when set in Settings > Game, an open-source course server.
-- **In game:** Esc / P / controller + pauses: Continue, Restart course, Exit to library. Library
-  and Course World courses have **no lives** (like SMM2's Course World): deaths restart the course.
-  With the SMM2 UI import the screens are SMM2's own layouts: the HUD per game style, the course
-  card, the pause menu (✕ Continue, Start Over / Retry, Exit Course → "You gave up..." with Exit
-  / Keep playing, Settings: the character), course clear (Start Over / Quit), "TIME'S UP!";
-  ↑/↓ or ←/→ choose, Return / A confirms, Esc / B goes back. `MMK_UI_SMM2=off` keeps the drawn
-  HUD and the plain menus.
-- **100 Mario Challenge:** by default in SMM2's Endless Challenge screens (difficulty tabs over
-  the map, New Game / Continue, Mario's walk between dots, his Play balloon, the course card with
-  lives); Settings > Game switches to SMM1's own layouts (with the owner's SMM1 UI import,
-  `mmk import-smm1`, found in `MMK_UI_CACHE`, `…/SMCraft/assets/smm1-*` or `~/smm-work/cache/smm1-*`:
-  tabs over the world map, Mario's walk, the intro card, pause, clear, game over, ending and
-  credits). Hold **−** or **Tab** (controller −; Settings "Skip course") through the 3-step
-  countdown to skip a course; letting go cancels. 100 Mario needs the SMM2 UI import.
-- **One front end everywhere:** with the SMM2 UI import every screen above is drawn by the Rust
-  front end (`mmk-front`, through the `mmk_front_*` C API) — the same code and pixels as
-  `mmk-play` on Windows, Linux and the web. Mouse clicks and taps select layout buttons.
-- **Save data:** best time, clears and attempts per course in
-  `~/Library/Application Support/SMCraft/saves.json`, keyed by a hash of the course data.
-
-### Settings (UserDefaults)
-
-| Key | Type | Default | Used by |
-|---|---|---|---|
-| `volume.master`, `volume.music`, `volume.sfx` | Double 0…1 | 1 | audio output |
-| `display.integerScale` | Bool | true | renderer (whole-number scaling, letterboxed) |
-| `display.fullscreen` | Bool | false | window (kept in sync both ways) |
-| `input.keys` | JSON `{action: [key code]}` | arrows/WASD, Z/Space jump, X/Shift run, Esc/P pause, −/Tab skip (100 Mario) | input |
-| `input.pad` | JSON `{action: [button]}` | A/B jump, X/Y run, Menu pause, Options (−) skip | input |
-| `assets.placeholder` | Bool | false | user chose to run without a dump |
-| `input.touch` | Bool | true | iOS: on-screen controls (hidden while a controller is connected) |
-| `boot.opening` | Bool | true | SMM2's opening at launch |
-| `hundred.presentation` | String | `smm2` | 100 Mario screens: `smm2` (Endless Challenge style) or `smm1` |
-| `online.server` | String | empty | open-source course server Course World also lists (e.g. `http://localhost:8640`) |
-| `player.character` | Int 0–3 | 0 | Mario / Luigi / Toad / Toadette (also the SMM2 pause menu's Settings) |
-
-Read them with `UserDefaults.standard.double(forKey: "volume.music")` etc.; defaults are
-registered at launch (`SettingsKey.registerDefaults`).
-
-### Environment variables (development, smoke tests)
-
-| Variable | Effect |
+| Path | What |
 |---|---|
-| `MMK_COURSE=<file>` | skip the menus and play this course |
-| `MMK_SCREENSHOT=<png>` [`MMK_SCREENSHOT_TICKS=<n>`] | scripted run, save the frame after n ticks (default 150), quit; skips the menus |
-| `MMK_START_X/Y=<px>` | start the player somewhere else (with the two above) |
-| `MMK_ASSETS=<dir>` | asset cache to use; `placeholder` = none |
-| `MMK_SUPPORT_DIR=<dir>` | data folder instead of `~/Library/Application Support/SMCraft` |
-| `MMK_UI_SCREENSHOT=<png>` [`MMK_UI_SCREENSHOT_DELAY=<s>`] [`MMK_UI_SCREEN=<screen>`] | capture the window (UI included) and quit. Screens: `import`, `settings`, and the front end's, named as `mmk-play --front-screen` names them: `boot`, `title`, `title-main`, `title-play`, `courseworld`, `courseworld-list`, `storymode`, `challenge`, `challenge-map`, `-walk`, `-pause`, `-clear`, `-skip`, `-card`, `-gameover`, `-ending` (`MMK_UI_DIFFICULTY=<0-3>`, `MMK_UI_CLEARED=<n>`); with `MMK_COURSE`: the course card, `course-clear`, `course-gameover`, `course-timeup`, `course-retire`, `course-settings`, `course-death`, `MMK_UI_PAUSE_TICKS` (pause), `MMK_UI_INTRO=0` (straight into play); `MMK_UI_SCRIPTED=1` uses the scripted run. `MMK_UI_TICKS=<n>` runs n front-end ticks at once and holds there (`DebugCapture.swift`) |
-| `MMK_UI2_CACHE=<dir>` | SMM2 UI import to use; `MMK_UI_SMM2=off` = no front end (library and plain play) |
-| `MMK_BOOT=on\|off`, `MMK_BOOT_OPENING=<InDefault…InKoopaling>` | force / skip the opening; pick one |
-| `MMK_UI_SCRIPT=<tick>:<button>,…`, `MMK_UI_INPUT=<tick>:<button>,…` | captures: press menu buttons at global UI ticks / title buttons at title ticks |
-| `MMK_HUNDRED=smm1\|smm2` | 100 Mario presentation for captures (over Settings) |
-| `MMK_LIVES=on` | with `MMK_COURSE` and no SMM2 UI import: play with lives |
-| `MMK_DEBUG_SOUND=1` | log every SMM2 UI sound played |
-| `MMK_UI_CACHE=<dir>` | SMM1 UI import to use; `MMK_UI_SMM1=off` = no SMM1-layout 100 Mario |
-| `MMK_DEBUG_MISSING_ART=1` | draw boxes for sprites whose art isn't in the cache |
-| `MMK_CPU_TEXTURES=1` | decode BC textures on the CPU, as on GPUs without BC support |
-| `MMK_TOUCH=on`, `MMK_TOUCH_HOLD=right,jump,…` | iOS: show the touch controls even with a controller connected; hold controls from launch |
-| `MMK_ORIENTATION=landscape\|portrait` | iOS: rotate at launch (Simulator captures) |
+| `recomp/` | the recompiler (`tools/`), the runtime (`runtime/`: kernel, services, NVN on Metal / Vulkan), SMM2's glue (`games/smm2/`) — see [recomp/README.md](recomp/README.md) |
+| `core/` | the open-source course server (`mmk server`) the mods talk to: accounts, courses, leaderboards, Endless / 100 Mario runs, online-play relay |
+| `smmfmt/`, `tests/` | Python reference for the course formats (`python -m smmfmt course.bcd`) |
+| `docs/` | course formats, toolchain, self-hosting the server, Windows |
+| `research/` | private reverse-engineering notes (gitignored; prose and tables, no game code) |
 
-## The iOS / iPadOS app
+## Build and play (macOS, Apple Silicon)
 
-The same Swift package and Rust core, built for iOS 17+ (DECISIONS.md, "iOS packaging"). Needs
-the Rust targets `aarch64-apple-ios` and `aarch64-apple-ios-sim` (the script adds them with
-rustup).
+Requirements: Xcode command line tools, Homebrew `sdl3` and `ffmpeg`, Python 3.12+, and your own
+extracted dump (base RomFS, v3.0.3 update ExeFS and RomFS). About 2 GB of disk.
 
 ```sh
-scripts/make-ios-app.sh                 # Simulator build → build/ios-sim/SMCraft.app (ad-hoc signed)
-xcrun simctl boot "iPad Pro 11-inch (M5)" && xcrun simctl install booted build/ios-sim/SMCraft.app
-xcrun simctl launch booted dev.smcraft.app
-SIMCTL_CHILD_MMK_COURSE=/path/course.zlib xcrun simctl launch booted dev.smcraft.app   # env vars: SIMCTL_CHILD_ prefix
-xcrun simctl io booted screenshot shot.png
-
-MMK_IOS_SIGN_IDENTITY="Apple Development: …" MMK_IOS_PROFILE=SMCraft.mobileprovision \
-  scripts/make-ios-app.sh --device      # device build → build/ios-device/SMCraft.app
+make -C recomp venv        # once: the recompiler's Python environment
+make -C recomp smm2        # check the dump, recompile it to C on this machine, build (10–20 min the first time)
+make -C recomp run-smm2    # play
 ```
 
-- **Game data:** the importer runs on the Mac. Copy the cache folder it made (`smm2-3.0.3`, and
-  `smm1-…` / `smm2-ui-…` for the menus) with the Files app into **On My iPad › SMCraft › assets**, or
-  choose it on the set-up screen from anywhere Files reaches and the app copies it in. Without
-  one, **Use placeholder art**. The Simulator also finds the Mac's `~/smm-work/cache`.
-- **Courses:** **+** in the library (Files picker: course files or a folder), or copy them into
-  **On My iPad › SMCraft › courses**.
-- **Controls:** on-screen d-pad, Jump / Run / Spin, **+** pause (back in menus), **−** held to
-  skip a 100 Mario course; any GameController pad (they hide the touch controls); hardware
-  keyboards with the default (or Mac-made) key bindings. Settings: **More › Settings…**.
-- **Installing on the owner's iPad/iPhone over Tailscale**, once signed:
-  `ios-install-tailscale build/ios-device/SMCraft.app --device ipad` (the owner's tool; it installs,
-  it doesn't sign).
+Keyboard: WASD stick, arrows d-pad, K / J / L / I = A / B / X / Y, Q / E = L / R, 1 / 3 = ZL / ZR,
+Enter / Backspace = + / −; F1 or Esc opens the overlay menu (video, audio, controls), F11 full
+screen. Controllers work too. Details and options: [recomp/README.md](recomp/README.md).
 
 ## Windows
 
@@ -164,129 +50,35 @@ player package (`make -C recomp TARGET=windows-x86_64 GAME=smm2 DEPS=<deps> all 
 your own dump on your PC. **It has not been run on Windows yet.** [docs/windows.md](docs/windows.md) has the
 requirements, the build, the first-launch dump setup and recompile, how to play, and troubleshooting.
 
-## Portable shell (`mmk-play`: Windows, Linux, web, macOS)
+## The course server
 
-A second front end written in Rust (winit + wgpu + gilrs + cpal) that plays a course with the
-same core; see [docs/architecture.md](docs/architecture.md) §5b. Linux needs `libasound2-dev` and
-`libudev-dev` to build.
-
-Without a course, and with the SMM2 UI import (`mmk import-smm2-ui`; `--ui-cache`,
-`$MMK_UI_CACHE` or `~/smm-work/cache/smm2-ui-3.0.3`), it starts like the Swift app: the opening,
-the title, Course World over a course folder (`--library`, default `~/smm-work/courses`) and a
-course server (`--server`), 100 Mario (`--hundred smm1` for SMM1's screens), with the SMM2
-in-course screens (`mmk-front`). With a server, Course World is online on SMM2's own screens:
-an account from the hub's player card, leaderboards, course pages, comments, likes / boos on
-the clear screen, maker profiles, clears sent as verified replays, the record's ghost. Menus:
-arrows/WASD, Return/Z/Space confirm, Esc/P back, mouse clicks; − or Tab held skips a 100 Mario
-course. `--no-opening` starts on the title, `--no-menus` plays the
-demo strip.
+Self-hostable; it never talks to Nintendo's network. The recomp's 100 Mario mod uses it for
+courses, runs and leaderboards (or a local one over your own course folder).
 
 ```sh
 cd core
-cargo run --release -p mmk-shell                            # SMM2 front end (menus)
-cargo run --release -p mmk-shell -- --front-screen courseworld --ticks 60 --screenshot cw.png  # headless capture
-cargo run --release -p mmk-shell -- path/to/course.zlib     # window; assets: $MMK_ASSETS or ~/smm-work/cache/smm2-3.0.3
-cargo run --release -p mmk-shell -- --assets placeholder    # demo strip with placeholder art
-cargo run --release -p mmk-shell -- course.zlib --screenshot out.png --ticks 150   # headless smoke test
-cargo run --release -p mmk-shell -- --check-textures        # GPU vs CPU BCn decoding
-../scripts/build-web.sh                                     # wasm build into core/target/web
-```
-
-Keys: arrows/WASD move, Z/Space jump, X/Shift run, Esc/P/Enter pause, R restart. Gamepads:
-d-pad/left stick, south/east jump, west/north run, Start pause.
-
-### In a browser
-
-```sh
-scripts/build-web.sh                          # needs wasm-bindgen-cli at the Cargo.lock version
-python3 -m http.server -b 127.0.0.1 -d core/target/web 8000   # then open http://127.0.0.1:8000
-```
-
-Desktop Chromium (Chrome, Edge) or Firefox; WebGPU, or WebGL2 where it's missing. The page
-starts on the demo strip with placeholder art. **Import game data…** takes a folder:
-
-- an asset cache made by `mmk import` (e.g. `~/smm-work/cache/smm2-3.0.3`): copied in about
-  15 s; or
-- a folder holding your dump's extracted `romfs/` and `exefs/`: imported in the page by the same
-  importers as `mmk import` and `mmk import-smm2-ui` (a few minutes, needs about 1.5 GB of
-  memory while it runs);
-- an SMM2 UI import made by `mmk import-smm2-ui` (e.g. `~/smm-work/cache/smm2-ui-3.0.3`, about
-  200 MB), or a folder holding it next to an asset cache.
-
-Either way the result goes into the browser's own storage for this site (the origin private
-file system, about 1.5 GB) and stays there for the next visit; nothing is uploaded anywhere.
-**Remove game data** deletes it. With the SMM2 UI import stored the page starts on the SMM2
-menus (opening, title, Course World, Story Mode, 100 Mario; arrows / Enter / Esc or clicks;
-`?opening=0` skips the opening), and courses picked from the list or opened with **Open course
-file…** (`.bcd`, `.course.zlib` or raw course data) play with the course card, HUD and pause
-menu; without it the page plays them directly. Sound starts on the first click or key press
-(browsers block it before that).
-
-### Course Maker (`mmk-play --edit`)
-
-```sh
-cargo run --release -p mmk-shell -- --edit my-course.bin            # edit (a new course if the file doesn't exist)
-cargo run --release -p mmk-shell -- --edit new.bin --style M3       # new course in SMB3 style
-```
-
-A debug-grade UI until the SMM2 maker layouts are drawn; the strip at the bottom says what
-happened (F1 lists the keys).
-
-| Keys / mouse | Does |
-|---|---|
-| left click / drag | place the selected part, paint ground while dragging |
-| right click / drag | erase (a part, then a track piece, then ground); cancels a two-click action |
-| 1–9, 0, Tab / Shift+Tab | pick the part (the palette also has Select, Track, Door, Warp Box, Scroll Node) |
-| arrows | scroll |
-| Door / Warp Box / Track tool | click one end, then the other (tracks: straight or 45°, even length) |
-| W / F / B | wings / alternate form / big, on the part under the cursor |
-| I | put the selected palette part inside the part under the cursor (block item, pipe contents, key) |
-| = / − (Shift: height) | resize the part under the cursor (semisolids, platforms, bridges, pipes, belts, lifts, slopes, vines …) |
-| R / C | turn / recolour the pipe under the cursor (R on empty space turns new pipes) |
-| L | link pipes: L on a pipe, A to the other area, L on its pipe |
-| K | door kind under the cursor: normal → P door → key door |
-| G | put the part under the cursor on the nearest track (or take it off) |
-| O | open / close the free track end under the cursor |
-| H | draw the path of a snake block, ! block, track block or Piranha Creeper: arrows add steps, Backspace removes one, H again saves it |
-| Select tool | drag a rectangle; Ctrl+C copy, Ctrl+X cut, Ctrl+V paste at the cursor, Delete / Backspace delete, Shift+arrows move |
-| A / V / [ ] | other area / sub-area vertical or horizontal / area smaller or bigger |
-| T / N | theme / night |
-| Q | autoscroll: none, slow, normal, fast, custom (Scroll Node tool adds the nodes) |
-| , / . (Shift: ×10) | timer −/+ 10 s |
-| ; | clear condition (none, defeat the Goombas, collect the coins, as Super Mario, no damage, no landing) |
-| ' | liquid (castle lava, forest water): stays, rises or falls, rises and falls |
-| Ctrl+Z / Ctrl+Y / Ctrl+S / Ctrl+U | undo / redo / save / upload (`--server`) |
-| Esc | drop the selection or a half-done action |
-| Enter / E | test-play / back to editing |
-
-The editor follows the game's placement rules: the start and goal areas stay clear, parts don't
-overlap ground or each other (semisolids and platforms may), containers only take what the game
-allows, and the game's per-area part limits (100 enemies and gizmos, 100 power-ups, 2000 blocks
-and coins, 1 checkpoint, 4 door pairs …), size ranges and style-only parts are enforced. The editing core is `core/crates/editor`;
-`cargo run -p mmk-editor --example sample_course -- out.bin` writes a course that uses most of it.
-
-## Online: the open-source course server
-
-Our own self-hostable server; it never talks to Nintendo's network.
-
-```sh
 cargo run --release -p mmk-cli -- server --dir ./server-data --addr 0.0.0.0:8640
 cargo run --release -p mmk-cli -- register Ada --server http://localhost:8640   # prints a token
-export MMK_TOKEN=…                                                              # the token
-cargo run --release -p mmk-cli -- upload my-course.bin --server http://localhost:8640
-cargo run --release -p mmk-cli -- search "castle" --server http://localhost:8640 --sort popular
-cargo run --release -p mmk-cli -- download ABC-DEF-GHJ --server http://localhost:8640
-cargo run --release -p mmk-cli -- like ABC-DEF-GHJ --server http://localhost:8640
-cargo run --release -p mmk-cli -- rankings records --server http://localhost:8640
+cargo run --release -p mmk-cli -- upload --token <token> courses/*.bcd --keys <course key table>
 ```
 
-The same server relays online play (up to 4 players per room, desktop and browser together):
+[docs/self-hosting.md](docs/self-hosting.md) covers ports, HTTPS, accounts and moderation; the API
+is at the top of `core/crates/server/src/lib.rs`.
+
+## Development
 
 ```sh
-cargo run --release -p mmk-shell -- level.bcd --net-relay localhost:8640 --net-room FRIDAY --net-player 0
+scripts/install-hooks.sh     # pre-commit guard against proprietary files
+scripts/check.sh             # the gates CI runs: server fmt / clippy / tests, recomp compile check, guard
 ```
 
-[docs/self-hosting.md](docs/self-hosting.md) covers ports, HTTPS, accounts, moderation and online
-play. The API is described at the top of `core/crates/server/src/lib.rs`. Clients use
-`core/crates/online`, which also feeds 100 Mario runs from a server. The app's Course World
-lists the server's courses next to the library's when Settings > Game names the server.
+Commits never contain game files; generated output stays in `recomp/private`, `recomp/generated`
+and `recomp/build` (which may be symlinks to another disk).
+
+## SMCraft (archived)
+
+Before the recomp this repo held **SMCraft**, a clean-room engine that played SMM2 courses with
+its own Rust core, a Swift app for macOS / iOS, a portable and web build, the SMM2 menus, a
+Course Maker and its own 100 Mario Challenge. It is kept, complete and building, on the
+[`smcraft-archive`](https://github.com/aksmith-git/MarioMaker/tree/smcraft-archive) branch (tag
+`smcraft-final`).

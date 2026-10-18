@@ -168,3 +168,6 @@ The release is built with zig (the compiler the package also ships) and MSYS2's 
 - **Known difference from the console**, seen on Linux and so expected on Windows: in the 3D World title course, the
   Mario model is missing from the Vulkan renderer's frames. The Metal (macOS) renderer draws him, and everything else
   matches.
+
+SMCraft (the earlier clean-room engine) and its Windows build `mmk-play.exe` are archived on the `smcraft-archive`
+branch, with their instructions.

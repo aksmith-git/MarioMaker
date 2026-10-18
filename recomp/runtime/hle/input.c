@@ -15,6 +15,7 @@
 #include "../nvn/renderer.h"
 #include "../settings.h"
 #include "../input_bind.h"
+#include "../padscript.h"
 
 enum {
     BTN_A = 0, BTN_B, BTN_X, BTN_Y, BTN_LSTICK, BTN_RSTICK, BTN_L, BTN_R, BTN_ZL, BTN_ZR, BTN_PLUS, BTN_MINUS,
@@ -96,7 +97,7 @@ bool input_user_blocked(const SDL_Event *e) {
     if (on < 0) {
         const char *v = getenv("LARECOMP_NO_USER_INPUT");
         on = v ? atoi(v) != 0 : (getenv("LARECOMP_INPUT") || getenv("LARECOMP_DOORJUMP_TEST") || getenv("LARECOMP_PLACE") ||
-                                 getenv("LARECOMP_HOST_INPUT") || getenv("LARECOMP_BIND_TEST"));
+                                 getenv("LARECOMP_HOST_INPUT") || getenv("LARECOMP_BIND_TEST") || padscript_active());
         if (on) LOG("[input] scripted run: keyboard, mouse and controllers ignored\n");
     }
     if (!on) return false;
@@ -323,6 +324,7 @@ void input_frame(uint64_t frame) {
     extern void watch_arm(void);
     watch_arm();
     host_test_frame(frame);
+    if (padscript_active() && !padscript_game_clock()) padscript_tick();  // RECOMP_PAD_CLOCK=frame
     const char *spec = getenv("LARECOMP_INPUT");
     if (!spec) return;
     static const char *const names[] = {"A", "B", "X", "Y", "LSTICK", "RSTICK", "L", "R", "ZL", "ZR", "PLUS",
@@ -373,14 +375,18 @@ static int32_t clamp_axis(int32_t v) { return v > 32767 ? 32767 : v < -32767 ? -
 
 // NpadFullKeyState / NpadHandheldState / NpadJoy*State share this layout (0x28 bytes):
 // {int64 sampling, u64 buttons, AnalogStick L {x,y}, AnalogStick R {x,y}, u32 attributes}
-static void fill_state(Cpu *c) {
-    uint8_t *s = (uint8_t *)(uintptr_t)c->x[0];
-    uint32_t id = *(uint32_t *)(uintptr_t)c->x[1];
+// (single: GetNpadState, x1 = the id; else one entry of GetNpadStates)
+static void fill_state(Cpu *c, uint8_t *s, uint32_t id, bool single) {
     memset(s, 0, 0x28);
     *(int64_t *)s = ++sampling;
     static int nlog;
     if (nlog < 6 && (sampling % 600) == 1) { nlog++; LOG("[input] GetNpadState id %#x lr %llx\n", id, c->x[30]); }
     if (id != 0) return;  // docked: only player 1 (FullKey); Handheld stays disconnected
+    if (padscript_active()) {  // a scripted replay (RECOMP_PAD_SCRIPT): the script's buttons alone, sticks at rest
+        *(uint64_t *)(s + 8) = padscript_buttons();
+        *(uint32_t *)(s + 32) = 1;  // IsConnected
+        return;
+    }
     extern void warp_game_tick(Cpu *c);
     warp_game_tick(c);  // game main thread, once per frame: apply a queued warp
     { extern void give_item_tick(Cpu *c, uint64_t frame); extern uint64_t renderer_present_count(void);
@@ -394,8 +400,8 @@ static void fill_state(Cpu *c) {
       extern void pets_game_tick(Cpu *c);
       pets_game_tick(c); }
     extern uint64_t g_watch_lo, g_watch_hi;
-    if (id == 0 && !g_pad_obj) g_pad_obj = c->x[1] - 8;
-    if (id == 0 && !g_watch_lo && getenv("LARECOMP_WATCH_PAD")) {
+    if (single && id == 0 && !g_pad_obj) g_pad_obj = c->x[1] - 8;
+    if (single && id == 0 && !g_watch_lo && getenv("LARECOMP_WATCH_PAD")) {
         unsigned lo = 0x98 + 0x10, hi = 0x98 + 0x48;  // offsets from the controller manager
         sscanf(getenv("LARECOMP_WATCH_PAD"), "%x,%x", &lo, &hi);
         g_watch_lo = c->x[1] - 8 - 0x98 + lo;
@@ -466,11 +472,38 @@ static void fill_state(Cpu *c) {
     *(uint32_t *)(s + 32) = 1;  // IsConnected
 }
 
-HLE_FUNC("_ZN2nn3hid12GetNpadStateEPNS0_16NpadFullKeyStateERKj", hid_state_fullkey) { fill_state(c); }
-HLE_FUNC("_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyDualStateERKj", hid_state_dual) { fill_state(c); }
-HLE_FUNC("_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyLeftStateERKj", hid_state_left) { fill_state(c); }
-HLE_FUNC("_ZN2nn3hid12GetNpadStateEPNS0_17NpadHandheldStateERKj", hid_state_handheld) { fill_state(c); }
-HLE_FUNC("_ZN2nn3hid12GetNpadStateEPNS0_17NpadJoyRightStateERKj", hid_state_right) { fill_state(c); }
+#define FILL1 fill_state(c, (uint8_t *)(uintptr_t)c->x[0], *(uint32_t *)(uintptr_t)c->x[1], true)
+HLE_FUNC("_ZN2nn3hid12GetNpadStateEPNS0_16NpadFullKeyStateERKj", hid_state_fullkey) { FILL1; }
+HLE_FUNC("_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyDualStateERKj", hid_state_dual) { FILL1; }
+HLE_FUNC("_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyLeftStateERKj", hid_state_left) { FILL1; }
+HLE_FUNC("_ZN2nn3hid12GetNpadStateEPNS0_17NpadHandheldStateERKj", hid_state_handheld) { FILL1; }
+HLE_FUNC("_ZN2nn3hid12GetNpadStateEPNS0_17NpadJoyRightStateERKj", hid_state_right) { FILL1; }
+
+// int GetNpadStates(State *out, int count, const NpadIdType &id): the newest `count` samples, newest first. (SMM2 reads
+// its pads this way; the SDK's own version reads hid shared memory, which nothing fills here.) Each call is one new
+// sample; the older entries repeat it with the sampling numbers before it, so a game that walks the history since its
+// last read sees one new sample per read.
+static void fill_states(Cpu *c) {
+    uint8_t *out = (uint8_t *)(uintptr_t)c->x[0];
+    int n = (int)c->x[1];
+    uint32_t id = *(uint32_t *)(uintptr_t)c->x[2];
+    if (n > 16) n = 16;
+    if (n < 1) { c->x[0] = 0; return; }
+    fill_state(c, out, id, false);
+    int64_t smp = *(int64_t *)out;
+    static int nlog;
+    if (nlog < 4 && id == 0) { nlog++; LOG("[input] GetNpadStates id %#x count %d lr %llx\n", id, n, c->x[30]); }
+    for (int i = 1; i < n; i++) {
+        memcpy(out + 0x28 * i, out, 0x28);
+        *(int64_t *)(out + 0x28 * i) = smp - i > 0 ? smp - i : 0;
+    }
+    c->x[0] = (uint64_t)n;
+}
+HLE_FUNC("_ZN2nn3hid13GetNpadStatesEPNS0_16NpadFullKeyStateEiRKj", hid_states_fullkey) { fill_states(c); }
+HLE_FUNC("_ZN2nn3hid13GetNpadStatesEPNS0_16NpadJoyDualStateEiRKj", hid_states_dual) { fill_states(c); }
+HLE_FUNC("_ZN2nn3hid13GetNpadStatesEPNS0_16NpadJoyLeftStateEiRKj", hid_states_left) { fill_states(c); }
+HLE_FUNC("_ZN2nn3hid13GetNpadStatesEPNS0_17NpadHandheldStateEiRKj", hid_states_handheld) { fill_states(c); }
+HLE_FUNC("_ZN2nn3hid13GetNpadStatesEPNS0_17NpadJoyRightStateEiRKj", hid_states_right) { fill_states(c); }
 
 // FullKey for player 1 only (we report docked mode, where Handheld is unavailable)
 HLE_FUNC("_ZN2nn3hid15GetNpadStyleSetERKj", hid_style_set) {

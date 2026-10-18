@@ -1,2 +1,22 @@
-"""Super Mario Maker 2 v3.0.3: per-instruction patches for the generator (tools/patches.py). None yet."""
-PATCHES = {}
+"""Super Mario Maker 2 v3.0.3: per-instruction patches for the generator (tools/patches.py).
+
+Each patch checks the instruction word it replaces, so another build of the game fails loudly.
+"""
+
+MAIN = 0x7000000000
+
+# Entry of the player's per-frame update (main+0x158a5c4, after the prologue): the instruction that copies the player
+# object (x0) into x19. The host hook (games/smm2/trace.c: script clock, state trace) runs first, then the copy. The
+# Ryujinx trace build replaces the same instruction with an SVC, so both runtimes sample at the same point.
+PLAYER_UPDATE = MAIN + 0x158a5c4
+MOV_X19_X0 = 0xAA0003F3
+
+
+def player_update_hook(gen, addr):
+    word = gen.words[(addr - gen.lo) // 4]
+    if word != MOV_X19_X0:
+        raise SystemExit(f'patches.py: {addr:#x} is {word:#010x}, not the expected instruction (not v3.0.3?)')
+    return '{ extern void smm2_player_hook(Cpu *); smm2_player_hook(c); } c->x[19] = c->x[0];'
+
+
+PATCHES = {PLAYER_UPDATE: player_update_hook}
