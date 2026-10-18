@@ -126,6 +126,10 @@ impl SpriteResolver {
             // the other SMM1 extras without their art: the nearest SMM2 art
             let smm1_stand_in = match key.0 {
                 "M1_Player_SlimMarioMdl" => Some(("M1_Player_SpMarioMdl", key.1)),
+                // the 3D-only update forms drawn as sprites (no meshes): Super Mario's art
+                "M1_Player_SquirrelMarioMdl" | "M1_Player_BoomerangMarioMdl" => {
+                    Some(("M1_Player_SpMarioMdl", key.1))
+                }
                 "M1_Item_kinokofunny" | "M1_Item_CharaKinoko" => Some(("M1_Item_kinoko", "wait.0")),
                 _ => None,
             };

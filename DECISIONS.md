@@ -885,3 +885,36 @@ renderers upload a texture when a sprite first uses it. Measured on the same cou
   stand-ins (small Mario, Super Mario, the Super Mushroom).
 - Options are not yet part of replays, rollback sessions or `World::checksum` input: a replay
   or an online session is only valid with all options off (⬜ carry them in both).
+
+## 2026-10-18 — The update power-ups (part 81, the Master Sword, the wearables)
+- **Own modules, small hooks.** The player's new states live in `sim/src/player/powerups.rs`
+  (`Player::pu`), the items, projectiles and EnemyDB reaction rows in `actors/powerups.rs`, the
+  world side (collecting, attacks, lifting and throwing) in `world/powerups.rs`. `player.rs` only
+  gains the form variants, the field and hook calls: one before the movement (it may take the
+  whole frame — balloon, frog swim, squirrel flight / glide / cling, Link's dash, shield and
+  down-thrust, SMB2 LiftUp, Propeller Box, Bullet Bill dash), one on a ground jump's launch speed,
+  one after the normal physics, and hooks in `hurt` (a wearable takes the hit), `bounce` (the
+  balloon only drifts) and `sensors` (the balloon's pose). The frame-matching work on the normal
+  movement stays untouched.
+- **Rules from the binary.** Forms, size classes (Link and the balloon have the small body), the
+  per-style remap of part 81, the small-player block swap (only form 0, mask 0x7d7d2: the sword
+  and the wearables come out as they are), every new form → Super on a hit, and the per-state
+  numbers are the specs' [obs] values (81-style-powerup-2.md, 127-headdress-items.md).
+- **EnemyDB reaction columns as a table per engine kind.** `Kind::pu_reaction` holds the v3
+  rows for reaction_sword / sword_under / shield / arrow / boomerang (and `usa_carry` the SMB2
+  carry flag and height); the engine kinds map to the rows by style and size. Reactions the
+  engine has no motion for map to the nearest one: Damage → into the shell (Koopa, Buzzy), lit
+  (Bob-omb), collapsed (Dry Bones), kicked (a shell), knocked down (Mechakoopa), else DieFall;
+  ReactOnly on bosses = a shell-strength hit for the sword, a fireball for arrows and boomerangs
+  [inf]; CapBound (the shield) turns the enemy away.
+- **Where the binary was silent the choice is marked [inf] in the code:** the SMB2 Mushroom
+  stands on what it can carry instead of stomping it (SMB2's rule [ext]; the "touched from above"
+  flag was not traced); the bomb throw's vy 2.0; the down-thrust's bounce (the stomp bounce) and
+  its landing as a small ground pound; the sword's tip breaking bricks like the tail; thrown SMB2
+  enemies knocking out what they hit and landing back in their own state; the shield destroying
+  blocked projectiles; enemies hidden by the Goomba Mask keeping to their own way.
+- **Not modelled yet** (no engine counterpart): the balloon's tilt and the arrow's angle are not
+  drawn (sprites don't rotate); SMB2 cloud pulling; the Frog skimming water at full P-speed while
+  carrying; the Goomba Mask's crouch-walk synced to the Goombas (the engine has no crouch-walk);
+  the balloon's push-stagger and the multiplayer balloon spin; the Red POW Box's keep-for-a-
+  pending-POW rule. Sounds are Event variants only; the sound director maps them later.

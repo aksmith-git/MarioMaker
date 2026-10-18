@@ -32,6 +32,7 @@ mod debug;
 mod smm1;
 use smm1::Smm1Shell;
 mod koopalings;
+mod powerups;
 mod v3;
 pub use v3::v3_dash_frames;
 mod w3;
@@ -98,6 +99,34 @@ pub enum Event {
     Skid,
     Taunt,
     LankyFloat,
+    /// The update power-ups (world/powerups.rs): Link's slash, dash into a wall
+    /// ("p_DashSwoadHit"), down-thrust ("hipdrop_start"), shield block ("shieldHit"), bow
+    /// ("PlayerArrowShoot"), arrow hit ("r_hit"); the SMB2 Mushroom's pull, throw ("throw2")
+    /// and full crouch charge ("voice_squat_charge"); the balloon's bounce ("wall_hit"); the
+    /// boomerang's throw ("fireball" with the form), wall bounce ("Rebound") and item hop
+    /// ("BoomerangReaction"); a LinkBomb blast ("p_LinkBombExp"); wearables put on ("Wearing")
+    /// and lost ("HeadDressOff"); the Cannon Box shot and its blast ("explode"); a Propeller
+    /// Box flight; the Bullet Bill Mask breaking ("KillerBreak").
+    SwordSlash,
+    SwordDashHit,
+    SwordThrust,
+    ShieldHit,
+    ArrowShoot,
+    ArrowHit,
+    Pull,
+    Throw,
+    SquatCharge,
+    BalloonBounce,
+    BoomerangThrow,
+    Rebound,
+    BoomerangReaction,
+    LinkBombExplode,
+    Wearing,
+    HeadDressOff,
+    CannonShot,
+    Explode,
+    PropellerBox,
+    KillerBreak,
 }
 
 /// P-switch duration: 540 frames, reloaded by every press (the course switch state's P timer,
@@ -291,6 +320,8 @@ pub struct World {
     pub options: crate::options::Options,
     /// World state of the 2.0 / 3.0 parts (world/v3.rs).
     pub v3: v3::V3World,
+    /// World state of the update power-ups (world/powerups.rs).
+    pu: powerups::PuWorld,
 }
 
 impl Default for World {
@@ -489,6 +520,7 @@ impl World {
             held_by: None,
             prev_jump_claw: false,
             v3: v3::V3World::default(),
+            pu: powerups::PuWorld::default(),
             wind: 0.0,
             wind_n: 0,
             options: Default::default(),
@@ -1020,6 +1052,9 @@ impl World {
             self.player.held = None;
             return;
         };
+        if self.pu_carry(i) {
+            return;
+        }
         if self.actors[i].kind.is_v3() {
             self.v3_carry(i);
             return;
@@ -1181,6 +1216,7 @@ impl World {
                     continue;
                 }
                 Some(Contents::Mushroom) => Kind::Mushroom,
+                Some(Contents::Power(w)) => self.pu_item(w),
                 Some(Contents::Special) => self.style_item(),
                 Some(Contents::FireFlower) => Kind::FireFlower,
                 Some(Contents::Star) => Kind::Star,
@@ -1551,6 +1587,7 @@ impl World {
         } else if self.player.car.is_some() {
             self.drive_koopa_car(input);
         } else {
+            self.pu_sense();
             self.player.step(input, &self.level);
         }
         self.v3_dash(prev_x);
@@ -1697,6 +1734,7 @@ impl World {
         self.step_donuts();
         self.step_p_switch();
         self.step_v3();
+        self.step_powerups();
         self.step_area_timer();
 
         // blocks, actors, effects
@@ -1741,6 +1779,7 @@ impl World {
         };
         // SMM1 shell physics: shells kicked by the mid-air wall assist
         self.step_shell_assist();
+        let masked = self.player.pu.headdress == Some(crate::player::Headdress::Goomba);
         for a in &mut self.actors {
             if a.held {
                 continue;
@@ -1754,6 +1793,7 @@ impl World {
                 (px, py)
             };
             a.target_facing = self.player.facing;
+            powerups::mask_target(a, masked);
             a.camera = (self.camera_x, self.camera_y);
             a.floor_ref = self.liquid.map(|l| l.y).unwrap_or(self.level.bottom - 12.0);
             if a.kind == Kind::Lakitu {
@@ -1795,7 +1835,7 @@ impl World {
                 && a.y > v.1
                 && a.y < v.3
         }) {
-            if self.player.on_ground && self.player.star == 0 {
+            if self.player.on_ground && self.player.star == 0 && self.player.form != Form::Balloon {
                 self.player.stun = 100;
                 self.player.vx = 0.0;
             }
@@ -2030,8 +2070,9 @@ impl World {
                     self.events.push(Event::Coin);
                     continue;
                 }
-                Contents::Special if !self.player.big() => Kind::Mushroom,
-                Contents::FireFlower if !self.player.big() => Kind::Mushroom,
+                Contents::Special if self.pu_small() => Kind::Mushroom,
+                Contents::FireFlower if self.pu_small() => Kind::Mushroom,
+                Contents::Power(w) => self.pu_block_item(w),
                 Contents::Mushroom => Kind::Mushroom,
                 Contents::Special => self.style_item(),
                 Contents::FireFlower => Kind::FireFlower,
@@ -2341,13 +2382,14 @@ impl World {
     fn release(&mut self, r: Release) {
         let (bx, by) = blocks::origin(r.x, r.y);
         // small player + power-up beyond the mushroom → Super Mushroom (20-super-mushroom.md)
-        let contents = if r.contents.is_powerup() && !self.player.big() {
+        let contents = if r.contents.is_powerup() && self.pu_small() {
             Contents::Mushroom
         } else {
             r.contents
         };
         let item = match contents {
             Contents::Mushroom => Some(Kind::Mushroom),
+            Contents::Power(w) => Some(self.pu_block_item(w)),
             Contents::Special => Some(self.style_item()),
             Contents::FireFlower => Some(Kind::FireFlower),
             Contents::Star => Some(Kind::Star),
@@ -3271,6 +3313,7 @@ impl World {
                 self.player.star = STAR_FRAMES;
                 self.events.push(Event::PowerUp);
             }
+            Kind::PowerItem { what } => self.collect_power_item(what, x, y),
             Kind::OneUp => {
                 if self.clear.goal == crate::clear::Goal::OneUps {
                     let r = self.clear.count(None, 1);
@@ -4122,7 +4165,7 @@ impl World {
             contents: None,
         };
         self.events.push(Event::Bump);
-        let contents = if c.is_powerup() && !self.player.big() {
+        let contents = if c.is_powerup() && self.pu_small() {
             Contents::Mushroom
         } else {
             c
@@ -4133,6 +4176,7 @@ impl World {
                 return;
             }
             Contents::Mushroom => Kind::Mushroom,
+            Contents::Power(w) => self.pu_block_item(w),
             Contents::Special => self.style_item(),
             Contents::FireFlower => Kind::FireFlower,
             Contents::Star => Kind::Star,
@@ -4738,6 +4782,11 @@ impl World {
                         self.player.power_up(Form::Fire);
                     }
                     Some(Contents::Star) => self.player.star = STAR_FRAMES,
+                    Some(Contents::Power(w)) => {
+                        if let Kind::PowerItem { what } = self.pu_item(w) {
+                            self.collect_power_item(what, cp.x, cp.y);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -5361,6 +5410,7 @@ impl World {
         self.clown_sprites(&mut out);
         self.w3_sprites(&mut out);
         self.v3_sprites(&mut out);
+        self.pu_sprites(&mut out);
         self.koopaling_sprites(&mut out);
         // Chain Chomp stakes and chains (the chain is cosmetic: 4 links, stake to Chomp)
         for a in &self.actors {
@@ -6373,6 +6423,12 @@ impl World {
             | Kind::OnOffTrampoline { .. }
             | Kind::Koopaling { .. }
             | Kind::KoopalingShot { .. } => a.v3_look()?,
+            Kind::PowerItem { .. }
+            | Kind::PlayerArrow
+            | Kind::PlayerBoomerang
+            | Kind::LinkBomb
+            | Kind::CannonShot
+            | Kind::RedPowRing => a.pu_look()?,
             Kind::LavaBubble => ("M1_Enemy_bubble", "wait.0", 16.0, 16.0, false),
             // [placeholder: the egg uses Yoshi's hatching frame; drawn per style by the remap]
             Kind::YoshiEgg { .. } => ("M1_Player_Yoshi", "born_body.0", 32.0, 32.0, false),
@@ -6683,6 +6739,9 @@ impl World {
             // SMM1 extras (SMB1 only): Lanky Mario's own art; a costume is drawn below
             Form::Lanky => "M1_Player_SlimMarioMdl",
             Form::Costume => "M1_Player_MarioMdl",
+            // the update forms: chosen with their frames below (world/powerups.rs)
+            Form::Link | Form::Balloon => "M1_Player_MarioMdl",
+            Form::Frog | Form::Squirrel | Form::Boomerang | Form::Smb2 => "M1_Player_SpMarioMdl",
         };
         // the multiplayer characters are the model's variants: _2 Luigi, _3 Toad, _4 Toadette
         // (star power is a palette effect in the game; not drawn yet [⬜])
@@ -6766,7 +6825,9 @@ impl World {
                 model,
                 ["walk.0", "walk.1", "walk.2"][(self.tick as usize / 2) % 3],
             ),
-            _ => (model, frame),
+            _ => self
+                .pu_player_look(p, form, who, frame)
+                .unwrap_or((model, frame)),
         };
         let layer = if self.in_pipe() {
             5
@@ -6804,7 +6865,10 @@ impl World {
             model
         };
         // (Mega Mario's art is 16×16 drawn through a 32×32 quad)
-        let h = if small || p.pose == Pose::Dead || form == Form::Mega {
+        let h = if small
+            || p.pose == Pose::Dead
+            || matches!(form, Form::Mega | Form::Link | Form::Balloon)
+        {
             16.0
         } else {
             32.0

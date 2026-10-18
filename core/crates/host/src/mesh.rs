@@ -466,6 +466,10 @@ pub fn player_parts(style: &str, model: &str) -> Option<(Vec<PlayerPart>, u32)> 
     let fire = model.starts_with("M1_Player_FireMarioMdl");
     let cat = model.starts_with("M1_Player_NekoMarioMdl");
     let builder = model.starts_with("M1_Player_BuilderMarioMdl");
+    // the Boomerang Flower's outfit (3D World; the sim's update forms, world/powerups.rs)
+    let boomerang = model.starts_with("M1_Player_BoomerangMarioMdl");
+    // the Super Acorn's suit (NSMBU): the "MM" body and head models [inf: Musasabi Mario]
+    let squirrel = model.starts_with("M1_Player_SquirrelMarioMdl");
     let player = model.starts_with("M1_Player_") && model.contains("MarioMdl");
     if !player {
         return None;
@@ -478,6 +482,13 @@ pub fn player_parts(style: &str, model: &str) -> Option<(Vec<PlayerPart>, u32)> 
             vec![
                 ("WU_Player_MarioMdl", "SMB_model", None),
                 ("WU_Player_MarioMdl", "SMH_model", Some((0, "face_1"))),
+            ],
+            variant,
+        ),
+        ("WU", false) if squirrel => (
+            vec![
+                ("WU_Player_MarioMdl", "MMB_model", None),
+                ("WU_Player_MarioMdl", "MMH_model", Some((0, "face_1"))),
             ],
             variant,
         ),
@@ -520,6 +531,17 @@ pub fn player_parts(style: &str, model: &str) -> Option<(Vec<PlayerPart>, u32)> 
                 ("3W_Player_MarioHandL", "", Some((0, "HandL"))),
                 ("3W_Player_MarioHandR", "", Some((0, "HandR"))),
                 ("3W_Player_Hammer", "", Some((0, "HandR"))),
+            ],
+            variant,
+        ),
+        // Boomerang Mario: the outfit body on Mario's skeleton (animations "Boomerang…")
+        ("3W", false) if boomerang => (
+            vec![
+                ("3W_Player_MarioBoomerang", "", None),
+                ("3W_Player_MarioFace", "", Some((0, "Head"))),
+                ("3W_Player_MarioEye", "", Some((0, "Head"))),
+                ("3W_Player_MarioHandL", "", Some((0, "HandL"))),
+                ("3W_Player_MarioHandR", "", Some((0, "HandR"))),
             ],
             variant,
         ),

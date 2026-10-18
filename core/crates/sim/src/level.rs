@@ -435,6 +435,8 @@ pub const SUPPORTED_PARTS: &[i16] = &[
     107, 108, 109, 110, 112, 113, 114, 115, 116, 117, 119,
     // 2.0 / 3.0 parts (level/v3.rs)
     74, 78, 79, 80, 111, 120, 121, 122, 123, 124, 125, 126, 132,
+    // the update power-ups (part 81 by style, the wearables)
+    81, 127, 128, 129, 130, 131,
 ];
 
 /// Parts whose alternate form (flag 0x4) the engine implements (or where the flag only picks a
@@ -445,7 +447,8 @@ const ALT_FORMS: &[i16] = &[
     54, 56, 61, 77, 84, 85, 96, 97, 100, 103, 104, 107, 108, 113,
     // 2.0 / 3.0: the spike ball, the P Block that appears, the blue ON/OFF Trampoline; on a
     // Mechakoopa the bit does nothing [obs]
-    74, 79, 111, 132,
+    74, 79, 111, 132, // the Super Mushroom's 0x4 form: the SMB1 Master Sword
+    20,
 ];
 
 /// Game styles the engine plays.
@@ -713,6 +716,11 @@ impl Level {
                 1 => Some(Kind::Koopa {
                     red: o.flags & 0x4 != 0,
                 }),
+                // the Super Mushroom's 0x4 form in SMB1 is the Master Sword (Triforce 0xff)
+                // [obs resolver 0x7100d80df0]
+                20 if o.flags & 0x4 != 0 && lvl.style == "M1" => Some(Kind::PowerItem {
+                    what: crate::actors::SWORD,
+                }),
                 20 => Some(Kind::Mushroom),
                 // the style power-up: Super Leaf (SMB3), Cape Feather (SMW); SMB1 keeps the
                 // mushroom for now
@@ -846,7 +854,10 @@ impl Level {
                     path: o.extended_data.wrapping_sub(1).min(255) as u8,
                     sleeps: o.flags & 0x4 != 0,
                 }),
-                _ => v3::actor_kind(o, &lvl),
+                _ => v3::actor_kind(o, &lvl).or_else(|| {
+                    // the update power-ups: part 81 by style, the wearables 127–131
+                    crate::actors::item_for_part(o.id).map(|what| Kind::PowerItem { what })
+                }),
             };
             if o.id == 61 && o.flags & 0x4 == 0 && o.flags & 0x400 == 0 {
                 // the Chain Chomp's stake is solid (WanwanPile has a collision body)

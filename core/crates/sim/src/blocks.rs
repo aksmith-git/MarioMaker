@@ -45,6 +45,9 @@ pub enum Contents {
     },
     /// Yoshi's Egg (SMW / NSMBU style; other styles' 45 is the Goomba's Shoe).
     YoshiEgg,
+    /// An update power-up item (`Kind::PowerItem::what`): part 81, the Master Sword (part 20
+    /// with flag 0x4 in SMB1), a wearable (127–131).
+    Power(u8),
 }
 
 impl Contents {
@@ -52,6 +55,9 @@ impl Contents {
     pub fn from_part(id: i16, child_flags: u32) -> Option<Self> {
         Some(match id {
             8 => Contents::Coin,
+            // the Super Mushroom's 0x4 form: the Master Sword (SMB1 only; the world turns it
+            // back into a mushroom in the other styles) [obs 0x7100d80df0]
+            20 if child_flags & 0x4 != 0 => Contents::Power(crate::actors::SWORD),
             20 => Contents::Mushroom,
             44 => Contents::Special,
             34 => Contents::FireFlower,
@@ -62,12 +68,15 @@ impl Contents {
                 red: child_flags & 0x4 != 0,
             },
             45 => Contents::YoshiEgg,
-            _ => return None,
+            id => Contents::Power(crate::actors::item_for_part(id)?),
         })
     }
 
     pub fn is_powerup(self) -> bool {
-        matches!(self, Contents::FireFlower | Contents::Special)
+        matches!(
+            self,
+            Contents::FireFlower | Contents::Special | Contents::Power(crate::actors::STYLE2)
+        )
     }
 }
 
