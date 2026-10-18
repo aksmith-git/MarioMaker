@@ -28,7 +28,8 @@ use serde_json::{Value, json};
 
 use crate::{ImportError, Progress, Result, read, write};
 
-pub const SMM1_IMPORTER_VERSION: u32 = 1;
+/// 2: costume stage (`costumes/`, module `smm1_costumes`).
+pub const SMM1_IMPORTER_VERSION: u32 = 2;
 
 #[derive(Clone, Debug)]
 pub struct Smm1Config {
@@ -51,17 +52,21 @@ pub struct Smm1Report {
     pub textures: usize,
     pub fonts: usize,
     pub messages: usize,
+    /// Mystery Mushroom costumes, their frames and sounds (`costumes/`).
+    pub costumes: usize,
+    pub costume_textures: usize,
+    pub costume_sounds: usize,
     /// Files that could not be converted (path: reason).
     pub skipped: Vec<String>,
 }
 
 /// The base content with the update overlaid.
-struct Overlay {
+pub(crate) struct Overlay {
     roots: Vec<PathBuf>, // update first
 }
 
 impl Overlay {
-    fn new(cfg: &Smm1Config) -> Self {
+    pub(crate) fn new(cfg: &Smm1Config) -> Self {
         let mut roots = Vec::new();
         if let Some(u) = &cfg.update {
             roots.push(u.clone());
@@ -70,12 +75,12 @@ impl Overlay {
         Self { roots }
     }
 
-    fn file(&self, rel: &str) -> Option<PathBuf> {
+    pub(crate) fn file(&self, rel: &str) -> Option<PathBuf> {
         self.roots.iter().map(|r| r.join(rel)).find(|p| p.is_file())
     }
 
     /// File names in `dir` across all roots (update wins), sorted.
-    fn list(&self, dir: &str, ext: &str) -> Vec<(String, PathBuf)> {
+    pub(crate) fn list(&self, dir: &str, ext: &str) -> Vec<(String, PathBuf)> {
         let mut out: BTreeMap<String, PathBuf> = BTreeMap::new();
         for root in self.roots.iter().rev() {
             let Ok(rd) = fs::read_dir(root.join(dir)) else {
@@ -391,6 +396,15 @@ pub fn run_smm1(cfg: &Smm1Config, progress: Progress) -> Result<Smm1Report> {
         }
     }
 
+    // --- costumes (Mystery Mushroom art and sounds)
+    let c = crate::smm1_costumes::import_costumes(&ov, &out, &cfg.language, progress)?;
+    report.costumes = c.costumes;
+    report.costume_textures = c.textures;
+    report.costume_sounds = c.sounds;
+    report
+        .skipped
+        .extend(c.skipped.into_iter().map(|s| format!("costumes: {s}")));
+
     // --- manifest
     let manifest = json!({
         "importer_version": SMM1_IMPORTER_VERSION,
@@ -399,7 +413,8 @@ pub fn run_smm1(cfg: &Smm1Config, progress: Progress) -> Result<Smm1Report> {
         "base_title_version": base_version,
         "update_title_version": update_version,
         "language": cfg.language,
-        "stages": ["identify", "layouts", "fonts", "messages"],
+        "stages": ["identify", "layouts", "fonts", "messages", "costumes"],
+        "costumes": report.costumes,
         "layouts": layout_names,
         "animations": report.animations,
         "textures": report.textures,
@@ -443,10 +458,10 @@ pub fn font_to_json(f: &Font, sheets: usize) -> Value {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn sarc(files: &[(&str, &[u8])]) -> Vec<u8> {
+    pub(crate) fn sarc(files: &[(&str, &[u8])]) -> Vec<u8> {
         // minimal big-endian SARC writer (names stored, no hash ordering requirement for reading)
         let mut names = Vec::new();
         let mut name_offs = Vec::new();

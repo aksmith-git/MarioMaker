@@ -120,6 +120,42 @@ mod native {
         start_x: Option<f32>,
         #[arg(long, default_value_t = 32.0)]
         start_y: f32,
+        /// SMM1 extra: SMM1 shell physics (mid-air shell kicks, shell jumps).
+        #[arg(long)]
+        smm1_shell_kicks: bool,
+        /// SMM1 extra: pipes drawn in front of the player.
+        #[arg(long)]
+        pipes_over_player: bool,
+        /// SMM1 extra: Super Mushrooms in SMB1-style courses become Mystery Mushrooms
+        /// (costumes) or Weird Mushrooms (Lanky Mario): off, mystery, weird.
+        #[arg(long, value_name = "off|mystery|weird")]
+        smb1_mushroom: Option<String>,
+        /// SMM1 extra: the Mystery Mushroom costume (an id of the SMM1 costume table, or
+        /// "random", the default).
+        #[arg(long, value_name = "ID|random")]
+        costume: Option<String>,
+        /// Any engine option as NAME=VALUE (repeatable; see `mmk_sim::Options`).
+        #[arg(long = "option", value_name = "NAME=VALUE")]
+        options: Vec<String>,
+    }
+
+    /// The engine options from the command line.
+    fn engine_options(args: &Args) -> Result<mmk_sim::Options, String> {
+        let mut o = mmk_sim::Options {
+            smm1_shell_kicks: args.smm1_shell_kicks,
+            pipes_over_player: args.pipes_over_player,
+            ..Default::default()
+        };
+        if let Some(m) = &args.smb1_mushroom {
+            o.apply(&format!("smb1_mushroom={m}"))?;
+        }
+        if let Some(c) = &args.costume {
+            o.apply(&format!("costume={c}"))?;
+        }
+        for a in &args.options {
+            o.apply(a)?;
+        }
+        Ok(o)
     }
 
     fn default_assets() -> Option<PathBuf> {
@@ -185,6 +221,7 @@ mod native {
             )),
             None => log("assets: none, drawing placeholder boxes"),
         }
+        game.session.set_options(engine_options(&args)?);
         if args.players > 1 {
             game.session.world.set_players(args.players);
         }

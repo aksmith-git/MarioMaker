@@ -16,9 +16,11 @@ use mmk_sim::{Input, World};
 
 pub mod challenge;
 pub mod condition;
+pub mod costumes;
 pub mod course_info;
 pub mod import;
 pub mod mesh;
+pub mod options;
 pub mod play_status;
 pub mod ui;
 
@@ -65,6 +67,8 @@ pub struct MmkAssets {
     names: Vec<(CString, CString)>,
     /// 3D meshes and animations, loaded on demand (`mesh` module).
     meshes: std::sync::Mutex<mesh::MeshStore>,
+    /// SMM1 costume names by id (`costumes::mmk_assets_add_costumes`).
+    costume_names: Vec<CString>,
 }
 
 #[repr(C)]
@@ -113,6 +117,7 @@ pub unsafe extern "C" fn mmk_assets_open(path: *const c_char) -> *mut MmkAssets 
                     cache,
                     names,
                     meshes,
+                    costume_names: Vec::new(),
                 }))
             }
             Err(e) => {
@@ -132,6 +137,7 @@ pub extern "C" fn mmk_assets_placeholder() -> *mut MmkAssets {
         cache: Cache::default(),
         names: Vec::new(),
         meshes: Default::default(),
+        costume_names: Vec::new(),
     }))
 }
 
@@ -247,6 +253,9 @@ pub struct MmkEngine {
     draw: Vec<mmk_host::DrawSprite>,
     /// Draw the 3D styles' models as meshes (default on; `mmk_engine_set_meshes`).
     mesh_mode: bool,
+    /// Engine options (SMM1 extras), applied to every world this engine makes
+    /// (`options::mmk_engine_set_option`).
+    options: mmk_sim::Options,
 }
 
 #[repr(C)]
@@ -313,6 +322,7 @@ pub unsafe extern "C" fn mmk_engine_new(assets: *const MmkAssets) -> *mut MmkEng
             planner: Default::default(),
             draw: Vec::new(),
             mesh_mode: true,
+            options: Default::default(),
         }))
     })
 }
@@ -350,6 +360,7 @@ pub unsafe extern "C" fn mmk_engine_load_course(
         match decode_course(bytes, unsafe { &*e.assets }) {
             Ok(course) => {
                 e.world = World::from_course(&course);
+                e.world.set_options(e.options);
                 e.course = Some(course);
                 e.resolver.reset();
                 e.planner.reset();
@@ -395,6 +406,7 @@ pub unsafe extern "C" fn mmk_engine_restart(engine: *mut MmkEngine) {
                 Some(c) => World::from_course(c),
                 None => World::new(),
             };
+            e.world.set_options(e.options);
         }
     })
 }
@@ -780,6 +792,7 @@ mod tests {
             planner: Default::default(),
             draw: Vec::new(),
             mesh_mode: true,
+            options: Default::default(),
         };
         unsafe {
             mmk_engine_set_audio(&mut engine, audio);

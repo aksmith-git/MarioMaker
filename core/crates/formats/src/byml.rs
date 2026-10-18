@@ -1,4 +1,5 @@
-//! BYML (binary YAML) reader, versions 2–4, either endianness → `serde_json::Value`.
+//! BYML (binary YAML) reader, versions 1–4, either endianness → `serde_json::Value`. Version 1
+//! (Wii U) has the same layout; a path table (node 0xC3) after the string table is skipped.
 //!
 //! Dictionaries keep file order. 64-bit integers that do not fit an f64 exactly are still exact
 //! in JSON (serde_json stores u64/i64). Binary blobs become `{"binary": "<hex>"}`.
@@ -172,12 +173,15 @@ pub fn parse(data: &[u8]) -> Result<Value> {
     };
     let r = Reader { d: data, be };
     let version = r.u16(2)?;
-    if !(2..=4).contains(&version) {
+    if !(1..=4).contains(&version) {
         return Err(bad(format!("unsupported version {version}")));
     }
     let keys = r.string_table(r.u32(4)?)?;
     let strings = r.string_table(r.u32(8)?)?;
-    let root = r.u32(12)?;
+    let mut root = r.u32(12)?;
+    if version == 1 && root != 0 && data.get(root as usize) == Some(&0xC3) {
+        root = r.u32(16)?; // path table, then the root
+    }
     let ctx = Ctx { r, keys, strings };
     if root == 0 {
         return Ok(Value::Null);

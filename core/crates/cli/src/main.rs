@@ -136,6 +136,22 @@ enum Cmd {
         /// Frames per course (60 per second).
         #[arg(long, default_value_t = 3600)]
         frames: u32,
+        /// SMM1 extra: SMM1 shell physics (mid-air shell kicks, shell jumps).
+        #[arg(long)]
+        smm1_shell_kicks: bool,
+        /// SMM1 extra: pipes drawn in front of the player.
+        #[arg(long)]
+        pipes_over_player: bool,
+        /// SMM1 extra: Super Mushrooms in SMB1-style courses become Mystery Mushrooms or Weird
+        /// Mushrooms: off, mystery, weird.
+        #[arg(long, value_name = "off|mystery|weird")]
+        smb1_mushroom: Option<String>,
+        /// SMM1 extra: the Mystery Mushroom costume id, or "random" (default).
+        #[arg(long, value_name = "ID|random")]
+        costume: Option<String>,
+        /// Any engine option as NAME=VALUE (repeatable).
+        #[arg(long = "option", value_name = "NAME=VALUE")]
+        options: Vec<String>,
     },
     /// Run the open-source course server (courses + index in DIR) and the online-play relay
     /// (UDP, same port).
@@ -303,6 +319,28 @@ fn export_textures(file: &PathBuf, out: &std::path::Path) -> Result<(), String> 
     };
     std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
     for blob in blobs {
+        if blob.starts_with(b"FRES") && blob.get(4) == Some(&3) {
+            // Wii U BFRES (SMM1): GX2 textures, written as PNG when they decode to RGBA8
+            for t in mmk_formats::bfres_wiiu::textures(&blob).map_err(|e| e.to_string())? {
+                println!(
+                    "{}",
+                    json!({ "name": t.name, "w": t.width, "h": t.height,
+                        "gx2_format": format!("{:#x}", t.format), "tile_mode": t.tile_mode })
+                );
+                if let Ok(img) = t.decode()
+                    && img.kind == mmk_formats::bflim::PixelKind::Rgba8
+                {
+                    write_png(
+                        &out.join(format!("{}.png", t.name)),
+                        t.width as usize,
+                        t.height as usize,
+                        &img.data,
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+            }
+            continue;
+        }
         let Some(b) = bntx::find_embedded(&blob) else {
             continue;
         };
@@ -370,6 +408,14 @@ fn audio_cmd(
             "codec": format!("{:?}", c.codec), "rate": c.sample_rate, "samples": c.samples,
             "samples_here": c.samples_here, "loop": w.loop_range(), "prefetch": w.prefetch })
     };
+    // Wii U waves (SMM1): converted to BWAV first
+    for (_, blob) in blobs.iter_mut() {
+        if blob.starts_with(b"FWAV") {
+            *blob = audio::Fwav::parse(blob)
+                .map_err(|e| e.to_string())?
+                .to_bwav();
+        }
+    }
     let mut found = false;
     for (container, blob) in &blobs {
         let mut sounds: Vec<(String, Bwav)> = Vec::new();
@@ -691,7 +737,30 @@ fn main() -> ExitCode {
             each,
             keys,
             frames,
-        } => simulate(&files, each, keys, frames),
+            smm1_shell_kicks,
+            pipes_over_player,
+            smb1_mushroom,
+            costume,
+            options,
+        } => {
+            let mut o = mmk_sim::Options {
+                smm1_shell_kicks,
+                pipes_over_player,
+                ..Default::default()
+            };
+            let assignments = smb1_mushroom
+                .map(|m| format!("smb1_mushroom={m}"))
+                .into_iter()
+                .chain(costume.map(|c| format!("costume={c}")))
+                .chain(options);
+            for a in assignments {
+                if let Err(e) = o.apply(&a) {
+                    eprintln!("{e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            simulate(&files, each, keys, frames, o)
+        }
         Cmd::MissingArt {
             files,
             assets,
@@ -879,13 +948,16 @@ fn main() -> ExitCode {
                         eprintln!("skipped: {s}");
                     }
                     println!(
-                        "imported SMM1 {} UI: {} layouts, {} animations, {} textures, {} fonts, {} message files ({} skipped) into {}",
+                        "imported SMM1 {} UI: {} layouts, {} animations, {} textures, {} fonts, {} message files; {} costumes ({} frames, {} sounds) ({} skipped) into {}",
                         r.build,
                         r.layouts,
                         r.animations,
                         r.textures,
                         r.fonts,
                         r.messages,
+                        r.costumes,
+                        r.costume_textures,
+                        r.costume_sounds,
                         r.skipped.len(),
                         r.out_dir.display()
                     );
@@ -1222,9 +1294,14 @@ fn read_key_table(path: Option<PathBuf>) -> Option<smm2::KeyTable> {
 
 /// One scripted run: hold right + run, jump in 24-frame bursts every 40 frames, and a long jump
 /// when stuck for a second. Returns (progress 0-1 toward the goal, deaths, cleared).
-fn simulate_course(course: &smm2::Course, frames: u32) -> (f32, u32, bool) {
+fn simulate_course(
+    course: &smm2::Course,
+    frames: u32,
+    options: mmk_sim::Options,
+) -> (f32, u32, bool) {
     use mmk_sim::input::{self, Input};
     let mut w = mmk_sim::World::from_course(course);
+    w.set_options(options);
     w.lives = 9999; // keep retrying for the whole run
     let start_x = w.player.x;
     let goal_x = w.level.goal.map(|g| g.0).unwrap_or(w.level.right);
@@ -1258,7 +1335,13 @@ fn simulate_course(course: &smm2::Course, frames: u32) -> (f32, u32, bool) {
     )
 }
 
-fn simulate(files: &[PathBuf], each: bool, keys: Option<PathBuf>, frames: u32) -> ExitCode {
+fn simulate(
+    files: &[PathBuf],
+    each: bool,
+    keys: Option<PathBuf>,
+    frames: u32,
+    options: mmk_sim::Options,
+) -> ExitCode {
     let table = read_key_table(keys);
     let (mut total, mut panics, mut clears) = (0usize, 0usize, 0usize);
     let mut progress = 0.0f32;
@@ -1274,7 +1357,7 @@ fn simulate(files: &[PathBuf], each: bool, keys: Option<PathBuf>, frames: u32) -
         };
         total += 1;
         let style = c.header.game_style.as_str_lossy();
-        let run = std::panic::catch_unwind(|| simulate_course(&c, frames));
+        let run = std::panic::catch_unwind(|| simulate_course(&c, frames, options));
         let line = match run {
             Ok((p, deaths, cleared)) => {
                 progress += p;

@@ -75,6 +75,8 @@ pub struct Session {
         mmk_netplay::Session<mmk_sim::World>,
         Box<dyn mmk_netplay::Link>,
     )>,
+    /// Engine options (SMM1 extras, `--option`), kept across restarts.
+    pub options: mmk_sim::Options,
 }
 
 impl Session {
@@ -98,7 +100,14 @@ impl Session {
             scripted: None,
             extra_inputs: Vec::new(),
             net: None,
+            options: Default::default(),
         }
+    }
+
+    /// Use these engine options now and after every restart.
+    pub fn set_options(&mut self, options: mmk_sim::Options) {
+        self.options = options;
+        self.world.set_options(options);
     }
 
     /// Attach sound output (None detaches): the course music starts.
@@ -141,6 +150,7 @@ impl Session {
             Some(c) => World::from_course(c),
             None => World::new(),
         };
+        self.world.set_options(self.options);
         if let Some(d) = &mut self.director {
             d.start_course(&self.world);
         }

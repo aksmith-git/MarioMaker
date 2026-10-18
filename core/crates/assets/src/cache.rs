@@ -64,6 +64,8 @@ pub struct Cache {
     pub textures: Vec<TextureEntry>,
     by_name: HashMap<(String, String), usize>,
     sprites: Sprites,
+    /// Manifests of the caches added with [`Cache::merge`], in order.
+    pub merged: Vec<Value>,
 }
 
 /// Reads one file of a cache, by its full path (`root.join(relative path)`).
@@ -184,6 +186,7 @@ impl Cache {
             textures,
             by_name,
             sprites,
+            merged: Vec::new(),
         })
     }
 
@@ -265,6 +268,57 @@ impl Cache {
         e.data.set(t).is_ok() && parsed
     }
 
+    /// Add another cache's textures and sprite placement after this cache's own (e.g. the SMM1
+    /// costume art next to the SMM2 cache). Existing (model, texture) names win; the indices of
+    /// this cache's textures don't change, the added ones follow them. Do this right after
+    /// opening, before texture indices are handed out. The other cache's manifest is kept in
+    /// [`Cache::merged`]. Returns the number of textures added.
+    pub fn merge(&mut self, other: Cache) -> usize {
+        let mut added = 0;
+        for t in other.textures {
+            let key = (t.model.clone(), t.name.clone());
+            if self.by_name.contains_key(&key) {
+                continue;
+            }
+            if self.pixels == Pixels::Loaded && t.data.get().is_none() {
+                // this cache never reads lazily: read the added texture now
+                let tex = std::fs::read(&t.path)
+                    .ok()
+                    .and_then(|b| Mtex::parse(&b).ok());
+                let _ = t.data.set(tex);
+            }
+            self.by_name.insert(key, self.textures.len());
+            self.textures.push(t);
+            added += 1;
+        }
+        for (k, q) in other.sprites.quads {
+            self.sprites.quads.entry(k).or_insert(q);
+        }
+        for (k, a) in other.sprites.anims {
+            self.sprites.anims.entry(k).or_insert(a);
+        }
+        self.merged.push(other.manifest);
+        added
+    }
+
+    /// Names of the SMM1 costumes (by costume id) from a merged costume cache (manifest kind
+    /// `costumes`), empty without one.
+    pub fn costume_names(&self) -> Vec<String> {
+        self.merged
+            .iter()
+            .chain(std::iter::once(&self.manifest))
+            .filter(|m| m["kind"] == "costumes")
+            .flat_map(|m| m["costumes"].as_array().cloned().unwrap_or_default())
+            .map(|c| {
+                c["name"]
+                    .as_str()
+                    .or(c["res"].as_str())
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect()
+    }
+
     /// Index of a texture by model and texture name.
     pub fn texture_index(&self, model: &str, name: &str) -> Option<usize> {
         self.by_name
@@ -301,6 +355,53 @@ mod tests {
         assert_eq!((q.y0, q.y1), (-16.0, 16.0));
         assert_eq!(c.anim("M", "walk").unwrap().texture_at(10), Some("walk.1"));
         assert!(c.anim("M", "walk_ftp").is_some());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Merging appends the other cache's textures and quads after this cache's own.
+    #[test]
+    fn merge_appends_textures_and_quads() {
+        let dir = std::env::temp_dir().join(format!("mmk-cache-merge-{}", std::process::id()));
+        for (sub, model) in [("a", "M"), ("b", "C")] {
+            let d = dir.join(sub);
+            std::fs::create_dir_all(d.join(format!("textures/{model}"))).unwrap();
+            std::fs::write(d.join("manifest.json"), format!(r#"{{"kind":"{sub}"}}"#)).unwrap();
+            std::fs::write(
+                d.join("textures/index.json"),
+                format!(r#"{{"{model}":{{"wait.0":{{"w":1,"h":1}}}}}}"#),
+            )
+            .unwrap();
+            let t = Mtex {
+                format: crate::MtexFormat::Rgba8,
+                variant: crate::MtexVariant::Unorm,
+                width: 1,
+                height: 1,
+                channel_select: [2, 3, 4, 5],
+                data: vec![1, 2, 3, 4],
+            };
+            std::fs::write(
+                d.join(format!("textures/{model}/wait.0.mtex")),
+                t.to_bytes(),
+            )
+            .unwrap();
+            std::fs::write(
+                d.join("sprites.json"),
+                format!(
+                    r#"{{"version":1,"models":{{"{model}":{{"quads":{{"wait.0":{{"rect":[-12,0,12,24],"uv":[0,0,1,1]}}}}}}}}}}"#
+                ),
+            )
+            .unwrap();
+        }
+        let mut a = Cache::open(dir.join("a")).unwrap();
+        let b = Cache::open(dir.join("b")).unwrap();
+        assert_eq!(a.merge(b), 1);
+        assert_eq!(a.texture_index("M", "wait.0"), Some(0));
+        assert_eq!(a.texture_index("C", "wait.0"), Some(1));
+        assert_eq!(a.texture(1).unwrap().data, vec![1, 2, 3, 4]);
+        assert_eq!(a.sprite_quad("C", "wait.0").unwrap().x0, -12.0);
+        assert_eq!(a.merged[0]["kind"], "b");
+        let again = Cache::open(dir.join("b")).unwrap();
+        assert_eq!(a.merge(again), 0, "names already present are kept");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -26,6 +26,7 @@ use crate::warp::{self, SideHold, Transit};
 
 mod bosses;
 mod debug;
+mod smm1;
 mod w3;
 
 /// SMM2 shows 24 × 13.5 tiles.
@@ -43,6 +44,9 @@ const BREAK_SCORE: u32 = 10;
 const KICK_SCORE: u32 = 400;
 const MAX_LIVES: u32 = 99;
 const HURRY_SECONDS: i32 = 100;
+/// Draw layer of pipe tiles with the SMM1 layering option (`Options::pipes_over_player`): above
+/// the player (50).
+const PIPE_FRONT_LAYER: u32 = 55;
 /// Activation margin around the view (shared enemy draft §2.8; the area-out rule itself is [?]).
 const ACTIVATE_MARGIN: f32 = 32.0;
 
@@ -258,6 +262,8 @@ pub struct World {
     pub wind: f32,
     wind_n: i32,
     prev_jump_claw: bool,
+    /// Engine options (SMM1 extras); kept across restarts.
+    pub options: crate::options::Options,
 }
 
 impl Default for World {
@@ -360,6 +366,11 @@ impl World {
         w
     }
 
+    /// Use these engine options from now on (hosts call this on every world they make).
+    pub fn set_options(&mut self, options: crate::options::Options) {
+        self.options = options;
+    }
+
     pub fn with_level(level: Level) -> Self {
         Self::with_areas(vec![level])
     }
@@ -452,6 +463,7 @@ impl World {
             prev_jump_claw: false,
             wind: 0.0,
             wind_n: 0,
+            options: Default::default(),
         };
         w.field_model = Box::leak(field_model(&w.level.style, w.level.theme).into_boxed_str());
         w.reset_course();
@@ -4860,7 +4872,12 @@ impl World {
         for t in &self.level.tiles {
             let (px, py) = (t.x as f32 * TILE, t.y as f32 * TILE);
             if visible(px, py) {
-                let mut s = tile(px, py, t.atlas, 10);
+                let layer = if t.pipe && self.options.pipes_over_player {
+                    PIPE_FRONT_LAYER
+                } else {
+                    10
+                };
+                let mut s = tile(px, py, t.atlas, layer);
                 s.flip_x = t.flip & 1 != 0;
                 s.flip_y = t.flip & 2 != 0;
                 out.push(s);

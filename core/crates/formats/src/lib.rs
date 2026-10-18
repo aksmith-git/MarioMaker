@@ -13,6 +13,7 @@ pub mod bfcpx;
 pub mod bffnt;
 pub mod bflim;
 pub mod bfres;
+pub mod bfres_wiiu;
 pub mod bntx;
 pub mod byml;
 pub mod course_id;

@@ -147,6 +147,8 @@ pub const DOWN_FALL_FRAMES: i32 = 140;
 /// held-jump gravity then gives the higher bounce [obs]. Players stomping players use 4.128 /
 /// 3.628 (0x71009ce0e0).
 pub const STOMP_BOUNCE: f32 = 3.9095;
+/// Entries of the SMM1 costume table (Mystery Mushroom costumes, ids 0 … COSTUMES − 1).
+pub const COSTUMES: usize = 200;
 
 /// Who is steering the player.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
