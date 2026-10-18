@@ -11,6 +11,9 @@ use mmk_formats::smm2::{Area, Course};
 use crate::actors::Kind;
 use crate::blocks::{BlockKind, Contents};
 
+mod v3;
+pub use v3::V3Tiles;
+
 pub const TILE: f32 = 16.0;
 const ATLAS_COLS: u32 = 16;
 const GROUND_ATLAS_BASE: u32 = 184;
@@ -358,6 +361,8 @@ pub struct Level {
     pub spike_blocks: Vec<(i32, i32, u8)>,
     /// Vines (64): climb areas (centre x, bottom, top) in px.
     pub vines: Vec<(f32, f32, f32)>,
+    /// Tile parts of the 2.0 / 3.0 updates (level/v3.rs).
+    pub v3: V3Tiles,
     pub liquid: Option<LiquidSpec>,
     /// One-way walls (drawing): centre x, bottom y, orientation.
     pub oneway: Vec<(f32, f32, u8)>,
@@ -552,6 +557,7 @@ impl Level {
             scroll_nodes: Vec::new(),
             pink_coins: Vec::new(),
             vines: Vec::new(),
+            v3: V3Tiles::default(),
             tracks: Default::default(),
             creepers: Vec::new(),
             liquid: None,
@@ -830,7 +836,7 @@ impl Level {
                     path: o.extended_data.wrapping_sub(1).min(255) as u8,
                     sleeps: o.flags & 0x4 != 0,
                 }),
-                _ => None,
+                _ => v3::actor_kind(o, &lvl),
             };
             if o.id == 61 && o.flags & 0x4 == 0 && o.flags & 0x400 == 0 {
                 // the Chain Chomp's stake is solid (WanwanPile has a collision body)
@@ -901,6 +907,9 @@ impl Level {
                     clown: o.flags & 0x200 != 0,
                     alt: o.flags & 0x4 != 0,
                 });
+                continue;
+            }
+            if v3::place_tile(&mut lvl, o, tx, ty) {
                 continue;
             }
             let on_track = o.flags & 0x400 != 0;
@@ -1621,6 +1630,7 @@ impl Level {
             scroll_nodes: Vec::new(),
             pink_coins: Vec::new(),
             vines: Vec::new(),
+            v3: V3Tiles::default(),
             tracks: Default::default(),
             creepers: Vec::new(),
             liquid: None,

@@ -8,6 +8,8 @@
 use crate::level::{Cell, Level, PipeDir, TILE};
 
 mod bosses;
+mod koopalings;
+mod v3;
 mod w3;
 pub use bosses::{BossAttack, BossHit};
 pub use w3::{CREEP_CELL, W3Look, W3State, creeper_corner, push as bully_push};
@@ -310,6 +312,40 @@ pub enum Kind {
     PiranhaCreeper {
         path: u8,
         sleeps: bool,
+    },
+    /// Spike (74): turns to the player, lifts a spiked ball (a snowball in snow themes) and
+    /// throws it (actors/v3.rs, like the other 2.0/3.0 parts below).
+    Spike,
+    /// A Spike's ball rolling along the ground (`snow`: a snowball).
+    SpikeBall {
+        snow: bool,
+    },
+    /// Pokey (78; `snow` = Snow Pokey): a walking cactus stack.
+    Pokey {
+        snow: bool,
+    },
+    /// Mechakoopa (111): `weapon` 0 plain, 1 Blasta (missiles), 2 Zappa (laser).
+    Mechakoopa {
+        weapon: u8,
+    },
+    /// Blasta Mechakoopa's homing missile.
+    MechaMissile,
+    /// Zappa Mechakoopa's laser beam.
+    MechaLaser,
+    /// ON/OFF Trampoline (132, 3D World; `blue` = the alternate colour).
+    OnOffTrampoline {
+        blue: bool,
+    },
+    /// A Koopaling (120–126; `who` 0 Lemmy, 1 Morton, 2 Larry, 3 Wendy, 4 Iggy, 5 Roy, 6 Ludwig)
+    /// (actors/koopalings.rs). `key`: holds a Key; `clown`: rides a Koopa Clown Car.
+    Koopaling {
+        who: u8,
+        key: bool,
+        clown: bool,
+    },
+    /// A Koopaling's projectile (`what`: see actors/koopalings.rs).
+    KoopalingShot {
+        what: u8,
     },
 }
 
@@ -1115,6 +1151,7 @@ impl Actor {
             Kind::TrackBlock { .. } => 16.0,
             Kind::TrackMount { .. } => 8.0,
             k if k.is_w3() => self.w3_size().0,
+            k if k.is_v3() => self.v3_size().0,
             _ if self.big => 16.0,
             _ => 8.0,
         }
@@ -1141,6 +1178,7 @@ impl Actor {
             Kind::BabyBlooper { .. } => 8.0,
             Kind::TrackMount { h, .. } => h as f32 * TILE,
             k if k.is_w3() => self.w3_size().1,
+            k if k.is_v3() => self.v3_size().1,
             _ if self.big => 32.0,
             _ => 16.0,
         }
@@ -1662,6 +1700,7 @@ impl Actor {
                 Kind::Goomba | Kind::Goombrat | Kind::Koopa { .. } | Kind::Thwomp { .. } => {} // their own wing behaviour
                 Kind::Bowser { .. } | Kind::BoomBoom { .. } | Kind::BowserJr { .. } => {}
                 k if k.is_w3() => {} // their own wing behaviour (actors/w3.rs)
+                k if k.is_v3() => {} // their own wing behaviour (actors/v3.rs)
                 Kind::Piranha { .. } | Kind::Muncher if self.pipe.is_none() => {
                     self.step_winged_plant(level);
                     return None;
@@ -1715,6 +1754,15 @@ impl Actor {
             | Kind::Bully
             | Kind::Charvaargh
             | Kind::PiranhaCreeper { .. } => return self.step_w3(level),
+            Kind::Spike
+            | Kind::SpikeBall { .. }
+            | Kind::Pokey { .. }
+            | Kind::Mechakoopa { .. }
+            | Kind::MechaMissile
+            | Kind::MechaLaser
+            | Kind::OnOffTrampoline { .. }
+            | Kind::Koopaling { .. }
+            | Kind::KoopalingShot { .. } => return self.step_v3(level),
             Kind::BowserFire | Kind::Shuriken => self.step_boss_shot(),
             Kind::ChainChomp { chained } => self.step_chomp(level, chained),
             Kind::LavaBubble => self.step_lava_bubble(),

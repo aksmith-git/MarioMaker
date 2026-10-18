@@ -26,6 +26,7 @@ use crate::warp::{self, SideHold, Transit};
 
 mod bosses;
 mod debug;
+mod v3;
 mod w3;
 
 /// SMM2 shows 24 × 13.5 tiles.
@@ -1649,6 +1650,7 @@ impl World {
         self.collect_coins();
         self.step_donuts();
         self.step_p_switch();
+        self.step_v3();
         self.step_area_timer();
 
         // blocks, actors, effects
@@ -2490,7 +2492,7 @@ impl World {
                     {
                         let fx = f.x;
                         f.mode = Mode::Dead;
-                        if let Some(down) = w3::fire_hit(e, fx) {
+                        if let Some(down) = w3::fire_hit(e, fx).or_else(|| v3::fire_hit(e, fx)) {
                             if down {
                                 scores.push((Self::chain_score(0), e.x, e.y + 24.0));
                             }
@@ -2838,6 +2840,13 @@ impl World {
                     }
                 }
                 self.events.push(Event::EnemyDown);
+                i += 1;
+                continue;
+            }
+            if a.kind.is_v3() {
+                if self.v3_contact(i, jump_held) {
+                    return;
+                }
                 i += 1;
                 continue;
             }
@@ -5214,6 +5223,7 @@ impl World {
         }
         self.clown_sprites(&mut out);
         self.w3_sprites(&mut out);
+        self.v3_sprites(&mut out);
         // Chain Chomp stakes and chains (the chain is cosmetic: 4 links, stake to Chomp)
         for a in &self.actors {
             if a.kind != (Kind::ChainChomp { chained: true }) || !visible(a.home_x, a.home_y) {
@@ -6209,6 +6219,15 @@ impl World {
             | Kind::Bully
             | Kind::Charvaargh
             | Kind::PiranhaCreeper { .. } => a.w3_look()?,
+            Kind::Spike
+            | Kind::SpikeBall { .. }
+            | Kind::Pokey { .. }
+            | Kind::Mechakoopa { .. }
+            | Kind::MechaMissile
+            | Kind::MechaLaser
+            | Kind::OnOffTrampoline { .. }
+            | Kind::Koopaling { .. }
+            | Kind::KoopalingShot { .. } => a.v3_look()?,
             Kind::LavaBubble => ("M1_Enemy_bubble", "wait.0", 16.0, 16.0, false),
             // [placeholder: the egg uses Yoshi's hatching frame; drawn per style by the remap]
             Kind::YoshiEgg { .. } => ("M1_Player_Yoshi", "born_body.0", 32.0, 32.0, false),
