@@ -949,10 +949,14 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         int n = sz == 5 ? 2 : 1;
         char rb[16];
         const char *dyn = a == RZ ? NULL : reg(c, a, rb);
-        for (int i = 0; i < n; i++) {
+        // (64-bit load whose address register is the first destination, LDC.64 R0, c[x][R0]: the second word is
+        // loaded first, or it would be read from the address the first load just overwrote - SMM2's layout vertex
+        // shader fetches its per-vertex texture coordinates this way)
+        bool rev = n == 2 && dyn && a == d;
+        for (int k = 0; k < n; k++) {
+            int i = rev ? n - 1 - k : k;
             char cb[256];
             cbuf_ref(c, idx, off + 4 * i, dyn, cb);
-            if (!dyn && (off + 4 * i) & 0) {}
             if (dyn) c->info->cbuf_size[idx] = 0x10000;
             set_reg(c, d + i, cb);
         }

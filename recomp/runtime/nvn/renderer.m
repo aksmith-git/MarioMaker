@@ -1208,7 +1208,7 @@ static void bind_textures(int stage, ShaderInfo *si) {
         if (h && st.tpool && tic < (uint32_t)st.tpool->count) {
             NvnTexEntry *e = &((NvnTexEntry *)st.tpool->entries)[tic];
             if (e->tex) tex = sampled_texture(e->tex, &e->view, e->has_view, st_->type);
-            if (g_debug_frame && e->tex) LOG("[tx] stage %d tex %d slot %d: nvn %p mtl %p (%lux%lu fmt %lu type %lu) view %d\n", stage, i, slot, (void *)e->tex, (__bridge void *)tex, (unsigned long)tex.width, (unsigned long)tex.height, (unsigned long)tex.pixelFormat, (unsigned long)tex.textureType, e->has_view);
+            if (g_debug_frame && e->tex) LOG("[tx] stage %d tex %d slot %d: nvn %p mtl %p (%lux%lu fmt %lu type %lu) view %d (mask %#x swz %d%d%d%d) tex swz %d%d%d%d mtl swz %08x\n", stage, i, slot, (void *)e->tex, (__bridge void *)tex, (unsigned long)tex.width, (unsigned long)tex.height, (unsigned long)tex.pixelFormat, (unsigned long)tex.textureType, e->has_view, e->view.setmask, e->view.swizzle[0], e->view.swizzle[1], e->view.swizzle[2], e->view.swizzle[3], e->tex->swizzle[0], e->tex->swizzle[1], e->tex->swizzle[2], e->tex->swizzle[3], (unsigned)(tex.swizzle.red | tex.swizzle.green << 8 | tex.swizzle.blue << 16 | tex.swizzle.alpha << 24));
             if (e->tex && stage == 1) {
                 extern int renderer_texpatch_of(NvnTexture *t);
                 extern int texpatch_bottle_kind(int id);
@@ -1287,6 +1287,8 @@ static void bind_textures(int stage, ShaderInfo *si) {
             renderer_save_texture(tex, path);
             snprintf(path, sizeof path, "build/dtex_%03d_%d_a.png", dn - 1, i);
             renderer_save_texture_alpha(tex, path);
+            snprintf(path, sizeof path, "build/dtex_%03d_%d_alpha.png", dn - 1, i);  // (sampled alpha, any format)
+            renderer_save_texture(tex, path);
         }
         if (stage == 0) { [enc setVertexTexture:tex atIndex:i]; [enc setVertexSamplerState:smp atIndex:i]; }
         else { [enc setFragmentTexture:tex atIndex:i]; [enc setFragmentSamplerState:smp atIndex:i]; }
@@ -2165,6 +2167,11 @@ static void draw(CmdRec *r, bool indexed) {
     }
     }  // runs
     stat_draws++;
+    if (g_debug_frame && ENV("LARECOMP_DEBUG_EACH_DRAW")) {  // (debug) the target after every draw: pass_NNN.png
+        LOG("[draw] ^ saved as pass_%03d\n", debug_pass_no);
+        end_pass();
+        st.rt_dirty = true;
+    }
     if (dbg_this) {
         static int nlog;
         if (nlog++ < 4) {

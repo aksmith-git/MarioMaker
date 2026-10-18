@@ -614,7 +614,9 @@ static const char *present_src =
     "  V o; o.pos = float4(p * 2.0 - 1.0, 0, 1);\n"
     "  float2 uv = float2(p.x, pv[0].x > 0.5 ? p.y : 1.0 - p.y); o.uv = pv[1].xy + uv * pv[1].zw; return o; }\n"
     "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]]) {\n"
-    "  return float4(t.sample(s, in.uv).rgb, 1.0); }\n";
+    "  return float4(t.sample(s, in.uv).rgb, 1.0); }\n"
+    "fragment float4 fs_alpha(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]]) {\n"
+    "  return float4(float3(t.sample(s, in.uv).a), 1.0); }\n";
 
 void backend_init(void) {
     while (!atomic_load(&ui_ready)) usleep(1000);
@@ -953,7 +955,7 @@ void renderer_save_texture(id<MTLTexture> tex, const char *path) {
     rp.colorAttachments[0].texture = dst;
     rp.colorAttachments[0].loadAction = MTLLoadActionClear;
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
-    static id<MTLRenderPipelineState> pipe;
+    static id<MTLRenderPipelineState> pipe, pipe_alpha;  // (a path ending in "_alpha.png": the alpha channel as grey)
     if (!pipe) {
         MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
         id<MTLLibrary> lib = [dev newLibraryWithSource:@(present_src) options:nil error:nil];
@@ -961,10 +963,13 @@ void renderer_save_texture(id<MTLTexture> tex, const char *path) {
         pd.fragmentFunction = [lib newFunctionWithName:@"fs"];
         pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
         pipe = [dev newRenderPipelineStateWithDescriptor:pd error:nil];
+        pd.fragmentFunction = [lib newFunctionWithName:@"fs_alpha"];
+        pipe_alpha = [dev newRenderPipelineStateWithDescriptor:pd error:nil];
     }
+    bool want_alpha = strstr(path, "_alpha.png") != NULL;
     id<MTLRenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:rp];
     float flip = renderer_origin_lower_left() ? 1.0f : 0.0f;
-    [e setRenderPipelineState:pipe];
+    [e setRenderPipelineState:want_alpha && pipe_alpha ? pipe_alpha : pipe];
     if (g_save_upright || strstr(path, "window")) flip = 0;  // the window image is already upright
     float pv[8] = {flip, 0, 0, 0, shot_crop[0], shot_crop[1], shot_crop[2], shot_crop[3]};
     [e setVertexBytes:pv length:sizeof pv atIndex:0];
