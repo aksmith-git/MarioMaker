@@ -251,6 +251,8 @@ pub struct CardInfo {
     pub mode_label: Option<String>,
     /// The mode line's own text instead of a label (the 100 Mario Challenge's "n/total").
     pub mode_text: Option<String>,
+    /// A course of the course server (by code): the clear screen offers Like / Boo.
+    pub server_code: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

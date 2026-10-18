@@ -1010,11 +1010,21 @@ pub(crate) mod tests {
         pub restarts: u32,
         pub values: HashMap<String, String>,
         pub paused: bool,
+        /// A server is configured (`online` accepts calls).
+        pub server: bool,
+        /// Calls started: (id, action, args, token).
+        pub calls: Vec<(u32, String, serde_json::Value, Option<String>)>,
+        /// Answers `poll_online` hands out, first first.
+        pub answers: Vec<(u32, Result<serde_json::Value, String>)>,
+        pub affects_play: bool,
+        pub loaded: Vec<Source>,
+        pub reports: Vec<(String, String)>,
+        pub library: Vec<CourseEntry>,
     }
 
     impl Host for MockHost {
         fn library(&mut self) -> Vec<CourseEntry> {
-            Vec::new()
+            self.library.clone()
         }
         fn request_server_courses(&mut self) -> bool {
             false
@@ -1022,7 +1032,8 @@ pub(crate) mod tests {
         fn poll_server_courses(&mut self) -> Option<Vec<WorldCourse>> {
             None
         }
-        fn load_course(&mut self, _: &Source) -> Result<LoadedCourse, String> {
+        fn load_course(&mut self, s: &Source) -> Result<LoadedCourse, String> {
+            self.loaded.push(s.clone());
             Ok(LoadedCourse::default())
         }
         fn title_courses(&mut self) -> usize {
@@ -1045,6 +1056,28 @@ pub(crate) mod tests {
         fn set_run_counters(&mut self, _: u32, _: u32, _: u32) {}
         fn set_paused(&mut self, p: bool) {
             self.paused = p;
+        }
+        fn report(&mut self, code: &str, what: &str) {
+            self.reports.push((code.into(), what.into()));
+        }
+        fn online(
+            &mut self,
+            id: u32,
+            action: &str,
+            args: &serde_json::Value,
+            token: Option<&str>,
+        ) -> bool {
+            if self.server {
+                self.calls
+                    .push((id, action.into(), args.clone(), token.map(str::to_string)));
+            }
+            self.server
+        }
+        fn poll_online(&mut self) -> Option<(u32, Result<serde_json::Value, String>)> {
+            (!self.answers.is_empty()).then(|| self.answers.remove(0))
+        }
+        fn play_options_affect_play(&self) -> bool {
+            self.affects_play
         }
         fn load_value(&mut self, key: &str) -> Option<String> {
             self.values.get(key).cloned()
@@ -1069,11 +1102,23 @@ pub(crate) mod tests {
 
     /// Run `f` with a context over `host` and `saves`.
     pub fn with<R>(host: &mut MockHost, saves: &mut Saves, f: impl FnOnce(&mut Cx) -> R) -> R {
+        let mut online = crate::online::Online::default();
+        with_online(host, saves, &mut online, f)
+    }
+
+    /// Run `f` with a context over `host`, `saves` and the account state `online`.
+    pub fn with_online<R>(
+        host: &mut MockHost,
+        saves: &mut Saves,
+        online: &mut crate::online::Online,
+        f: impl FnOnce(&mut Cx) -> R,
+    ) -> R {
         let mut fade = crate::fade::SceneFade::new(None);
         let (mut pending, mut now, mut toast) = (None, Vec::new(), None);
         let mut cx = Cx {
             host,
             saves,
+            online,
             fade: &mut fade,
             pending: &mut pending,
             now: &mut now,

@@ -82,6 +82,8 @@ pub struct UiInput {
     pub skip: bool,
     /// A click / tap this tick, in layout units (1280 × 720, origin centre, y up).
     pub click: Option<[f32; 2]>,
+    /// A key typed into an open text field (see `FrontInput::text`).
+    pub text: Option<char>,
 }
 
 /// The game's selection frame (`Cmn_Cursor_00`): `W_SelectFrame_00` sized to the selected
@@ -176,6 +178,54 @@ impl Script {
             .filter(|(at, _)| *at == t)
             .fold(Buttons::NONE, |a, (_, b)| a | *b)
     }
+}
+
+/// What a screen's loading part (`Cmn_LoadingIcon_01`) shows.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Loading {
+    Hidden,
+    /// The spinning icon with the screen's "please wait" (`<icon>-T_LoadText_00`).
+    Waiting,
+    /// A message instead (an empty list, an error), in the waiting line without the icon: the
+    /// part's own no-data text uses an outlined font style the layer doesn't draw [inf].
+    Message(String),
+}
+
+/// Show `state` in loading part `icon` of `l` (from `tick`).
+pub fn set_loading(l: &mut Layout, icon: &str, state: &Loading, tick: i32) {
+    if *state == Loading::Hidden {
+        l.show(icon, false);
+        return;
+    }
+    l.visible(icon, None);
+    l.show(&format!("{icon}/N_NoData_00"), false);
+    l.stop(&format!("{icon}/NoData"));
+    l.visible(&format!("{icon}/N_Loading_00"), None);
+    let text = format!("{icon}/T_LoadText_00");
+    match state {
+        Loading::Waiting => {
+            l.visible(&format!("{icon}/N_Icon_00"), None);
+            let label = format!("{}-T_LoadText_00", icon.replace('/', "-"));
+            l.text_from(&text, &label);
+            l.play_loop(&format!("{icon}/Loop"), tick);
+        }
+        Loading::Message(m) => {
+            l.show(&format!("{icon}/N_Icon_00"), false);
+            l.stop(&format!("{icon}/Loop"));
+            l.text(&text, m);
+        }
+        Loading::Hidden => {}
+    }
+}
+
+/// The first of `panes` (bounding panes, `[Part/…/]Pane`) drawn under the click `p` (layout
+/// units, origin centre, y up) at `tick`.
+pub fn hit(l: &mut Layout, tick: i32, panes: &[String], p: [f32; 2]) -> Option<usize> {
+    l.apply(tick);
+    panes.iter().position(|b| {
+        l.rect(b)
+            .is_some_and(|r| r.visible && r.alpha > 0.01 && r.contains(p))
+    })
 }
 
 /// The nearest of `targets` (centres) from `from` in the pressed direction, for menus laid out

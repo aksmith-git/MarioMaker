@@ -422,7 +422,21 @@ pub fn front(
     } else {
         // MMK_FRONT_REALTIME=1: one tick per 1/60 s (gives a server listing time to arrive)
         let realtime = std::env::var("MMK_FRONT_REALTIME").as_deref() == Ok("1");
-        for _ in 0..ticks {
+        // MMK_FRONT_TYPE=TICK:TEXT types TEXT into an open text field, a key per tick from
+        // tick TICK ("\n" is Return)
+        let mut typed: Vec<char> = Vec::new();
+        let mut type_at = u64::MAX;
+        if let Ok(t) = std::env::var("MMK_FRONT_TYPE")
+            && let Some((at, text)) = t.split_once(':')
+        {
+            type_at = at.parse().unwrap_or(u64::MAX);
+            typed = text.replace("\\n", "\n").chars().rev().collect();
+        }
+        for i in 0..ticks {
+            let mut input = input;
+            if i >= type_at {
+                input.text = typed.pop();
+            }
             // the smoke-test script as the player's input (the Swift app's MMK_SCREENSHOT)
             let b = if scripted {
                 scripted_run(game.session.world.tick).buttons

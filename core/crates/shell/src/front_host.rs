@@ -6,13 +6,14 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 
 use mmk_front::host::{Condition, CourseMeta, LoadedCourse};
 use mmk_front::{CourseEntry, CourseStatus, Host, Source, WorldCourse};
 use mmk_host::audio::AudioOut;
 use mmk_sim::player::{Control, DOWN_FALL_FRAMES};
 use mmk_sim::world::Event;
+use serde_json::{Value, json};
 
 use crate::game::Game;
 use crate::source::{self, AssetSource, DirSource};
@@ -39,6 +40,20 @@ pub struct HostData {
     rx: Option<Receiver<Vec<WorldCourse>>>,
     rng: u64,
     memory: HashMap<String, String>,
+    /// Server calls (`Host::online`) answer here, from their threads.
+    online: Option<(Sender<Reply>, Receiver<Reply>)>,
+    /// The record run downloaded by a `ghost` call: raced from the next start of that course.
+    ghost: Option<(String, mmk_modes::replay::Replay)>,
+}
+
+/// A server call's id and what its thread sent back.
+type Reply = (u32, Answer);
+
+/// What a server call's thread sends back.
+enum Answer {
+    Json(Result<Value, String>),
+    /// A `ghost` call: the course code and the replay's bytes.
+    Ghost(String, Result<Vec<u8>, String>),
 }
 
 impl HostData {
@@ -61,7 +76,16 @@ impl HostData {
             rx: None,
             rng: seed,
             memory: HashMap::new(),
+            online: None,
+            ghost: None,
         }
+    }
+
+    fn online_tx(&mut self) -> Sender<Reply> {
+        self.online
+            .get_or_insert_with(std::sync::mpsc::channel)
+            .0
+            .clone()
     }
 
     fn src(&self) -> Option<&dyn AssetSource> {
@@ -359,12 +383,7 @@ impl Host for ShellHost<'_> {
                 .unwrap_or_default();
             let list = found
                 .iter()
-                .filter_map(|l| {
-                    WorldCourse::server(&serde_json::json!({
-                        "code": l.code, "name": l.name, "maker": l.maker, "style": l.style,
-                        "plays": l.plays, "clears": l.clears, "likes": l.likes,
-                    }))
-                })
+                .filter_map(|l| WorldCourse::server(&mmk_online::listing_json(l)))
                 .collect();
             let _ = tx.send(list);
         });
@@ -397,7 +416,15 @@ impl Host for ShellHost<'_> {
                         .map_err(|e| e.to_string())?;
                     std::fs::write(&file, bytes).map_err(|e| e.to_string())?;
                 }
-                self.data.load_file(self.game, &file)
+                let loaded = self.data.load_file(self.game, &file)?;
+                // a server course's clears go back as replays the server verifies
+                self.game.session.record_replays();
+                if self.data.ghost.as_ref().is_some_and(|g| &g.0 == code)
+                    && let Some((_, r)) = self.data.ghost.take()
+                {
+                    self.game.session.set_ghost(r);
+                }
+                Ok(loaded)
             }
         }
     }
@@ -497,6 +524,72 @@ impl Host for ShellHost<'_> {
         std::thread::spawn(move || {
             let _ = mmk_online::Client::new(server).report(&code, &what);
         });
+    }
+
+    fn online(&mut self, id: u32, action: &str, args: &Value, token: Option<&str>) -> bool {
+        let Some(server) = self.data.server.clone() else {
+            return false;
+        };
+        let tx = self.data.online_tx();
+        let token = token.filter(|t| !t.is_empty()).map(str::to_string);
+        let code = args["code"].as_str().unwrap_or_default().to_string();
+        match action {
+            "submit_replay" => {
+                // the run just cleared (kept by the session since the course started)
+                let replay = self.game.session.take_cleared_replay();
+                let affects = self.play_options_affect_play();
+                match replay.filter(|_| !affects) {
+                    Some(r) => {
+                        std::thread::spawn(move || {
+                            let c = mmk_online::Client::new(server).with_token(token);
+                            let a = c
+                                .submit_replay(&code, &r.encode())
+                                .map(|l| mmk_online::listing_json(&l));
+                            let _ = tx.send((id, Answer::Json(a)));
+                        });
+                    }
+                    None => {
+                        let _ = tx.send((id, Answer::Json(Err("no replay of a clear".into()))));
+                    }
+                }
+            }
+            "ghost" => {
+                std::thread::spawn(move || {
+                    let bytes = mmk_online::Client::new(server).record_replay(&code);
+                    let _ = tx.send((id, Answer::Ghost(code, bytes)));
+                });
+            }
+            _ => {
+                let (action, args) = (action.to_string(), args.clone());
+                std::thread::spawn(move || {
+                    let a = mmk_online::call(&server, token.as_deref(), &action, &args);
+                    let _ = tx.send((id, Answer::Json(a)));
+                });
+            }
+        }
+        true
+    }
+
+    fn poll_online(&mut self) -> Option<(u32, Result<Value, String>)> {
+        let (id, a) = self.data.online.as_ref()?.1.try_recv().ok()?;
+        Some((
+            id,
+            match a {
+                Answer::Json(r) => r,
+                Answer::Ghost(code, bytes) => bytes.and_then(|b| {
+                    let r = mmk_modes::replay::Replay::decode(&b)
+                        .ok_or_else(|| "the record's run isn't a replay".to_string())?;
+                    let frames = r.inputs.len();
+                    let same = r.sim_version == mmk_modes::replay::SIM_VERSION;
+                    self.data.ghost = Some((code, r));
+                    Ok(json!({ "frames": frames, "same_engine": same }))
+                }),
+            },
+        ))
+    }
+
+    fn play_options_affect_play(&self) -> bool {
+        self.game.session.world.options.affects_play()
     }
 
     fn load_value(&mut self, key: &str) -> Option<String> {

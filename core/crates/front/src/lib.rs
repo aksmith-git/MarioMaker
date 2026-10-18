@@ -11,13 +11,17 @@
 //! view where [`DrawItem::Course`] stands, and plays the frame's [`SoundCue`]s (WAVs of the SMM2
 //! UI import's `ui/sound/`).
 
+pub mod account;
 pub mod boot;
 pub mod challenge;
+pub mod coursepage;
 pub mod endless;
 pub mod fade;
 pub mod host;
 pub mod layout;
+pub mod leaderboard;
 pub mod menu;
+pub mod online;
 pub mod play;
 pub mod screens;
 pub mod smm1;
@@ -81,6 +85,10 @@ pub struct FrontInput {
     pub skip: bool,
     /// A click / tap this tick, layout units (1280 × 720 view, origin centre, y up).
     pub click: Option<[f32; 2]>,
+    /// A key typed this tick while a text field is open ([`Front::typing`]): a character,
+    /// '\u{8}' to erase the last one, '\n' to finish, '\u{1b}' to cancel. Hosts without a
+    /// keyboard leave it None (one key per tick; queue the rest).
+    pub text: Option<char>,
 }
 
 /// A deferred scene change (run when its fade has covered the screen).
@@ -113,6 +121,8 @@ pub enum Back {
 pub struct Cx<'a> {
     pub host: &'a mut dyn Host,
     pub saves: &'a mut Saves,
+    /// The server account and the answers of server calls.
+    pub online: &'a mut online::Online,
     fade: &'a mut SceneFade,
     pending: &'a mut Option<Go>,
     now: &'a mut Vec<Go>,
@@ -217,6 +227,7 @@ pub struct Front {
     pending: Option<Go>,
     now: Vec<Go>,
     pub saves: Saves,
+    pub online: online::Online,
     toast: Option<(String, i32)>,
     held: Buttons,
     pub opts: Options,
@@ -232,6 +243,7 @@ impl Front {
         fade.instant = opts.instant_fades;
         let mut f = Self {
             saves: Saves::load(host),
+            online: online::Online::load(host),
             smm2,
             smm1,
             screen: Screen::None,
@@ -264,6 +276,7 @@ impl Front {
             Cx {
                 host,
                 saves: &mut self.saves,
+                online: &mut self.online,
                 fade: &mut self.fade,
                 pending: &mut self.pending,
                 now: &mut self.now,
@@ -411,11 +424,13 @@ impl Front {
             held: input.menu,
             skip: input.skip,
             click: input.click,
+            text: input.text,
         };
         let play = PlayInput {
             ui,
             start: input.start,
         };
+        self.online.poll(host);
         if let Some((_, t)) = &mut self.toast {
             *t -= 1;
             if *t <= 0 {
@@ -502,6 +517,15 @@ impl Front {
         }
     }
 
+    /// A text field is open: the host should send typed keys ([`FrontInput::text`]) and keep
+    /// the keyboard's letter keys from moving the menus.
+    pub fn typing(&self) -> bool {
+        match &self.screen {
+            Screen::World(f) => f.typing(),
+            _ => false,
+        }
+    }
+
     /// What to draw and play now.
     pub fn frame(&mut self) -> Frame {
         let mut items = Vec::new();
@@ -530,7 +554,9 @@ impl Front {
     }
 
     /// Captures: jump to a screen the way the Swift app's `MMK_UI_SCREEN` does: boot, title,
-    /// title-main, title-play, courseworld, courseworld-list, challenge, challenge-map,
+    /// title-main, title-play, courseworld, courseworld-list, the online screens (account,
+    /// courseworld-leaderboards, courseworld-course-page / -comments / -post / -maker of the
+    /// list's first server course), challenge, challenge-map,
     /// challenge-walk, challenge-gameover, challenge-ending (`difficulty`, `cleared` for the
     /// walk). Returns false for an unknown name.
     pub fn capture(
@@ -561,6 +587,46 @@ impl Front {
             "courseworld-list" => {
                 self.show_world(host, ListKind::World, 0);
                 self.apply(host, Go::World(WorldGo::List));
+            }
+            // the online screens (a server: --server / MMK_SERVER; MMK_FRONT_REALTIME=1 gives
+            // its answers time to arrive)
+            "account" | "courseworld-leaderboards" => {
+                self.show_world(
+                    host,
+                    ListKind::World,
+                    if screen == "account" { 6 } else { 1 },
+                );
+                let what = if screen == "account" {
+                    "account"
+                } else {
+                    "leaderboards"
+                };
+                let (mut cx, scr) = self.cx(host);
+                let Screen::World(f) = scr else {
+                    return false;
+                };
+                if !f.debug_open(&mut cx, what) {
+                    return false;
+                }
+                self.run_now(host);
+            }
+            "courseworld-course-page"
+            | "courseworld-comments"
+            | "courseworld-post"
+            | "courseworld-maker" => {
+                self.show_world(host, ListKind::World, 0);
+                self.apply(host, Go::World(WorldGo::List));
+                let what = &screen["courseworld-".len()..];
+                let what = if what == "course-page" { "page" } else { what };
+                let (mut cx, scr) = self.cx(host);
+                let Screen::World(f) = scr else {
+                    return false;
+                };
+                f.wait_server(&mut cx, 500);
+                if !f.debug_open(&mut cx, what) {
+                    return false;
+                }
+                self.run_now(host);
             }
             "storymode" => self.show_world(host, ListKind::Story, 0),
             s if s.starts_with("challenge") => {
