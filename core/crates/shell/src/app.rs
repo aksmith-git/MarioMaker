@@ -184,6 +184,7 @@ pub struct App {
     /// Mouse position (window px) and Ctrl held, for the maker.
     mouse: (f64, f64),
     ctrl: bool,
+    shift: bool,
     /// Keeps sound playing (native builds).
     #[cfg(not(target_arch = "wasm32"))]
     pub audio: Option<crate::audio_out::AudioStream>,
@@ -216,6 +217,7 @@ impl App {
             idle: false,
             mouse: (0.0, 0.0),
             ctrl: false,
+            shift: false,
             #[cfg(not(target_arch = "wasm32"))]
             audio: None,
             sound: None,
@@ -331,7 +333,7 @@ impl App {
             }
             return false;
         }
-        let ctrl = self.ctrl;
+        let (ctrl, shift) = (self.ctrl, self.shift);
         let m = self.game.maker.as_mut().expect("checked");
         let digit = [
             KeyCode::Digit1,
@@ -347,20 +349,64 @@ impl App {
         ]
         .iter()
         .position(|&k| k == code);
+        let arrow = match code {
+            KeyCode::ArrowLeft => Some((-1, 0)),
+            KeyCode::ArrowRight => Some((1, 0)),
+            KeyCode::ArrowUp => Some((0, 1)),
+            KeyCode::ArrowDown => Some((0, -1)),
+            _ => None,
+        };
+        // arrows draw a path while one is being drawn, and move the selection with Shift
+        if let Some(d) = arrow {
+            if m.drawing_path() {
+                return m.path_key(Some(d));
+            }
+            if shift && m.has_selection() {
+                return m.selection_op('m', d.0, d.1);
+            }
+            return false;
+        }
         match code {
             _ if digit.is_some() => m.select(digit.unwrap_or(0)),
+            KeyCode::Tab if shift => m.prev_tool(),
             KeyCode::Tab => m.next_tool(),
             KeyCode::KeyZ if ctrl => m.undo(),
             KeyCode::KeyY if ctrl => m.redo(),
             KeyCode::KeyS if ctrl => m.save(),
             #[cfg(not(target_arch = "wasm32"))]
             KeyCode::KeyU if ctrl => m.upload(),
+            KeyCode::KeyC if ctrl => return m.selection_op('c', 0, 0),
+            KeyCode::KeyX if ctrl => return m.selection_op('x', 0, 0),
+            KeyCode::KeyV if ctrl => return m.selection_op('v', 0, 0),
+            KeyCode::Delete => return m.selection_op('d', 0, 0),
+            KeyCode::Backspace if m.drawing_path() => return m.path_key(None),
+            KeyCode::Backspace => return m.selection_op('d', 0, 0),
+            KeyCode::Escape => m.cancel(),
             KeyCode::KeyW if !ctrl => m.modify('w'),
             KeyCode::KeyB => m.modify('b'),
             KeyCode::KeyF => m.modify('f'),
             KeyCode::KeyI => m.modify('i'),
+            KeyCode::KeyR => m.modify('r'),
+            KeyCode::KeyC => m.modify('c'),
+            KeyCode::KeyK => m.modify('k'),
+            KeyCode::KeyG => m.modify('g'),
+            KeyCode::KeyO => m.modify('o'),
+            KeyCode::KeyL => m.modify('l'),
+            KeyCode::KeyH => m.modify('h'),
+            KeyCode::Equal => m.modify(if shift { '^' } else { '+' }),
+            KeyCode::Minus => m.modify(if shift { 'v' } else { '-' }),
             KeyCode::KeyT => m.setting('t'),
             KeyCode::KeyN => m.setting('n'),
+            KeyCode::KeyA if !ctrl => m.setting('a'),
+            KeyCode::KeyV => m.setting('V'),
+            KeyCode::BracketLeft => m.setting('['),
+            KeyCode::BracketRight => m.setting(']'),
+            KeyCode::KeyQ => m.setting('q'),
+            KeyCode::Comma => m.setting(if shift { '<' } else { ',' }),
+            KeyCode::Period => m.setting(if shift { '>' } else { '.' }),
+            KeyCode::Semicolon => m.setting(';'),
+            KeyCode::Quote => m.setting('\''),
+            KeyCode::F1 => m.message = crate::maker::HELP.to_string(),
             KeyCode::Enter => {
                 self.game.play_maker_course();
                 self.keys.clear();
@@ -492,6 +538,9 @@ impl ApplicationHandler<UserEvent> for App {
                     ) {
                         self.ctrl = pressed;
                     }
+                    if matches!(code, KeyCode::ShiftLeft | KeyCode::ShiftRight) {
+                        self.shift = pressed;
+                    }
                     if pressed && self.maker_key(code) {
                         return;
                     }
@@ -502,15 +551,15 @@ impl ApplicationHandler<UserEvent> for App {
                 self.mouse = (position.x, position.y);
                 self.maker_hover();
             }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button,
-                ..
-            } => {
+            WindowEvent::MouseInput { state, button, .. } => {
                 if self.game.editing
                     && let Some(m) = self.game.maker.as_mut()
                 {
-                    m.click(button == MouseButton::Right);
+                    if state == ElementState::Pressed {
+                        m.press(button == MouseButton::Right);
+                    } else {
+                        m.release();
+                    }
                 }
             }
             WindowEvent::RedrawRequested => self.frame(event_loop),

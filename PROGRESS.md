@@ -395,12 +395,25 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   ×1.05 jump while dashing
 - ⬜ Every part (0–132, incl. 2.0/3.0 items from the update dump), Yoshi, shoes, clown cars,
   power-ups per style, Koopalings, Master Sword, etc.
-- 🔄 Course Maker (editor): core crate `editor` ✅ (place / erase parts with default sizes, child items,
-  flags, ground painting auto-tiled from a corpus-derived table, theme / night / timer / autoscroll /
-  style / name / length, undo-redo, save; tests play the saved course in the sim) · maker UI, copy,
-  sub-area links, pipes/doors, paths, tracks ⬜ · first maker UI ✅ in the portable shell
-  (`mmk-play --edit <file>`): engine-drawn course, ghost preview, 24-part palette, place/erase with
-  the mouse, scroll, undo/redo, save, Enter test-play / E back · SMM2 maker layouts ⬜
+- 🔄 Course Maker (editor): core crate `editor` — each step tested by saving the course, re-opening
+  it byte-identically and playing it in the sim (`unsupported_features` empty):
+  - ✅ parts: place / erase / resize (semisolid, mushroom platform, bridge, pipe, belt, lift, slopes,
+    vine, Bill Blaster, seesaw, trampolines, snake block, tree) with sizes, forms and composition from
+    the game's editor part table; big parts stored doubled; child items; ground auto-tiled
+  - ✅ both areas: main / sub switching, sub-area theme / night / vertical (48 wide, 28–168 tall in 7s),
+    area sizes (24–240), goal follows the right edge
+  - ✅ links: pipes (length / direction / colour, main↔sub warp ids, contents), door pairs (normal,
+    P, key), warp box pairs, link ids shared with tracks — encoded like the sample courses
+  - ✅ tracks (straight + 45°, corpus end codes, open / closed ends, parts on tracks: 0x400 + piece
+    link id) · snake block / ! block / track block / Piranha Creeper paths · ⬜ laying bends and
+    junctions, clear pipes, Lakitu-cloud / clown-car / claw riders (kept when editing a file)
+  - ✅ selection: rectangle copy / cut / paste / move / delete (parts, ground, tracks; all or nothing)
+  - ✅ settings: clear condition (category / CRC32 / magnitude), autoscroll incl. custom nodes and
+    speed, liquid mode / speed / heights, timer 10–500
+  - 🔄 placement rules: overlap layers, start / goal zones, containers, style-only parts,
+    checkpoint / pink-coin / path / array limits ✅ · the game's full per-part limit table ⬜
+  - ✅ shell maker UI (`mmk-play --edit <file>`): engine-drawn area, ghost preview, 40-part palette,
+    keys for everything above (README) · SMM2 maker layouts ⬜
 - ⬜ Story Mode (Peach's castle jobs, built-in courses from the owner's dump), Coursebot, Lessons
 - ⬜ Endless Challenge (SMM2's successor to 100 Mario) alongside the SMM1-style 100 Mario Challenge
 - ⬜ Ninji speedruns / event courses (offline with local data), records and medals

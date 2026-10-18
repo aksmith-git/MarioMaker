@@ -361,6 +361,41 @@ impl Editor {
         Ok(())
     }
 
+    /// Resize a part (semisolids, mushroom platforms, bridges, pipes, conveyors, lifts, slopes,
+    /// vines, Bill Blasters, seesaws, trampolines, snake blocks, trees …) to `w`×`h` tiles within
+    /// the ranges the game allows, keeping its bottom-left tile. Slopes keep their shape: the
+    /// width follows the height (gentle 2h, steep h + 1). Pipes: `h` is the length.
+    pub fn resize(&mut self, index: usize, w: u8, h: u8) -> Result<(), EditError> {
+        let Some(o) = self.object(index).cloned() else {
+            return Err(EditError::Missing);
+        };
+        let Some((wr, hr)) = parts::resize_range(o.id) else {
+            return Err(EditError::NotAllowed("this part has a fixed size"));
+        };
+        if o.id == 9 {
+            let dir = parts::Dir::from_flags(o.flags);
+            return self.set_pipe(index, h, dir, ((o.flags >> 18) & 3) as u8);
+        }
+        let w = match o.id {
+            87 => h.saturating_mul(2),
+            88 | 94 => h.saturating_add(1),
+            _ => w,
+        };
+        if !wr.contains(&w) || !hr.contains(&h) {
+            return Err(EditError::NotAllowed("size out of range"));
+        }
+        let fp = parts::footprint(&o);
+        let mut n = parts::new_object(o.id, fp.x, fp.y, w, h, o.flags);
+        n.child_id = o.child_id;
+        n.child_flags = o.child_flags;
+        n.extended_data = o.extended_data;
+        n.link_id = o.link_id;
+        n.sound_effect_id = o.sound_effect_id;
+        self.check_replace(index, &n)?;
+        self.area_mut().objects.items[index] = n;
+        Ok(())
+    }
+
     /// Current area's theme and night flag.
     pub fn theme(&self) -> (u8, bool) {
         let h = &self.area().header;
@@ -600,6 +635,51 @@ mod tests {
                 .any(|s| s.kind == mmk_sim::actors::Kind::Goomba)
         );
         assert!(lvl.blocks.iter().any(|b| b.x == 12 && b.y == 4));
+    }
+
+    #[test]
+    fn resizable_parts_play_at_their_size() {
+        use mmk_sim::level::{Cell, Level};
+        let mut e = flat("M1");
+        let semi = e.place(16, 10, 2).unwrap();
+        e.resize(semi, 6, 4).unwrap();
+        let mush = e.place(14, 20, 2).unwrap();
+        e.resize(mush, 5, 6).unwrap();
+        let bridge = e.place(17, 30, 6).unwrap();
+        e.resize(bridge, 8, 2).unwrap();
+        assert!(e.resize(bridge, 8, 3).is_err(), "bridges are 2 tall");
+        let belt = e.place(53, 40, 4).unwrap();
+        e.resize(belt, 7, 1).unwrap();
+        let lift = e.place(11, 50, 6).unwrap();
+        e.resize(lift, 6, 1).unwrap();
+        assert!(e.resize(lift, 9, 1).is_err(), "lifts are at most 8 wide");
+        let slope = e.place(88, 60, 2).unwrap();
+        e.resize(slope, 0, 4).unwrap();
+        assert_eq!(
+            e.object(slope).unwrap().width,
+            5,
+            "steep slopes stay h + 1 wide"
+        );
+        let vine = e.place(64, 70, 2).unwrap();
+        e.resize(vine, 1, 9).unwrap();
+        let pipe = e.place(9, 80, 2).unwrap();
+        e.resize(pipe, 2, 6).unwrap();
+        assert!(
+            e.resize(e.object_at(10, 2).unwrap(), 1, 1).is_err(),
+            "not below 3 wide"
+        );
+        // a wider semisolid can't grow into the mushroom platform's stem
+        assert!(e.resize(semi, 3, 27).is_err());
+        let back = round_trip(&e);
+        let lvl = Level::from_course(&back, 0);
+        assert_eq!(lvl.cell(15, 5), Cell::SemiTop, "semisolid top row, 6 wide");
+        assert_eq!(lvl.cell(16, 5), Cell::Empty);
+        assert_eq!(lvl.cell(24, 7), Cell::SemiTop, "mushroom cap");
+        assert_eq!(lvl.cell(37, 7), Cell::SemiTop, "bridge deck");
+        assert!(lvl.conveyors.iter().any(|c| c.0 == 40 && c.1 == 46));
+        assert_eq!(lvl.cell(80, 7), Cell::Solid, "6-tile pipe");
+        assert!(lvl.vines.iter().any(|v| v.2 - v.1 == 9.0 * 16.0));
+        assert!(lvl.slopes.iter().any(|s| s.width == 5 && s.height == 4));
     }
 
     #[test]

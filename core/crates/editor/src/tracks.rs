@@ -245,6 +245,17 @@ impl Editor {
         Ok(())
     }
 
+    /// Whether the free track end at a point is open (None: no free end there).
+    pub fn track_end_open(&self, p: (i32, i32)) -> Option<bool> {
+        let at = self.pieces_at(p);
+        let [(i, k)] = at.as_slice() else {
+            return None;
+        };
+        let t = &self.area().tracks.items[*i];
+        let code = if *k == 0 { t.k0 } else { t.k1 };
+        Some((0x80..0x88).contains(&code))
+    }
+
     /// The track piece at a tile: its centre, else one of its ends.
     pub fn track_at(&self, tx: i32, ty: i32) -> Option<usize> {
         let tracks = &self.area().tracks.items;

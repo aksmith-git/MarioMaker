@@ -673,3 +673,23 @@ renderers upload a texture when a sprite first uses it. Measured on the same cou
   late or lossy peer missed are resent (up to 64 per packet). Found by a two-browser test where
   the late joiner missed the first frames and both sides stalled.
 - The relay holds no accounts or course data; rooms expire 30 s after their members go quiet.
+
+
+## 2026-10-18 — Course Maker writes what real course files contain
+- **Ground truth is the file, then the binary.** Every encoding the editor writes (pipe anchors
+  per direction, warp ids, door / warp box pairs, link ids, track records and their end codes,
+  path nodes, big parts' doubled size, rider positions, management flags) was checked against the
+  550 sample courses; the per-part sizes, forms and composition flags come from the game's own
+  editor part table. Where the sample is irregular (track joint codes at diagonal bends) the editor
+  writes the most common value per case; the engine reads tracks from geometry, so play is
+  unaffected either way.
+- **Rules are data where possible.** Overlap is decided by layers (semisolid-like parts behind,
+  ground-embeddable parts such as Monty Moles and claws, everything else solid), chosen because
+  that is what the sample shows; the start zone (columns 0–6 up to three rows above the start
+  ground) and the goal ground are protected because no sample course puts anything there.
+- **Edits are all-or-nothing.** Paste and move check every placement and restore the course on
+  failure; the UI wraps each action in one undo checkpoint and drops it when nothing changed.
+- **Editor-laid tracks are straight or 45°.** Bends and junctions in opened files are kept and
+  their end codes left untouched; laying them waits for the game's bend geometry.
+- **Paths are stored as steps.** The editor takes a heading and a list of steps and encodes the
+  node codes (straight, corner, end) itself, so the UI and the file can't disagree.
