@@ -1417,6 +1417,7 @@ mod tests {
         let course = mmk_formats::smm2::Course::parse(&data).unwrap();
         let mut w = World::from_course(&course);
         let mut r = Replay::new();
+        let mut touch = 0;
         while !w.cleared && r.inputs.len() < 20_000 {
             let jump = if r.inputs.len() % 90 >= 70 {
                 input::JUMP
@@ -1428,6 +1429,9 @@ mod tests {
             };
             r.push(i);
             w.step(i);
+            if touch == 0 && w.goal_phase != mmk_sim::world::GoalPhase::None {
+                touch = r.inputs.len();
+            }
         }
         assert!(w.cleared);
         let (st, _, v) = handle(&store, "POST", "/api/accounts", &[], br#"{"name":"Rex"}"#);
@@ -1455,7 +1459,8 @@ mod tests {
         let (st, _, b) = handle(&store, "POST", &url, &auth, &r.encode());
         assert_eq!(st, 200);
         let v: Value = serde_json::from_slice(&b).unwrap();
-        let ms = (r.inputs.len() as u64 * 1000).div_ceil(60);
+        // timed at the goal touch, as the game's clear screen shows
+        let ms = (touch as u64 * 1000).div_ceil(60);
         assert_eq!(
             (v["record_ms"].as_u64(), v["record_verified"].as_bool()),
             (Some(ms), Some(true))
