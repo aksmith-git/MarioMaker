@@ -430,6 +430,28 @@ impl Director {
                 }
                 // Lanky Mario's float cue: its SMM1 sound isn't imported [⬜]
                 Event::LankyFloat => {}
+                // the update power-ups' sounds (their names are on the Event variants): not
+                // mapped yet [⬜]
+                Event::SwordSlash
+                | Event::SwordDashHit
+                | Event::SwordThrust
+                | Event::ShieldHit
+                | Event::ArrowShoot
+                | Event::ArrowHit
+                | Event::Pull
+                | Event::Throw
+                | Event::SquatCharge
+                | Event::BalloonBounce
+                | Event::BoomerangThrow
+                | Event::Rebound
+                | Event::BoomerangReaction
+                | Event::LinkBombExplode
+                | Event::Wearing
+                | Event::HeadDressOff
+                | Event::CannonShot
+                | Event::Explode
+                | Event::PropellerBox
+                | Event::KillerBreak => {}
                 Event::Death if costume("down").is_some() => {
                     self.stop_count();
                     self.music(costume("down"), None);

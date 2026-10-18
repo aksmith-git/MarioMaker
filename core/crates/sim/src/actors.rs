@@ -10,7 +10,12 @@ use crate::level::{Cell, Level, PipeDir, TILE};
 
 mod bosses;
 mod koopalings;
+mod powerups;
 pub use koopalings::{shot as koopaling_shot, who as koopaling_who};
+pub use powerups::{ARROW_LAUNCH, BOOMERANG_LEGS, STYLE2, SWORD, WEAR, item_for_part};
+pub use powerups::{Attack as PuAttack, Reaction as PuReaction};
+pub use powerups::{BOOMERANG_STOP as BOOMERANG_STOP_FRAMES, CANNON_LIFE as CANNON_SHOT_LIFE};
+pub use powerups::{THROW_MAX as THROW_MAX_USA, THROW_SPEED as THROW_SPEED_USA};
 mod v3;
 mod w3;
 pub use bosses::{BossAttack, BossHit};
@@ -352,6 +357,17 @@ pub enum Kind {
     KoopalingShot {
         what: u8,
     },
+    /// An update power-up item (actors/powerups.rs): `what` 0 the style's part-81 item, 1 the
+    /// Master Sword, 2 + kind a wearable.
+    PowerItem {
+        what: u8,
+    },
+    /// Link's arrow, the boomerang, Link's bomb, the Cannon Box shot, the Red POW Box ring.
+    PlayerArrow,
+    PlayerBoomerang,
+    LinkBomb,
+    CannonShot,
+    RedPowRing,
 }
 
 impl Kind {
@@ -509,6 +525,7 @@ impl Kind {
                 | Kind::OneUp
                 | Kind::StyleItem
                 | Kind::SuperHammer
+                | Kind::PowerItem { .. }
         )
     }
 }
@@ -541,6 +558,8 @@ pub enum Mode {
     DieFall,
     ShellWait,
     ShellSlide,
+    /// Thrown by the SMB2 Mushroom (actors/powerups.rs): flies until it lands.
+    Thrown,
     /// Remove at the end of the frame.
     Dead,
 }
@@ -1175,6 +1194,7 @@ impl Actor {
             Kind::TrackMount { .. } => 8.0,
             k if k.is_w3() => self.w3_size().0,
             k if k.is_v3() => self.v3_size().0,
+            k if k.is_pu() => self.pu_size().0,
             _ if self.big => 16.0,
             // the Weird Mushroom's contact box is 12 px wide, the Super Mushroom's 14 (SMM1
             // 0x023c3ae4: half-width 6 for 7) [obs]
@@ -1205,6 +1225,7 @@ impl Actor {
             Kind::TrackMount { h, .. } => h as f32 * TILE,
             k if k.is_w3() => self.w3_size().1,
             k if k.is_v3() => self.v3_size().1,
+            k if k.is_pu() => self.pu_size().1,
             _ if self.big => 32.0,
             _ => 16.0,
         }
@@ -1469,6 +1490,9 @@ impl Actor {
                         Kind::Mushroom | Kind::OneUp | Kind::Star | Kind::SuperHammer => {
                             ITEM_SPEED * self.dir as f32
                         }
+                        Kind::PowerItem { what } if powerups::walks(what, 0) => {
+                            ITEM_SPEED * self.dir as f32
+                        }
                         _ => 0.0,
                     };
                     if self.kind == Kind::Star {
@@ -1492,6 +1516,9 @@ impl Actor {
                     self.mode = Mode::Normal;
                     self.vx = match self.kind {
                         Kind::Mushroom | Kind::OneUp | Kind::Star | Kind::SuperHammer => {
+                            ITEM_SPEED * self.dir as f32
+                        }
+                        Kind::PowerItem { what } if powerups::walks(what, 0) => {
                             ITEM_SPEED * self.dir as f32
                         }
                         _ => 0.0,
@@ -1540,6 +1567,7 @@ impl Actor {
                 }
             }
             Mode::Normal => spawned = self.step_normal(level, player_x),
+            Mode::Thrown => self.step_thrown(level),
             Mode::ShellWait => {
                 if self.on_ground && self.vy <= 0.0 {
                     self.vx = 0.0;
@@ -1813,6 +1841,12 @@ impl Actor {
             | Kind::OnOffTrampoline { .. }
             | Kind::Koopaling { .. }
             | Kind::KoopalingShot { .. } => return self.step_v3(level),
+            Kind::PowerItem { .. }
+            | Kind::PlayerArrow
+            | Kind::PlayerBoomerang
+            | Kind::LinkBomb
+            | Kind::CannonShot
+            | Kind::RedPowRing => self.step_pu(level),
             Kind::BowserFire | Kind::Shuriken => self.step_boss_shot(),
             Kind::ChainChomp { chained } => self.step_chomp(level, chained),
             Kind::LavaBubble => self.step_lava_bubble(),

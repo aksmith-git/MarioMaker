@@ -466,8 +466,8 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   ×1.05 jump while dashing
 - 🔄 Every part (0–132, incl. 2.0/3.0 items from the update dump): the 2.0/3.0 enemies, blocks
   and gizmos ✅ (below; from the v3.0.3 binary, editor-built test courses in
-  `crates/editor/tests/v3_parts.rs`, `MMK_WRITE_COURSES=<dir>` writes them) · second style
-  power-ups, Master Sword, wearable boxes/masks (81, 127–131), Koopalings in Clown Cars ⬜
+  `crates/editor/tests/v3_parts.rs`, `MMK_WRITE_COURSES=<dir>` writes them) · the update
+  power-ups ✅ (below; `crates/editor/tests/v3_powerups.rs`) · Koopalings in Clown Cars ⬜
   - ✅ Spike (74): SMB1/SMB3 Gabon3rd walks 0.5 and throws in bursts of 2 when the player is
     32–288 px ahead (ball flies level at 1.5); SMW/NSMBU/3D World GabonWU stands, faces the player
     (3D World 50-frame Turn), waits 0–59 then 120 (SMW 160) + 0–29 frames, lifts and throws on the
@@ -496,8 +496,42 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
     crawling flames), Roy (dives into the ground and comes up elsewhere), Ludwig (hovering shell,
     fans of 3/5 slow shots) · Clown Car rides, Roy's ceiling exits, Morton's winged feints, wing
     flight ⬜
-- ⬜ Yoshi variants, shoes, clown cars, power-ups per style, Master Sword, etc. (rest of the
-  "every part" list)
+  - ✅ Update power-ups (v3.0.3; `sim/src/player/powerups.rs`, `actors/powerups.rs`,
+    `world/powerups.rs`): part 81 gives the style's form (SMB1 SMB2 Mushroom, SMB3 Frog Suit,
+    SMW Power Balloon, NSMBU Super Acorn, 3D World Boomerang Flower); a ? block swaps it for a
+    Super Mushroom for small Mario, but not the Master Sword or the wearables; every new form drops
+    to Super when hit; Link and the balloon have the small body
+  - ✅ SMB2 Mushroom: stands on carryable enemies [ext], Down + Run lifts them (3 / 23 frames, carry
+    height to 25 over 12 frames), letting go of Run throws (2.2 px/f, up to 4.0, gravity −0.1875)
+    and thrown enemies knock out what they hit; 60-frame crouch charge → vy 4.1 with the held-jump
+    gravity (≈ 98 px); snowballs pulled from snow ground · cloud pulling ⬜
+  - ✅ Master Sword (part 20 with flag 0x4 in SMB1) / Link: 8-frame slash (23 × 15 box, the tip
+    breaks blocks on frames 3–7), Down + Run dash (60-frame wind-up, then 3.0 px/f while Run is
+    held, wall recoil), shield while Down on the ground (blocks projectiles, turns enemies), bow
+    on Spin (24-frame draw, arrows 5.0 / 0.9 straight, 3.5 / 4.8 up, 3.5 / −2.0 down, gravity
+    −0.12, drag 0.038, bounce off terrain), down-thrust (12 + 5-frame hang, drop at −6.0, Up
+    cancels, bounces off enemies), Up + Run pulls a LinkBomb (Bob-omb blast); EnemyDB sword /
+    sword_under / shield / arrow reactions
+  - ✅ Frog Suit: 20-frame hops / 10-frame waits on land (3× accel, ice has no effect, no slope
+    slide), every jump 3.928; free 8-way swimming 1.0 (Run 2.0) with no gravity, kept 17 px under
+    the surface, jump out from the surface
+  - ✅ Power Balloon: floats 0.5 px/f along the stick with no gravity or timer, Run jets 2.0 (1.5
+    in water; sky-night 3.5) along the tilt, which turns 6° / 5° a frame; walls, floors and
+    ceilings bounce it (jet lockout 40); stomps only drift it
+  - ✅ Super Acorn: Spin in the air boosts once per air time (vy 2.0, turning to 67.5° while the
+    speed grows to 4.2 × base for 15 / 20 frames, then a −0.12 coast), glides with jump held (fall
+    cap −2.0 … −0.65 by speed), flutters at −1.5 once the boost is used, clings to walls for 90
+    frames; ground spin jump 4.15
+  - ✅ Boomerang Flower: one boomerang at a time, 5.0 px/f out 160 px, 15-frame stops, back past
+    the thrower 80 / 60 / 40 / 20 px, caught after 15 frames; wall rebound, items hop
+    ("BoomerangReaction"), EnemyDB boomerang reactions and bound_boomerang
+  - ✅ Wearables (3D World, 127–131): put on by touch (small Mario too), take one hit; turn off
+    fireballs, boomerangs and the cat's moves; Cannon Box (30-frame cooldown, 3.0 / charged 5.5
+    shots for 30 frames, 32 × 32 blast), Propeller Box (3 flights per air time, 15-frame rise to
+    2.5), Goomba Mask (hidden from Goombas / Boom Boom), Bullet Bill Mask (300 frames of 3.0 px/f
+    dash per air time while jump is held, breaks on walls), Red POW Box (3 head bumps: POW quake
+    and an 80-px block-breaking ring) · the boxes' worn models drawn above the head
+- ⬜ Yoshi variants, shoes, clown cars, etc. (rest of the "every part" list)
 - 🔄 Course Maker (editor): core crate `editor` — each step tested by saving the course, re-opening
   it byte-identically and playing it in the sim (`unsupported_features` empty):
   - ✅ parts: place / erase / resize (semisolid, mushroom platform, bridge, pipe, belt, lift, slopes,

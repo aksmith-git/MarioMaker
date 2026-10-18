@@ -54,8 +54,9 @@ pub fn placeable(part: i16) -> bool {
 pub fn style_allows(style: &str, part: i16) -> bool {
     const W3_ONLY: &[i16] = &[
         50, 51, 65, 71, 72, 85, 86, 93, 96, 97, 106, 107, 108, 110, 112, 113, 114, 116, 117, 119,
-        // 3.0: P Block, Dash Block, ON/OFF Trampoline
-        79, 80, 132,
+        // 3.0: P Block, Dash Block, ON/OFF Trampoline; the wearables (their put-on works only
+        // in 3D World, 0x71015c53e0, and only 3D World has their models) [obs]
+        79, 80, 132, 127, 128, 129, 130, 131,
     ];
     const NOT_W3: &[i16] = &[
         14, 16, 17, 23, 24, 28, 30, 31, 36, 40, 42, 43, 45, 47, 52, 54, 57, 58, 59, 61, 64, 67, 68,

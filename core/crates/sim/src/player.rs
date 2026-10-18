@@ -7,6 +7,10 @@
 use crate::input::{self, Input};
 use crate::level::{Cell, Level, Slope, TILE};
 
+// the 2.0 / 3.0 update power-ups (player/powerups.rs)
+mod powerups;
+pub use powerups::*;
+
 /// Speed thresholds T0..T3 (§2.1); row 1 while the star runs.
 const T: [f32; 4] = [0.5, 1.5, 2.25, 3.0];
 const T_STAR: [f32; 4] = [0.5, 2.0, 3.25, 4.0];
@@ -141,6 +145,18 @@ pub enum Form {
     /// SMM1 Mystery Mushroom (SMB1 only): a costume (`Player::costume`) on small Mario's body and
     /// physics (SMM1 form 7, size class 1).
     Costume,
+    /// SMB1 Master Sword (part 20 with flag 0x4): Link, on small Mario's body (form 10).
+    Link,
+    /// SMB3 Frog Suit (part 81 in SMB3, form 11).
+    Frog,
+    /// SMW Power Balloon (part 81 in SMW, form 12): small body, floats.
+    Balloon,
+    /// NSMBU Super Acorn (part 81 in NSMBU, form 13 "Flying").
+    Squirrel,
+    /// 3D World Boomerang Flower (part 81 in 3D World, form 14).
+    Boomerang,
+    /// SMB1 SMB2 Mushroom (part 81 in SMB1, form 15 "USA").
+    Smb2,
 }
 
 /// Invincibility after taking damage (§7).
@@ -521,6 +537,8 @@ pub struct Player {
     pub cues: u8,
     /// Frames before a vine can be grabbed again (after jumping off).
     climb_lock: i32,
+    /// The update power-ups' states (player/powerups.rs).
+    pub pu: PowerUps,
 }
 
 impl Player {
@@ -634,6 +652,7 @@ impl Player {
             fell_off: false,
             broad: false,
             broad_land: 0,
+            pu: PowerUps::default(),
         }
     }
 
@@ -706,10 +725,17 @@ impl Player {
     }
 
     pub fn big(&self) -> bool {
-        !matches!(self.form, Form::Small | Form::Costume)
+        // Link and the Power Balloon have the small body (size class 1) [obs 0x71023d5e0c]
+        !matches!(
+            self.form,
+            Form::Small | Form::Costume | Form::Link | Form::Balloon
+        )
     }
 
     pub fn sensors(&self) -> &'static Sensors {
+        if let Some(s) = self.pu_sensors() {
+            return s;
+        }
         if self.form == Form::Mega {
             return &MEGA;
         }
@@ -737,6 +763,10 @@ impl Player {
 
     /// Body box B (§6.2), the wider contact box used for items and coins.
     pub fn contact_box(&self) -> (f32, f32, f32, f32) {
+        if self.form == Form::Balloon {
+            // the balloon's box B: centre (0, 8), half 8 × 8 [obs]
+            return (self.x - 8.0, self.y, self.x + 8.0, self.y + 16.0);
+        }
         if self.form == Form::Mega {
             return (self.x - 12.0, self.y, self.x + 12.0, self.y + 28.0);
         }
@@ -797,6 +827,9 @@ impl Player {
         }
         if self.helmet.take().is_some() {
             self.invuln = INVULN_DAMAGE;
+            return true;
+        }
+        if self.pu_absorb() {
             return true;
         }
         match self.form {
@@ -902,6 +935,9 @@ impl Player {
     /// Bounce off an enemy.
     pub fn bounce(&mut self, jump_held: bool) {
         let _ = jump_held; // the held-jump gravity makes the difference
+        if self.pu_bounce(STOMP_BOUNCE) {
+            return;
+        }
         self.vy = STOMP_BOUNCE;
         self.on_ground = false;
         self.slope = None;
@@ -1257,6 +1293,8 @@ impl Player {
             && self.held.is_none()
             && !self.dive
             && self.cat_climb == 0
+            // a wearable turns the cat's moves off (form 7 with +0x4bc == −1 tests) [obs]
+            && !(self.form == Form::Cat && self.pu.headdress.is_some())
         {
             // the raccoon's tail_attack animation is 18 frames (TailAttack 0x7100a034e0 ends
             // with it); the cat's scratch is ClimbAttack (0x7100a1c170 / 0x7100a1c230), which
@@ -1287,6 +1325,9 @@ impl Player {
         }
         self.step_meters(inp, pressed, jump);
         self.prev_run = run;
+        let Some(inp) = self.pu_before(inp, pressed, spin_pressed, level) else {
+            return;
+        };
 
         // vines (64-vine.md)
         if self.climb_lock > 0 {
@@ -1509,6 +1550,7 @@ impl Player {
                     self.in_jump = true;
                     self.crouch_jump = self.duck || self.crouch;
                     self.vy = JUMP_BASE + jump_bonus(self.vx.abs());
+                    self.vy = self.pu_launch(self.vy);
                     if self.jump_count == 2 || self.dashing() {
                         self.vy *= 1.05;
                     }
@@ -1634,6 +1676,7 @@ impl Player {
                 self.vy = vy_before - 0.1;
             }
         }
+        self.pu_after(inp, jump, vy_before, vx_before, level);
         self.was_in_water = self.in_water;
         self.x += self.wind;
 
@@ -1759,6 +1802,12 @@ impl Player {
                 Form::Mega => 9,
                 Form::Lanky => 10,
                 Form::Costume => 11,
+                Form::Link => 12,
+                Form::Frog => 13,
+                Form::Balloon => 14,
+                Form::Squirrel => 15,
+                Form::Boomerang => 16,
+                Form::Smb2 => 17,
             },
             shoe: self.shoe.is_some() && !self.shoe_karon,
             karon_shell: self.shoe.is_some() && self.shoe_karon,
@@ -1982,7 +2031,7 @@ impl Player {
             && self.held.is_none()
             && self.shoe.is_none()
         {
-            if self.form == Form::Cat {
+            if self.form == Form::Cat && self.pu.headdress.is_none() {
                 self.dive = true;
             } else {
                 self.pound = if self.style == Style::W3 {
@@ -2005,7 +2054,10 @@ impl Player {
                 return;
             }
         }
-        if self.form == Form::Cat && self.cat_wall_climb(inp, pressed, level) {
+        if self.form == Form::Cat
+            && self.pu.headdress.is_none()
+            && self.cat_wall_climb(inp, pressed, level)
+        {
             return;
         }
         if self.pound > 0 {
