@@ -577,11 +577,14 @@ impl World {
                     } else {
                         "M1_Enemy_gabonball"
                     };
+                    // [simplified: drawn where the hand joint is at the release frame; the game's
+                    // ball follows the joint through the lift]
+                    let (hx, hy) = a.spike_hand(a.v3.style as usize);
                     out.push(Self::model_sprite(
                         model,
                         "gabonball_model",
-                        a.x - 8.0 * s,
-                        a.y + 16.0 * s,
+                        hx - 8.0 * s,
+                        hy - 8.0 * s,
                         16.0 * s,
                         16.0 * s,
                         false,

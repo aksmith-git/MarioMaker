@@ -885,3 +885,11 @@ renderers upload a texture when a sprite first uses it. Measured on the same cou
   stand-ins (small Mario, Super Mario, the Super Mushroom).
 - Options are not yet part of replays, rollback sessions or `World::checksum` input: a replay
   or an online session is only valid with all options off (⬜ carry them in both).
+
+## 2026-10-18 — Joint positions come from the model data, missing joints included
+- Where the game places something at a model joint, the engine uses that joint's position from
+  the style's model at the frame the game reads it (Spike's ball: `GeneratorPosition` at the
+  throw's release frame). The 2D and flat NSMBU models are authored facing left (+x behind).
+- When the model has no such joint the game's lookup fails and it uses the actor's position; the
+  engine does the same rather than invent a joint. Mechakoopa's weapons ask for "shot", which no
+  robot model has, so missiles and the laser start at its feet.

@@ -2545,8 +2545,10 @@ impl Actor {
     /// The dive is over [obs AttackEnd 0x71007a0cf0, exit 0x71007a1030]: its spot (inside the
     /// area's edges) still in view → the wait; out of view → straight into a side leap from just
     /// outside the view, facing its centre, a spacing shift toward the view turned round and
-    /// doubled [inf: the views list (camera manager +0x138, the list the cannons' fire test
-    /// reads) taken as the players' view rectangles].
+    /// doubled. The views list (camera manager +0x138, one per area, also read by the cannons'
+    /// fire test and the in-view flag) is rebuilt every frame from the active cameras' view
+    /// rectangles (+0xC left … +0x18 top): in single player just the camera's view, in
+    /// multiplayer each player's camera [obs v1 0x7100b64340].
     fn charvaargh_dive_end(&mut self, level: &Level, base: f32) {
         self.w3.flags &= !(chr::VERTICAL | chr::REAR);
         self.w3.recs &= !chr::REC_VERT;
