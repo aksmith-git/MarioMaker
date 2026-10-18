@@ -11,6 +11,7 @@
 //! invulnerability.
 
 use super::{Actor, Kind, MAX_FALL, Mode, SHELL_WAKE};
+use crate::fmath::DetMath;
 use crate::level::{Cell, Level, TILE};
 use crate::world::{VIEW_H, VIEW_W};
 
@@ -516,7 +517,7 @@ impl Actor {
         let (px, _) = self.target;
         let want = ((px - self.x) / 48.0).clamp(-CLOWN_SPEED, CLOWN_SPEED);
         self.vx = Self::approach(self.vx, want, CLOWN_ACCEL);
-        let ty = self.home_y + 8.0 * (self.age as f32 * 3.0).to_radians().sin();
+        let ty = self.home_y + 8.0 * (self.age as f32 * 3.0).to_radians().dsin();
         self.vy = (ty - self.y).clamp(-1.0, 1.0);
         self.collide(level);
         self.dir = self.toward_target();
@@ -1663,7 +1664,7 @@ impl Actor {
                     }
                 } else {
                     self.heading += 8.0;
-                    self.vy = 0.4 * self.heading.to_radians().sin();
+                    self.vy = 0.4 * self.heading.to_radians().dsin();
                     self.collide(level);
                     if self.heading >= 45.0 * 8.0 {
                         self.phase = bb::POM_THROW_SIGN;
@@ -1675,7 +1676,7 @@ impl Actor {
                 self.vx = 0.0;
                 if self.wings {
                     self.heading += 8.0;
-                    self.vy = 0.4 * self.heading.to_radians().sin();
+                    self.vy = 0.4 * self.heading.to_radians().dsin();
                     self.collide(level);
                 } else {
                     self.fall(level, G);
@@ -1825,7 +1826,7 @@ impl Actor {
             }
             jr::HOVER => {
                 self.heading += 8.0;
-                self.vy = 0.4 * self.heading.to_radians().sin();
+                self.vy = 0.4 * self.heading.to_radians().dsin();
                 self.vx = 0.0;
                 self.collide(level);
                 self.dir = self.toward_target();
@@ -2105,9 +2106,9 @@ impl Actor {
         let (ox, oy) = if self.big { (24.0, 18.0) } else { (12.0, 12.0) };
         let (sx, sy) = (self.x + d * ox, self.y + oy);
         let (px, py) = self.target;
-        let mut a = (py + 12.0 - sy).atan2((px - sx) * d).to_degrees();
+        let mut a = (py + 12.0 - sy).datan2((px - sx) * d).to_degrees();
         a = a.clamp(-JR_AIM, JR_AIM);
-        let (sn, cs) = a.to_radians().sin_cos();
+        let (sn, cs) = a.to_radians().dsin_cos();
         let carry = if self.vx * d > 0.0 {
             self.vx.abs()
         } else {
@@ -2721,7 +2722,7 @@ mod tests {
                 assert_eq!(f.kind, Kind::BowserFire);
                 let speed = (f.vx * f.vx + f.vy * f.vy).sqrt();
                 assert!((speed - 1.5).abs() < 1e-4);
-                assert!(f.vy.atan2(-f.vx).to_degrees().abs() <= JR_AIM + 1e-3);
+                assert!(f.vy.datan2(-f.vx).to_degrees().abs() <= JR_AIM + 1e-3);
                 volleys.last_mut().expect("in a volley").push(f.x);
             }
             was = a.phase;

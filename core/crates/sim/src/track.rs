@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 
+use crate::fmath::DetMath;
 use crate::level::TILE;
 
 /// Normal and winged rider speeds, px/frame.
@@ -64,7 +65,7 @@ impl Piece {
                 e1,
             } => {
                 let arc = self.len - 2.0 * BEND_LEAD;
-                let at = |a: f32| (c.0 + r * a.cos(), c.1 + r * a.sin());
+                let at = |a: f32| (c.0 + r * a.dcos(), c.1 + r * a.dsin());
                 let s = s.clamp(0.0, self.len);
                 if s < BEND_LEAD {
                     let (p, k) = (at(a0), s / BEND_LEAD);
@@ -92,7 +93,7 @@ impl Piece {
                 let k = ((s - BEND_LEAD) / arc).clamp(0.0, 1.0);
                 let a = a0 + (a1 - a0) * k;
                 let sign = (a1 - a0).signum();
-                (-a.sin() * sign, a.cos() * sign)
+                (-a.dsin() * sign, a.dcos() * sign)
             }
         }
     }
@@ -147,7 +148,7 @@ impl Tracks {
                     // the ends are the tile centres one tile out (as for the diagonals); the
                     // 24-px arc's centre sits half a tile in from the corner tile's centre
                     let o = at(cc.0, cc.1);
-                    let dir = |a: f32| (a.cos(), a.sin());
+                    let dir = |a: f32| (a.dcos(), a.dsin());
                     let (d0, d1) = (dir(a0), dir(a1));
                     let r_out = 2.0 * TILE;
                     Seg::Arc {

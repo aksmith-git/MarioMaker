@@ -20,6 +20,7 @@ const SNAKE_OWNER: u32 = 0x8000_0000;
 const EXCL_OWNER: u32 = 0x9000_0000;
 /// Solid owner ids of tree canopies: base + tree.
 const TREE_OWNER: u32 = 0x9800_0000;
+use crate::fmath::DetMath;
 use crate::player::{Control, Form, Player, Pose, STAR_FRAMES};
 use crate::render::{Sprite, SpriteImage};
 use crate::warp::{self, SideHold, Transit};
@@ -1321,7 +1322,7 @@ impl World {
         let speed = pvx.abs() * 0.35 + 3.25;
         let angles: &[f32] = if n == 1 { &[0.0] } else { &[-15.0, 0.0, 15.0] };
         for &deg in angles {
-            let (s, c) = deg.to_radians().sin_cos();
+            let (s, c) = deg.to_radians().dsin_cos();
             let mut f = Actor::new(Kind::Fireball, px + facing as f32 * 12.0, py + 12.0);
             f.dir = facing;
             f.vx = speed * c * facing as f32;
@@ -1675,7 +1676,7 @@ impl World {
             let mut left = 32.0;
             let mut at = (px, py);
             for w in self.player_trail.windows(2).rev() {
-                let d = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+                let d = (w[1].0 - w[0].0).dhypot(w[1].1 - w[0].1);
                 at = w[0];
                 if d >= left {
                     let k = left / d.max(1e-3);
@@ -3558,7 +3559,7 @@ impl World {
         if dx * dx + dy * dy > 30.0 * 30.0 {
             return;
         }
-        let ang = dy.atan2(dx).to_degrees().rem_euclid(360.0);
+        let ang = dy.datan2(dx).to_degrees().rem_euclid(360.0);
         let away = if dx < 0.0 { -1.0 } else { 1.0 };
         let top = if p.vy > 0.0 {
             (45.0..=135.0).contains(&ang)
@@ -3704,7 +3705,7 @@ impl World {
                 1 => {
                     if a.timer <= 0 {
                         let face = if px < a.x { 180.0f32 } else { 0.0 };
-                        let want = (py + 8.0 - (a.y + 16.0)).atan2(px - a.x).to_degrees();
+                        let want = (py + 8.0 - (a.y + 16.0)).datan2(px - a.x).to_degrees();
                         let mut d = want - face;
                         while d > 180.0 {
                             d -= 360.0;
@@ -3728,8 +3729,8 @@ impl World {
         }
         for (x, y, ang) in casts {
             let mut m = Actor::new(Kind::Magic, x, y);
-            m.vx = 0.75 * ang.cos();
-            m.vy = 0.75 * ang.sin();
+            m.vx = 0.75 * ang.dcos();
+            m.vy = 0.75 * ang.dsin();
             m.timer = 600;
             self.add_actor(m);
         }
@@ -4123,7 +4124,7 @@ impl World {
         for ci in 0..self.level.cannons.len() {
             let c = self.level.cannons[ci];
             let a = c.angle.to_radians();
-            let (mx, my) = (c.x + 8.0 * a.cos(), c.y + 8.0 + 8.0 * a.sin());
+            let (mx, my) = (c.x + 8.0 * a.dcos(), c.y + 8.0 + 8.0 * a.dsin());
             if mx < v.0 || mx > v.2 || my < v.1 || my > v.3 {
                 continue;
             }
@@ -4134,8 +4135,8 @@ impl World {
             self.cannon_timers[ci] = 190;
             let mut b = Actor::new(Kind::Cannonball, mx, my - 8.0);
             let speed = if c.red { 2.4 } else { 1.0 };
-            b.vx = speed * a.cos();
-            b.vy = speed * a.sin();
+            b.vx = speed * a.dcos();
+            b.vy = speed * a.dsin();
             b.phase = c.red as u8;
             self.add_actor(b);
             self.events.push(Event::Kick);
@@ -4167,8 +4168,8 @@ impl World {
             let a = self.firebar_angle(fb).to_radians();
             for i in 1..fb.n {
                 let (fx, fy) = (
-                    fb.x + i as f32 * 8.0 * a.cos(),
-                    fb.y + i as f32 * 8.0 * a.sin(),
+                    fb.x + i as f32 * 8.0 * a.dcos(),
+                    fb.y + i as f32 * 8.0 * a.dsin(),
                 );
                 hit |= overlap(hb, (fx - 4.0, fy - 4.0, fx + 4.0, fy + 4.0));
             }
@@ -5532,8 +5533,8 @@ impl World {
             let a = self.firebar_angle(fb).to_radians();
             for i in 0..fb.n {
                 let (fx, fy) = (
-                    fb.x + i as f32 * 8.0 * a.cos(),
-                    fb.y + i as f32 * 8.0 * a.sin(),
+                    fb.x + i as f32 * 8.0 * a.dcos(),
+                    fb.y + i as f32 * 8.0 * a.dsin(),
                 );
                 out.push(Self::model_sprite(
                     "M1_Object_firebar",
@@ -8826,7 +8827,7 @@ mod tests {
             .filter(|a| matches!(a.kind, Kind::RingBoo { .. }))
             .collect();
         assert_eq!(ring.len(), 8);
-        let r = (ring[0].x - 300.0).hypot(ring[0].y + 8.0 - 72.0);
+        let r = (ring[0].x - 300.0).dhypot(ring[0].y + 8.0 - 72.0);
         assert!((r - 52.0).abs() < 1.0, "radius {r}");
 
         // a homing Bullet Bill turns toward the player

@@ -686,3 +686,16 @@ renderers upload a texture when a sprite first uses it. Measured on the same cou
 - Replays play one player, offline, from the course start (deaths and respawns are inside the
   deterministic run; a restart starts a new replay). Verification runs on the server's request
   thread (a 10-minute run simulates in well under a second in release builds).
+
+## 2026-10-18 — The sim's float math is platform-independent
+- Online peers on different systems step the same world, and the server (Linux) re-simulates
+  replays recorded on any platform, so the sim must produce identical bits everywhere.
+  Arithmetic and `sqrt` are exact IEEE operations; transcendental functions (`sin`, `cos`,
+  `atan2`, `hypot`, …) come from each platform's math library and differ in the last bits.
+- The sim calls them through `mmk_sim::fmath::DetMath` (`.dsin()`, `.dcos()`, …), backed by the
+  pure-Rust `libm` crate (musl's algorithms), identical on every target including wasm.
+  `core/crates/sim/clippy.toml` forbids the `f32`/`f64` platform versions in the sim, so CI and
+  `scripts/check.sh` reject new uses. Rust never fuses multiply-adds on its own, so no FMA issue.
+- Effect when switched: 1 of the 550 sample courses ended in a different state (its trig hit a
+  last-bit difference between Apple's library and musl's) — the case this prevents across
+  machines. Front ends (rendering, audio) may keep using the platform functions.

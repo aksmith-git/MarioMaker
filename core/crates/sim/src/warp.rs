@@ -5,6 +5,7 @@
 //! mouth at probe height feet + 11.9, side entry after the direction is held 10 frames, doors
 //! within |dx| ≤ 7, |dy| < 2 with Up and no Left/Right.
 
+use crate::fmath::DetMath;
 use crate::input::{self, Input};
 use crate::level::{PipeDir, Warp, WarpKind};
 use crate::player::Player;
@@ -131,7 +132,7 @@ pub fn pipe_entry(
             _ => (probe.0 - bx).abs() <= 8.0 && (probe.1 - by).abs() <= 8.0,
         };
         if inside {
-            let d = (probe.0 - bx).hypot(probe.1 - by);
+            let d = (probe.0 - bx).dhypot(probe.1 - by);
             if best.is_none_or(|(bd, _)| d < bd) {
                 best = Some((d, *w));
             }

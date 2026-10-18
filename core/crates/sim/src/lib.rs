@@ -12,6 +12,7 @@ pub mod camera;
 pub mod checksum;
 pub mod clear;
 pub mod exclamation;
+pub mod fmath;
 pub mod input;
 pub mod level;
 pub mod liquid;

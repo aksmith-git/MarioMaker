@@ -15,6 +15,7 @@
 //! `Actor::w3`, together with what the world senses for these enemies each frame.
 
 use super::{Actor, ENEMY_GRAVITY, Kind, MAX_FALL};
+use crate::fmath::DetMath;
 use crate::level::{Cell, Level, TILE};
 
 /// Per-actor state of the 3D World enemies, and what the world senses for them before each step.
@@ -671,8 +672,8 @@ impl Actor {
         let g = DIRS[self.w3.down as usize];
         let t = DIRS[self.w3.ahead as usize];
         let (kx, ky) = self.w3.corner;
-        let cx = kx + h * (-g.0 * a.cos() + t.0 * a.sin());
-        let cy = ky + h * (-g.1 * a.cos() + t.1 * a.sin());
+        let cx = kx + h * (-g.0 * a.dcos() + t.0 * a.dsin());
+        let cy = ky + h * (-g.1 * a.dcos() + t.1 * a.dsin());
         self.x = cx;
         self.y = cy - h;
         if self.timer as f32 * rate >= 90.0 {
@@ -879,7 +880,7 @@ impl Actor {
         }
         if self.wings {
             self.w3.travel += 5.0; // 1/72 turn per frame
-            self.y += SKIP_HOVER * self.w3.travel.to_radians().sin();
+            self.y += SKIP_HOVER * self.w3.travel.to_radians().dsin();
             self.vx = 0.0;
             self.dir = self.toward_player();
             return;
@@ -1457,7 +1458,7 @@ impl Actor {
         let (px, py) = self.target;
         let (cx, cy) = (self.x, self.y + 16.0 * s);
         let (ax, ay) = (px, py + self.w3.player_h / 2.0 - 16.0 * s);
-        let want = (ay - cy).atan2(ax - cx).to_degrees();
+        let want = (ay - cy).datan2(ax - cx).to_degrees();
         let diff = (want - self.heading + 540.0).rem_euclid(360.0) - 180.0;
         match self.phase {
             puff::LUNGE => {
@@ -1511,16 +1512,16 @@ impl Actor {
                     if self.timer >= PUFF_COOLDOWN {
                         self.phase = puff::FLOAT;
                         self.timer = 0;
-                        self.vx = self.speed * self.heading.to_radians().cos();
-                        self.vy = self.speed * self.heading.to_radians().sin();
+                        self.vx = self.speed * self.heading.to_radians().dcos();
+                        self.vy = self.speed * self.heading.to_radians().dsin();
                         return;
                     }
                 }
             }
         }
         let a = self.heading.to_radians();
-        self.vx = self.speed * a.cos();
-        self.vy = self.speed * a.sin();
+        self.vx = self.speed * a.dcos();
+        self.vy = self.speed * a.dsin();
         if self.vx.abs() > 0.05 && self.phase != puff::SWIM_TURN {
             self.dir = self.vx.signum() as i32;
         }
@@ -1942,8 +1943,8 @@ impl Actor {
             _ => std::f32::consts::FRAC_PI_2,
         };
         self.speed = ease(self.speed, target, step);
-        let (fx, fy) = (a.cos() * self.dir as f32, -a.sin());
-        self.heading = fy.atan2(fx).to_degrees();
+        let (fx, fy) = (a.dcos() * self.dir as f32, -a.dsin());
+        self.heading = fy.datan2(fx).to_degrees();
         self.vx = self.speed * fx;
         self.vy = self.speed * fy;
         let (hx, hy) = self.charvaargh_head();
@@ -1982,7 +1983,7 @@ impl Actor {
         let (hx, hy) = self.charvaargh_head();
         if back < 0.0 {
             let a = self.heading.to_radians();
-            return (hx - back * a.cos(), hy - back * a.sin());
+            return (hx - back * a.dcos(), hy - back * a.dsin());
         }
         let mut left = back;
         let mut p = (hx, hy);
