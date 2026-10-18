@@ -11,6 +11,7 @@
 pub mod audio;
 pub mod course;
 pub mod frame;
+pub mod mesh;
 pub mod texture;
 
 pub use frame::{DrawSprite, SpriteResolver, clear_color, place};
