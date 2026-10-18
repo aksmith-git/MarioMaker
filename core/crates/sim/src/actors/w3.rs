@@ -1,8 +1,14 @@
 //! 3D World enemies: Ant Trooper (96-ant-trooper.md), Stingby (65-stingby.md), Skipsqueak
 //! (51-skipsqueak.md), Hop-Chops (50-hop-chops.md), Porcupuffer (114-porcupuffer.md), Bully
 //! (117-bully.md), Charvaargh (86-charvaargh.md) and Piranha Creeper (107-piranha-creeper.md).
-//! Inferred choices are marked [inf]; DECISIONS.md lists them. The world-side rules (touching
-//! them, their sprites) are in world/w3.rs.
+//! Every rule here follows the specs' [obs] facts; the few that the binary does not settle are
+//! marked [inf] with the reason. The world-side rules (touching them, their sprites) are in
+//! world/w3.rs.
+//!
+//! Many of these enemies are timed by their model animations: a state ends when a one-shot
+//! animation ends, or acts inside a window of animation frames. The frame counts are the
+//! animations' own lengths and the play rates come from the style's enemy model parameters
+//! (`anim_len`); both are listed in the specs.
 //!
 //! State layout: `phase` is the state (0 = not set up yet; numbering per enemy in the modules
 //! below), `timer` the state timer, `hops` the Porcupuffer's HP; everything else lives in
@@ -18,29 +24,63 @@ pub struct W3State {
     pub liquid: Option<(f32, bool)>,
     /// Sensed: the whole area is under water (underwater theme).
     pub flooded: bool,
-    /// Sensed: the nearest player is in water, its height (px) and whether it is rising in a
-    /// jump.
+    /// Sensed: the nearest player is in water, its height (px) and whether it launched a jump
+    /// (or a swim stroke) this frame.
     pub player_wet: bool,
     pub player_h: f32,
     pub player_rising: bool,
+    /// Sensed last frame: the player was on the ground, its vertical speed.
+    pub player_ground_prev: bool,
+    pub player_vy_prev: f32,
     /// Ant Trooper: the side its surface is on and the way it walks (indices into `DIRS`), and
     /// the corner it is wrapping round.
     pub down: u8,
     pub ahead: u8,
     pub corner: (f32, f32),
-    /// Small counters: hops, crashes, recovery attempts, push strength.
+    /// Small counters: hops, recovery attempts, Bully push sub-phase.
     pub count: u8,
     pub tries: u8,
-    /// A second timer: Stingby / Hop-Chops give-up, Porcupuffer cooldowns.
+    /// Skipsqueak: wall crashes per direction (right, left).
+    pub crashes: [u8; 2],
+    /// A second timer: Stingby / Hop-Chops give-up, Porcupuffer cooldowns, Bully flip timer.
     pub clock: i32,
     /// Stingby patrol anchor, Porcupuffer surfacing x.
     pub anchor: f32,
-    /// Piranha Creeper: distance of the head along its path (px).
+    /// Charvaargh: distance the head has travelled since the leap began (px).
     pub travel: f32,
+    /// Model animation frame (Hop-Chops), Piranha Creeper piece animation frame.
+    pub frame: f32,
+    /// Piranha Creeper: piece animation rate; the braking tracker near a stop.
+    pub rate: f32,
+    pub track: f32,
+    /// Piranha Creeper: the piece the head is in; the piece a trampled head retracts to.
+    pub node: i32,
+    pub goal: i32,
     /// The state to go back to after a hit or a wait.
     pub resume: u8,
-    /// Skipsqueak gave up going home.
-    pub gave_up: bool,
+    /// Flag bits per enemy (see the `flag` constants).
+    pub flags: u8,
+    /// Bully: frames before the player's body can push it again; shoves of the player so far.
+    pub cooldown: i32,
+    pub shoves: u8,
+}
+
+/// `W3State::flags` bits.
+mod flag {
+    /// Hop-Chops: hopped in this animation window.
+    pub const HOPPED: u8 = 1;
+    /// Hop-Chops: braking to turn round in the chase.
+    pub const BRAKING: u8 = 2;
+    /// Bully: may stop at a ledge edge (HoldOut) when pushed.
+    pub const CAN_HOLD: u8 = 1;
+    /// Bully: a player is its target (chased after a push).
+    pub const TARGET: u8 = 2;
+    /// Piranha Creeper: the trampled head retracted into its base and dies.
+    pub const DIES: u8 = 1;
+    /// Piranha Creeper: it was moving back when trampled.
+    pub const WAS_BACK: u8 = 2;
+    /// Piranha Creeper: reached the trample retract goal.
+    pub const RETRACTED: u8 = 4;
 }
 
 /// Unit vectors of the crawler directions: 0 down, 1 right, 2 up, 3 left.
@@ -54,10 +94,24 @@ fn ease(v: f32, target: f32, step: f32) -> f32 {
     v + (target - v).clamp(-step, step)
 }
 
+/// Frames a one-shot animation of `frames` frames takes at play rate `rate`: the state that
+/// waits for its end leaves on the first frame the animation frame reaches the end [obs: the
+/// frame advances by the rate once per frame; the exact frame of the end test is [inf] ±1].
+fn anim_len(frames: f32, rate: f32) -> i32 {
+    (frames / rate).ceil() as i32
+}
+
+/// Frames a model yaw turn of `deg` degrees takes at the enemy turn rate (8°/frame, set for
+/// every enemy model at EnemySys init 0x71007872e0) [obs].
+fn yaw_frames(deg: f32) -> i32 {
+    (deg / 8.0).ceil() as i32
+}
+
 // ---------------------------------------------------------------- Ant Trooper
 
-/// [inf] walk speed: the shared crawler walk (Spike Top) was not decoded; a 0.49 constant is
-/// seen there, and the engine's Spike Top walks at 0.5.
+/// Crawl speed along the surface: the shared crawler walk's 0.5 [obs 0x7100778710 tail]; the
+/// Ant Trooper overrides the speed hook that makes the yellow Spike Top 1.5× faster with an
+/// empty one, so the horned form walks at 0.5 too [obs vtable slot +0x1a0 = 0x7100603910].
 const ANT_WALK: f32 = 0.5;
 /// Ledge wrap turn rate (deg/frame): 6, big 4 [obs].
 const ANT_TURN: f32 = 6.0;
@@ -81,13 +135,15 @@ const STING_SPAN: f32 = 16.0;
 const STING_ACCEL: f32 = 0.06;
 const STING_SEE: f32 = 96.0;
 const STING_BAND: f32 = 8.0;
-/// Charge speed 0.5 [obs; the spec notes it looks low for the game].
+/// Charge speed 0.5 [obs Chase enter 0x7100670640].
 const STING_CHARGE: f32 = 0.5;
 const STING_KEEP: f32 = 160.0;
 const STING_GIVE_UP: i32 = 100;
-/// [inf] Turn and the alert animation (Find, animation 0x0F) lengths.
-const STING_TURN: i32 = 12;
-const STING_ALERT: i32 = 30;
+/// Turn: the model yaws from one side (60°, the model's 3D World facing angle) to the other
+/// before the alert [obs 0x7100670510 waits for the yaw turn]; Find plays the 37-frame alert at
+/// rate 1 [obs 0x71006705e0].
+const STING_FACE_DEG: f32 = 60.0;
+const STING_ALERT_FRAMES: f32 = 37.0;
 
 mod sting {
     pub const FLY: u8 = 1;
@@ -101,22 +157,37 @@ mod sting {
 const SKIP_JUMP: f32 = 2.7;
 /// Take-off after more than 2 recovery attempts [obs].
 const SKIP_JUMP_HIGH: f32 = 3.65;
-const SKIP_GRAVITY: f32 = -0.20625;
-const SKIP_GRAVITY_WATER: f32 = -0.103125;
+/// Jump gravity: −0.103125 out of water, −0.20625 in water [obs 0x710075f710: the table at
+/// 0x7101c8c448 is indexed by "not in water"].
+const SKIP_GRAVITY: f32 = -0.103125;
+const SKIP_GRAVITY_WATER: f32 = -0.20625;
 const SKIP_RUN: f32 = 3.0;
 const SKIP_RUN_ACCEL: f32 = 0.02;
 const SKIP_BRAKE_ACCEL: f32 = 0.1;
 const SKIP_CREEP: f32 = 0.2;
 const SKIP_HOME: f32 = 1.0;
 const SKIP_CRASH_VY: f32 = 1.875;
+/// A crash bounces it back at 1.2 px/f; after landing ×0.35 [obs 0x710075ffa0, 0x71007601a0].
+const SKIP_CRASH_BACK: f32 = 1.2;
 const SKIP_CRASH_KEEP: f32 = 0.35;
-/// Gives up after more than 5 crashes or more than 2 failed recovery jumps [obs].
-const SKIP_CRASHES: u8 = 5;
+/// 4 crashes into the same side: it gives up [obs 0x710075ffa0].
+const SKIP_CRASHES: u8 = 4;
+/// Gives up after more than 2 recovery attempts [obs].
 const SKIP_TRIES: u8 = 2;
-/// [inf] crouch (JumpSign animation) frames before the take-off.
-const SKIP_CROUCH: i32 = 6;
-/// [inf] the recovery jump drifts toward home, at most this fast.
-const SKIP_RECOVER_VX: f32 = 1.5;
+/// Wall jump: 1.0 px/f forward, the 17-frame JumpSign at rate 2, then 3.75 up (5.0 on the
+/// third crash) [obs 0x7100760210, 0x7100760290].
+const SKIP_WALL_VX: f32 = 1.0;
+const SKIP_WALL_VY: f32 = 3.75;
+const SKIP_WALL_VY_HIGH: f32 = 5.0;
+/// Animations [obs model data]: crouch JumpStandingSign 17, landing JumpStandingEnd 13,
+/// JumpSign 17, GiveUp 69 (played at 0.75).
+const SKIP_CROUCH: f32 = 17.0;
+const SKIP_LAND: f32 = 13.0;
+const SKIP_SIGN: f32 = 17.0;
+const SKIP_GIVE_UP: f32 = 69.0;
+/// Its model faces 60° to either side: turning round to run home takes this yaw turn first
+/// [obs 0x710075ffa0 waits for the turn].
+const SKIP_FACE_DEG: f32 = 60.0;
 /// Winged hover: y += 0.25·sin φ, φ += 1/72 turn per frame [obs].
 const SKIP_HOVER: f32 = 0.25;
 
@@ -128,6 +199,9 @@ mod skip {
     pub const RETURN: u8 = 5;
     pub const CRASH: u8 = 6;
     pub const GIVE_UP: u8 = 7;
+    pub const LAND: u8 = 8;
+    pub const WALL_SIGN: u8 = 9;
+    pub const WALL_JUMP: u8 = 10;
 }
 
 // ---------------------------------------------------------------- Hop-Chops
@@ -135,21 +209,34 @@ mod skip {
 const HOP_VX: f32 = 0.5;
 const HOP_VY: f32 = 1.2;
 const HOP_GRAVITY: f32 = -0.1;
-/// Ground frames before a patrol hop: the hop animation's airborne window starts at frame 9
-/// [obs]; the chase window starts at frame 2 [obs].
-const HOP_WAIT: i32 = 9;
-const HOP_RUN_WAIT: i32 = 2;
+/// Patrol hops are timed by the looping Walk animation (35 frames at rate 0.7): it stands
+/// outside frames 9–31 and takes off once inside 9–12 [obs 0x71006833f0, 0x7100682bc0,
+/// 0x7100682c00, 0x7100683b90].
+const HOP_WALK_FRAMES: f32 = 35.0;
+const HOP_WALK_RATE: f32 = 0.7;
+const HOP_WINDOW: (f32, f32) = (9.0, 31.0);
+const HOP_TAKE_OFF: f32 = 12.0;
 const HOP_SEE: (f32, f32) = (96.0, 64.0);
 const HOP_KEEP: (f32, f32) = (128.0, 80.0);
 const HOP_LOST_GRACE: i32 = 16;
 const HOP_FIND_VY: f32 = 2.5;
+/// The chase: the looping Run animation (20 frames at rate 0.8) moves it at 0.6 during frames
+/// 2–15; at frame 2 it sets vy 0 and gravity −0.2 (the hop is only in the animation) [obs
+/// 0x7100682e70, 0x7100682c40, 0x7100682c80].
+const HOP_RUN_FRAMES: f32 = 20.0;
+const HOP_RUN_RATE: f32 = 0.8;
+const HOP_RUN_WINDOW: (f32, f32) = (2.0, 15.0);
+const HOP_RUN_JUMP: f32 = 5.0;
 const HOP_RUN_VX: f32 = 0.6;
 const HOP_RUN_GRAVITY: f32 = -0.2;
 const HOP_TURN_DECEL: f32 = 0.06;
 const HOP_LOST_DECEL: f32 = 0.05;
-/// [inf] Turn and Lost animation lengths.
-const HOP_TURN_FRAMES: i32 = 16;
-const HOP_LOST_FRAMES: i32 = 30;
+/// Turn: Turn 35 frames at 0.9, with a 2.0 hop 7 frames in; Find 36 frames at 0.95; Lost plays
+/// GiveUp, 114 frames at 0.9 [obs 0x7100682400/0x7100682480, 0x71006f9490, 0x71006f9640].
+const HOP_TURN: (f32, f32) = (35.0, 0.9);
+const HOP_TURN_HOP: f32 = 2.0;
+const HOP_FIND: (f32, f32) = (36.0, 0.95);
+const HOP_LOST: (f32, f32) = (114.0, 0.9);
 
 mod hop {
     pub const WALK: u8 = 1;
@@ -182,10 +269,12 @@ const PUFF_JUMP: f32 = 4.0;
 const PUFF_JUMP_RAMP: f32 = 0.75;
 const PUFF_DIVE_DEPTH: f32 = 16.0;
 const PUFF_COOLDOWN: i32 = 60;
-/// [inf] SwimTurn: 12 steps of the yaw turn, then a 30-frame cooldown; Recover 20 frames.
+/// SwimTurn: the heading mirrors in 12 equal steps while the yaw swings 120° at 10°/frame, 12
+/// frames [obs 0x71006612c0, 0x7100661340]; Swim then blocks the next turn for 5 frames [obs
+/// Swim enter 0x7100660af0]; Recover plays DamageReset, 60 frames [obs 0x71006635d0].
 const PUFF_TURN_FRAMES: i32 = 12;
-const PUFF_TURN_COOLDOWN: i32 = 30;
-const PUFF_RECOVER: i32 = 20;
+const PUFF_TURN_COOLDOWN: i32 = 5;
+const PUFF_RECOVER: i32 = 60;
 
 mod puff {
     pub const FALL: u8 = 1;
@@ -205,26 +294,47 @@ const BULLY_WALK: f32 = 0.3;
 const BULLY_CHASE: f32 = 0.8;
 const BULLY_ACCEL: f32 = 0.025;
 const BULLY_GIVE_UP: f32 = 256.0;
-/// [inf] the Find trigger range is open: 128 px either side, 48 px up or down.
-const BULLY_SEE: (f32, f32) = (128.0, 48.0);
-/// [inf] Find animation length.
-const BULLY_FIND: i32 = 30;
-/// Push-back speed by hit strength [obs table]; which attack gives which index is [inf].
+/// Turns round in the chase once the player is more than 28 px behind it [obs 0x71006478e0].
+const BULLY_BEHIND: f32 = 28.0;
+/// A wall stops the charge with a 1.0 px/f bounce [obs 0x71006478e0].
+const BULLY_WALL_BOUNCE: f32 = 1.0;
+/// Sight box: from its x to 128 px ahead (centre 64 ahead, half width 64), and the player's
+/// body within ±(32 + 16·k) of y + 16·k (k = 1, big 2) [obs 0x71006490a0].
+const BULLY_SEE_AHEAD: f32 = 64.0;
+const BULLY_SEE_HALF: f32 = 32.0;
+/// Find plays its 39-frame notice at rate 1 [obs 0x71006477a0].
+const BULLY_FIND_FRAMES: f32 = 39.0;
+/// Push-back speed by hit strength (table 0x7101d01204), ×0.75 when big [obs 0x7100647fe0].
 const BULLY_PUSH: [f32; 3] = [1.0, 1.75, 2.5];
 const BULLY_PUSH_DECAY: f32 = 0.05;
+/// The push animations: pushed the way it faces PushFront 27, else PushBack 39; the push state
+/// times out after 60 frames; 10 frames' recovery after it stops (15 in water) [obs].
+const BULLY_PUSH_FRONT: i32 = 27;
+const BULLY_PUSH_BACK: i32 = 39;
 const BULLY_FLIP: i32 = 60;
+const BULLY_FLIP_RECOVER: i32 = 10;
+const BULLY_FLIP_RECOVER_WATER: i32 = 15;
+/// Pushed slower than 1.75 towards a ledge it stops on the edge (HoldOut, 120 frames), then
+/// Land (FlyHitLand, 59 frames) [obs 0x71006481f0, 0x7100648370, 0x7100647f10].
+const BULLY_HOLD_SPEED: f32 = 1.75;
 const BULLY_HOLD_OUT: i32 = 120;
+const BULLY_LAND: i32 = 59;
+/// Off a ledge: speed eases to 0 at 0.2; landing stuns it 40 frames (FallStan) [obs].
+const BULLY_FALL_DECEL: f32 = 0.2;
+const BULLY_FALL_STAN: i32 = 40;
+/// Its model faces 40° to either side [obs model data].
 const BULLY_FLY_CHASE: i32 = 300;
 const BULLY_FLY_ACCEL: f32 = 0.075;
 const BULLY_FLY_SPEED: f32 = 0.5;
 
-/// Hit strengths for `Actor::bully_push` (indices into the push table) [inf mapping].
+/// Hit strengths for `Actor::bully_push` (indices into the push table) [obs 0x7100649cb0: by the
+/// attack type of the hit].
 pub mod push {
-    /// Fireballs and other light hits.
+    /// The player's body walking into it, fireballs: 1.0.
     pub const LIGHT: usize = 0;
-    /// Stomps and spin jumps.
+    /// Stomps, spin jumps, shoe stomps, Yoshi stomps, tail and slide hits: 1.75.
     pub const STOMP: usize = 1;
-    /// Ground pounds and shoe stomps: the Bully is then stunned (HoldOut).
+    /// Ground pounds, shells, hammers, Koopa Troopa Car hits, the Cat dive: 2.5.
     pub const HEAVY: usize = 2;
 }
 
@@ -233,6 +343,9 @@ mod bully {
     pub const WALK: u8 = 2;
     pub const FIND: u8 = 3;
     pub const CHASE: u8 = 4;
+    pub const FALL: u8 = 5;
+    pub const FALL_STAN: u8 = 6;
+    pub const LAND: u8 = 7;
     pub const FLIP: u8 = 8;
     pub const HOLD_OUT: u8 = 9;
     pub const FLY_CHASE: u8 = 11;
@@ -241,45 +354,97 @@ mod bully {
 
 // ---------------------------------------------------------------- Charvaargh
 
-/// Detection: ±128 px horizontally, −88…+160 px vertically from the head [obs].
-const CHAR_SEE_X: f32 = 128.0;
-const CHAR_SEE_Y: (f32, f32) = (-88.0, 160.0);
+/// It waits 30 frames under the lava between leaps [obs Wait enter 0x710079ff40] and leaps at
+/// the nearest player wherever they are (no sight range) [obs Wait exe 0x71007a00a0]; within
+/// 128 px of the area's edge it leaps away from the edge.
 const CHAR_LOCKOUT: i32 = 30;
-const CHAR_SIGN: i32 = 30;
-const CHAR_SIGN_RISE: f32 = 24.0;
-/// 8 body segments, 12 px apart along the path [obs].
-const CHAR_SEGMENTS: usize = 8;
-const CHAR_SEGMENT_GAP: f32 = 12.0;
-/// [inf] the arc is not decoded: the head leaps at 2.5 px/f round a half circle of radius 64
-/// (its heading turns ±90° either side of up), then dives back.
-const CHAR_SPEED: f32 = 2.5;
-const CHAR_RADIUS: f32 = 64.0;
-/// [inf] at rest the 64-px head sits just under the surface (its top 4 px below).
-const CHAR_DEPTH: f32 = 4.0;
+const CHAR_EDGE: f32 = 128.0;
+/// The warning: the 131-frame AttackSideSign (its silhouette swims in the background lava),
+/// then 30 more frames [obs 0x71007a07c0, 0x71007a0910].
+const CHAR_SIGN: i32 = 131 + 30;
+/// The leap starts 32 px under the base level at 2.0 px/f; AttackStart eases the speed to 0.2
+/// by 0.005/f over its 150 frames, Attack back towards 2.0 by 0.002/f over 190 frames, and
+/// AttackEnd dives on [obs 0x71007a09b0, 0x71007a0c00, 0x71007a1620].
+const CHAR_START_SPEED: f32 = 2.0;
+const CHAR_START: (f32, f32, i32) = (0.2, 0.005, 150);
+const CHAR_ATTACK: (f32, f32, i32) = (2.0, 0.002, 190);
+/// The head's heading is the Head bone's forward axis in the leap animations, the root bone
+/// pitching from straight up to straight down: pitch α (radians, −π/2 up … π/2 down) as
+/// piecewise cubics in t = segment progress [obs model data, read through 0x71007a1620].
+const CHAR_PITCH_START: [(f32, f32, [f32; 4]); 2] = [
+    (
+        0.0,
+        84.0,
+        [-1.570_783, 0.011_683_17, 0.961_865_2, -0.264_221_6],
+    ),
+    (
+        84.0,
+        150.0,
+        [-0.861_456_2, 0.897_901_3, 0.092_790_18, -0.129_248_7],
+    ),
+];
+const CHAR_PITCH_ATTACK: [(f32, f32, [f32; 4]); 2] = [
+    (0.0, 149.0, [0.010_563_49, 1.591_044, 1.488_299, -1.519_084]),
+    (149.0, 190.0, [1.570_774, 0.0, 0.0, 0.0]),
+];
+/// The body follows the head's path: 8 touch boxes 40×40 at these distances behind the head
+/// (negative = ahead): head + 20, head, the 5 spine bones, the last one − 20 [obs 0x710079e290,
+/// bone chain from the model]; the tail end (Spine5 − 48) ends the dive once it is 64 px under
+/// the base level [obs 0x710079f890, 0x71007a0cf0].
+const CHAR_SEGMENTS: [f32; 8] = [-20.0, 0.0, 19.95, 46.55, 73.15, 99.75, 130.34, 150.34];
+const CHAR_TAIL: f32 = 130.34 + 48.0;
+const CHAR_DIVE_DEPTH: f32 = 64.0;
 
 mod chr {
     pub const FALL: u8 = 1;
     pub const WAIT: u8 = 2;
     pub const SIGN: u8 = 3;
-    /// Attack: rise (`count` 0), arc (1), dive (2).
+    pub const START: u8 = 4;
     pub const ATTACK: u8 = 5;
+    pub const END: u8 = 6;
 }
 
 // ---------------------------------------------------------------- Piranha Creeper
 
-const CREEP_SPEED: f32 = 0.6;
-const CREEP_ACCEL: f32 = 0.1;
-/// Braking near a stop: 10 % of the gap, at least 0.05 px/f [obs].
+/// The head rides the end of the stalk piece that is growing: each piece's Appear animation
+/// moves the head 32 px over 12 frames (from 20 px before the piece's centre to 12 past it) and
+/// ends at frame 11 [obs model data; 0x7100722e30 advances a piece when its animation ends].
+pub const CREEP_CELL: f32 = 32.0;
+const CREEP_ENTRY: f32 = 20.0;
+const CREEP_EXIT: f32 = 12.0;
+const CREEP_PIECE_FRAMES: f32 = 12.0;
+const CREEP_PIECE_END: f32 = 11.0;
+/// The first piece starts at frame 3; the base piece stops back at frame 3 [obs 0x7100722d30,
+/// 0x71007245d0].
+const CREEP_BASE_FRAME: f32 = 3.0;
+/// Play rate 0.6 (−0.6 back), eased by 0.1 per frame; on the last piece a tracker approaches
+/// the end frame by 10 % of the gap (≥ 0.05) and the rate follows it (≥ 0.01) [obs].
+const CREEP_RATE: f32 = 0.6;
+const CREEP_RATE_STEP: f32 = 0.1;
 const CREEP_BRAKE: f32 = 0.1;
 const CREEP_CRAWL: f32 = 0.05;
+const CREEP_MIN_RATE: f32 = 0.01;
+/// Waits 3 frames at the end before retracting and 10 at the base before creeping out again
+/// [obs Wait 0x7100723930].
+const CREEP_WAIT_END: i32 = 3;
+const CREEP_WAIT_BASE: i32 = 10;
+/// Trampled: the head retracts 2 pieces (at −0.6) while the 59-frame Trampled animation plays,
+/// then 130 frames' TrampledLoop [obs 0x7100723d40, 0x7100723f40, 0x71007241b0].
+const CREEP_TRAMPLED: i32 = 59;
 const CREEP_DAMAGE_WAIT: i32 = 130;
-/// [inf] start delay, the wait at either end and the trampled animation.
-const CREEP_WAIT: i32 = 60;
-const CREEP_TRAMPLED: i32 = 10;
-/// A path cell is 2×2 tiles (the stalk pieces are 32 px long) [inf from the models].
-pub const CREEP_CELL: f32 = 32.0;
-/// Head box half size [inf].
-const CREEP_HEAD: f32 = 12.0;
+const CREEP_RETRACT: i32 = 2;
+/// Head box: the profile's 32×32 [obs 0x7101d030dc].
+const CREEP_HEAD: f32 = 16.0;
+/// The corner piece's head path in (along entry, along exit) px, as cubics over frames 0–6 and
+/// 6–12 [obs model data].
+const CREEP_CORNER_A: [[f32; 4]; 2] = [
+    [-20.0, 14.575_415, 0.185_934_7, -1.257_951],
+    [-6.496_597, 11.173_877, -2.857_968, -1.819_313],
+];
+const CREEP_CORNER_B: [[f32; 4]; 2] = [
+    [0.000_182_6, 0.0, -0.424_670_2, 1.224_563],
+    [0.800_075, 2.824_764, 13.615_625, -5.240_231],
+];
 
 mod creep {
     pub const MOVE: u8 = 1;
@@ -290,22 +455,59 @@ mod creep {
     pub const DAMAGE_WAIT: u8 = 7;
 }
 
-/// Direction (index into `DIRS`) a Piranha Creeper path node leads to. Node codes [inf, from
-/// the course corpus]: 1–4 straight right / left / down / up; 5–12 corners (5 right→down,
-/// 6 down→right, 7 right→up, 8 up→right, 9 left→down, 10 down→left, 11 left→up, 12 up→left);
-/// 13–16 the end cap facing left / right / up / down.
+/// Direction (index into `DIRS`) a Piranha Creeper path node leads to: the game's node-code
+/// table 0x7101cff340 [obs]. Codes: 1 left, 2 right, 3 down, 4 up; corners 5 left→down, 6 down→
+/// left, 7 left→up, 8 up→left, 9 right→down, 10 down→right, 11 right→up, 12 up→right; 13–16
+/// end caps (pointing back along the path).
 pub fn creeper_out(code: u8) -> u8 {
     match code {
-        1 | 6 | 8 | 14 => 1,
-        2 | 10 | 12 | 13 => 3,
-        3 | 5 | 9 | 16 => 0,
+        1 | 6 | 8 | 13 => 3,
+        2 | 10 | 12 | 14 => 1,
+        3 | 5 | 9 | 15 => 0,
         _ => 2,
+    }
+}
+
+/// Direction the path enters a node from (the way the head moves into it).
+fn creeper_in(code: u8) -> u8 {
+    match code {
+        1 | 5 | 7 => 3,
+        2 | 9 | 11 => 1,
+        3 | 6 | 10 => 0,
+        4 | 8 | 12 => 2,
+        _ => opposite(creeper_out(code)),
     }
 }
 
 /// A Piranha Creeper path node is a corner piece.
 pub fn creeper_corner(code: u8) -> bool {
     (5..=12).contains(&code)
+}
+
+/// Pieces of a creeper path: (entry, exit) direction per piece. The first piece leads out of
+/// the base the way the first node enters; then one piece per node but the last (its end cap)
+/// [obs builder 0x710071f980].
+fn creeper_pieces(codes: &[u8]) -> Vec<(u8, u8)> {
+    let Some(&first) = codes.first() else {
+        return Vec::new();
+    };
+    let d0 = creeper_in(first);
+    let mut out = vec![(d0, d0)];
+    for &c in codes.iter().take(codes.len().saturating_sub(1)) {
+        let prev = out.last().map_or(d0, |p| p.1);
+        out.push((prev, creeper_out(c)));
+    }
+    out
+}
+
+fn cubic(c: &[f32; 4], t: f32) -> f32 {
+    ((c[3] * t + c[2]) * t + c[1]) * t + c[0]
+}
+
+fn pitch(curve: &[(f32, f32, [f32; 4]); 2], f: f32) -> f32 {
+    let (f0, f1, c) = if f < curve[0].1 { curve[0] } else { curve[1] };
+    let t = ((f - f0) / (f1 - f0)).clamp(0.0, 1.0);
+    cubic(&c, t)
 }
 
 impl Kind {
@@ -325,13 +527,14 @@ impl Kind {
     }
 
     /// The 3D World enemies that take the generic enemy paths (fireballs, shells, POW, Star).
-    /// Charvaargh does not: nothing defeats it [inf].
+    /// Charvaargh does not: it has no EnemyDB row and its own touch callback reacts to a Super
+    /// Star only [obs 0x710079c5f0].
     pub fn w3_enemy(self) -> bool {
         self.is_w3() && self != Kind::Charvaargh
     }
 
-    /// Survives in lava and poison (Charvaargh lives there; Porcupuffer swims on any liquid
-    /// [inf]).
+    /// Survives in lava and poison: Charvaargh lives there; Porcupuffer's lava reaction is
+    /// Invalid [obs EnemyDB].
     pub fn liquid_proof(self) -> bool {
         matches!(self, Kind::Charvaargh | Kind::Porcupuffer)
     }
@@ -392,7 +595,8 @@ impl Actor {
     /// floor it walks with gravity; a wall ahead is climbed (the wall becomes its surface), and
     /// at a ledge it wraps round the corner at 6°/frame (big 4°) and carries on down the face,
     /// along ceilings and back up. The body is a square box, so turning does not change it.
-    /// Winged: the generic flight [inf: the Wing flyer was not decoded].
+    /// Winged: the generic flight [inf: its Wing context is the shared flyer of the winged
+    /// Spiny region (FlyMove/Against/Turn, 0x7100782670…), not traced here].
     fn step_ant(&mut self, level: &Level) {
         if self.phase == 0 {
             self.phase = ant::FLOOR;
@@ -576,9 +780,10 @@ impl Actor {
     }
 
     /// Stingby (65-stingby.md): flies with no gravity, patrolling ±16 px round its anchor at
-    /// 0.2 px/f. A player within 96 px and level with it is charged: it turns to face them if
-    /// needed, plays its alert, then flies at them at 0.5 px/f; it gives up after the player has
-    /// been beyond 160 px or behind it for 100 frames. Walls turn it round.
+    /// 0.2 px/f. A player within 96 px and level with it is charged: facing away, it turns
+    /// round first (its model yaws across, 15 frames), plays its 37-frame alert, then flies at
+    /// them at 0.5 px/f; it gives up after the player has been beyond 160 px or behind it for
+    /// 100 frames. Walls turn it round.
     fn step_stingby(&mut self, level: &Level) {
         if self.phase == 0 {
             self.phase = sting::FLY;
@@ -600,10 +805,12 @@ impl Actor {
                 if dx.abs() <= STING_SEE && self.stingby_level() {
                     if facing {
                         self.phase = sting::FIND;
-                        self.timer = STING_ALERT;
+                        self.timer = anim_len(STING_ALERT_FRAMES, 1.0);
                     } else {
+                        // Turn enter flips the facing; the state waits for the yaw turn
+                        self.dir = -self.dir;
                         self.phase = sting::TURN;
-                        self.timer = STING_TURN;
+                        self.timer = yaw_frames(2.0 * STING_FACE_DEG);
                     }
                 }
                 STING_PATROL
@@ -611,9 +818,8 @@ impl Actor {
             sting::TURN => {
                 self.timer -= 1;
                 if self.timer <= 0 {
-                    self.dir = -self.dir;
                     self.phase = sting::FIND;
-                    self.timer = STING_ALERT;
+                    self.timer = anim_len(STING_ALERT_FRAMES, 1.0);
                 }
                 0.0
             }
@@ -655,11 +861,17 @@ impl Actor {
 
     // ------------------------------------------------------------ Skipsqueak
 
-    /// Skipsqueak (51-skipsqueak.md): keeps to its home spot (x and floor height). It jumps
-    /// whenever the player is rising in a jump (crouch, take-off 2.7, gravity −0.20625), runs home
-    /// when displaced (≤ 3.0 px/f, braking for the last v²/0.1 px), and jumps back up when below
-    /// home (3.65 on the third try, then gives up). Running into a wall it bounces (Crash); more
-    /// than 5 crashes and it gives up too. Winged: it hovers in place, bobbing.
+    fn skip_crash_slot(&self) -> usize {
+        if self.dir > 0 { 0 } else { 1 }
+    }
+
+    /// Skipsqueak (51-skipsqueak.md): keeps to its home spot (x and floor height). Whenever the
+    /// player launches a jump it crouches (17 frames) and jumps straight up (2.7, gravity
+    /// −0.103125; −0.20625 in water), landing with a 13-frame recovery. Displaced, it runs home
+    /// (≤ 3.0 px/f, braking for the last v²/0.1 px); below its home floor it jumps back up
+    /// (3.65 on the third try) and after three tries makes the spot it is on its new home.
+    /// Running into a wall it bounces back (Crash) the first time and tries a wall jump after
+    /// that; 4 crashes into the same side and it gives up too. Winged: it hovers, bobbing.
     fn step_skipsqueak(&mut self, level: &Level) {
         if self.phase == 0 {
             self.phase = skip::FALL;
@@ -672,7 +884,8 @@ impl Actor {
             self.dir = self.toward_player();
             return;
         }
-        let g = if self.w3.liquid.is_some_and(|(s, w)| w && self.y + 8.0 < s) || self.w3.flooded {
+        let wet = self.w3.liquid.is_some_and(|(s, w)| w && self.y + 8.0 < s) || self.w3.flooded;
+        let jump_g = if wet {
             SKIP_GRAVITY_WATER
         } else {
             SKIP_GRAVITY
@@ -685,76 +898,98 @@ impl Actor {
                     self.phase = skip::FALL;
                     return;
                 }
-                self.dir = self.toward_player();
-                let away = (self.x - self.home_x).abs() > SKIP_HOME;
                 let below = self.y < self.home_y - SKIP_HOME;
-                if self.w3.gave_up {
-                    self.home_x = self.x;
-                    self.home_y = self.y;
-                } else if away {
-                    self.phase = skip::RETURN;
+                if below && self.w3.tries > SKIP_TRIES {
+                    self.skip_give_up();
                     return;
-                } else if below {
-                    if self.w3.tries > SKIP_TRIES {
-                        self.phase = skip::GIVE_UP;
-                        self.w3.gave_up = true;
-                        self.timer = 60;
-                        return;
-                    }
-                    self.phase = skip::CROUCH;
-                    self.timer = SKIP_CROUCH;
+                }
+                if (self.x - self.home_x).abs() > SKIP_HOME {
+                    self.skip_return();
                     return;
-                } else {
-                    // at home: the floor it stands on is home (it follows a moving floor)
-                    self.home_y = self.y;
-                    self.w3.tries = 0;
-                    self.w3.count = 0;
                 }
-                if self.w3.player_rising {
-                    self.phase = skip::CROUCH;
-                    self.timer = SKIP_CROUCH;
+                self.dir = self.toward_player();
+                if self.w3.player_rising || below {
+                    self.skip_crouch(below);
+                    return;
                 }
+                // at home: the floor it stands on is home (it follows a moving floor)
+                self.home_y = self.y;
+                self.w3.tries = 0;
             }
             skip::CROUCH => {
                 self.vx = 0.0;
                 self.w3_fall(level, ENEMY_GRAVITY);
                 self.timer -= 1;
-                if self.timer <= 0 {
-                    let recovering = self.y < self.home_y - SKIP_HOME && !self.w3.gave_up;
-                    self.vy = if recovering && self.w3.tries >= SKIP_TRIES {
+                if self.timer <= 0 && self.on_ground {
+                    // straight up: the take-off sets no horizontal speed [obs 0x710075f710]
+                    self.vy = if self.w3.tries > SKIP_TRIES {
                         SKIP_JUMP_HIGH
                     } else {
                         SKIP_JUMP
                     };
-                    if recovering {
-                        self.w3.tries += 1;
-                        // [inf] drifts toward home over the jump's airtime
-                        let air = 2.0 * self.vy / -SKIP_GRAVITY;
-                        self.vx =
-                            ((self.home_x - self.x) / air).clamp(-SKIP_RECOVER_VX, SKIP_RECOVER_VX);
-                    }
                     self.on_ground = false;
                     self.phase = skip::JUMP;
                 }
             }
-            skip::JUMP | skip::CRASH | skip::FALL => {
-                let gravity = if self.phase == skip::FALL {
-                    ENEMY_GRAVITY
-                } else {
-                    g
-                };
-                self.w3_fall(level, gravity);
+            skip::JUMP | skip::WALL_JUMP => {
+                if self.phase == skip::WALL_JUMP {
+                    // the forward speed holds through the jump
+                    self.vx = SKIP_WALL_VX * self.dir as f32;
+                }
+                self.w3_fall(
+                    level,
+                    if self.phase == skip::JUMP {
+                        jump_g
+                    } else {
+                        ENEMY_GRAVITY
+                    },
+                );
                 if self.on_ground && self.vy <= 0.0 {
-                    if self.y >= self.home_y - SKIP_HOME {
-                        self.w3.tries = 0;
+                    self.vx = 0.0;
+                    if self.phase == skip::JUMP {
+                        self.phase = skip::LAND;
+                        self.timer = anim_len(SKIP_LAND, 1.0);
+                    } else {
+                        // a wall jump that cleared the wall takes one crash back
+                        let k = self.skip_crash_slot();
+                        if !self.wall {
+                            self.w3.crashes[k] = self.w3.crashes[k].saturating_sub(1);
+                        }
+                        self.skip_return();
                     }
+                }
+            }
+            skip::LAND => {
+                self.vx = 0.0;
+                self.w3_fall(level, ENEMY_GRAVITY);
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    self.phase = skip::WAIT;
+                }
+            }
+            skip::FALL => {
+                self.w3_fall(level, ENEMY_GRAVITY);
+                if self.on_ground && self.vy <= 0.0 {
                     self.vx = 0.0;
                     self.phase = skip::WAIT;
                 }
             }
             skip::RETURN => {
+                if self.timer > 0 {
+                    // the model is still turning round
+                    self.timer -= 1;
+                    self.vx = 0.0;
+                    self.w3_fall(level, ENEMY_GRAVITY);
+                    return;
+                }
                 let d = self.home_x - self.x;
-                let dir = d.signum();
+                if d.abs() < SKIP_HOME {
+                    self.vx = 0.0;
+                    self.phase = skip::WAIT;
+                    self.w3_fall(level, ENEMY_GRAVITY);
+                    return;
+                }
+                let dir = self.dir as f32;
                 let v = self.vx * dir; // speed toward home
                 let (target, accel) = if v > 0.0 && d.abs() <= v * v / SKIP_BRAKE_ACCEL {
                     (SKIP_CREEP, SKIP_BRAKE_ACCEL)
@@ -762,40 +997,56 @@ impl Actor {
                     (SKIP_RUN, SKIP_RUN_ACCEL)
                 };
                 self.vx = ease(self.vx, target * dir, accel);
-                self.dir = dir as i32;
-                if d.abs() <= self.vx.abs().max(SKIP_HOME) {
-                    // arrived
-                    self.x = self.home_x;
-                    self.vx = 0.0;
-                    self.phase = skip::WAIT;
-                    self.w3_fall(level, ENEMY_GRAVITY);
-                    return;
+                self.w3_fall(level, ENEMY_GRAVITY);
+                if self.wall {
+                    let k = self.skip_crash_slot();
+                    let c = self.w3.crashes[k];
+                    if c >= SKIP_CRASHES {
+                        self.skip_give_up();
+                    } else if c < 1 || !self.on_ground {
+                        // Crash: bounce back
+                        self.w3.crashes[k] += 1;
+                        self.vx = -SKIP_CRASH_BACK * dir;
+                        self.vy = SKIP_CRASH_VY;
+                        self.on_ground = false;
+                        self.phase = skip::CRASH;
+                    } else {
+                        // WallJump: the jump sign at double speed, then up
+                        self.vx = SKIP_WALL_VX * dir;
+                        self.phase = skip::WALL_SIGN;
+                        self.timer = anim_len(SKIP_SIGN, 2.0);
+                    }
                 }
-                let before = self.vx;
+            }
+            skip::CRASH => {
+                self.w3_fall(level, ENEMY_GRAVITY);
+                if self.vy <= 0.0 && self.on_ground {
+                    self.vx *= SKIP_CRASH_KEEP;
+                    self.phase = skip::RETURN;
+                    self.timer = 0;
+                }
+            }
+            skip::WALL_SIGN => {
+                self.vx = SKIP_WALL_VX * self.dir as f32;
                 self.w3_fall(level, ENEMY_GRAVITY);
                 if !self.on_ground {
-                    self.phase = skip::FALL;
-                } else if self.wall {
-                    self.w3.count += 1;
-                    if self.w3.count > SKIP_CRASHES {
-                        self.phase = skip::GIVE_UP;
-                        self.w3.gave_up = true;
-                        self.timer = 60;
-                        return;
-                    }
-                    // Crash: a bounce; after an earlier crash a higher wall jump [inf]
-                    self.vy = if self.w3.count > 1 {
-                        SKIP_JUMP_HIGH
+                    self.skip_return();
+                    return;
+                }
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    let k = self.skip_crash_slot();
+                    self.vy = if self.w3.crashes[k] == 3 {
+                        SKIP_WALL_VY_HIGH
                     } else {
-                        SKIP_CRASH_VY
+                        SKIP_WALL_VY
                     };
-                    self.vx = before * SKIP_CRASH_KEEP;
                     self.on_ground = false;
-                    self.phase = skip::CRASH;
+                    self.phase = skip::WALL_JUMP;
                 }
             }
             _ => {
-                // GiveUp: a short sulk, then it stays where it is [inf]
+                // GiveUp: sulks, then stays where it is: this spot became its home
                 self.vx = 0.0;
                 self.w3_fall(level, ENEMY_GRAVITY);
                 self.timer -= 1;
@@ -804,6 +1055,37 @@ impl Actor {
                 }
             }
         }
+    }
+
+    /// Jump: the crouch; a jump from below home counts as a recovery attempt [obs Jump enter
+    /// 0x710075f690].
+    fn skip_crouch(&mut self, below: bool) {
+        self.w3.tries = if below { self.w3.tries + 1 } else { 0 };
+        self.phase = skip::CROUCH;
+        self.timer = anim_len(SKIP_CROUCH, 1.0);
+    }
+
+    /// Return: faces home (turning the model round first) and runs [obs 0x710075fee0].
+    fn skip_return(&mut self) {
+        let dir = if self.home_x > self.x { 1 } else { -1 };
+        self.timer = if dir != self.dir {
+            yaw_frames(2.0 * SKIP_FACE_DEG)
+        } else {
+            0
+        };
+        self.dir = dir;
+        self.w3.tries = 0;
+        self.phase = skip::RETURN;
+    }
+
+    /// GiveUp: the spot it is on becomes home [obs 0x7100760460].
+    fn skip_give_up(&mut self) {
+        self.phase = skip::GIVE_UP;
+        self.home_x = self.x;
+        self.home_y = self.y;
+        self.w3.tries = 0;
+        self.vx = 0.0;
+        self.timer = anim_len(SKIP_GIVE_UP, 0.75);
     }
 
     fn w3_fall(&mut self, level: &Level, g: f32) {
@@ -820,15 +1102,23 @@ impl Actor {
         (0.0..=reach).contains(&dx) && (py - self.y).abs() <= up
     }
 
-    /// Hop-Chops (50-hop-chops.md): patrols in small hops (1.2 up, 0.5 forward, gravity −0.1),
-    /// turning after 2–4 hops or at a wall. A player within 96 px ahead (±64) startles it (a
-    /// 2.5 hop), then it chases in quicker hops (0.6, gravity −0.2), facing the player again on
-    /// each landing (braking at 0.06 first when that turns it round). It gives up after the
-    /// player has been behind it or outside 128 × ±80 px for 16 frames.
+    fn hop_walk_enter(&mut self) {
+        self.phase = hop::WALK;
+        self.w3.frame = 0.0;
+        self.w3.count = 0;
+        self.w3.flags &= !flag::HOPPED;
+        self.w3.tries = 2 + self.rand(3) as u8;
+    }
+
+    /// Hop-Chops (50-hop-chops.md): patrols in small hops (1.2 up, 0.5 forward, gravity −0.1)
+    /// timed by its walk animation, one every 50 frames, turning (with a little hop) after 2–4
+    /// hops or at a wall. A player within 96 px ahead (±64) startles it (a 2.5 hop), then it
+    /// chases in quick runs (0.6 px/f during part of each 25-frame run cycle), turning round to
+    /// face the player on the ground (braking at 0.06 first). It gives up after the player has
+    /// been behind it or outside 128 × ±80 px for 16 frames.
     fn step_hop_chops(&mut self, level: &Level) {
         if self.phase == 0 {
-            self.phase = hop::WALK;
-            self.w3.tries = 2 + self.rand(3) as u8;
+            self.hop_walk_enter();
         }
         if self.wings {
             self.step_generic_wings(level);
@@ -836,103 +1126,145 @@ impl Actor {
         }
         match self.phase {
             hop::WALK => {
-                if self.on_ground {
+                self.w3.frame = (self.w3.frame + HOP_WALK_RATE) % HOP_WALK_FRAMES;
+                if self.on_ground && self.ahead_box(HOP_SEE.0, HOP_SEE.1) {
+                    self.phase = hop::FIND;
+                    self.timer = anim_len(HOP_FIND.0, HOP_FIND.1);
                     self.vx = 0.0;
-                    if self.ahead_box(HOP_SEE.0, HOP_SEE.1) {
-                        self.phase = hop::FIND;
-                        self.vy = HOP_FIND_VY;
-                        self.on_ground = false;
-                        self.w3_fall(level, ENEMY_GRAVITY);
-                        return;
-                    }
-                    self.timer += 1;
-                    if self.timer >= HOP_WAIT {
-                        self.timer = 0;
-                        self.vy = HOP_VY;
-                        self.vx = HOP_VX * self.dir as f32;
-                        self.on_ground = false;
-                    }
+                    self.vy = HOP_FIND_VY;
+                    self.on_ground = false;
+                    self.w3_fall(level, ENEMY_GRAVITY);
+                    return;
                 }
-                self.w3_fall(level, HOP_GRAVITY);
-                if self.on_ground && self.vx != 0.0 {
-                    // landed a hop
-                    self.vx = 0.0;
-                    self.w3.count += 1;
-                }
-                if self.on_ground && (self.wall || self.w3.count >= self.w3.tries) {
+                let turn = self.wall || (self.on_ground && self.w3.count >= self.w3.tries);
+                if turn {
                     self.phase = hop::TURN;
-                    self.timer = HOP_TURN_FRAMES;
-                    self.w3.count = 0;
+                    self.timer = anim_len(HOP_TURN.0, HOP_TURN.1);
+                    self.w3.clock = 7;
+                    self.w3.flags &= !flag::HOPPED;
+                    self.dir = -self.dir;
+                    self.w3_fall(level, ENEMY_GRAVITY);
+                    return;
                 }
+                let f = self.w3.frame;
+                let mut g = if self.w3.flags & flag::HOPPED != 0 {
+                    HOP_GRAVITY
+                } else {
+                    ENEMY_GRAVITY
+                };
+                if self.on_ground {
+                    if (HOP_WINDOW.0..=HOP_WINDOW.1).contains(&f) {
+                        if f <= HOP_TAKE_OFF {
+                            self.vx = HOP_VX * self.dir as f32;
+                            if self.w3.flags & flag::HOPPED == 0 && self.vy <= 0.0 {
+                                self.vy = HOP_VY;
+                                g = HOP_GRAVITY;
+                                self.on_ground = false;
+                                self.w3.count += 1;
+                                self.w3.flags |= flag::HOPPED;
+                            }
+                        }
+                    } else {
+                        self.vx = 0.0;
+                        g = ENEMY_GRAVITY;
+                        self.w3.flags &= !flag::HOPPED;
+                    }
+                }
+                self.w3_fall(level, g);
             }
             hop::TURN => {
+                if self.on_ground {
+                    self.vx = 0.0;
+                }
+                let before = self.w3.clock;
+                if self.w3.clock > 0 {
+                    self.w3.clock -= 1;
+                }
+                if before < 2 && self.on_ground && self.w3.flags & flag::HOPPED == 0 {
+                    self.vy = HOP_TURN_HOP;
+                    self.on_ground = false;
+                    self.w3.flags |= flag::HOPPED;
+                }
+                self.w3_fall(level, ENEMY_GRAVITY);
+                self.timer -= 1;
+                if self.timer <= 0 {
+                    self.hop_walk_enter();
+                }
+            }
+            hop::FIND => {
                 self.vx = 0.0;
                 self.w3_fall(level, ENEMY_GRAVITY);
                 self.timer -= 1;
                 if self.timer <= 0 {
-                    self.dir = -self.dir;
-                    self.phase = hop::WALK;
-                    self.timer = 0;
-                    self.w3.tries = 2 + self.rand(3) as u8;
-                }
-            }
-            hop::FIND => {
-                self.dir = self.toward_player();
-                self.vx = 0.0;
-                self.w3_fall(level, ENEMY_GRAVITY);
-                if self.on_ground {
                     self.phase = hop::RUN;
-                    self.timer = 0;
+                    self.w3.frame = 0.0;
                     self.w3.clock = 0;
+                    self.w3.flags &= !(flag::HOPPED | flag::BRAKING);
                 }
             }
             hop::RUN => {
-                if self.ahead_box(HOP_KEEP.0, HOP_KEEP.1) {
-                    self.w3.clock = 0;
-                } else {
-                    self.w3.clock += 1;
-                    if self.w3.clock > HOP_LOST_GRACE {
-                        self.phase = hop::LOST;
-                        self.timer = HOP_LOST_FRAMES;
-                    }
-                }
+                let braking = self.w3.flags & flag::BRAKING != 0;
                 let mut g = ENEMY_GRAVITY;
                 if self.on_ground {
-                    let want = self.toward_player();
-                    if want != self.dir && self.vx != 0.0 {
-                        // turning round: brake to a stop first
-                        self.vx = ease(self.vx, 0.0, HOP_TURN_DECEL);
-                    } else {
-                        self.dir = want;
-                        self.vx = 0.0;
-                        self.timer += 1;
-                        if self.timer >= HOP_RUN_WAIT {
-                            self.timer = 0;
-                            self.vy = HOP_VY;
+                    if !braking && self.toward_player() != self.dir {
+                        self.dir = -self.dir;
+                        self.w3.flags |= flag::BRAKING;
+                    }
+                    let braking = self.w3.flags & flag::BRAKING != 0;
+                    let f = self.w3.frame;
+                    if (HOP_RUN_WINDOW.0..=HOP_RUN_WINDOW.1).contains(&f) {
+                        if !braking {
                             self.vx = HOP_RUN_VX * self.dir as f32;
-                            self.on_ground = false;
+                        }
+                        if f <= HOP_RUN_JUMP && self.w3.flags & flag::HOPPED == 0 && self.vy <= 0.0
+                        {
+                            self.vy = 0.0;
+                            self.w3.flags |= flag::HOPPED;
+                        }
+                        if self.w3.flags & flag::HOPPED != 0 {
+                            g = HOP_RUN_GRAVITY;
+                        }
+                    } else {
+                        self.w3.flags &= !flag::HOPPED;
+                        if braking {
+                            self.vx = ease(self.vx, 0.0, HOP_TURN_DECEL);
+                            if self.vx == 0.0 {
+                                self.w3.flags &= !flag::BRAKING;
+                            }
+                        } else {
+                            self.vx = 0.0;
                         }
                     }
-                } else {
-                    g = HOP_RUN_GRAVITY;
                 }
-                let vx = self.vx;
+                // the run animation stands still while it brakes outside the window
+                let paused = self.w3.flags & flag::BRAKING != 0
+                    && !(HOP_RUN_WINDOW.0..=HOP_RUN_WINDOW.1).contains(&self.w3.frame);
+                if !paused {
+                    self.w3.frame = (self.w3.frame + HOP_RUN_RATE) % HOP_RUN_FRAMES;
+                }
                 self.w3_fall(level, g);
-                if self.on_ground && !self.wall {
-                    self.vx = vx; // keeps sliding into the turn-round brake
-                } else if self.wall {
+                if self.wall {
                     self.vx = 0.0;
+                }
+                if self.on_ground {
+                    if self.ahead_box(HOP_KEEP.0, HOP_KEEP.1) {
+                        self.w3.clock = 0;
+                    } else {
+                        self.w3.clock += 1;
+                        if self.w3.clock > HOP_LOST_GRACE {
+                            self.phase = hop::LOST;
+                            self.timer = anim_len(HOP_LOST.0, HOP_LOST.1);
+                        }
+                    }
                 }
             }
             _ => {
-                // Lost
+                // Lost: slows to a stop while the give-up animation plays
                 self.vx = ease(self.vx, 0.0, HOP_LOST_DECEL);
                 self.w3_fall(level, ENEMY_GRAVITY);
                 self.timer -= 1;
                 if self.timer <= 0 {
-                    self.phase = hop::WALK;
-                    self.timer = 0;
-                    self.w3.count = 0;
+                    self.hop_walk_enter();
                 }
             }
         }
@@ -951,12 +1283,13 @@ impl Actor {
     }
 
     /// Feet y when floating at the surface (its centre on the surface level: the liquid
-    /// surface − 4 px, −16 in castle / forest themes, doubled when big); None without a surface.
+    /// surface − 4 px, −16 in castle / forest themes, doubled when big). With no liquid the
+    /// surface is the area's bottom [obs 0x7100663740]; None in an all-water area.
     fn puff_float_y(&self, level: &Level) -> Option<f32> {
         if self.w3.flooded {
             return None;
         }
-        let (surf, _) = self.w3.liquid?;
+        let surf = self.w3.liquid.map_or(level.bottom, |(y, _)| y);
         let s = self.size_k();
         let off = if matches!(level.theme, 2 | 9) {
             -16.0
@@ -971,12 +1304,12 @@ impl Actor {
     /// close (full HP only). When the player is out of the water it floats up and patrols the
     /// surface within 160 px of where it came up, leaping at a player just ahead and above it,
     /// and dives again when the player swims ≥ 16 px under it. Placed above the liquid it falls
-    /// to the surface; with no liquid it just rests on the ground [inf].
+    /// to the surface; with no liquid it rests on the ground.
     fn step_porcupuffer(&mut self, level: &Level) {
         let float_y = self.puff_float_y(level);
         if self.phase == 0 {
             self.hops = PUFF_HP;
-            let under = float_y.is_some_and(|f| self.y < f - 32.0);
+            let under = self.w3.liquid.is_some() && float_y.is_some_and(|f| self.y < f - 32.0);
             self.phase = if self.w3.flooded || under {
                 puff::SWIM
             } else {
@@ -1137,13 +1470,19 @@ impl Actor {
                 if self.timer >= PUFF_LUNGE_STOP + PUFF_LUNGE_FRAMES {
                     self.phase = puff::SWIM;
                     self.timer = 0;
+                    self.w3.clock = self.w3.clock.max(PUFF_TURN_COOLDOWN);
                 }
             }
             puff::SWIM_TURN => {
+                // the heading moves to its mirror image in 12 equal steps
+                let step = self.w3.anchor;
+                let goal = self.w3.travel;
+                self.heading = ease(self.heading, goal, step);
                 self.timer -= 1;
                 if self.timer <= 0 {
+                    self.heading = goal;
                     self.phase = puff::SWIM;
-                    self.w3.clock = PUFF_TURN_COOLDOWN;
+                    self.w3.clock = self.w3.clock.max(PUFF_TURN_COOLDOWN);
                 }
             }
             _ => {
@@ -1156,14 +1495,16 @@ impl Actor {
                     self.phase = puff::LUNGE;
                     self.timer = 0;
                 } else if behind && self.w3.clock == 0 {
-                    // SwimTurn: face the other way, mirroring the heading
+                    // SwimTurn: face the other way, the heading mirroring over 12 frames
                     self.dir = -self.dir;
-                    self.heading = 180.0 - self.heading;
+                    let goal = 180.0 - self.heading;
+                    self.w3.travel = goal;
+                    self.w3.anchor = (goal - self.heading).abs() / PUFF_TURN_FRAMES as f32;
                     self.phase = puff::SWIM_TURN;
                     self.timer = PUFF_TURN_FRAMES;
                 }
                 // the player left the water: float up after 60 frames
-                if self.w3.player_wet || float_y.is_none() {
+                if self.w3.player_wet || float_y.is_none() || self.w3.liquid.is_none() {
                     self.timer = 0;
                 } else {
                     self.timer += 1;
@@ -1180,12 +1521,13 @@ impl Actor {
         let a = self.heading.to_radians();
         self.vx = self.speed * a.cos();
         self.vy = self.speed * a.sin();
-        if self.vx.abs() > 0.05 {
+        if self.vx.abs() > 0.05 && self.phase != puff::SWIM_TURN {
             self.dir = self.vx.signum() as i32;
         }
         self.collide(level);
         // under water it stays below its floating level
         if let Some(f) = float_y
+            && self.w3.liquid.is_some()
             && self.y > f
         {
             self.y = f;
@@ -1203,7 +1545,11 @@ impl Actor {
             return true;
         }
         if self.phase != puff::RECOVER {
-            self.w3.resume = self.phase;
+            self.w3.resume = if self.phase == puff::SWIM_TURN {
+                puff::SWIM
+            } else {
+                self.phase
+            };
         }
         self.phase = puff::RECOVER;
         self.timer = PUFF_RECOVER;
@@ -1218,11 +1564,51 @@ impl Actor {
 
     // ------------------------------------------------------------ Bully
 
+    /// The nearest player is in its sight box [obs 0x71006490a0].
+    fn bully_sees(&self) -> bool {
+        let k = self.size_k();
+        let (px, py) = self.target;
+        let cx = self.x + BULLY_SEE_AHEAD * self.dir as f32;
+        let cy = self.y + 16.0 * k;
+        let half = BULLY_SEE_HALF + 16.0 * k;
+        let head = py + self.w3.player_h.max(1.0);
+        (px - cx).abs() < BULLY_SEE_AHEAD && py < cy + half && head > cy - half
+    }
+
+    /// No floor ahead in direction `dir` (the ledge probe 0x7100648d80).
+    fn bully_ledge(&self, level: &Level, dir: f32) -> bool {
+        if !self.on_ground {
+            return false;
+        }
+        let probe = self.x + dir * (self.half_w() + 0.1);
+        let slope = level
+            .slope_at(probe)
+            .is_some_and(|(s, _)| s >= self.y - 8.0);
+        level.cell_at(probe, self.y - 1.0) == Cell::Empty && !slope
+    }
+
+    fn bully_wait(&mut self) {
+        self.phase = bully::WAIT;
+        self.timer = BULLY_WAIT;
+        self.vx = 0.0;
+        self.w3.flags = flag::CAN_HOLD;
+    }
+
+    fn bully_find(&mut self) {
+        self.phase = bully::FIND;
+        self.timer = anim_len(BULLY_FIND_FRAMES, 1.0);
+        self.vx = 0.0;
+        self.w3.flags |= flag::TARGET;
+    }
+
     /// Bully (117-bully.md): waits 40 frames, walks at 0.3 for 60–179 frames (turning at walls
-    /// and ledges [inf]), and charges a player it sees at 0.8 (accel 0.025) until they are more
-    /// than 256 px away. Hits only push it back (1.0 / 1.75 / 2.5 px/f decaying by 0.05/f over
-    /// 60 frames; a heavy push leaves it stunned for 120). Winged: chases through the air for
-    /// 300 frames (≤ 0.5 px/f, steering 0.075), then flies home [inf: FlyLand not modelled].
+    /// and ledges), and when a player is in the 128-px box ahead plays its notice (39 frames)
+    /// and charges at 0.8 (accel 0.025), turning round only once the player is 28 px behind,
+    /// until they are 256 px away. Hits only push it back (1.0 / 1.75 / 2.5 px/f by the attack,
+    /// decaying by 0.05/f), after which it charges the attacker; pushed slowly towards a ledge
+    /// it stops teetering on the edge (HoldOut). Winged: chases through the air for 300 frames
+    /// (≤ 0.5 px/f, steering 0.075), then flies home [inf: the winged states FlyChase / FlyLand /
+    /// FlyReturn (0x7100648530…0x7100648c00) are only partly traced].
     fn step_bully(&mut self, level: &Level) {
         if self.phase == 0 {
             if self.wings {
@@ -1230,83 +1616,132 @@ impl Actor {
                 self.timer = BULLY_FLY_CHASE;
                 self.vy = 0.5;
             } else {
-                self.phase = bully::WAIT;
-                self.timer = BULLY_WAIT;
+                self.bully_wait();
             }
+        }
+        if self.w3.cooldown > 0 {
+            self.w3.cooldown -= 1;
         }
         let (px, py) = self.target;
         let dx = px - self.x;
-        let sees = dx.abs() <= BULLY_SEE.0 && (py - self.y).abs() <= BULLY_SEE.1;
         let flying = self.wings;
+        let dir = self.dir as f32;
         match self.phase {
             bully::WAIT => {
-                self.vx = ease(self.vx, 0.0, BULLY_ACCEL);
+                self.vx = 0.0;
                 self.timer -= 1;
-                if sees {
-                    self.phase = bully::FIND;
-                    self.timer = BULLY_FIND;
+                if self.bully_sees() {
+                    self.bully_find();
                 } else if self.timer <= 0 {
-                    self.phase = bully::WALK;
-                    self.timer = 60 + self.rand(120) as i32;
                     if self.rand(2) == 0 {
                         self.dir = -self.dir;
                     }
+                    self.phase = bully::WALK;
+                    self.timer = 60 + self.rand(120) as i32;
+                    self.vx = BULLY_WALK * self.dir as f32;
                 }
             }
             bully::WALK => {
-                self.vx = ease(self.vx, BULLY_WALK * self.dir as f32, BULLY_ACCEL);
-                let probe = self.x + self.dir as f32 * (self.half_w() + 0.1);
-                let slope = level
-                    .slope_at(probe)
-                    .is_some_and(|(s, _)| s >= self.y - 8.0);
-                if self.on_ground
-                    && level.cell_at(probe, self.y - 1.0) == Cell::Empty
-                    && !slope
-                    && self.turn_lock == 0
-                {
-                    self.turn();
+                if self.bully_ledge(level, dir) || self.wall {
+                    self.dir = -self.dir;
                 }
+                self.vx = BULLY_WALK * self.dir as f32;
                 self.timer -= 1;
-                if sees {
-                    self.phase = bully::FIND;
-                    self.timer = BULLY_FIND;
+                if self.bully_sees() {
+                    self.bully_find();
                 } else if self.timer <= 0 {
-                    self.phase = bully::WAIT;
-                    self.timer = BULLY_WAIT;
+                    self.bully_wait();
                 }
             }
             bully::FIND => {
-                self.dir = self.toward_player();
-                self.vx = ease(self.vx, 0.0, BULLY_ACCEL);
+                self.vx = 0.0;
                 self.timer -= 1;
                 if self.timer <= 0 {
                     self.phase = bully::CHASE;
                 }
             }
             bully::CHASE => {
-                self.dir = self.toward_player();
-                self.vx = ease(self.vx, BULLY_CHASE * self.dir as f32, BULLY_ACCEL);
-                if dx.abs() > BULLY_GIVE_UP {
-                    self.phase = bully::WAIT;
-                    self.timer = BULLY_WAIT;
+                let dist = (dx * dx + (py - self.y).powi(2)).sqrt();
+                if dist > BULLY_GIVE_UP {
+                    self.bully_wait();
+                } else if self.wall && self.vx * dir > 0.0 {
+                    // a wall stops the charge with a bounce
+                    self.vx = -BULLY_WALL_BOUNCE * dir;
+                } else if self.bully_ledge(level, dir) && self.w3.flags & flag::CAN_HOLD != 0 {
+                    self.bully_hold_out();
+                } else {
+                    if (self.x - (px + BULLY_BEHIND * dir)) * dir > 0.0 {
+                        self.dir = -self.dir;
+                    }
+                    self.vx = ease(self.vx, BULLY_CHASE * self.dir as f32, BULLY_ACCEL);
                 }
             }
-            bully::FLIP | bully::HOLD_OUT => {
-                self.vx = ease(self.vx, 0.0, BULLY_PUSH_DECAY);
-                if flying {
-                    self.vy = ease(self.vy, 0.0, BULLY_PUSH_DECAY);
-                }
-                self.timer -= 1;
-                if self.timer <= 0 {
-                    if self.phase == bully::FLIP && self.w3.count as usize == push::HEAVY {
-                        self.phase = bully::HOLD_OUT;
-                        self.timer = BULLY_HOLD_OUT;
-                    } else if flying {
-                        self.phase = bully::FLY_RETURN;
+            bully::FLIP => {
+                if !flying && !self.on_ground {
+                    self.bully_fall();
+                } else {
+                    let v = self.vx;
+                    let moving = v.signum();
+                    if self.w3.flags & flag::CAN_HOLD != 0
+                        && v.abs() < BULLY_HOLD_SPEED
+                        && v != 0.0
+                        && self.bully_ledge(level, moving)
+                    {
+                        self.bully_hold_out();
                     } else {
-                        self.phase = bully::WAIT;
-                        self.timer = BULLY_WAIT;
+                        self.timer += 1;
+                        self.w3.clock -= 1;
+                        if v != 0.0 {
+                            self.vx = ease(v, 0.0, BULLY_PUSH_DECAY);
+                        } else if self.w3.count == 0 {
+                            // stopped: once the push animation is over, a short recovery
+                            if self.timer >= self.w3.tries as i32 || self.w3.clock <= 0 {
+                                self.w3.count = 1;
+                                self.w3.clock =
+                                    if self.w3.liquid.is_some_and(|(s, w)| w && self.y + 16.0 < s)
+                                        || self.w3.flooded
+                                    {
+                                        BULLY_FLIP_RECOVER_WATER
+                                    } else {
+                                        BULLY_FLIP_RECOVER
+                                    };
+                            }
+                        } else if self.w3.clock <= 0 {
+                            if flying {
+                                self.phase = bully::FLY_RETURN;
+                            } else if self.w3.flags & flag::TARGET != 0 {
+                                self.phase = bully::CHASE;
+                            } else {
+                                self.bully_wait();
+                            }
+                        }
+                        if flying {
+                            self.vy = ease(self.vy, 0.0, BULLY_PUSH_DECAY);
+                        }
                     }
+                }
+            }
+            bully::HOLD_OUT | bully::LAND | bully::FALL_STAN => {
+                self.vx = 0.0;
+                if !self.on_ground {
+                    self.bully_fall();
+                } else {
+                    self.timer -= 1;
+                    if self.timer <= 0 {
+                        if self.phase == bully::HOLD_OUT {
+                            self.phase = bully::LAND;
+                            self.timer = BULLY_LAND;
+                        } else {
+                            self.bully_wait();
+                        }
+                    }
+                }
+            }
+            bully::FALL => {
+                self.vx = ease(self.vx, 0.0, BULLY_FALL_DECEL);
+                if self.on_ground && self.vy <= 0.0 {
+                    self.phase = bully::FALL_STAN;
+                    self.timer = BULLY_FALL_STAN;
                 }
             }
             bully::FLY_CHASE => {
@@ -1341,20 +1776,63 @@ impl Actor {
             self.collide(level);
         } else {
             self.w3_fall(level, ENEMY_GRAVITY);
-            if self.wall && matches!(self.phase, bully::WALK) && self.turn_lock == 0 {
-                self.turn();
-            }
         }
     }
 
+    fn bully_hold_out(&mut self) {
+        self.phase = bully::HOLD_OUT;
+        self.timer = BULLY_HOLD_OUT;
+        self.vx = 0.0;
+        self.w3.flags &= !flag::CAN_HOLD;
+    }
+
+    fn bully_fall(&mut self) {
+        self.phase = bully::FALL;
+    }
+
     /// A hit that only pushes a Bully back, away from `from_x`, at strength `strength` (see
-    /// `push`).
+    /// `push`); `by_player` makes the attacker its target.
     pub fn bully_push(&mut self, strength: usize, from_x: f32) {
+        self.bully_push_by(strength, from_x, true);
+    }
+
+    pub fn bully_push_by(&mut self, strength: usize, from_x: f32, by_player: bool) {
         let away = if self.x < from_x { -1.0 } else { 1.0 };
-        self.vx = BULLY_PUSH[strength.min(2)] * away;
+        let k = if self.big { 0.75 } else { 1.0 };
+        self.vx = BULLY_PUSH[strength.min(2)] * k * away;
+        if self.phase == 0 {
+            self.bully_wait();
+        }
+        let hold = self.w3.flags & flag::CAN_HOLD;
+        self.w3.flags = hold | if by_player { flag::TARGET } else { 0 };
         self.phase = bully::FLIP;
-        self.timer = BULLY_FLIP;
-        self.w3.count = strength as u8;
+        self.timer = 0;
+        self.w3.clock = BULLY_FLIP;
+        self.w3.count = 0;
+        // the push animation: PushFront when pushed the way it faces, else PushBack
+        self.w3.tries = if away * self.dir as f32 > 0.0 {
+            BULLY_PUSH_FRONT
+        } else {
+            BULLY_PUSH_BACK
+        } as u8;
+    }
+
+    /// The player's body touching it pushes it (light, 7 frames apart per Bully) [obs
+    /// 0x7100649cb0]; true when this touch pushes.
+    pub fn bully_body_push(&mut self, from_x: f32) -> bool {
+        if self.w3.cooldown > 0 {
+            return false;
+        }
+        self.w3.cooldown = 7;
+        self.bully_push_by(push::LIGHT, from_x, true);
+        true
+    }
+
+    /// Shoves of the player so far (every 4th one also throws the player up; the game counts
+    /// them on the player [obs 0x71009d5b90], here per Bully).
+    pub fn bully_shove_count(&mut self) -> u8 {
+        self.w3.shoves = self.w3.shoves.wrapping_add(1);
+        self.w3.shoves
     }
 
     /// Bully is charging at the player.
@@ -1362,137 +1840,178 @@ impl Actor {
         matches!(self.phase, bully::CHASE | bully::FLY_CHASE)
     }
 
-    /// Bully is being pushed back or stunned.
+    /// Bully is being pushed back or teetering on a ledge.
     pub fn bully_pushed(&self) -> bool {
         matches!(self.phase, bully::FLIP | bully::HOLD_OUT)
     }
 
     // ------------------------------------------------------------ Charvaargh
 
-    /// Feet y of the head at rest, just under the lava (or under the area bottom).
-    fn charvaargh_rest(&self, level: &Level) -> f32 {
-        let surf = match self.w3.liquid {
-            Some((y, _)) if !self.w3.flooded => y,
-            _ => level.bottom + 8.0,
-        };
-        surf - CHAR_DEPTH - 64.0 * self.size_k()
+    /// The level it leaps from: the lava surface − 16 in lava themes (castle; forest at night),
+    /// else the area's bottom [obs 0x710079db70, 0x710079ff40].
+    fn charvaargh_base(&self, level: &Level) -> f32 {
+        let lava = level.theme == 2 || (level.theme == 9 && level.night);
+        match self.w3.liquid {
+            Some((y, _)) if lava && !self.w3.flooded => y - 16.0,
+            _ => level.bottom,
+        }
     }
 
-    /// Charvaargh (86-charvaargh.md): waits under the lava; a player within ±128 px (and −88…
-    /// +160 px vertically) gets a warning (the head rises 24 px for 30 frames), then it leaps
-    /// out toward them in a half circle and dives back, its 8 body segments trailing 12 px
-    /// apart. 30 frames' lockout before the next leap. Nothing defeats it [inf].
+    /// The head point (the model's origin): 32 px above `y` (the box's foot).
+    fn charvaargh_head(&self) -> (f32, f32) {
+        (self.x, self.y + 32.0)
+    }
+
+    /// Charvaargh (86-charvaargh.md): rests under the lava; every 30 frames it warns (its
+    /// silhouette swims in the background for 161 frames), then leaps out at the nearest
+    /// player: it rises from 32 px under the base level at 2.0 px/f, its heading swinging from
+    /// straight up to straight down as the leap animations pitch it (speed easing to 0.2, then
+    /// back towards 2.0), and dives until its tail is 64 px under the base. The body (8 boxes)
+    /// follows the head's path. Only a Super Star defeats it. Not modelled yet (traced in the
+    /// spec): the vertical leap out of the background at a player within 96 px, the chained
+    /// leap from AttackEnd, and the spacing of several Charvaarghs.
     fn step_charvaargh(&mut self, level: &Level) {
-        let rest = self.charvaargh_rest(level);
-        let s = self.size_k();
+        let base = self.charvaargh_base(level);
         if self.phase == 0 {
             self.phase = chr::FALL;
         }
-        let (px, py) = self.target;
         match self.phase {
             chr::FALL => {
                 self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
                 self.y += self.vy;
-                if self.y <= rest {
-                    self.y = rest;
-                    self.vy = 0.0;
-                    self.phase = chr::WAIT;
-                    self.timer = CHAR_LOCKOUT;
+                if self.charvaargh_head().1 <= base + 4.0 + CHAR_DIVE_DEPTH {
+                    self.charvaargh_wait(level, base);
                 }
             }
             chr::WAIT => {
-                self.y += (rest - self.y).clamp(-1.0, 1.0);
                 self.timer -= 1;
-                let head_y = self.y + 32.0 * s;
-                let dy = py - head_y;
-                if self.timer <= 0
-                    && (px - self.x).abs() <= CHAR_SEE_X
-                    && (CHAR_SEE_Y.0..=CHAR_SEE_Y.1).contains(&dy)
-                {
+                if self.timer <= 0 {
+                    // face the nearest player, away from an area edge within 128 px
+                    self.dir = if self.x - CHAR_EDGE < level.left {
+                        1
+                    } else if self.x + CHAR_EDGE > level.right {
+                        -1
+                    } else {
+                        self.toward_player()
+                    };
                     self.phase = chr::SIGN;
                     self.timer = CHAR_SIGN;
-                    self.dir = self.toward_player();
                 }
             }
             chr::SIGN => {
-                self.y = ease(self.y, rest + CHAR_SIGN_RISE, 2.0);
                 self.timer -= 1;
                 if self.timer <= 0 {
-                    self.phase = chr::ATTACK;
-                    self.w3.count = 0;
-                    self.heading = 90.0;
+                    self.phase = chr::START;
+                    self.timer = 0;
+                    self.speed = CHAR_START_SPEED;
+                    self.y = base - 32.0 - 32.0;
                     self.trail.clear();
+                    self.w3.travel = 0.0;
+                    self.heading = 90.0;
                 }
             }
-            _ => self.charvaargh_leap(rest, s),
+            _ => self.charvaargh_leap(level, base),
         }
     }
 
-    fn charvaargh_leap(&mut self, rest: f32, s: f32) {
-        let v = CHAR_SPEED * s;
-        let surface = rest + CHAR_DEPTH + 64.0 * s;
-        let centre_y = self.y + 32.0 * s;
-        match self.w3.count {
-            0 => {
-                // rise straight up until the head's centre clears the surface
-                self.heading = 90.0;
-                if centre_y >= surface {
-                    self.w3.count = 1;
-                }
-            }
-            1 => {
-                // the half circle toward the facing side: heading 90° → ∓90°
-                let w = (v / (CHAR_RADIUS * s)).to_degrees();
-                self.heading -= w * self.dir as f32;
-                let turned = (90.0 - self.heading) * self.dir as f32;
-                if turned >= 180.0 {
-                    self.heading = -90.0;
-                    self.w3.count = 2;
-                }
-            }
-            _ => {
-                self.heading = -90.0;
-                if self.y <= rest {
-                    self.y = rest;
-                    self.phase = chr::WAIT;
-                    self.timer = CHAR_LOCKOUT;
-                    self.trail.clear();
-                    return;
-                }
-            }
+    fn charvaargh_wait(&mut self, level: &Level, base: f32) {
+        self.phase = chr::WAIT;
+        self.timer = CHAR_LOCKOUT;
+        self.vx = 0.0;
+        self.vy = 0.0;
+        self.y = base + 4.0 - 32.0;
+        let hw = 32.0;
+        if self.x - hw < level.left {
+            self.x = level.left + 64.0;
+        } else if self.x + hw > level.right {
+            self.x = level.right - 64.0;
         }
-        let a = self.heading.to_radians();
-        self.vx = v * a.cos();
-        self.vy = v * a.sin();
+        self.trail.clear();
+    }
+
+    fn charvaargh_leap(&mut self, level: &Level, base: f32) {
+        self.timer += 1;
+        let f = self.timer as f32;
+        let (target, step, frames) = match self.phase {
+            chr::START => CHAR_START,
+            _ => CHAR_ATTACK,
+        };
+        let a = match self.phase {
+            chr::START => pitch(&CHAR_PITCH_START, f),
+            chr::ATTACK => pitch(&CHAR_PITCH_ATTACK, f),
+            _ => std::f32::consts::FRAC_PI_2,
+        };
+        self.speed = ease(self.speed, target, step);
+        let (fx, fy) = (a.cos() * self.dir as f32, -a.sin());
+        self.heading = fy.atan2(fx).to_degrees();
+        self.vx = self.speed * fx;
+        self.vy = self.speed * fy;
+        let (hx, hy) = self.charvaargh_head();
+        if self.trail.is_empty() {
+            self.trail.push((hx, hy));
+        }
         self.x += self.vx;
         self.y += self.vy;
-        self.trail.push((self.x, self.y + 32.0 * s));
-        let keep = (CHAR_SEGMENTS as f32 * CHAR_SEGMENT_GAP / v).ceil() as usize + 2;
+        self.w3.travel += self.speed;
+        let head = self.charvaargh_head();
+        self.trail.push(head);
+        // keep enough of the path for the tail
+        let keep = (CHAR_TAIL / 0.2).ceil() as usize + 2;
         if self.trail.len() > keep {
             let n = self.trail.len() - keep;
             self.trail.drain(..n);
         }
+        if self.phase != chr::END && self.timer >= frames {
+            self.phase = if self.phase == chr::START {
+                chr::ATTACK
+            } else {
+                chr::END
+            };
+            self.timer = 0;
+        } else if self.phase == chr::END {
+            let tail = self.charvaargh_point(CHAR_TAIL);
+            if tail.1 + CHAR_DIVE_DEPTH <= base {
+                self.charvaargh_wait(level, base);
+            }
+        }
     }
 
-    /// Centres of the body segments trailing the head while it leaps (empty at rest).
+    /// The point `back` px behind the head along its path (ahead of it when negative); behind
+    /// the start of the path it continues straight down.
+    fn charvaargh_point(&self, back: f32) -> (f32, f32) {
+        let (hx, hy) = self.charvaargh_head();
+        if back < 0.0 {
+            let a = self.heading.to_radians();
+            return (hx - back * a.cos(), hy - back * a.sin());
+        }
+        let mut left = back;
+        let mut p = (hx, hy);
+        for q in self.trail.iter().rev().skip(1) {
+            let d = ((p.0 - q.0).powi(2) + (p.1 - q.1).powi(2)).sqrt();
+            if d >= left && d > 0.0 {
+                let t = left / d;
+                return (p.0 + (q.0 - p.0) * t, p.1 + (q.1 - p.1) * t);
+            }
+            left -= d;
+            p = *q;
+        }
+        (p.0, p.1 - left)
+    }
+
+    /// Centres of the body's touch boxes while it leaps (empty otherwise).
     pub fn charvaargh_segments(&self) -> Vec<(f32, f32)> {
-        if self.phase != chr::ATTACK || self.trail.is_empty() {
+        if !matches!(self.phase, chr::START | chr::ATTACK | chr::END) {
             return Vec::new();
         }
-        let v = CHAR_SPEED * self.size_k();
-        let step = (CHAR_SEGMENT_GAP / v).max(1.0);
-        (1..=CHAR_SEGMENTS)
-            .filter_map(|k| {
-                let back = (k as f32 * step).round() as usize;
-                let i = self.trail.len().checked_sub(1 + back)?;
-                Some(self.trail[i])
-            })
+        CHAR_SEGMENTS
+            .iter()
+            .map(|&d| self.charvaargh_point(d))
             .collect()
     }
 
     /// Charvaargh is leaping (or warning).
     pub fn charvaargh_attacking(&self) -> bool {
-        matches!(self.phase, chr::SIGN | chr::ATTACK)
+        matches!(self.phase, chr::SIGN | chr::START | chr::ATTACK | chr::END)
     }
 
     // ------------------------------------------------------------ Piranha Creeper
@@ -1507,111 +2026,203 @@ impl Actor {
             .unwrap_or(&[])
     }
 
-    /// Centre of the head at `travel` px along the path, from the base cell at (`home_x`,
-    /// `home_y` + 16).
-    pub fn creeper_point(&self, codes: &[u8], travel: f32) -> (f32, f32) {
+    /// Centre of piece `k`: the first piece at (`home_x`, `home_y` + 16) whichever way the path
+    /// leaves [obs 0x710071f980], each next one 32 px further along.
+    fn creeper_centre(&self, pieces: &[(u8, u8)], k: usize) -> (f32, f32) {
         let (mut x, mut y) = (self.home_x, self.home_y + CREEP_CELL / 2.0);
-        let mut left = travel;
-        for &c in codes.iter().take(codes.len().saturating_sub(1)) {
-            let (dx, dy) = DIRS[creeper_out(c) as usize];
-            let step = left.min(CREEP_CELL);
-            x += dx * step;
-            y += dy * step;
-            left -= step;
-            if left <= 0.0 {
-                break;
-            }
+        for p in pieces.iter().take(k) {
+            let (dx, dy) = DIRS[p.1 as usize];
+            x += dx * CREEP_CELL;
+            y += dy * CREEP_CELL;
         }
         (x, y)
     }
 
-    /// Cells of the stalk behind the head (centre and node code), base first.
+    /// Centre of the head in piece `k` at piece animation frame `f`.
+    pub fn creeper_point_at(&self, codes: &[u8], k: usize, f: f32) -> (f32, f32) {
+        let pieces = creeper_pieces(codes);
+        let Some(&(e, o)) = pieces.get(k) else {
+            return (self.home_x, self.home_y + CREEP_CELL / 2.0);
+        };
+        let (cx, cy) = self.creeper_centre(&pieces, k);
+        let (ex, ey) = DIRS[e as usize];
+        let (ox, oy) = DIRS[o as usize];
+        let (a, b) = if e == o {
+            (
+                -CREEP_ENTRY + (CREEP_ENTRY + CREEP_EXIT) * f / CREEP_PIECE_FRAMES,
+                0.0,
+            )
+        } else {
+            let half = CREEP_PIECE_FRAMES / 2.0;
+            let (s, t) = if f < half {
+                (0, f / half)
+            } else {
+                (1, ((f - half) / half).min(1.0))
+            };
+            (cubic(&CREEP_CORNER_A[s], t), cubic(&CREEP_CORNER_B[s], t))
+        };
+        (cx + ex * a + ox * b, cy + ey * a + oy * b)
+    }
+
+    /// Centre of the head now.
+    pub fn creeper_point(&self, codes: &[u8]) -> (f32, f32) {
+        self.creeper_point_at(codes, self.w3.node.max(0) as usize, self.w3.frame)
+    }
+
+    /// Stalk pieces behind the head (centre and node code), base first.
     pub fn creeper_stalk(&self, codes: &[u8]) -> Vec<(f32, f32, u8)> {
-        let reached = (self.w3.travel / CREEP_CELL).floor() as usize;
-        (0..codes.len().min(reached + 1))
-            .filter(|&k| (k as f32) * CREEP_CELL < self.w3.travel - CREEP_CELL / 2.0)
+        let pieces = creeper_pieces(codes);
+        let n = (self.w3.node.max(0) as usize).min(pieces.len());
+        (0..n)
             .map(|k| {
-                let (x, y) = self.creeper_point(codes, k as f32 * CREEP_CELL);
-                (x, y, codes[k])
+                let (x, y) = self.creeper_centre(&pieces, k);
+                let code = if k == 0 { codes[0] } else { codes[k - 1] };
+                (x, y, code)
             })
             .collect()
     }
 
-    /// Piranha Creeper (107-piranha-creeper.md): the head creeps along its path (one 2×2 cell per
-    /// node) at 0.6 px/f, easing by 0.1/f and braking near the ends (10 % of the gap, ≥ 0.05);
-    /// the stalk grows behind it. At the end it waits and creeps back (the alternate stays out
-    /// and sleeps). A stomp tramples the head for 130 frames, then it carries on [inf].
+    /// Plays piece `k` from its start (or its end when going back).
+    fn creeper_enter_piece(&mut self, k: i32, back: bool) {
+        self.w3.node = k;
+        self.w3.frame = if back { CREEP_PIECE_END } else { 0.0 };
+    }
+
+    /// Piranha Creeper (107-piranha-creeper.md): the head grows out along its path, a 32-px
+    /// stalk piece at a time (each piece's animation at rate 0.6 ≈ 1.68 px/f, easing in by 0.1
+    /// per frame and braking into the last piece), waits 3 frames at the end and retracts the
+    /// same way (the alternate stays out and sleeps), then waits 10 frames at the base. A stomp
+    /// tramples the head: it retracts 2 pieces, lies flat 130 frames and carries on; trampled
+    /// within 2 pieces of its base it retracts into the base and dies. Not modelled yet (traced
+    /// in the spec): PreStop, the 30-frame pause when something blocks the growing piece.
     fn step_creeper(&mut self, level: &Level, path: u8, sleeps: bool) {
         let codes = self.creeper_codes(level, path);
-        let len = CREEP_CELL * codes.len().saturating_sub(1) as f32;
+        let n = creeper_pieces(codes).len() as i32;
         if self.phase == 0 {
-            self.phase = creep::WAIT;
-            self.timer = CREEP_WAIT;
-            self.w3.resume = creep::MOVE;
+            self.phase = creep::MOVE;
+            self.creeper_enter_piece(0, false);
+            self.w3.frame = CREEP_BASE_FRAME;
+            self.w3.rate = 0.0;
+            self.w3.track = 0.0;
         }
         match self.phase {
-            creep::MOVE | creep::MOVE_BACK => {
-                let forward = self.phase == creep::MOVE;
-                let gap = if forward {
-                    len - self.w3.travel
+            creep::MOVE if n > 0 => {
+                let last = self.w3.node >= n - 1;
+                if last {
+                    let gap = CREEP_PIECE_END - self.w3.track;
+                    self.w3.track =
+                        (self.w3.track + (gap * CREEP_BRAKE).max(CREEP_CRAWL)).min(CREEP_PIECE_END);
+                    self.w3.rate = (self.w3.track - self.w3.frame).max(CREEP_MIN_RATE);
                 } else {
-                    self.w3.travel
-                };
-                let cruise = ease(self.speed, CREEP_SPEED, CREEP_ACCEL);
-                self.speed = cruise.min((gap * CREEP_BRAKE).max(CREEP_CRAWL));
-                let step = self.speed.min(gap);
-                self.w3.travel += if forward { step } else { -step };
-                if gap - step <= 0.0 {
-                    self.speed = 0.0;
-                    if forward && sleeps {
-                        self.phase = creep::SLEEP;
-                    } else {
-                        self.w3.resume = if forward {
-                            creep::MOVE_BACK
+                    self.w3.rate = ease(self.w3.rate, CREEP_RATE, CREEP_RATE_STEP);
+                }
+                self.w3.frame = (self.w3.frame + self.w3.rate).min(CREEP_PIECE_END);
+                if self.w3.frame >= CREEP_PIECE_END {
+                    if last {
+                        self.w3.rate = 0.0;
+                        if sleeps {
+                            self.phase = creep::SLEEP;
                         } else {
-                            creep::MOVE
-                        };
-                        self.phase = creep::WAIT;
-                        self.timer = CREEP_WAIT;
+                            self.phase = creep::WAIT;
+                            self.timer = CREEP_WAIT_END;
+                            self.w3.resume = creep::MOVE_BACK;
+                        }
+                    } else {
+                        self.creeper_enter_piece(self.w3.node + 1, false);
+                        self.w3.rate = CREEP_RATE;
                     }
+                }
+            }
+            creep::MOVE_BACK if n > 0 => {
+                let base = self.w3.node <= 0;
+                if base {
+                    self.w3.track -= (self.w3.track * CREEP_BRAKE).max(CREEP_CRAWL);
+                    self.w3.track = self.w3.track.max(0.0);
+                    self.w3.rate = (self.w3.track - self.w3.frame).min(-CREEP_MIN_RATE);
+                } else {
+                    self.w3.rate = ease(self.w3.rate, -CREEP_RATE, CREEP_RATE_STEP);
+                }
+                self.w3.frame = (self.w3.frame + self.w3.rate).max(0.0);
+                if base && self.w3.frame <= CREEP_BASE_FRAME {
+                    self.w3.rate = 0.0;
+                    self.phase = creep::WAIT;
+                    self.timer = CREEP_WAIT_BASE;
+                    self.w3.resume = creep::MOVE;
+                } else if self.w3.frame <= 0.0 {
+                    self.creeper_enter_piece(self.w3.node - 1, true);
+                    self.w3.rate = -CREEP_RATE;
                 }
             }
             creep::WAIT => {
                 self.timer -= 1;
-                if self.timer <= 0 && len > 0.0 {
+                if self.timer <= 0 && n > 0 {
                     self.phase = self.w3.resume;
+                    self.w3.rate = 0.0;
+                    // the tracker restarts: from 0 creeping out, from the piece's end back
+                    self.w3.track = if self.phase == creep::MOVE {
+                        0.0
+                    } else {
+                        CREEP_PIECE_END
+                    };
                 }
             }
-            creep::DAMAGE | creep::DAMAGE_WAIT => {
+            creep::DAMAGE => {
+                // retract at −0.6 to the goal piece while the trampled animation plays
+                if self.w3.flags & flag::RETRACTED == 0 {
+                    self.w3.frame = (self.w3.frame - CREEP_RATE).max(0.0);
+                    let ended = self.w3.frame <= 0.0
+                        || (self.w3.node == 0 && self.w3.frame <= CREEP_BASE_FRAME);
+                    if ended {
+                        let next = self.w3.node - 1;
+                        if self.w3.goal < next {
+                            self.creeper_enter_piece(next, true);
+                        } else {
+                            if self.w3.node < 1 {
+                                self.w3.flags |= flag::DIES;
+                            } else {
+                                self.creeper_enter_piece(self.w3.goal.max(0), true);
+                            }
+                            self.w3.flags |= flag::RETRACTED;
+                        }
+                    }
+                }
+                self.timer -= 1;
+                if self.timer <= 0 && self.w3.flags & flag::RETRACTED != 0 {
+                    if self.w3.flags & flag::DIES != 0 {
+                        self.die_fall(self.x);
+                        return;
+                    }
+                    self.phase = creep::DAMAGE_WAIT;
+                    self.timer = CREEP_DAMAGE_WAIT;
+                }
+            }
+            creep::DAMAGE_WAIT => {
                 self.timer -= 1;
                 if self.timer <= 0 {
-                    if self.phase == creep::DAMAGE {
-                        self.phase = creep::DAMAGE_WAIT;
-                        self.timer = CREEP_DAMAGE_WAIT;
-                    } else {
-                        self.phase = self.w3.resume;
-                        self.timer = CREEP_WAIT;
-                    }
+                    let back = self.w3.flags & flag::WAS_BACK != 0;
+                    self.phase = if back { creep::MOVE_BACK } else { creep::MOVE };
+                    self.w3.rate = 0.0;
+                    self.w3.track = if back { CREEP_PIECE_END } else { 0.0 };
                 }
             }
             _ => {} // Sleep
         }
-        let (hx, hy) = self.creeper_point(codes, self.w3.travel);
+        let k = self.w3.node.clamp(0, (n - 1).max(0)) as usize;
+        let (hx, hy) = self.creeper_point_at(codes, k, self.w3.frame);
         self.x = hx;
         self.y = hy - CREEP_HEAD;
-        // it faces along the path where the head is
-        let k = ((self.w3.travel / CREEP_CELL) as usize).min(codes.len().saturating_sub(1));
-        if let Some(&c) = codes.get(k) {
-            self.heading = match creeper_out(c) {
+        // it faces along the piece it is in
+        if let Some(&(_, o)) = creeper_pieces(codes).get(k) {
+            self.heading = match o {
                 0 => -90.0,
                 1 => 0.0,
                 2 => 90.0,
                 _ => 180.0,
             };
-            if c == 1 || c == 14 || c == 6 || c == 8 {
-                self.dir = 1;
-            } else if matches!(c, 2 | 13 | 10 | 12) {
-                self.dir = -1;
+            match o {
+                1 => self.dir = 1,
+                3 => self.dir = -1,
+                _ => {}
             }
         }
     }
@@ -1622,16 +2233,13 @@ impl Actor {
         if self.creeper_trampled() {
             return false;
         }
-        if !matches!(self.phase, creep::DAMAGE | creep::DAMAGE_WAIT) {
-            self.w3.resume = match self.phase {
-                creep::MOVE | creep::MOVE_BACK | creep::SLEEP => self.phase,
-                0 => creep::MOVE,
-                _ => self.w3.resume,
-            };
-        }
+        let back = self.phase == creep::MOVE_BACK
+            || (self.phase == creep::WAIT && self.w3.resume == creep::MOVE_BACK);
+        self.w3.flags = if back { flag::WAS_BACK } else { 0 };
+        self.w3.goal = (self.w3.node - CREEP_RETRACT).max(-1);
         self.phase = creep::DAMAGE;
         self.timer = CREEP_TRAMPLED;
-        self.speed = 0.0;
+        self.w3.rate = 0.0;
         true
     }
 
@@ -1647,12 +2255,13 @@ impl Actor {
 
     // ------------------------------------------------------------ hits and looks
 
-    /// A block bumped from below under it: true if that knocks it off (Bully: DieFall [obs];
-    /// the small walkers like a Goomba [inf]).
+    /// A block bumped from below under it: true if that knocks it off (blkhit DieFall in each
+    /// EnemyDB row) [obs].
     pub fn w3_block_hit(&self) -> bool {
         matches!(
             self.kind,
             Kind::AntTrooper { .. }
+                | Kind::Stingby
                 | Kind::Skipsqueak { .. }
                 | Kind::HopChops
                 | Kind::Bully
@@ -1711,8 +2320,10 @@ impl Actor {
                 },
                 match self.phase {
                     _ if stomped => "pressdown.0",
-                    skip::CROUCH => "jumpsign.0",
-                    skip::JUMP | skip::CRASH => "jump.0",
+                    skip::CROUCH => "jumpstandingsign.0",
+                    skip::WALL_SIGN => "jumpsign.0",
+                    skip::JUMP | skip::CRASH | skip::WALL_JUMP => "jump.0",
+                    skip::LAND => "jumpstandingend.0",
                     skip::FALL => "fall.0",
                     skip::RETURN => "run.0",
                     skip::GIVE_UP => "giveup.0",
@@ -1741,9 +2352,9 @@ impl Actor {
             Kind::Porcupuffer => (
                 "M1_Enemy_fugumannen",
                 match self.phase {
-                    puff::RECOVER => "damage.0",
+                    puff::RECOVER => "damagereset.0",
                     puff::LUNGE => "attack.0",
-                    puff::SWIM_TURN => "turn.0",
+                    puff::SWIM_TURN => "reaction.0",
                     puff::FLOAT => "floatup.0",
                     puff::SURFACE_JUMP => "jump.0",
                     puff::SURFACE => "swimfloat.0",
@@ -1757,8 +2368,11 @@ impl Actor {
             Kind::Bully => (
                 "M1_Enemy_donketsu",
                 match self.phase {
+                    bully::FLIP if self.w3.tries as i32 == BULLY_PUSH_FRONT => "pushfront.0",
                     bully::FLIP => "pushback.0",
-                    bully::HOLD_OUT => "stayback.0",
+                    bully::HOLD_OUT => "stayfront.0",
+                    bully::LAND | bully::FALL_STAN => "flyhitland.0",
+                    bully::FALL => "flyhitfall.0",
                     bully::FIND => "find.0",
                     bully::CHASE => "run.0",
                     bully::WALK => "walk.0",
@@ -1772,12 +2386,12 @@ impl Actor {
             ),
             Kind::Charvaargh => (
                 "M1_Enemy_magmafish",
-                match (self.phase, self.w3.count) {
-                    (chr::SIGN, _) if face => "attacksidesignright.0",
-                    (chr::SIGN, _) => "attacksidesignleft.0",
-                    (chr::ATTACK, 0) => "attacksidestart.0",
-                    (chr::ATTACK, 1) => "attackside.0",
-                    (chr::ATTACK, _) => "attacksideend.0",
+                match self.phase {
+                    chr::SIGN | chr::WAIT if face => "attacksidesignright.0",
+                    chr::SIGN | chr::WAIT => "attacksidesignleft.0",
+                    chr::START => "attacksidestart.0",
+                    chr::ATTACK => "attackside.0",
+                    chr::END => "attacksideend.0",
                     _ => "fall.0",
                 },
                 M,
@@ -1822,14 +2436,32 @@ mod tests {
     }
 
     #[test]
-    fn creeper_node_codes_lead_the_right_way() {
-        // straight, corners (in → out) and end caps
-        assert_eq!(creeper_out(1), 1);
+    fn animation_lengths_round_up() {
+        assert_eq!(anim_len(37.0, 1.0), 37);
+        assert_eq!(anim_len(35.0, 0.9), 39);
+        assert_eq!(anim_len(17.0, 2.0), 9);
+        assert_eq!(yaw_frames(120.0), 15);
+    }
+
+    #[test]
+    fn creeper_node_codes_follow_the_game_table() {
+        // straight 1 left, 2 right, 3 down, 4 up; corners lead out of the turn; end caps point
+        // back along the path
+        assert_eq!(creeper_out(1), 3);
+        assert_eq!(creeper_out(2), 1);
+        assert_eq!(creeper_out(3), 0);
         assert_eq!(creeper_out(4), 2);
-        assert_eq!(creeper_out(12), 3); // up → left
-        assert_eq!(creeper_out(5), 0); // right → down
-        assert_eq!(creeper_out(16), 0);
+        assert_eq!(creeper_out(5), 0); // left → down
+        assert_eq!(creeper_out(12), 1); // up → right
+        assert_eq!(creeper_out(14), 1); // end cap of a path heading left
+        assert_eq!(creeper_in(12), 2);
+        assert_eq!(creeper_in(14), 3);
         assert!(creeper_corner(9) && !creeper_corner(13));
+        // up, up, up→right, end: 3 pieces, the last a corner
+        assert_eq!(
+            creeper_pieces(&[4, 4, 12, 13]),
+            vec![(2, 2), (2, 2), (2, 2), (2, 1)]
+        );
     }
 
     #[test]
@@ -1849,6 +2481,13 @@ mod tests {
         assert_eq!(&sides[..4], &[0, 1, 0, 3], "sides {sides:?}");
         assert!(a.x > 176.0, "went over the wall: x {}", a.x);
         assert!((a.y - 32.0).abs() < 0.5, "back on the floor: y {}", a.y);
+    }
+
+    #[test]
+    fn horned_ant_trooper_walks_at_the_plain_speed() {
+        let (lvl, mut a) = on_flat(Kind::AntTrooper { horned: true }, 100.0);
+        run(&mut a, &lvl, 5);
+        assert!((a.vx - ANT_WALK).abs() < 1e-6, "vx {}", a.vx);
     }
 
     #[test]
@@ -1889,13 +2528,32 @@ mod tests {
         }
         assert!(hi - lo <= 34.0 && hi - lo >= 30.0, "span {}", hi - lo);
         assert!(a.vx.abs() <= STING_PATROL + 1e-4);
-        // a player 80 px ahead at the same height: alert, then the charge
+        // a player 80 px ahead at the same height: the 37-frame alert, then the charge
         a.target = (a.x + 80.0 * a.dir as f32, a.y);
         a.w3.player_h = 16.0;
         run(&mut a, &lvl, 1);
-        assert!(a.stingby_charging());
-        run(&mut a, &lvl, STING_ALERT as usize + 40);
+        assert_eq!(a.phase, sting::FIND);
+        run(&mut a, &lvl, 36);
+        assert_eq!(a.phase, sting::FIND);
+        run(&mut a, &lvl, 1);
+        assert_eq!(a.phase, sting::CHASE);
+        run(&mut a, &lvl, 40);
         assert!((a.vx.abs() - STING_CHARGE).abs() < 1e-4, "vx {}", a.vx);
+    }
+
+    #[test]
+    fn stingby_turns_round_for_15_frames_before_the_alert() {
+        let (lvl, mut a) = on_flat(Kind::Stingby, 200.0);
+        a.y = 64.0;
+        a.w3.player_h = 16.0;
+        a.target = (140.0, 64.0); // behind it
+        run(&mut a, &lvl, 1);
+        assert_eq!(a.phase, sting::TURN);
+        assert_eq!(a.dir, -1, "faces the player from the start of the turn");
+        run(&mut a, &lvl, 14);
+        assert_eq!(a.phase, sting::TURN);
+        run(&mut a, &lvl, 1);
+        assert_eq!(a.phase, sting::FIND);
     }
 
     #[test]
@@ -1904,7 +2562,7 @@ mod tests {
         a.y = 64.0;
         a.w3.player_h = 16.0;
         a.target = (260.0, 64.0);
-        run(&mut a, &lvl, STING_ALERT as usize + 5);
+        run(&mut a, &lvl, 37 + 5);
         assert_eq!(a.phase, sting::CHASE);
         a.target = (a.x - 400.0, 64.0); // far behind
         run(&mut a, &lvl, 99);
@@ -1919,17 +2577,22 @@ mod tests {
         a.target = (150.0, 32.0);
         run(&mut a, &lvl, 5);
         assert_eq!(a.phase, skip::WAIT);
-        // the player jumps: crouch, then a 2.7 take-off (apex ≈ 17.7 px)
+        // the player jumps: a 17-frame crouch, then a 2.7 take-off at −0.103125 (apex ≈ 35 px)
         a.w3.player_rising = true;
+        run(&mut a, &lvl, 1);
+        a.w3.player_rising = false;
+        assert_eq!(a.phase, skip::CROUCH);
+        run(&mut a, &lvl, 16);
+        assert_eq!(a.phase, skip::CROUCH);
         let mut top: f32 = 0.0;
-        for _ in 0..60 {
+        for _ in 0..120 {
             a.step_spawning(&lvl);
-            a.w3.player_rising = false;
             top = top.max(a.y - 32.0);
         }
-        assert!((top - 17.7).abs() < 1.5, "apex {top}");
+        assert!((top - 34.0).abs() < 0.5, "apex {top}");
         assert_eq!(a.phase, skip::WAIT);
-        // pushed 40 px away it runs back and stops on its spot
+        assert!((a.x - 200.0).abs() < 1e-3, "straight up");
+        // pushed 40 px away it turns, runs back and stops on its spot
         a.x = 240.0;
         run(&mut a, &lvl, 300);
         assert!((a.x - 200.0).abs() <= 1.0, "home x {}", a.x);
@@ -1937,8 +2600,8 @@ mod tests {
     }
 
     #[test]
-    fn skipsqueak_off_its_ledge_tries_to_get_back_then_gives_up() {
-        // home on a 3-tile-high pillar it cannot jump back onto from the floor
+    fn skipsqueak_off_its_ledge_tries_three_times_then_takes_a_new_home() {
+        // home on a 4-tile-high pillar it cannot jump back onto from the floor
         let mut lvl = Level::flat(40);
         for y in 2..6 {
             lvl.set(12, y, Cell::Solid);
@@ -1953,30 +2616,60 @@ mod tests {
         a.home_x = 230.0; // displaced straight down: only the height is wrong
         let mut jumps = 0;
         let mut was_air = false;
-        for _ in 0..600 {
+        let mut gave_up = false;
+        for _ in 0..800 {
             a.step_spawning(&lvl);
             let air = a.phase == skip::JUMP;
             if air && !was_air {
                 jumps += 1;
             }
             was_air = air;
+            gave_up |= a.phase == skip::GIVE_UP;
         }
         assert_eq!(jumps, 3, "three recovery jumps");
-        assert!(a.w3.gave_up);
+        assert!(gave_up);
+        assert!((a.home_y - 32.0).abs() < 0.5, "the floor is its new home");
+        assert_eq!(a.phase, skip::WAIT);
     }
 
     #[test]
-    fn hop_chops_hops_then_turns_and_chases_a_player_ahead() {
+    fn skipsqueak_bounces_off_a_wall_then_wall_jumps() {
+        let mut lvl = Level::flat(40);
+        lvl.set(14, 2, Cell::Solid); // a 1-tile step at x 224–240
+        let mut a = Actor::new(Kind::Skipsqueak { spiny: false }, 200.0, 32.0);
+        a.target = (100.0, 32.0);
+        run(&mut a, &lvl, 5);
+        a.home_x = 260.0; // home beyond the step
+        let mut seen = Vec::new();
+        for _ in 0..400 {
+            a.step_spawning(&lvl);
+            if seen.last() != Some(&a.phase) {
+                seen.push(a.phase);
+            }
+        }
+        assert!(seen.contains(&skip::CRASH), "{seen:?}");
+        assert!(seen.contains(&skip::WALL_JUMP), "{seen:?}");
+        assert!(a.x > 240.0, "got over the step: x {}", a.x);
+    }
+
+    #[test]
+    fn hop_chops_hops_every_50_frames_then_turns_and_chases_a_player_ahead() {
         let (lvl, mut a) = on_flat(Kind::HopChops, 300.0);
         a.target = (0.0, 300.0); // out of sight
-        let x0 = a.x;
+        let mut take_offs = Vec::new();
+        let mut was_ground = true;
         let mut turned = false;
-        for _ in 0..600 {
+        for t in 0..400 {
             a.step_spawning(&lvl);
-            turned |= a.dir < 0;
+            if was_ground && !a.on_ground && a.phase == hop::WALK {
+                take_offs.push(t);
+            }
+            was_ground = a.on_ground;
+            turned |= a.phase == hop::TURN;
         }
+        assert!(take_offs.len() >= 2, "{take_offs:?}");
+        assert_eq!(take_offs[1] - take_offs[0], 50, "{take_offs:?}");
         assert!(turned, "turned after its hops");
-        assert!((a.x - x0).abs() < 80.0, "patrols near home");
         // a player 64 px ahead (it looks while on the ground): startled hop, then the chase
         while !(a.on_ground && a.phase == hop::WALK) {
             a.step_spawning(&lvl);
@@ -1986,15 +2679,20 @@ mod tests {
         assert!(a.hop_chops_running());
         assert!(a.vy > 2.0, "startled hop {}", a.vy);
         let mut top: f32 = 0.0;
-        for _ in 0..120 {
+        let mut high: f32 = 0.0;
+        for _ in 0..160 {
             a.target = (a.x + 64.0 * a.dir as f32, 32.0);
             a.step_spawning(&lvl);
-            top = top.max(a.vx.abs());
+            if a.phase == hop::RUN {
+                top = top.max(a.vx.abs());
+                high = high.max(a.y - 32.0);
+            }
         }
         assert_eq!(a.phase, hop::RUN);
         assert!((top - HOP_RUN_VX).abs() < 1e-4, "chase speed {top}");
-        // the player gone behind: lost after 16 frames
-        a.target = (a.x - 200.0 * a.dir as f32, 32.0);
+        assert!(high < 0.5, "the run does not leave the ground: {high}");
+        // the player gone behind: it turns to face them; far away: lost after 16 frames
+        a.target = (a.x - 400.0 * a.dir as f32, 32.0);
         run(&mut a, &lvl, 18);
         assert_eq!(a.phase, hop::LOST);
     }
@@ -2018,6 +2716,22 @@ mod tests {
             .collect();
         assert_eq!(speeds, [1.25, 1.125, 1.0, 0.9375]);
         assert_eq!(a.mode, super::super::Mode::DieFall);
+    }
+
+    #[test]
+    fn porcupuffer_recovers_for_60_frames_after_a_hit() {
+        let mut lvl = Level::flat(40);
+        lvl.top = 432.0;
+        let mut a = Actor::new(Kind::Porcupuffer, 100.0, 100.0);
+        a.w3.flooded = true;
+        a.w3.player_wet = true;
+        a.target = (0.0, 300.0);
+        run(&mut a, &lvl, 2);
+        assert!(!a.porcupuffer_hit(0.0));
+        run(&mut a, &lvl, 59);
+        assert_eq!(a.phase, puff::RECOVER);
+        run(&mut a, &lvl, 1);
+        assert_eq!(a.phase, puff::SWIM);
     }
 
     #[test]
@@ -2069,10 +2783,16 @@ mod tests {
     }
 
     #[test]
-    fn bully_charges_a_seen_player_and_is_only_pushed_back() {
+    fn bully_charges_a_player_ahead_and_is_only_pushed_back() {
         let (lvl, mut a) = on_flat(Kind::Bully, 300.0);
-        a.target = (200.0, 32.0);
-        run(&mut a, &lvl, BULLY_FIND as usize + 60);
+        a.dir = -1;
+        a.w3.player_h = 16.0;
+        a.target = (200.0, 32.0); // 100 px ahead
+        run(&mut a, &lvl, 1);
+        assert_eq!(a.phase, bully::FIND);
+        run(&mut a, &lvl, 38);
+        assert_eq!(a.phase, bully::FIND);
+        run(&mut a, &lvl, 60);
         assert!(a.bully_charging());
         assert!((a.vx + BULLY_CHASE).abs() < 0.05, "charge vx {}", a.vx);
         a.bully_push(push::STOMP, a.x - 10.0);
@@ -2084,20 +2804,57 @@ mod tests {
             "decays 0.05/f: {}",
             a.vx
         );
-        run(&mut a, &lvl, 51);
-        assert!(!a.bully_pushed());
-        // a heavy push stuns it for 120 more frames
-        a.bully_push(push::HEAVY, a.x + 10.0);
-        run(&mut a, &lvl, 61);
-        assert_eq!(a.phase, bully::HOLD_OUT);
+        // it stops after 35 frames; the PushBack animation (pushed against its facing) ends at
+        // 39; 10 frames' recovery; then it charges its attacker
+        let mut n = 10;
+        while a.bully_pushed() && n < 200 {
+            a.step_spawning(&lvl);
+            n += 1;
+        }
+        assert_eq!(n, 49, "push lasted {n} frames");
+        assert!(a.bully_charging());
         assert!(a.alive());
+    }
+
+    #[test]
+    fn bully_does_not_see_a_player_behind_it() {
+        let (lvl, mut a) = on_flat(Kind::Bully, 300.0);
+        a.dir = 1;
+        a.w3.player_h = 16.0;
+        a.target = (250.0, 32.0); // behind
+        run(&mut a, &lvl, 10);
+        assert_eq!(a.phase, bully::WAIT);
+    }
+
+    #[test]
+    fn a_pushed_bully_stops_on_a_ledge_edge() {
+        let mut lvl = Level::flat(40);
+        for x in 21..40 {
+            lvl.set(x, 0, Cell::Empty);
+            lvl.set(x, 1, Cell::Empty);
+        }
+        let mut a = Actor::new(Kind::Bully, 318.0, 32.0);
+        a.dir = -1;
+        a.on_ground = true;
+        a.target = (0.0, 400.0);
+        run(&mut a, &lvl, 2);
+        a.bully_push(push::LIGHT, 300.0); // pushed right at 1.0 towards the drop at x 336
+        let mut held = false;
+        for _ in 0..80 {
+            a.step_spawning(&lvl);
+            held |= a.phase == bully::HOLD_OUT;
+        }
+        assert!(held, "teetered on the edge");
+        assert!(a.y > 31.0, "did not fall: y {}", a.y);
     }
 
     #[test]
     fn bully_gives_up_beyond_256_px() {
         let (lvl, mut a) = on_flat(Kind::Bully, 300.0);
+        a.dir = -1;
+        a.w3.player_h = 16.0;
         a.target = (200.0, 32.0);
-        run(&mut a, &lvl, BULLY_FIND as usize + 5);
+        run(&mut a, &lvl, 39 + 5);
         assert_eq!(a.phase, bully::CHASE);
         a.target = (a.x + 300.0, 32.0);
         run(&mut a, &lvl, 1);
@@ -2105,69 +2862,91 @@ mod tests {
     }
 
     #[test]
-    fn charvaargh_warns_then_leaps_a_half_circle_and_dives_back() {
-        let lvl = Level::flat(40);
+    fn charvaargh_warns_then_leaps_its_arc_and_dives_back() {
+        let mut lvl = Level::flat(40);
+        lvl.theme = 2;
         let mut a = Actor::new(Kind::Charvaargh, 200.0, 12.0);
         a.w3.liquid = Some((44.0, false));
-        a.target = (0.0, 300.0);
-        run(&mut a, &lvl, 60);
-        let rest = 44.0 - CHAR_DEPTH - 64.0;
-        assert_eq!(a.phase, chr::WAIT);
-        assert!((a.y - rest).abs() < 0.01);
-        // a player 100 px to the right on the shore
         a.target = (300.0, 48.0);
-        run(&mut a, &lvl, 1);
-        assert!(a.charvaargh_attacking());
-        assert_eq!(a.dir, 1);
-        let (mut top, mut segs) = (f32::MIN, 0);
-        let mut back = false;
-        for _ in 0..400 {
+        run(&mut a, &lvl, 2);
+        let base = 44.0 - 16.0;
+        assert_eq!(a.phase, chr::WAIT);
+        assert!((a.charvaargh_head().1 - (base + 4.0)).abs() < 0.01);
+        assert!(a.charvaargh_segments().is_empty(), "harmless at rest");
+        run(&mut a, &lvl, 29);
+        assert_eq!(a.phase, chr::SIGN);
+        assert_eq!(a.dir, 1, "leaps toward the player");
+        run(&mut a, &lvl, CHAR_SIGN as usize);
+        assert_eq!(a.phase, chr::START);
+        let x0 = a.x;
+        let (mut top, mut frames) = (f32::MIN, 0);
+        while a.phase != chr::WAIT && frames < 800 {
             a.step_spawning(&lvl);
-            top = top.max(a.y + 32.0);
-            segs = segs.max(a.charvaargh_segments().len());
-            back = a.phase == chr::WAIT;
-            if back {
-                break;
+            frames += 1;
+            top = top.max(a.charvaargh_head().1 - base);
+            if a.phase == chr::ATTACK {
+                assert_eq!(a.charvaargh_segments().len(), 8);
             }
         }
-        assert!(back, "dived back in further along: x {}", a.x);
-        assert!((a.x - (200.0 + 2.0 * CHAR_RADIUS)).abs() < 4.0, "x {}", a.x);
-        assert!((top - (44.0 + CHAR_RADIUS)).abs() < 6.0, "apex {top}");
-        assert_eq!(segs, CHAR_SEGMENTS);
+        // ≈ 148 px up and ≈ 224 px across; 150 + 190 frames, then the dive (≈ 100 frames)
+        assert!((top - 148.0).abs() < 4.0, "apex {top}");
+        let across = a.x - x0;
+        assert!((across - 224.0).abs() < 4.0, "across {across}");
+        assert!((430..460).contains(&frames), "frames {frames}");
+        assert!(a.alive());
     }
 
     #[test]
     fn piranha_creeper_creeps_out_along_its_path_and_back() {
         let mut lvl = Level::flat(40);
-        // up 2 cells, then right 1 (codes: up, up, up→right, end facing right)
-        lvl.creepers.push((0, vec![4, 4, 8, 14]));
+        // up 2 pieces, then right (codes: up, up, up→right, end)
+        lvl.creepers.push((0, vec![4, 4, 12, 13]));
         let path = Kind::PiranhaCreeper {
             path: 0,
             sleeps: false,
         };
         let mut a = Actor::new(path, 200.0, 32.0);
         run(&mut a, &lvl, 1);
-        let base = (200.0, 48.0);
-        assert!((a.x - base.0).abs() < 0.01 && (a.y + CREEP_HEAD - base.1).abs() < 0.01);
-        // 96 px of path at ≤ 0.6 px/f: out within ~200 frames after the start wait
-        let mut top: f32 = 0.0;
-        for _ in 0..CREEP_WAIT as usize + 220 {
-            a.step_spawning(&lvl);
-            top = top.max(a.speed);
-        }
-        assert!((top - CREEP_SPEED).abs() < 1e-4);
-        assert!((a.x - 232.0).abs() < 0.01 && (a.y + CREEP_HEAD - 112.0).abs() < 0.01);
         let codes = lvl.creepers[0].1.clone();
+        // the head starts in the base piece (centre y 48), 3 frames in
+        let (_, hy) = a.creeper_point(&codes);
+        assert!(
+            (hy - (48.0 - 20.0 + 32.0 * 3.1 / 12.0)).abs() < 0.1,
+            "head y {hy}"
+        );
+        // 4 pieces (the last a corner) at ≈ 1.6 px/f: out within ~90 frames
+        let mut out = 0;
+        while a.phase == creep::MOVE && out < 400 {
+            a.step_spawning(&lvl);
+            out += 1;
+        }
+        assert!((60..110).contains(&out), "out in {out} frames");
+        let (hx, hy) = a.creeper_point(&codes);
+        // the corner piece at (200, 144) ends 12 px to its right … 11/12 of the way
+        assert!(
+            (hx - 209.6).abs() < 0.2 && (hy - 143.8).abs() < 0.2,
+            "end ({hx}, {hy})"
+        );
         assert_eq!(a.creeper_stalk(&codes).len(), 3);
-        // then back to the base
-        run(&mut a, &lvl, 250);
-        assert!((a.x - base.0).abs() < 0.01 && (a.y + CREEP_HEAD - base.1).abs() < 0.01);
+        // 3 frames' wait, back down, then 10 frames at the base
+        run(&mut a, &lvl, 3);
+        assert_eq!(a.phase, creep::MOVE_BACK);
+        let mut back = 0;
+        while a.phase == creep::MOVE_BACK && back < 400 {
+            a.step_spawning(&lvl);
+            back += 1;
+        }
+        assert_eq!(a.phase, creep::WAIT);
+        let (_, hy) = a.creeper_point(&codes);
+        assert!((hy - 36.0).abs() < 1.0, "back at the base: {hy}");
+        run(&mut a, &lvl, 10);
+        assert_eq!(a.phase, creep::MOVE);
     }
 
     #[test]
-    fn sleeping_creeper_stays_out_and_a_trampled_one_resumes() {
+    fn sleeping_creeper_stays_out_and_a_trampled_one_retracts_then_resumes() {
         let mut lvl = Level::flat(40);
-        lvl.creepers.push((3, vec![1, 1, 14]));
+        lvl.creepers.push((3, vec![2, 2, 2, 2, 14]));
         let mut a = Actor::new(
             Kind::PiranhaCreeper {
                 path: 3,
@@ -2176,18 +2955,42 @@ mod tests {
             100.0,
             32.0,
         );
-        run(&mut a, &lvl, CREEP_WAIT as usize + 30);
+        run(&mut a, &lvl, 70);
+        let codes = lvl.creepers[0].1.clone();
+        let node = a.w3.node;
+        assert!(node >= 3, "piece {node}");
         let x = a.x;
         assert!(a.creeper_trample());
         assert!(!a.creeper_trample(), "already flat");
-        run(&mut a, &lvl, 100);
-        assert_eq!(a.x, x, "held still while trampled");
-        run(
-            &mut a,
-            &lvl,
-            CREEP_DAMAGE_WAIT as usize + CREEP_WAIT as usize + 200,
-        );
+        run(&mut a, &lvl, CREEP_TRAMPLED as usize);
+        assert_eq!(a.phase, creep::DAMAGE_WAIT);
+        assert_eq!(a.w3.node, node - 2, "retracted 2 pieces");
+        assert!(a.x < x - 40.0, "x {} from {x}", a.x);
+        run(&mut a, &lvl, CREEP_DAMAGE_WAIT as usize + 200);
         assert!(a.creeper_asleep());
-        assert!((a.x - 164.0).abs() < 0.01, "asleep at the end: x {}", a.x);
+        let (hx, _) = a.creeper_point(&codes);
+        assert!(
+            (hx - (100.0 + 4.0 * 32.0 + 12.0 - 32.0 / 12.0)).abs() < 1.0,
+            "x {hx}"
+        );
+    }
+
+    #[test]
+    fn a_creeper_trampled_near_its_base_dies() {
+        let mut lvl = Level::flat(40);
+        lvl.creepers.push((0, vec![4, 4, 4, 15]));
+        let mut a = Actor::new(
+            Kind::PiranhaCreeper {
+                path: 0,
+                sleeps: false,
+            },
+            100.0,
+            32.0,
+        );
+        run(&mut a, &lvl, 15);
+        assert!(a.w3.node <= 1);
+        assert!(a.creeper_trample());
+        run(&mut a, &lvl, CREEP_TRAMPLED as usize + 1);
+        assert_eq!(a.mode, super::super::Mode::DieFall);
     }
 }

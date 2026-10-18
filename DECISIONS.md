@@ -136,33 +136,26 @@ Ant Trooper, Stingby, Skipsqueak, Hop-Chops, Porcupuffer, Bully, Charvaargh and 
 live in `actors/w3.rs` and `world/w3.rs`, like the bosses: the shared files only gain variants,
 match arms and one-line hooks. Their extra state is one `W3State` on the actor, which also holds
 what the world senses for them each frame (the liquid, the player's height, wetness and jump).
-Choices the specs leave open, all [inf]:
-- **Ant Trooper:** walks at 0.5 (the crawler walk isn't decoded). It crawls the contour with a
-  square box: walls ahead are climbed, ledges are wrapped at 6°/frame (big 4°), and it only wraps
-  fully solid blocks, so it walks off semisolids. A stomp defeats a plain one (the rows say
-  ReactOnly; the game defeats it). Winged ones use the generic flight.
-- **Stingby:** Turn takes 12 frames and the alert 30. The obs charge speed 0.5 is kept, though it
-  looks slow.
-- **Skipsqueak:** "player jumping" is read as airborne and rising. The crouch takes 6 frames and
-  recovery jumps drift toward home. The third try uses 3.65, then it gives up and stays put.
-  Winged ones hover in place.
-- **Hop-Chops:** hops are timed by the animation windows (9 ground frames, 2 when chasing). Turn
-  takes 16 frames, Lost 30, and the Find hop uses the normal gravity.
-- **Porcupuffer:** it swims on any liquid and survives lava. With no liquid it rests on the
-  ground. The jump window is centred 40 px above its centre. SwimTurn has a 30-frame cooldown
-  and Recover lasts 20 frames.
-- **Bully:** it sees 128 px either side and ±48 px. A fireball pushes it at 1.0, a stomp or spin
-  at 1.75, and a ground pound or shoe stomp at 2.5 followed by 120 frames of HoldOut. Its touch
-  shoves the player (2.0 px/f) without hurting them. Shells bounce off it. It turns at ledges
-  only while walking. Winged ones chase for 300 frames, then fly home.
-- **Charvaargh:** it isn't a generic enemy, so nothing defeats it and a Star only protects the
-  player. It rests with its head 4 px under the surface. The leap is a 64-px half circle at
-  2.5 px/f, and each of its 8 segments touches within 32×32 px. Only the head is drawn; the
-  model's animation shows the body.
-- **Piranha Creeper:** its path node codes were read off the corpus: 1–4 straight, 5–12 corners,
-  13–16 end caps, one 2×2 cell per node. It waits 60 frames at the start and at each end. A stomp
-  tramples the head (harmless for 10 + 130 frames); fire, shells and Stars defeat it. The stalk
-  is harmless and drawn unrotated.
+Their guesses were burnt down against the binary (specs updated, citations there); what is still
+open or not modelled:
+- **Animation timing [inf ±1 frame]:** states that wait for a model animation last
+  ceil(frames / rate), with the frame counts from the model files and the rates from
+  `EnemyModelParams` (which of its two rate fields is the normal size is read off the 2D files).
+  Model yaw turns take DirDeg·2 / 8 frames.
+- **Ant Trooper:** the winged flyer (shared with other winged walkers) uses the generic flight;
+  the horn's top is taken to hurt a stomping player (its "Needle" collider was not traced).
+- **Skipsqueak:** the player flag it watches is set on a jump launch and each swim stroke; that it
+  lasts one frame is [inf] (read as "left the ground rising" or a stroke's kick).
+- **Porcupuffer:** the surface-jump window's vertical centre stays as before [?].
+- **Bully:** the winged chase is the older approximation (FlyChase / FlyLand / FlyReturn only
+  partly read). The player's Pushed state is approximated by setting its speed (3.0, every 4th
+  push 4.0 up); its control lock lives in the player code. The shell's own bounce is [inf].
+- **Charvaargh:** the side leap is exact (heading curves from the model, body boxes along the
+  head's path, which the posed skeleton follows to within a few px). Not modelled: the vertical
+  leap out of the background, the chained leap, spacing between several Charvaarghs. One hook in
+  `actors.rs`: it is exempt from the fell-into-a-pit kill, as it dives far below the lava.
+- **Piranha Creeper:** which hits trample the head (stomps, by the animation names) and that the
+  trampled head and the stalk are harmless are [inf]; PreStop (blocked growth) is not modelled.
 
 ## 2026-10-18 — Bosses (Bowser, Boom Boom / Pom Pom, Bowser Jr.): HP through one hit path
 Every boss hit goes through `Actor::boss_hit(attack)`, which applies the spec's HP rules. Bowser:
