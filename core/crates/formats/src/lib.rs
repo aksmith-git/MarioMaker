@@ -10,6 +10,7 @@ pub mod audio;
 pub mod bc7;
 pub mod bcn;
 pub mod bfcpx;
+pub mod bfevfl;
 pub mod bffnt;
 pub mod bflim;
 pub mod bfres;

@@ -94,6 +94,14 @@ enum Cmd {
         #[arg(long, default_value = "USen")]
         language: String,
     },
+    /// Import only the Story Mode / Dojo data (event flows, Story tables, hub map, lesson list)
+    /// into an existing SMM2 asset cache folder (the `modes` stage of `import`).
+    ImportModes {
+        /// Extracted RomFS (update applied).
+        romfs: PathBuf,
+        /// The cache folder, e.g. ~/smm-work/cache/smm2-3.0.3
+        out: PathBuf,
+    },
     /// Decode a BFLYT / BFLAN / BFFNT / MSBT file (Yaz0 removed) and print it as JSON.
     Lyt { file: PathBuf },
     /// Smoke-run courses headlessly with a scripted run-and-jump input: reports crashes, how far
@@ -996,6 +1004,26 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Cmd::ImportModes { romfs, out } => match mmk_import::modes::import_modes(&romfs, &out) {
+            Ok(r) => {
+                println!(
+                    "imported {} Story flows, {} lesson flows, {} jobs, {} builds, {} flags, {} hub objects, {} lessons into {}",
+                    r.story_flows,
+                    r.lesson_flows,
+                    r.jobs,
+                    r.builds,
+                    r.flags,
+                    r.hub_objects,
+                    r.lessons,
+                    out.display()
+                );
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("import failed: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Cmd::ImportSmm2Ui {
             romfs,
             out,

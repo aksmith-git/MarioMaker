@@ -1313,6 +1313,7 @@ name = "mmk-import"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "crc32fast",
  "mmk-assets",
  "mmk-formats",
  "serde_json",
@@ -1401,6 +1402,15 @@ version = "0.1.0"
 dependencies = [
  "libm",
  "mmk-formats",
+]
+
+[[package]]
+name = "mmk-story"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "mmk-formats",
+ "serde_json",
 ]
 
 [[package]]

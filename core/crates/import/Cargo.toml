@@ -12,3 +12,4 @@ mmk-assets = { path = "../assets" }
 serde_json.workspace = true
 ab_glyph.workspace = true
 thiserror.workspace = true
+crc32fast.workspace = true

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/formats", "crates/assets", "crates/import", "crates/sim", "crates/audio", "crates/modes", "crates/ui", "crates/front", "crates/editor", "crates/server", "crates/online", "crates/netplay", "crates/ffi", "crates/cli", "crates/host", "crates/shell"]
+members = ["crates/formats", "crates/assets", "crates/import", "crates/sim", "crates/audio", "crates/modes", "crates/story", "crates/ui", "crates/front", "crates/editor", "crates/server", "crates/online", "crates/netplay", "crates/ffi", "crates/cli", "crates/host", "crates/shell"]
 
 [workspace.package]
 edition = "2024"
