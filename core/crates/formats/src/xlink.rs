@@ -156,6 +156,20 @@ pub struct Call {
     pub condition: Option<Condition>,
 }
 
+/// An action trigger: entering `action` (in action slot `slot`) starts call `call` (index
+/// into [`Xlnk::user_calls`]), from `start_frame` (to `end_frame`), or only when the object
+/// comes from action `after`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActionTrigger {
+    pub slot: String,
+    pub action: String,
+    pub call: usize,
+    pub start_frame: i32,
+    pub end_frame: Option<i32>,
+    pub after: Option<String>,
+    pub flag: u32,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Param {
     Str(String),
@@ -163,6 +177,8 @@ pub enum Param {
     Int(i32),
     /// A random value in [min, max] each time the asset plays.
     Range(f32, f32),
+    /// A random value in [min, max] from a uniform draw raised to the power (min, max, power).
+    RangePow(f32, f32, f32),
     Curve(Curve),
     Raw(u32),
 }
@@ -316,6 +332,80 @@ impl<'a> Xlnk<'a> {
         self.users.len()
     }
 
+    /// The action triggers of user `name`: which call each of its actions (named states or
+    /// animations of the object, grouped in action slots) starts.
+    ///
+    /// Layout at user + header[11]: action slots (header[5]) {u32 name pos, u16 first action,
+    /// u16 last action}; actions (header[6]) {u32 name pos, u32 first trigger, u32 last
+    /// trigger}; triggers (header[7], 24 bytes) {u32 guid, u32 call index × 32, u32 start
+    /// (a frame, or with flag 0x10 the name pos of the action it must follow), i32 end frame
+    /// (0x7FFFFFFF: none), u32 flag, i32 overwrite param pos}.
+    pub fn user_actions(&self, name: &str) -> Result<Option<Vec<ActionTrigger>>> {
+        let Some(u) = self.user_offset(name) else {
+            return Ok(None);
+        };
+        let d = self.d;
+        let n_call = i32_at(d, u + 8)?.max(0) as usize;
+        let n_slot = i32_at(d, u + 20)?.max(0) as usize;
+        let n_act = i32_at(d, u + 24)?.max(0) as usize;
+        let n_trig = i32_at(d, u + 28)?.max(0) as usize;
+        let mut t = u + u32_at(d, u + 44)? as usize;
+        let mut slots = Vec::with_capacity(n_slot);
+        for _ in 0..n_slot {
+            let name = self.name(u32_at(d, t)? as usize)?;
+            let a = u16_at(d, t + 4)? as usize;
+            let b = u16_at(d, t + 6)? as usize;
+            slots.push((name, a, b));
+            t += 8;
+        }
+        let mut acts = Vec::with_capacity(n_act);
+        for _ in 0..n_act {
+            acts.push((
+                self.name(u32_at(d, t)? as usize)?,
+                u32_at(d, t + 4)? as usize,
+                u32_at(d, t + 8)? as usize,
+            ));
+            t += 12;
+        }
+        let mut trigs = Vec::with_capacity(n_trig);
+        for _ in 0..n_trig {
+            let call = u32_at(d, t + 4)? as usize / 32;
+            let start = u32_at(d, t + 8)?;
+            let end = i32_at(d, t + 12)?;
+            let flag = u32_at(d, t + 16)?;
+            trigs.push((call, start, end, flag));
+            t += 24;
+        }
+        let mut out = Vec::new();
+        for (ai, (action, first, last)) in acts.iter().enumerate() {
+            let slot = slots
+                .iter()
+                .find(|(_, a, b)| (*a..=*b).contains(&ai))
+                .map(|s| s.0.clone())
+                .unwrap_or_default();
+            for &(call, start, end, flag) in trigs.get(*first..=*last).into_iter().flatten() {
+                if call >= n_call {
+                    continue;
+                }
+                let after = if flag & 0x10 != 0 && start != 0 {
+                    Some(self.name(start as usize)?)
+                } else {
+                    None
+                };
+                out.push(ActionTrigger {
+                    slot: slot.clone(),
+                    action: action.clone(),
+                    call,
+                    start_frame: if after.is_none() { start as i32 } else { 0 },
+                    end_frame: (end != i32::MAX).then_some(end),
+                    after,
+                    flag,
+                });
+            }
+        }
+        Ok(Some(out))
+    }
+
     /// The user-level parameters of `name` (default distance set, group, limits …).
     pub fn user_params(&self, name: &str) -> Result<Option<BTreeMap<String, Param>>> {
         let Some(u) = self.user_offset(name) else {
@@ -457,6 +547,15 @@ impl<'a> Xlnk<'a> {
             3 if value < self.n_random => {
                 let o = self.random_base + 8 * value;
                 Param::Range(f32_at(self.d, o)?, f32_at(self.d, o + 4)?)
+            }
+            // random ranges with a skewed distribution: the uniform draw raised to a power
+            // (kinds 6–13: ½, ⅓, ¼, 1/1.5, 2, 3, 4, 1.5) [inf: by analogy with the kind 3
+            // range they share the table with]
+            6..=13 if value < self.n_random => {
+                let o = self.random_base + 8 * value;
+                let power =
+                    [0.5, 1.0 / 3.0, 0.25, 1.0 / 1.5, 2.0, 3.0, 4.0, 1.5][kind as usize - 6];
+                Param::RangePow(f32_at(self.d, o)?, f32_at(self.d, o + 4)?, power)
             }
             _ => Param::Raw(raw),
         }))

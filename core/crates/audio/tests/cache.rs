@@ -32,7 +32,7 @@ fn imported_sounds_decode_and_play() {
         assert!(bank.id(name).is_some(), "{name} missing");
     }
     for s in &bank.sounds {
-        assert!(s.frames > 0 && s.data.len() == s.frames as usize * s.channels as usize);
+        assert!(s.frames > 0 && s.pcm().unwrap().len() == s.frames as usize * s.channels as usize);
         if let Some((a, b)) = s.loop_range {
             assert!(
                 a < b && b <= s.frames,
@@ -43,7 +43,13 @@ fn imported_sounds_decode_and_play() {
         }
         // decoded ADPCM must not be noise: neighbouring samples are close compared with the level
         let ch = s.channels as usize;
-        let x: Vec<f64> = s.data.iter().step_by(ch).map(|&v| v as f64).collect();
+        let x: Vec<f64> = s
+            .pcm()
+            .unwrap()
+            .iter()
+            .step_by(ch)
+            .map(|&v| v as f64)
+            .collect();
         let rms = (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
         let diff = x.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f64>() / x.len() as f64;
         assert!(rms > 50.0, "{} is silent", s.name);

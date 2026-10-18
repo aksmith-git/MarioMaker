@@ -4,6 +4,7 @@ pub mod bars;
 pub mod bwav;
 pub mod dsp;
 pub mod fwav;
+pub mod settings;
 
 pub use bars::Bars;
 pub use bwav::{Bwav, Codec};

@@ -147,7 +147,13 @@ web build's worker installs its own for the browser's picked files and storage, 
    (bind-pose vertices, skeleton, materials, LOD 0) and `anims/<Model>/<anim>.mskel`
    (skeletal + bone visibility + texture-pattern tracks merged by name), see
    `mmk_assets::mesh`.
-7. **Audio**: BWAV/BARS → kept as DSP-ADPCM + loop points; decoded in the mixer.
+7. **Audio**: the gameplay sound database from the game's sound links (`SLink2DB`: per
+   object and style, event keys → containers over waves; plus the sound group tree, distance
+   attenuation sets, per-theme effects, ground materials) → `audio/sound.json`; every wave it
+   names copied unchanged (BWAV, DSP-ADPCM + loop points) to `audio/se/` and `audio/music/`
+   (`import::sound`). The player decodes effects per course and streams music
+   (`mmk_audio::{links, mixer, stream}`, `host::sound`). `audio/index.json` keeps the fixed
+   SMB1 set for caches made before the database.
 8. **Manifest**: importer version, source file hashes, contents → enables incremental re-import.
 
 Output: `~/Library/Application Support/<app>/assets/<build-id>/`. Nothing is ever written back to
@@ -338,8 +344,9 @@ and on macOS too. No platform code outside this crate; everything below `shell` 
   browser gilrs reads the Gamepad API (standard mapping).
 - **Audio** (`audio_out`): cpal default output (Core Audio, WASAPI, ALSA; WebAudio in a browser);
   the mixer (`host::audio::AudioOut`) renders at the device's rate on the callback thread, fed by
-  the session's `Director`, with the course's theme music read from `audio/music/`
-  (`source::music_reader`; the web build prefetches it, see below).
+  the session's `Director`, with the sound database and its waves read from `audio/`
+  (`source::music_reader`; the web build prefetches a course's files, `host::audio::
+  course_files`, see below).
 - **Assets** (`source`): every cache read goes through `AssetSource` (`DirSource` on disk,
   `MemorySource` for files handed over by the browser); `assets::Cache::load` and
   `audio::Bank::load_cache_with` take a read function for this. `Cache::load_deferred` reads only

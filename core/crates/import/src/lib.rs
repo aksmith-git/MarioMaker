@@ -8,6 +8,7 @@
 
 pub mod audio;
 pub mod effects;
+pub mod sound;
 pub mod vfs;
 
 use std::collections::HashMap;
@@ -31,7 +32,8 @@ pub mod sprites;
 /// 6: modes stage (story/, lessons/, eventflow/: Story Mode and Dojo data).
 /// 7: effects stage (effects/: particle effects and their links; effect textures).
 /// 8: env stage (3D styles' backgrounds, lights, fogs, richer materials).
-pub const IMPORTER_VERSION: u32 = 8;
+/// 9: gameplay sound database (`audio/sound.json`, `audio/se/`, music by the game's names).
+pub const IMPORTER_VERSION: u32 = 9;
 pub mod smm1;
 pub mod smm1_costumes;
 pub use smm1::{Smm1Config, Smm1Report, run_smm1};
@@ -405,8 +407,8 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
         &audio::all_style_sounds(STYLES),
         progress,
     )?;
-    // each style's theme music, decoded per course by the player
-    audio::export_music(&cfg.romfs, &out, STYLES)?;
+    // the gameplay sound database and every wave it names (effects, music)
+    let sounds = sound::import_sounds(&cfg.romfs, &out, progress)?;
 
     // 5b. particle effects and their links (after the textures: adds to textures/index.json)
     let fx = effects::import_effects(&cfg.romfs, &out, progress)?;
@@ -429,6 +431,9 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
         "mesh_styles": meshes::MESH_STYLES,
         "textures": texture_count,
         "sounds": sound_count,
+        "sound_users": sounds.users,
+        "sound_waves": sounds.waves,
+        "sound_streams": sounds.streams,
         "sprites": sprite_count,
         "meshes": counts.meshes.meshes,
         "anims": counts.meshes.anims,

@@ -115,13 +115,12 @@ pub fn open_bank(source: &dyn AssetSource) -> Result<Bank, String> {
     Bank::load_cache_with(ROOT, &|p| source.read(&relative(p))).map_err(|e| e.to_string())
 }
 
-/// Course music (`audio/music/<name>.bwav`) read from the source's directory when a course
-/// starts. None for sources without one (the web build prefetches the files, see `web`).
+/// The sound database and its waves (`audio/<path>`) read from the source's directory as
+/// courses need them. None for sources without one (the web build prefetches the files, see
+/// `web`).
 pub fn music_reader(source: &dyn AssetSource) -> Option<mmk_host::audio::MusicReader> {
-    let dir = source.dir()?.join("audio/music");
-    Some(Box::new(move |name| {
-        std::fs::read(dir.join(format!("{name}.bwav"))).ok()
-    }))
+    let dir = source.dir()?.join("audio");
+    Some(Box::new(move |rel| std::fs::read(dir.join(rel)).ok()))
 }
 
 /// The course key table (for encrypted `.bcd` courses).
