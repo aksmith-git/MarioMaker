@@ -114,6 +114,16 @@ enum Cmd {
         #[arg(short, long, default_value = ".")]
         out: PathBuf,
     },
+    /// List the sprites of courses whose art the asset cache lacks (counting 3D meshes for
+    /// NSMBU / 3D World), walking each area view by view with every actor spawned.
+    MissingArt {
+        files: Vec<PathBuf>,
+        #[arg(long)]
+        assets: PathBuf,
+        /// Course key table for encrypted .bcd files (an asset cache's keys/course_table.bin).
+        #[arg(long)]
+        keys: Option<PathBuf>,
+    },
     Simulate {
         files: Vec<PathBuf>,
         #[arg(long)]
@@ -631,6 +641,11 @@ fn main() -> ExitCode {
             keys,
             frames,
         } => simulate(&files, each, keys, frames),
+        Cmd::MissingArt {
+            files,
+            assets,
+            keys,
+        } => missing_art(&files, &assets, keys),
         Cmd::Gallery {
             style,
             alt,
@@ -1155,11 +1170,15 @@ fn gallery(
     // parts that aren't placeable objects of their own (header-made goal / start, track and
     // scroll nodes, sound effects)
     const SKIP: &[i16] = &[26, 27, 37, 38, 59, 89, 109];
+    // the editor offers these in 3D World only
+    const W3_ONLY: &[i16] = &[
+        50, 51, 65, 72, 85, 86, 96, 97, 106, 107, 112, 113, 114, 116, 117, 119,
+    ];
     const PAGE: i32 = 220;
     let parts: Vec<i16> = mmk_sim::level::SUPPORTED_PARTS
         .iter()
         .copied()
-        .filter(|p| !SKIP.contains(p))
+        .filter(|p| !SKIP.contains(p) && (style == "3W" || !W3_ONLY.contains(p)))
         .collect();
     std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
     let mut written = Vec::new();
@@ -1208,4 +1227,80 @@ fn gallery(
         page += 1;
     }
     Ok(written)
+}
+
+/// Sprites without art: for each course and area, step the view over the area, resolve every
+/// sprite against the cache and count the (model, texture) names that resolve to nothing.
+fn missing_art(files: &[PathBuf], assets: &std::path::Path, keys: Option<PathBuf>) -> ExitCode {
+    let cache = match mmk_assets::Cache::open(assets) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{}: {e:?}", assets.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let meshes = assets.join("meshes");
+    let table = read_key_table(keys);
+    let mut missing: std::collections::BTreeMap<(String, String, String), usize> =
+        Default::default();
+    let mut checked = 0;
+    for f in files {
+        let Some(data) = std::fs::read(f)
+            .ok()
+            .and_then(|raw| course_data(raw, table.as_ref()))
+        else {
+            eprintln!("{}: not course data", f.display());
+            continue;
+        };
+        let Ok(c) = smm2::Course::parse(&data) else {
+            eprintln!("{}: unreadable course", f.display());
+            continue;
+        };
+        checked += 1;
+        let mut w = mmk_sim::World::from_course(&c);
+        let style = w.level.style.clone();
+        let mut resolver = mmk_host::SpriteResolver::default();
+        for area in 0..2 {
+            w.show_area(area);
+            let (left, bottom, right, top) = w.area_bounds();
+            let (vw, vh) = (mmk_sim::world::VIEW_W, mmk_sim::world::VIEW_H);
+            let mut y = bottom;
+            while y < top {
+                let mut x = left;
+                while x < right {
+                    w.look_at(x, y);
+                    for s in w.sprites() {
+                        if resolver.resolve_one(&style, &s, &cache).texture.is_some() {
+                            continue;
+                        }
+                        // the 3D styles draw many models as meshes
+                        let rest = s.image.model.strip_prefix("M1_").unwrap_or(s.image.model);
+                        let mesh = matches!(style.as_str(), "WU" | "3W")
+                            && (meshes.join(format!("{style}_{rest}.mmesh")).exists()
+                                || meshes.join(format!("{}.mmesh", s.image.model)).exists()
+                                || s.image.model.starts_with("M1_Player_"));
+                        if !mesh {
+                            *missing
+                                .entry((
+                                    style.clone(),
+                                    s.image.model.to_string(),
+                                    s.image.texture.to_string(),
+                                ))
+                                .or_default() += 1;
+                        }
+                    }
+                    x += vw;
+                }
+                y += vh;
+            }
+        }
+    }
+    for ((style, model, tex), n) in &missing {
+        println!("{style}  {model}  {tex}  ({n})");
+    }
+    println!(
+        "{checked} courses: {} missing (style, model, texture) names",
+        missing.len()
+    );
+    ExitCode::SUCCESS
 }

@@ -18,6 +18,7 @@ mmk-assets = { path = "../assets" }
 mmk-server = { path = "../server" }
 mmk-online = { path = "../online" }
 mmk-editor = { path = "../editor" }
+mmk-host = { path = "../host" }
 clap.workspace = true
 flate2.workspace = true
 serde_json.workspace = true

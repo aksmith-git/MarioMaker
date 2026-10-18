@@ -1242,6 +1242,7 @@ dependencies = [
  "mmk-assets",
  "mmk-editor",
  "mmk-formats",
+ "mmk-host",
  "mmk-import",
  "mmk-online",
  "mmk-server",
