@@ -3108,7 +3108,7 @@ impl World {
                 let falls = if h == 2 {
                     !matches!(a.kind, Kind::Buzzy | Kind::ClownCar { .. })
                 } else {
-                    matches!(a.kind, Kind::SpikeTop | Kind::Lakitu)
+                    matches!(a.kind, Kind::SpikeTop { .. } | Kind::Lakitu)
                 };
                 if falls && ay > p.y {
                     let px = p.x;
