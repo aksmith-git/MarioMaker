@@ -27,3 +27,5 @@ pub mod headless;
 pub mod web;
 #[cfg(target_arch = "wasm32")]
 pub mod web_import;
+#[cfg(target_arch = "wasm32")]
+pub mod web_net;

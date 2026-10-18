@@ -147,6 +147,9 @@ enum Cmd {
         /// Moderation token (ban accounts, delete courses); default $MMK_ADMIN_TOKEN.
         #[arg(long)]
         admin_token: Option<String>,
+        /// The relay's WebSocket address for browsers (default: the HTTP port + 1).
+        #[arg(long)]
+        relay_ws: Option<String>,
     },
     /// Upload a course (raw, zlib or .bcd needs decrypting first) to a course server.
     Upload {
@@ -956,6 +959,7 @@ fn main() -> ExitCode {
             dir,
             addr,
             admin_token,
+            relay_ws,
         } => {
             let admin = admin_token.or_else(|| std::env::var("MMK_ADMIN_TOKEN").ok());
             let store = match mmk_server::Store::open(&dir) {
@@ -965,13 +969,17 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            // the online-play relay shares the port number, over UDP
-            match std::net::UdpSocket::bind(&addr) {
-                Ok(sock) => {
-                    std::thread::spawn(move || mmk_netplay::relay::Relay::default().run(sock));
-                    eprintln!("mmk-server: online-play relay on udp://{addr}");
+            // the online-play relay: UDP on the same port number, WebSocket on the next
+            let ws = relay_ws.unwrap_or_else(|| match addr.parse::<std::net::SocketAddr>() {
+                Ok(mut a) => {
+                    a.set_port(a.port().wrapping_add(1));
+                    a.to_string()
                 }
-                Err(e) => eprintln!("mmk-server: no relay (udp {addr}: {e})"),
+                Err(_) => "0.0.0.0:8641".into(),
+            });
+            match mmk_server::start_relay(&addr, &ws) {
+                Ok(_) => eprintln!("mmk-server: online-play relay on udp://{addr} and ws://{ws}"),
+                Err(e) => eprintln!("mmk-server: no relay ({e})"),
             }
             eprintln!("mmk-server: {} on http://{addr}", dir.display());
             match mmk_server::serve(store, &addr) {

@@ -23,10 +23,10 @@ cpal = { version = "0.18.2", features = ["wasm-bindgen"] }
 gilrs = "0.11.2"
 serde_json.workspace = true
 wgpu = { version = "30.0.1", features = ["webgl"] }
+mmk-netplay = { path = "../netplay" }
 winit = "0.30.13"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-mmk-netplay = { path = "../netplay" }
 mmk-online = { path = "../online" }
 clap.workspace = true
 png = "0.18.1"
@@ -38,4 +38,4 @@ console_error_panic_hook = "0.1.7"
 js-sys = "0.3.106"
 wasm-bindgen = "0.2.129"
 wasm-bindgen-futures = "0.4.79"
-web-sys = { version = "0.3.106", features = ["Document", "Element", "HtmlCanvasElement", "Performance", "Window", "console"] }
+web-sys = { version = "0.3.106", features = ["Document", "Element", "HtmlCanvasElement", "Performance", "Window", "console", "WebSocket", "MessageEvent", "BinaryType"] }

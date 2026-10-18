@@ -20,8 +20,14 @@ use mmk_sim::{Input, World};
 
 /// How far back a correction can reach (frames of snapshots kept).
 pub const MAX_ROLLBACK: usize = 12;
-/// Inputs repeated in every packet.
+/// Inputs repeated in every packet at least.
 pub const REDUNDANCY: usize = 8;
+/// Most inputs in one packet (unacknowledged inputs beyond this wait for later packets).
+pub const MAX_RESEND: usize = 64;
+/// How far a peer may run ahead of the inputs it has from everyone: it waits ([`Session::can_advance`])
+/// rather than predict so far that a late input falls outside the rollback window. This also lines
+/// up a start: whoever starts first waits for the others.
+pub const MAX_LEAD: usize = MAX_ROLLBACK - 2;
 
 /// Something rollback can drive: the world stepped with one input per player.
 pub trait Game: Clone {
@@ -45,6 +51,8 @@ struct Slot {
 #[derive(Clone, Debug, Default)]
 struct Timeline {
     slots: Vec<Slot>,
+    /// Frames confirmed without a gap from the start.
+    through: usize,
 }
 
 impl Timeline {
@@ -78,6 +86,9 @@ impl Timeline {
         {
             s.input = input;
         }
+        while self.slots.get(self.through).is_some_and(|s| s.confirmed) {
+            self.through += 1;
+        }
         !old.confirmed && old.input != input
     }
 }
@@ -88,6 +99,8 @@ pub struct Session<G: Game> {
     pub frame: usize,
     pub local: usize,
     timelines: Vec<Timeline>,
+    /// Per player: how many of our inputs they have confirmed (from their packets' acks).
+    acked: Vec<usize>,
     /// Snapshot before frame `n` (the last MAX_ROLLBACK frames).
     snapshots: VecDeque<(usize, G)>,
     /// Earliest frame whose inputs changed since it was simulated.
@@ -102,6 +115,7 @@ impl<G: Game> Session<G> {
             frame: 0,
             local,
             timelines: vec![Timeline::default(); players],
+            acked: vec![0; players],
             snapshots: VecDeque::new(),
             dirty: None,
             rollbacks: 0,
@@ -121,6 +135,30 @@ impl<G: Game> Session<G> {
         if mispredicted && frame < self.frame {
             self.dirty = Some(self.dirty.map_or(frame, |d| d.min(frame)));
         }
+    }
+
+    /// Whether stepping now keeps every unconfirmed remote input inside the rollback window. When
+    /// it doesn't, the caller skips the step (still sending its packet) until inputs arrive.
+    pub fn can_advance(&self) -> bool {
+        self.timelines
+            .iter()
+            .enumerate()
+            .all(|(i, t)| i == self.local || self.frame < t.through + MAX_LEAD)
+    }
+
+    pub fn players(&self) -> usize {
+        self.timelines.len()
+    }
+
+    /// Frames ahead of the slowest peer's confirmed inputs.
+    pub fn lead(&self) -> usize {
+        self.timelines
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != self.local)
+            .map(|(_, t)| self.frame.saturating_sub(t.through))
+            .max()
+            .unwrap_or(0)
     }
 
     fn inputs(&self, frame: usize) -> Vec<Input> {
@@ -152,20 +190,38 @@ impl<G: Game> Session<G> {
         self.frame += 1;
     }
 
-    /// The packet to send this frame: our last REDUNDANCY inputs.
+    /// The packet to send this frame: our inputs from the oldest one some peer hasn't confirmed
+    /// (at least the last REDUNDANCY, at most MAX_RESEND), and how far we have everyone's.
     pub fn packet(&self) -> Packet {
         let end = self.frame;
-        let start = end.saturating_sub(REDUNDANCY);
+        let unacked = (0..self.acked.len())
+            .filter(|&i| i != self.local)
+            .map(|i| self.acked[i])
+            .min()
+            .unwrap_or(end);
+        let start = unacked
+            .min(end.saturating_sub(REDUNDANCY))
+            .max(end.saturating_sub(MAX_RESEND));
         Packet {
             player: self.local as u8,
             first_frame: start as u32,
             inputs: (start..end)
                 .map(|n| self.timelines[self.local].get(n).input.buttons as u16)
                 .collect(),
+            acks: self
+                .timelines
+                .iter()
+                .enumerate()
+                .map(|(i, t)| if i == self.local { end } else { t.through } as u32)
+                .collect(),
         }
     }
 
     pub fn receive(&mut self, p: &Packet) {
+        let from = p.player as usize;
+        if let (Some(&a), Some(mine)) = (p.acks.get(self.local), self.acked.get_mut(from)) {
+            *mine = (*mine).max(a as usize);
+        }
         for (k, &b) in p.inputs.iter().enumerate() {
             self.remote_input(
                 p.player as usize,
@@ -176,12 +232,15 @@ impl<G: Game> Session<G> {
     }
 }
 
-/// Wire format: player (u8), first frame (u32 LE), count (u8), inputs (u16 LE each).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Wire format: player (u8), first frame (u32 LE), count (u8), inputs (u16 LE each), then ack
+/// count (u8) and acks (u32 LE each).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Packet {
     pub player: u8,
     pub first_frame: u32,
     pub inputs: Vec<u16>,
+    /// Per player: how many of their inputs the sender has without a gap (its own: its frame).
+    pub acks: Vec<u32>,
 }
 
 impl Packet {
@@ -192,6 +251,10 @@ impl Packet {
         for i in &self.inputs {
             v.extend(i.to_le_bytes());
         }
+        v.push(self.acks.len() as u8);
+        for a in &self.acks {
+            v.extend(a.to_le_bytes());
+        }
         v
     }
 
@@ -200,6 +263,14 @@ impl Packet {
         let first_frame = u32::from_le_bytes(rest.get(..4)?.try_into().ok()?);
         let n = *rest.get(4)? as usize;
         let data = rest.get(5..5 + 2 * n)?;
+        let acks = match rest[5 + 2 * n..].split_first() {
+            Some((&k, a)) => a
+                .get(..4 * k as usize)?
+                .chunks(4)
+                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect(),
+            None => Vec::new(),
+        };
         Some(Self {
             player,
             first_frame,
@@ -207,6 +278,7 @@ impl Packet {
                 .chunks(2)
                 .map(|c| u16::from_le_bytes([c[0], c[1]]))
                 .collect(),
+            acks,
         })
     }
 }
@@ -340,6 +412,63 @@ mod tests {
     }
 
     #[test]
+    fn a_late_peer_is_waited_for_and_both_agree() {
+        let mut world = World::with_level(Level::demo());
+        world.set_players(2);
+        let mut a = Session::new(world.clone(), 2, 0);
+        let mut b = Session::new(world.clone(), 2, 1);
+        // a starts 200 ticks before b; each tick both exchange packets (2 ticks of delay)
+        let mut to_a: Vec<(usize, Packet)> = Vec::new();
+        let mut to_b: Vec<(usize, Packet)> = Vec::new();
+        let (mut fa, mut fb) = (0, 0);
+        for t in 0..800 {
+            for (at, p) in std::mem::take(&mut to_a) {
+                if at <= t {
+                    a.receive(&p)
+                } else {
+                    to_a.push((at, p))
+                }
+            }
+            for (at, p) in std::mem::take(&mut to_b) {
+                // b isn't running yet: whatever reaches it before then is lost
+                if at > t {
+                    to_b.push((at, p))
+                } else if t >= 200 {
+                    b.receive(&p)
+                }
+            }
+            if a.can_advance() && fa < 500 {
+                a.advance(script(0, fa));
+                fa += 1;
+            }
+            to_b.push((t + 2, a.packet()));
+            if t >= 200 {
+                if b.can_advance() && fb < 500 {
+                    b.advance(script(1, fb));
+                    fb += 1;
+                }
+                to_a.push((t + 2, b.packet()));
+            }
+            assert!(a.lead() <= MAX_LEAD && b.lead() <= MAX_LEAD);
+        }
+        assert_eq!((fa, fb), (500, 500));
+        let mut reference = world;
+        for f in 0..500 {
+            reference.step_players(&[script(0, f), script(1, f)]);
+        }
+        for s in [&a.game, &b.game] {
+            assert_eq!(
+                (s.player.x, s.player.y),
+                (reference.player.x, reference.player.y)
+            );
+            assert_eq!(
+                (s.others[0].x, s.others[0].y),
+                (reference.others[0].x, reference.others[0].y)
+            );
+        }
+    }
+
+    #[test]
     fn udp_links_exchange_packets() {
         let pa = 40000 + (std::process::id() % 10000) as u16;
         let pb = pa + 1;
@@ -357,6 +486,7 @@ mod tests {
             player: 0,
             first_frame: 7,
             inputs: vec![16, 0],
+            acks: vec![],
         };
         a.send(&p);
         let mut got = Vec::new();
@@ -376,6 +506,7 @@ mod tests {
             player: 2,
             first_frame: 1234,
             inputs: vec![1, 16, 0x30],
+            acks: vec![7, 0, 1234567],
         };
         assert_eq!(Packet::parse(&p.to_bytes()), Some(p));
         assert_eq!(Packet::parse(&[1, 2]), None);

@@ -220,12 +220,13 @@ mod native {
                 None
             };
         if let Some((link, n, how)) = link {
-            let n = n.clamp(2, mmk_netplay::relay::MAX_ROOM);
-            let me = args.net_player.min(n - 1);
-            game.session.world.set_players(n);
-            let net = mmk_netplay::Session::new(game.session.world.clone(), n, me);
-            game.session.net = Some((net, link));
-            log(&format!("online: player {} of {n}, {how}", me + 1));
+            game.session.go_online(link, n, args.net_player);
+            let s = &game.session.net.as_ref().unwrap().0;
+            log(&format!(
+                "online: player {} of {}, {how}",
+                s.local + 1,
+                s.players()
+            ));
         }
         if let Some(x) = args.start_x {
             let w = &mut game.session.world;

@@ -270,6 +270,20 @@ pub fn close_assets() -> Result<(), JsValue> {
     })
 }
 
+/// Play the current course online through the relay at `url` (the course server's WebSocket,
+/// e.g. `ws://host:8641`): room `room`, `players` players (2–4), we are player `player` (1-based).
+/// Everyone in the room must be playing the same course; each waits for the others to start.
+#[wasm_bindgen]
+pub fn net_join(url: &str, room: &str, player: usize, players: usize) -> Result<(), JsValue> {
+    let me = player.clamp(1, 4) - 1;
+    let link = crate::web_net::WsLink::connect(url, room, me as u8)?;
+    with_web(|w| {
+        w.proxy
+            .send_event(UserEvent::Net(Box::new(link), players, me))
+    })?
+    .map_err(|_| JsValue::from_str("the game has stopped"))
+}
+
 /// Play a course: SMM2 course data, raw or zlib-compressed, or an encrypted `.bcd` (needs the
 /// opened game data's key table). Empty bytes play the demo strip. Resolves to
 /// `{name, style, theme}`.

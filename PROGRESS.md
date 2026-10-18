@@ -419,7 +419,10 @@ Not Nintendo's network: the engine talks to an open-source server the owner can 
   identical to a full replay) and `mmk-play --net-bind/--net-peer/--net-player` · up to 4 players
   ✅ · relay rooms on the course server (UDP, same port) with hole punching ✅ (direct once a peer
   answers a probe, relayed until then; `mmk-play --net-relay host:port --net-room NAME`; test: 4
-  peers through a live relay end identical to a full replay) · WebRTC for the web, versus ⬜
+  peers through a live relay end identical to a full replay) · browsers ✅ join the same rooms over a
+  WebSocket (`mmk server` HTTP port + 1; page "Play online…" or `?relay=&room=&player=&players=`;
+  checked with two headless browsers, one joining 3 s late: identical positions at frames 600 and
+  1200) · start sync (`MAX_LEAD` wait) and acked resends ✅ · WebRTC upgrade, versus ⬜
 - ✅ Accounts without Nintendo services; moderation for self-hosters (`--admin-token`: ban/unban,
   delete any course)
 

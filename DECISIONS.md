@@ -664,3 +664,19 @@ renderers upload a texture when a sprite first uses it. Measured on the same cou
   before a gesture. It schedules buffers from the main thread, so a long main-thread stall can
   click. An AudioWorklet needs wasm threads (cross-origin isolation) to share the mixer.
 
+
+## 2026-10-18 — Online play: relay rooms on the course server; browsers over WebSocket
+- **Rooms, not addresses.** Players join a named room (≤ 4) on the course server's relay instead
+  of typing each other's IPs. The relay tells members each other's public UDP addresses; peers
+  probe each other (hole punching) and talk directly once a probe gets through, relayed until then.
+  Direct `--net-bind/--net-peer` stays for LAN play.
+- **Browsers join the same rooms over a WebSocket** (`mmk server`, HTTP port + 1), not WebRTC.
+  Native WebRTC would need a large stack in every native build for web↔native cross-play; a
+  WebSocket bridge into the UDP rooms gives cross-play now and works through any NAT or firewall.
+  Cost: TCP head-of-line delay for browser players (rollback absorbs some of it). WebRTC data
+  channels stay a possible later upgrade for browser↔browser latency.
+- **Start sync and resends.** A session never runs more than `MAX_LEAD` (10) frames past the
+  inputs it has from everyone, so whoever starts first waits, and packets carry acks so inputs a
+  late or lossy peer missed are resent (up to 64 per packet). Found by a two-browser test where
+  the late joiner missed the first frames and both sides stalled.
+- The relay holds no accounts or course data; rooms expire 30 s after their members go quiet.

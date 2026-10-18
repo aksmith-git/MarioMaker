@@ -28,6 +28,8 @@
 //! The difficulty value is 100 − clear rate once a course has been played, as SMM1's 100 Mario
 //! bands use it. Courses are identified by SMM2-style codes (XXX-XXX-XXX).
 
+pub mod ws;
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -855,6 +857,22 @@ pub fn handle(
 }
 
 /// Serve the API on `addr` (e.g. "0.0.0.0:8640") until the process ends.
+/// Start the online-play relay: UDP on `udp_addr` (native players) and WebSocket on `ws_addr`
+/// (browsers), each in its own thread.
+pub fn start_relay(
+    udp_addr: &str,
+    ws_addr: &str,
+) -> Result<std::sync::Arc<mmk_netplay::relay::Hub>, String> {
+    let udp = std::net::UdpSocket::bind(udp_addr).map_err(|e| format!("udp {udp_addr}: {e}"))?;
+    let tcp = std::net::TcpListener::bind(ws_addr).map_err(|e| format!("tcp {ws_addr}: {e}"))?;
+    let hub = mmk_netplay::relay::Hub::new(udp);
+    let h = hub.clone();
+    std::thread::spawn(move || h.run_udp());
+    let h = hub.clone();
+    std::thread::spawn(move || ws::serve(h, tcp));
+    Ok(hub)
+}
+
 pub fn serve(store: Store, addr: &str) -> Result<(), String> {
     let server = tiny_http::Server::http(addr).map_err(|e| e.to_string())?;
     for mut req in server.incoming_requests() {

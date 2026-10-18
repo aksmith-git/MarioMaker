@@ -70,8 +70,7 @@ pub struct Session {
     pub scripted: Option<fn(u64) -> Input>,
     /// Local multiplayer: inputs of players 2–4 for the next ticks (set by the app each frame).
     pub extra_inputs: Vec<Input>,
-    /// Online play: a rollback session (player index = ours) and its UDP link.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Online play: a rollback session (player index = ours) and its link.
     pub net: Option<(
         mmk_netplay::Session<mmk_sim::World>,
         Box<dyn mmk_netplay::Link>,
@@ -98,7 +97,6 @@ impl Session {
             phase_frames: 0,
             scripted: None,
             extra_inputs: Vec::new(),
-            #[cfg(not(target_arch = "wasm32"))]
             net: None,
         }
     }
@@ -209,15 +207,39 @@ impl Session {
         }
     }
 
+    /// Play online from here: `players` players (2–4), we are player `me` (0-based).
+    pub fn go_online(&mut self, link: Box<dyn mmk_netplay::Link>, players: usize, me: usize) {
+        let n = players.clamp(2, mmk_netplay::relay::MAX_ROOM);
+        self.world.set_players(n);
+        let net = mmk_netplay::Session::new(self.world.clone(), n, me.min(n - 1));
+        self.net = Some((net, link));
+    }
+
     /// Exactly one sim tick (also used by the headless screenshot run).
     pub fn tick(&mut self, input: Input) {
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some((net, link)) = &mut self.net {
             // online: the rollback session owns the true world; we draw a copy of it
             for p in link.poll() {
                 net.receive(&p);
             }
-            net.advance(input);
+            if net.can_advance() {
+                net.advance(input);
+                if net.frame.is_multiple_of(600) {
+                    let g = &net.game;
+                    let at: Vec<String> = std::iter::once(&g.player)
+                        .chain(&g.others)
+                        .map(|p| format!("({:.1}, {:.1})", p.x, p.y))
+                        .collect();
+                    crate::app::log(&format!(
+                        "online: frame {}, lead {}, {} rollbacks, players at {}",
+                        net.frame,
+                        net.lead(),
+                        net.rollbacks,
+                        at.join(" ")
+                    ));
+                }
+            }
+            // (else: too far ahead of a peer, or waiting for the others to start; keep sending)
             link.send(&net.packet());
             self.world = net.game.clone();
             if let Some(d) = &mut self.director {

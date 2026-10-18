@@ -366,8 +366,39 @@ ui.forget.onclick = () =>
     await openData();
   });
 
+// ---- online play -----------------------------------------------------------------------------
+// Everyone picks the same course, then joins the same room on a course server's relay (its
+// WebSocket port, the HTTP port + 1); whoever is first waits for the others.
+
+function netJoin(relay, room, player, players) {
+  mmk.net_join(relay, room, player, players);
+  status(`Online: room “${room}”, player ${player} of ${players}. Waiting for the others…`);
+  ui.canvas.focus();
+}
+
+$("online").onclick = () =>
+  guard(() => {
+    const relay = prompt("Relay (the course server's WebSocket):", localStorage.getItem("mmk-relay") || "ws://localhost:8641");
+    if (!relay) return;
+    const room = prompt("Room name (1–16 characters, the same for everyone):", "SMCRAFT");
+    if (!room) return;
+    const players = Number(prompt("How many players (2–4)?", "2")) || 2;
+    const player = Number(prompt(`Which player are you (1–${players})?`, "1")) || 1;
+    try {
+      localStorage.setItem("mmk-relay", relay);
+    } catch {}
+    netJoin(relay, room, player, players);
+  });
+
 // for scripted checks (and the console)
-globalThis.mmkPage = { importFolder, openData, playBuiltin, play, readFile, removeData };
+globalThis.mmkPage = { importFolder, openData, playBuiltin, play, readFile, removeData, netJoin };
 
 await guard(openData);
+// ?relay=ws://host:8641&room=NAME&player=1&players=2 joins at once (after ?course=builtin name)
+{
+  const q = new URLSearchParams(location.search);
+  if (q.get("course")) await guard(() => playBuiltin(q.get("course")));
+  if (q.get("relay") && q.get("room"))
+    guard(() => netJoin(q.get("relay"), q.get("room"), Number(q.get("player")) || 1, Number(q.get("players")) || 2));
+}
 ui.canvas.focus();

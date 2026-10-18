@@ -161,6 +161,8 @@ pub enum UserEvent {
     /// Sound output for this and later games (the web page got its first user gesture, or new
     /// assets brought a new sound bank).
     Sound(Arc<AudioOut>),
+    /// Play the current course online from its start: the link, players, our player (0-based).
+    Net(Box<dyn mmk_netplay::Link>, usize, usize),
 }
 
 pub struct App {
@@ -460,6 +462,10 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Sound(out) => {
                 self.game.session.set_audio(Some(out.clone()));
                 self.sound = Some(out);
+            }
+            UserEvent::Net(link, players, me) => {
+                self.game.session.go_online(link, players, me);
+                log(&format!("online: player {} of {players}", me + 1));
             }
         }
     }
