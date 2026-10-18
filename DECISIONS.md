@@ -2,6 +2,187 @@
 
 Newest first. Each entry: what was decided, why, and what would change it.
 
+## 2026-10-18 — The Swift app runs the Rust front end (`mmk_front_*`); its screen classes are gone
+**Decision:** with the SMM2 UI import, the Apple app's screens are `mmk-front`'s, through a C API
+(`core/crates/ffi/src/front.rs`, section "front end" of `mmk.h`):
+- **Create:** `mmk_front_new(options, engine, assets, audio, host)` — the app makes the engine
+  (with its SMM1-extra options and character) and its audio, the front end loads, steps and
+  restarts courses on that engine. The `Host` is implemented in Rust over it (status from the
+  world as `mmk-play`'s host does; title courses from the cache / import; server listing,
+  downloads, reports and the online calls on threads with `mmk-online`; replays recorded for
+  server courses). The app only provides a callback table (`MmkFrontHost`): persistent values
+  (`saves` / `hundred` stay the app's `saves.json` / `hundred.json`, the openings-seen flags and
+  the character stay in UserDefaults, other keys go to UserDefaults `front.<key>`) and the pause
+  volume. The library is pushed as JSON (`mmk_front_set_library`) whenever the Swift scan
+  changes it, so the SwiftUI library and Course World list the same courses.
+- **Per tick:** `mmk_front_tick` (menu buttons, engine buttons, pause, skip, a click in layout
+  units); then `mmk_front_frame` (layout quad lists + a course-view item), `mmk_front_toast`,
+  `mmk_front_sounds` (WAV names, volume, delay), `mmk_front_status` (course shown / playing / a
+  direct play finished), textures through `mmk_front_texture(_count)`.
+- **Swift keeps** its renderer (the course where the frame has the course item, then the layouts
+  through `UILayer`, which now takes a texture-list closure), audio, input (keyboard, pads, touch
+  controls; clicks / taps via a SwiftUI tap on the game view), the SwiftUI library, Settings and
+  importer. `GameSession` is either the front end or plain play (no SMM2 UI import: drawn HUD,
+  SwiftUI pause / clear / game over).
+- **Removed:** `SMM2Boot/Title/CourseWorld/Course/Endless/Menus`, `Challenge`,
+  `ChallengeScreens`, `SMM1UI`, `SceneFade` (~4 500 lines). `UISound` only plays the WAVs the
+  front end names.
+- **Captures:** `MMK_UI_SCREENSHOT` + `MMK_UI_SCREEN` now name `mmk-play --front-screen`'s screens;
+  `MMK_UI_TICKS=n` runs n front-end ticks at once and holds (course screens: until the screen has
+  been up n ticks), as `mmk-play` does. Before / after on the same 30 screens: 27 identical, the
+  rest within an animation phase (numbers in PROGRESS.md Phase 8).
+- **Departures:** without the SMM2 UI import there is no 100 Mario Challenge any more (it was the
+  SwiftUI stand-in or the SMM1 layouts driven by Swift); the library's Story Mode filter is no
+  longer opened by the title (Story Mode lists the built-in courses in the course list, as in
+  `mmk-play`); `MMK_LIVES=on` no longer applies to SMM2-screen play; the demo strip plays plain.
+**Why:** one implementation of every screen for every platform (owner: "same screens
+everywhere"); the Swift copies had started to drift from the Rust port.
+**Would change:** a ghost in the Apple app needs the engine snapshot to draw a second world (the
+`ghost` online action answers "not shown in this app yet"); Settings screens in layouts.
+
+## 2026-10-18 — Course World online in the Rust front end: SMM2's own screens over our server
+**Decision:** `mmk-front` gets the Course World online features against the open-source server,
+each on the game's own layout where it has one:
+- **Account:** the hub's player card (`L_PlayerBody_00`) opens `Nwk_PlayerInfo_00` over the hub
+  (its InPlayerInfo / In). The game's face / name / outfit buttons become ours: "Create
+  account" (type a name, `register`), "Sign in with a token" (type an existing account's token,
+  checked with `me`), "Sign out" [departure: no Miis or Nintendo accounts]. The token and the
+  name / maker ID are kept with `Host::store_value` (`online.token`, `online.account`); the card
+  shows the name [inf].
+- **Course page:** "More info" on an open server course row opens `Nwk_CourseListWindow_00` in
+  its course mode (Type 2, contents `Nwk_CourseDetail_00`) over the list: likes, plays, the first
+  clearer and the record holder with the time (names fetched with `maker`), refreshed with
+  `info`. The maker's Mii button opens their profile (the window's maker mode, Type 0, with their
+  uploaded courses as course rows); the first clearer's button opens theirs; the record holder's
+  races the record's ghost (`ghost`, then the course) [inf: the game opens the holder's profile;
+  ghosts are ours]. The "Cleared by / Liked by" column shows the layout's "no one yet"
+  [departure: the server keeps no player lists].
+- **Likes / boos** where SMM2 has them: the judge buttons (`Cmn_GoodBtn_00` /
+  `Cmn_NegativeBtn_00`) on a server course's clear screen and in its pause menu (Type 2, the
+  judge row between the close button and Start Over; ←/→ between Boo and Like [inf]); the voted
+  one keeps the end of its Decide on both screens [inf].
+- **Comments:** "View comments" opens `Nwk_CommentViewer_00` (text comments, left and right in
+  turn, name and date; absolute dates because the host gives no clock for "n hours ago" [inf]);
+  confirm opens `Nwk_CommentPosting_00` in its text form to type one (signed in) [inf: the game
+  posts from the pause / clear screens].
+- **Leaderboards:** the hub's Leaderboards button opens `Nwk_CourseListMaker_00`: Course Makers =
+  `maker_points`; Players = clears, first clears, world records, Endless Easy / Normal / Expert /
+  Super Expert (the sort button's TypeClearCourse categories, cycled by it [inf: the game opens a
+  sort window]); ←/→ step through all eight; rows `Nwk_MakerData_00` (rank, name, score under its
+  label; own row TypeOwn); confirm opens the maker's profile. Versus, followed, friends and
+  official makers are hidden [departure].
+- **Clears:** signed in, a server course's clear is sent as its replay (`submit_replay`: the host
+  records every server course from its start and hands over the cleared run), the server
+  re-simulating it; refused, a plain `clear` with the time follows; with play options that change
+  play (`Host::play_options_affect_play`) the clear goes without a time and no replay [inf].
+  Signed out: the anonymous clear report as before. 100 Mario in SMM2's presentation reports the
+  run's courses cleared after each clear (`endless`; the server keeps the best) [inf: as the run
+  grows, so a run that ends any way counts].
+- **Input:** `FrontInput::text` (one typed key per tick: a character, '\u{8}' erase, '\n' done,
+  '\u{1b}' cancel) with `Front::typing()` telling the host when a field is open; `mmk-play`
+  then routes the keyboard there (`FrontApp::key_text`). Clicks select-and-decide on every new
+  screen, the course list, the Endless menu / map and the SMM1 100 Mario screens.
+- Messages shown by these screens come from the layouts' message tables at run time; our own
+  lines (button labels on the player info, toasts, "No comments yet.") are ours. Empty-list texts
+  go in the loading part's waiting line: its no-data text uses an outlined font style the layer
+  doesn't draw yet.
+**Why:** the owner's Phase 10 (accounts, likes, comments, leaderboards, records and ghosts)
+reachable from SMM2's own Course World on every platform, the server staying ours.
+**Open / would change it:** the pause / clear screens' comment buttons; the server timing a
+replay to the end of the clear (`Replay::run` stops at `World::cleared`) while the clear screen
+shows the goal time, so the record shown differs from the clear screen's time; a Course Maker in
+the front end (upload); thumbnails, Miis and per-player lists if the server gains them; the
+game's sort window, its relative comment times with a host clock.
+
+## 2026-10-18 — The web build runs the SMM2 front end; the UI cache reads through a file source
+**Decision:** the browser shows the same SMM2 menus as `mmk-play` (`mmk-front`), and the UI
+cache no longer reads files itself:
+- **`mmk_ui::UiFiles`** (`read(rel) → Fetch::{Ready, Later, Missing}`, `list`, `is_dir`):
+  `DirFiles` on disk (what `UiCache::open` uses, unchanged behaviour), `MemFiles` in memory.
+  A `Later` texture gets its id and size at once (sizes come from the layout JSON / font
+  metrics) with an empty stand-in (`TextureEntry::ready == false`); the host takes the requests
+  (`take_requests`), reads the files and hands them back (`provide`), as `mmk_assets::Cache`
+  does for the game's textures. Layouts, font metrics and message tables must be `Ready`.
+- **On the web**: the SMM2 UI import lives in OPFS `mmk-ui/` with a file list (`files.txt`;
+  walking ~500 folders of OPFS takes seconds). `open_front` reads all its JSON (782 files, 13 MB;
+  ~0.4 s) and the UI WAVs (19 MB, kept as bytes, decoded on first play) into memory, lists the
+  textures (170 MB) as `Later`; each frame `pump_ui` starts the reads, and the front end holds
+  (at most 30 frames) while they're on their way — screens appear whole; the layer skips quads
+  whose textures are still missing. The host (`web_front`): library = the game data's built-in
+  courses (decoded once in the background, kept zlib-compressed) plus files the page opens;
+  saves / settings in `localStorage`; no course server listing (no HTTP client in the web
+  build); a course's music is read when the front end loads it (until then the bank's music).
+  The import arrives as an `mmk import-smm2-ui` folder, or the in-page dump import makes it
+  (`smm2_ui` now reads through the importer's `Vfs`).
+**Why:** a pluggable source keeps one cache for every host; preloading everything (≈200 MB)
+would cost memory and start-up time, and a "not loaded yet, retry" path through every screen
+would spread async through the front end. Textures are the only bulk and the only thing a
+screen can show late.
+**Would change:** if a screen ever needs a layout the page could not read up front (it reads
+them all), or memory limits on mobile browsers call for evicting textures.
+
+## 2026-10-18 — SMM2 2.0/3.0 parts: own modules, behaviour from v3.0.3, test courses from the editor
+**Decision:** the 2.0/3.0 enemies, blocks and gizmos (Spike, Pokey, P Block, Dash Block,
+Mechakoopa, ON/OFF Trampoline, the Koopalings) live in `actors/v3.rs`, `actors/koopalings.rs`,
+`world/v3.rs`, `world/koopalings.rs` and `level/v3.rs`; the shared files only carry hook lines
+(Kind variants, dispatch arms, the contact / fire / shell / carry / tail / dash hooks, one
+`v3: V3State` actor field, one `v3: V3World` world field, one `v3: V3Tiles` level field). Numbers
+come from the v3.0.3 executable (specs in the private `research/specs/objects/`); as the sample
+corpus predates 2.0, every part has an editor-built test course and sim tests.
+**Choices the binary did not settle** (all marked in the code):
+- rolling spike balls / snowballs and a thrown knocked-down Mechakoopa knock out enemies they
+  run into [ext]; a carried snowball or robot hitting an enemy breaks like a carried shell [inf];
+- grabbing a Snow Pokey with Run puts a snowball in the player's hands [inf: the grab hits the
+  head and the player ends up holding it];
+- the missile's blast also knocks out enemies in its box [inf];
+- Koopalings: a Koopaling in a Clown Car is reported unsupported (its Clown context is not
+  modelled); Roy only comes up from the floor (the ≤ 33 % ceiling exits are not modelled);
+  Morton's winged feints, wing flight and parachute behaviour are not modelled; the ledge-jump
+  probe is one column one tile ahead;
+- the Mechakoopa laser and the spike-ball spin are effects the importer does not export: the beam
+  is drawn under its own name (`M1_Effect_laser`), which the cache lacks;
+- the P Switch lasts 540 frames (the course switch state's timer, 0x71016c4a48) instead of the
+  earlier [ext] 600.
+**What would change it:** frame-stepping v3.0.3 in Ryujinx (see each spec's "How to verify").
+
+## 2026-10-18 — The SMM2 front end lives in Rust (`mmk-front`); hosts only draw, play and input
+**Decision:** the SMM2 presentation — opening, scene fades, title and Play menu, Course World,
+100 Mario in SMM2's Endless screens or SMM1's, the in-course HUD / card / pause / settings /
+clear / give up / time up / game over screens, the course-play rules around them (when the
+engine steps, deaths, retries, the run's results) and the UI sound resolution — is the crate
+`core/crates/front` (`mmk-front`), a port of the Swift app's screens, platform-neutral:
+- **In:** per 60 Hz tick a `FrontInput` (menu buttons held, pause, skip, an optional click in
+  layout units) and a `Host` (the engine: load / step / restart a course and read a
+  `CourseStatus`; the library and the server listing; small key → string storage; a random
+  number). The front end never touches files, sockets, the sim or a GPU.
+- **Out:** `Front::frame()` — layout draw lists in order (`DrawItem::Layout`: quads, layout
+  size, which import's textures) with `DrawItem::Course` where the engine's picture goes (the
+  whole 16:9 view), plus a message (the Swift app's toasts); `Front::take_sounds()` — `SoundCue`s
+  (WAV names of the SMM2 UI import's `ui/sound/`, volume, delay in frames).
+- Scene changes are deferred `Go` values run when the fade has covered the screen, so screens
+  stay plain state machines without callbacks; captures make fades instant, as the Swift app's
+  frozen captures do (`MMK_FADES=1` keeps them).
+- `mmk-play` uses it by default when no course is given and the SMM2 UI import is found
+  (`--ui-cache`, `$MMK_UI_CACHE`, `~/smm-work/cache/smm2-ui-3.0.3`); its host is
+  `shell/src/front_host.rs` (library = a course folder + the asset cache's built-in courses,
+  scanned on a thread; server through `mmk-online` on a thread; saves and settings as files in
+  `~/.mmk-play`), its drawing `front_app.rs` (one `UiLayer` per import, the course with the game
+  renderer), its sound `ui_sound.rs` (UI clips mixed into the game's output stream).
+- **Verification:** `mmk-play --front-screen NAME --ticks N --screenshot out.png` renders the
+  same screens as the Swift app's `MMK_UI_SCREENSHOT` / `MMK_UI_SCREEN` / `MMK_UI_TICKS`; the
+  deterministic ones match it to within rounding (max channel difference ≤ 5).
+- Departures of the portable front end: Story Mode and Coursebot open the course list (over the
+  built-in Story Mode courses / the library) instead of the Swift app's SwiftUI library; dates in
+  the course list use the C library's local time zone (UTC on Windows for now); messages are drawn
+  with the shell's bitmap font.
+**Why:** one implementation for every platform (the owner's "same screens everywhere"), testable
+headless, and the Swift app can switch to it through the FFI (next step: a `mmk_front_*` C API —
+create with the UI import(s) and a host vtable of C callbacks, `tick(input)`, `frame()` returning
+draw items whose quads the existing `UILayer` already draws, `sounds()` — replacing the Swift
+screen classes). **Would change:** a web front end needs the UI cache read asynchronously (OPFS)
+before `Ui` can open layouts on demand; until then the web build keeps its plain HUD. (Done the
+same day: see "The web build runs the SMM2 front end".)
+
 ## 2026-10-18 — Name: SMCraft
 **Decision:** the project, app and window titles are **SMCraft** (owner's choice). App bundle id
 `dev.smcraft.app`; the macOS data folder becomes `Application Support/SMCraft` (an existing `MMK`
@@ -774,6 +955,162 @@ renderers upload a texture when a sprite first uses it. Measured on the same cou
   last-bit difference between Apple's library and musl's) — the case this prevents across
   machines. Front ends (rendering, audio) may keep using the platform functions.
 
+
+## 2026-10-18 — Course Maker writes what real course files contain
+- **Ground truth is the file, then the binary.** Every encoding the editor writes (pipe anchors
+  per direction, warp ids, door / warp box pairs, link ids, track records and their end codes,
+  path nodes, big parts' doubled size, rider positions, management flags) was checked against the
+  550 sample courses; the per-part sizes, forms and composition flags come from the game's own
+  editor part table. Where the sample is irregular (track joint codes at diagonal bends) the editor
+  writes the most common value per case; the engine reads tracks from geometry, so play is
+  unaffected either way.
+- **Rules are data where possible.** Overlap is decided by layers (semisolid-like parts behind,
+  ground-embeddable parts such as Monty Moles and claws, everything else solid), chosen because
+  that is what the sample shows; the start zone (columns 0–6 up to three rows above the start
+  ground) and the goal ground are protected because no sample course puts anything there.
+- **Limits per area, as the game counts them.** The editor's part counters (general, power-ups,
+  plain blocks, terrain, and per-part ones) and their limits come from the v1.0.0 placement check;
+  a block or coin with wings or a link moves to the general counter, as in the game. There are no
+  per-course counters (the often-quoted "2 checkpoints" is 1 per area).
+- **Edits are all-or-nothing.** Paste and move check every placement and restore the course on
+  failure; the UI wraps each action in one undo checkpoint and drops it when nothing changed.
+- **Editor-laid tracks are straight or 45°.** Bends and junctions in opened files are kept and
+  their end codes left untouched; laying them waits for the game's bend geometry.
+- **Paths are stored as steps.** The editor takes a heading and a list of steps and encodes the
+  node codes (straight, corner, end) itself, so the UI and the file can't disagree.
+
+## 2026-10-18 — SMM1 extras are engine options, by name
+- Phase 11's SMM1 behaviours are fields of one `mmk_sim::Options` value, each off by default; with
+  all of them off the simulation is the SMM2 one (every existing test passes unchanged). A world
+  keeps its options across deaths and restarts; hosts hold one value and hand it to every world
+  they make (`World::set_options`), so a course load or restart can't drop a setting.
+- Hosts address options by name and integer (`Options::set` / `get` / `apply`): the FFI has one
+  setter/getter pair (`mmk_engine_set_option(engine, "smm1_shell_kicks", 1)`), the command lines
+  take `--option NAME=VALUE` plus a flag per option. A new option needs no new entry point and no
+  C struct layout change (the app's header is owned by the Swift side).
+- Options follow the binary, not memory: the request said "pipes drawn over the player", but
+  SMM1 draws the player in front of pipes in play; the option is `smm1_layering`, SMM1's whole
+  depth ladder. The shell option likewise carries everything SMM1's shell code does differently
+  from the engine (window, no-bounce kick, kicker windows, re-kick, wall assist).
+- SMM2 courses contain no Weird or Mystery Mushrooms, so `smb1_mushroom` turns every Super
+  Mushroom item of an SMB1-style course into one (SMM1 made them by shaking the Super Mushroom,
+  SMB1 only). That includes the Super Mushroom a small player gets from a Fire Flower block — the
+  simple rule, kept on purpose.
+- Costumes are numbered as SMM1 numbers them (0–99, amiibo 100 + n); the importer reads that order
+  from the owner's executable, so no costume list is in the repository. The sim only knows ids
+  and draws `SMM1_Costume_<id>`; random picks come from the costumes the host has art for
+  (`Options::costume_pool`, set by the FFI engine and `mmk-play` from the merged cache).
+- The SMM1 art and sounds are a separate asset cache (`<smm1 cache>/sprites`) merged into the
+  SMM2 one at load time (`Cache::merge`); without it the extras still play, drawn with SMM2
+  stand-ins (small Mario, Super Mario, the Super Mushroom).
+- Options are not yet part of replays, rollback sessions or `World::checksum` input: a replay
+  or an online session is only valid with all options off (⬜ carry them in both).
+
+## 2026-10-18 — Story Mode and the Dojo run the game's own event flows
+- **The flows are the rules.** SMM2 keeps almost all of Story Mode (which jobs are offered when,
+  build order, givers, crises, ending, post-game) in `Pack/QuestEventFlow.pack`, and the Dojo's
+  lessons in `EventFlow/lesson_*`. The engine reads them at import time from the owner's dump
+  (`eventflow/*.bfevfl` in the asset cache, never in git) and runs them on a small interpreter
+  (`mmk_story::flow`) instead of re-coding them; our code is the `QuestSystemActor` rules the flows
+  call (story-mode.md §2–§6) and a request / answer loop for the screens. Hand-coding the story
+  from the tables was the alternative; it would have meant transcribing 3 900 lines of flow.
+- **Forks run sequentially.** SMM2 uses forks to overlap presentation (a fade with a camera move);
+  running each branch to the join in order keeps the logic and lets a screen without the 3D hub
+  skip presentation entirely.
+- **Every UI and presentation action is a `Request`** (message, job list, build menu, reward
+  window, enter course, staff roll, save, or `Present(call)` for camera / animation / fade / wait /
+  demo). Pure state changes happen at once. A screen answers questions (`answer`), the lists
+  (`order_job`, `order_build`) and calls `step` again; the 2D hub lists `hub_things()` (map
+  objects whose gates hold) as the places to talk.
+- **Story state is our JSON, with quest.dat's meaning** (per-job / per-build bits, days, coins,
+  ordered job, one-time bits, gear, talk words, named flags) plus the two unlocks SMM2 keeps in
+  the main save. Session-only values (selected build, pop-up queue, last result) stay in memory as
+  in the game.
+- **Move flags settle whenever the hub is rebuilt** (after a course, after a load), which is when
+  SMM2 rebuilds the Story scene from its save buffer; that is how NPCs "move on" between visits.
+- **Table columns by CRC32.** The Story / lesson tables have Japanese column names and enum values;
+  the importer matches them by the CRC32 of the name and writes English JSON (`story/*.json`,
+  `lessons/index.json`), so no game text is in the source.
+- **Inferred, to verify in Ryujinx:** Try Again after TOO BAD restarts with 5 lives; the attempt
+  counter behind the "struggling" play type counts misses (its writer was not found);
+  `checkFirstTalked` / `checkFirstTalkedFromPowerOn` are per-NPC "talked this visit / since
+  start"; `checkBuildEndTriggerForBuildChief` is the lowest finished build the Chief has not yet
+  announced; `checkBGMChangeProgress` (manager +0x80) answers 0.
+
+## 2026-10-18 — Endless Challenge on SMM2's rules, server-held runs
+- **Separate from `hundred`, shaped like SMM2.** The run record is authoritative, as Nintendo's
+  server is in SMM2; the offline `Session` applies the same `RunRecord::report` the server does,
+  so a local save mirrors the server.
+- **Starting lives 5** [ext]: the binary has no client default (the server sends it); kept as one
+  constant per difficulty so it can follow a verified value.
+- **Quit restores the client's counters to the snapshot, but the saved record keeps lives already
+  lost.** The binary reloads lives from the server record on a retry, so the server counts each
+  miss; quitting cannot refund lives.
+- **Reports carry what the course gained**, not run totals (coins and score since the snapshot,
+  before the bonus); the record adds the time bonus from `frames_left` and caps pending at 3.
+- **Pick rule.** Bands by clears ÷ attempts with at least 20 attempts: Easy ≥ 34 %, Normal 12–34 %,
+  Expert 3–12 %, Super Expert < 3 % [inf]; uniform within the band; only an empty band widens
+  (±1, ±2, ±3, then unrated), and that is reported. Courses drawn into a run are never drawn again;
+  never the player's own or banned courses; `next` is idempotent and Continue replays the course
+  being played. Endless plays feed the courses' statistics (a play on first report, an attempt per
+  miss or clear, a clear without a record time).
+
+## 2026-10-18 — Coursebot slots and Dojo state
+- **The game's slot indirection is kept**: a 180-entry slot table maps course number → file
+  number, so a drag is a swap of table entries (My Courses only, as in v3.0.3) and files are never
+  renamed. Coursebot metadata (name, description, style, clear check, upload code, Downloaded
+  stats) lives in the Coursebot index keyed by file number; hosts write name / description into the
+  course header when they hand a slot to the editor or the uploader. Files: `course_data_NNN.bcd`
+  (the course bytes as the engine loads them), `course_thumb_NNN.png`, `course_replay_NNN.dat`
+  (our replay format, dropped when the slot is overwritten). Overwriting needs an explicit
+  confirmation from the screen.
+- **Dojo completion** is 128 bits (stored as a hex string); only Maker Lessons set bits, Maker
+  Basics sets its own flag (which also grows the title-course rotation from 8 to 10), power-up
+  lessons set nothing; Nina's introduction is one flag for every lesson kind (save +0x100 bit 10).
+
+## 2026-10-18 — Native SMM2 port by static recompilation: base on LAS Recomp, borrow from the Wonder framework
+**Goal (owner):** a native port of Super Mario Maker 2 v3.0.3 for macOS, Windows, Linux, iOS/iPadOS
+and the web, built by static recompilation from the player's own dump, with SMM1's 100 Mario
+Challenge and Mystery Mushroom costumes as mods. It lives in `recomp/`; SMCraft stays as it is.
+
+**Survey** (r/decomps posts named by the owner, checked against the projects' own repos, Oct 2026):
+| Project | Method | Reuses / provides | License | Platforms |
+|---|---|---|---|---|
+| SwitchRecomp (Super Mario Odyssey) | static ARM64→C, own Horizon layer, NVN→Vulkan/OpenGL | its own runtime | not released (no code) | PC; Android announced |
+| SuperMarioWonderRecomp ("SwitchGamesRecomp") | static AArch64→C++; shared `runtime/` + per-game `games/<g>/` (Wonder, Hades) | kernel/IPC/`nn::*` HLE written for it; NVN replayed into Vulkan (MoltenVK on Mac); Maxwell shaders → SPIR-V offline with the **Ryujinx translator (MIT)**; SDK AudioRenderer in process | MIT | macOS arm64 (tested); Windows planned; Android in progress; no iOS/web |
+| LAS Recomp (Link's Awakening, 2019) | static AArch64→C (Python lifter, Capstone; Unicorn for jump tables), **recompiled on the player's machine at first launch** | own kernel/services/NVN; **native Metal** (macOS) + Vulkan (Win/Linux); envytools-based Maxwell shader translator; SDL3 | MIT | macOS arm64, Windows x64, Linux x64 (aarch64 experimental); no iOS/web |
+| SkyRecomp (Skyward Sword HD) | LAS Recomp's pipeline retargeted to another game | LAS runtime + NVN layer | MIT | Windows, Linux, macOS (Metal) |
+| HD-2D A Link to the Past (WIP) | fan remake on the SNES decompilation (not a recomp) | — | — | — |
+
+**Decision:** static recompilation, built on **LAS Recomp** (fork into `recomp/`, MIT, upstream commit
+recorded in `recomp/UPSTREAM.md`), borrowing from SuperMarioWonderRecomp where it is stronger.
+- Nothing public handles SMM2 out of the box; SwitchRecomp has no code to build on.
+- LAS Recomp has already been retargeted to a second game (SkyRecomp), so its recompiler and runtime
+  aren't welded to one title. Its SDK/NVN generation (2019) matches SMM2 v3.0.3, whose libraries are
+  tagged SDK 7.3.2 / NEX 4.6.2 (2019) — Wonder targets a 2023 SDK, and NVN is resolved by name (SMM2
+  imports 513 `nvn*` names), so the closer generation carries over more.
+- Native Metal on macOS is the best route to iOS/iPadOS (Metal, AOT — static recompilation needs
+  no JIT), with Vulkan for Windows/Linux.
+- It recompiles on the player's machine from their dump, so the repo and any release hold none of
+  the game's code — the same rule SMCraft follows.
+- Its patch/mod layer (`runtime/hle/*`, `tools/patches.py`) suits the 100 Mario and costume mods.
+- From the Wonder framework: the shared-runtime / per-game split as the layout goal, and its
+  Ryujinx-translator-based shader path (the owner asked to reuse Ryujinx, MIT) if LAS's translator
+  falls short on SMM2's shaders.
+- **Reference runtime:** Ryujinx (MIT), already set up with the owner's dump, for frame captures and
+  input-replay comparisons (the render-diff setup and the memory-reading Ryujinx built for SMCraft).
+
+**Done means evidence, per platform** (tracked in PROGRESS.md "Recomp"): boots to the title and
+plays courses; frame captures match Ryujinx on the same dump; recorded-input replays stay in sync
+with Ryujinx frame for frame (positions and outcomes).
+
+**Web:** last. A recompiled game is ~1–2 GB of generated C and uses 3–4 GB of guest memory; it needs
+wasm64 (memory64), threads (SharedArrayBuffer) and an NVN→WebGPU backend. Whether that's practical is
+decided after the native ports, with the reasons written down either way.
+
+**Rules:** no Nintendo binaries, assets, keys, recompiled output or disassembly in git —
+`scripts/check_no_proprietary.py` now also blocks native binaries, SPIR-V, AArch64 ELFs, anything
+under `recomp/private|generated|build/`, and text that looks like disassembly or recompiled code.
 ## 2026-10-18 — Gameplay sound from the game's own sound links
 - What each event sounds like comes from the user's own data, not from code: the importer
   turns `SLink2/SLink2DB` (per object and style: event keys → trees of switch / random / blend /
@@ -793,7 +1130,9 @@ renderers upload a texture when a sprite first uses it. Measured on the same cou
   decoded to PCM per course. The course sound set only grows during a course, so a wave
   loaded on first play doesn't cut voices.
 - Caches without `sound.json` keep the old fixed SMB1 set (`audio/index.json`). The importer
-  no longer writes the `audio/music/<style>_<theme>` copies; re-run `mmk import`.
+  no longer writes the `audio/music/<style>_<theme>` copies; re-run `mmk import` (importer
+  version 7). SMM1 costume sounds (Phase 11) are added to the course sound set when a costume
+  is put on, in both directors (the mixer has no music slots any more).
 - Choices where the game's behaviour is not known are marked [inf] in code and in the private
   `research/specs/audio.md` §11: pan depth 0.5, the attenuation reference (the view's edge),
   effect sends at 1.0, limit types other than 2 needing a strictly higher priority, the Yoshi

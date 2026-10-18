@@ -23,12 +23,15 @@ use mmk_formats::smm2::keyfind;
 use serde_json::{Value, json};
 
 pub mod meshes;
+pub mod modes;
 pub mod sprites;
 
 /// 5: mesh stage (meshes/, anims/), StaticModel.pack models of the 3D styles.
-/// 6: gameplay sound database (`audio/sound.json`, `audio/se/`, music by the game's names).
-pub const IMPORTER_VERSION: u32 = 6;
+/// 6: modes stage (story/, lessons/, eventflow/: Story Mode and Dojo data).
+/// 7: gameplay sound database (`audio/sound.json`, `audio/se/`, music by the game's names).
+pub const IMPORTER_VERSION: u32 = 7;
 pub mod smm1;
+pub mod smm1_costumes;
 pub use smm1::{Smm1Config, Smm1Report, run_smm1};
 pub mod smm2_font;
 pub mod smm2_ui;
@@ -83,6 +86,8 @@ pub struct ImportReport {
     pub meshes: usize,
     pub anims: usize,
     pub builtin_courses_verified: usize,
+    /// Story Mode / Dojo data written by the modes stage.
+    pub modes: modes::ModesReport,
 }
 
 /// Progress callback: (stage, done, total).
@@ -399,13 +404,18 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
     // the gameplay sound database and every wave it names (effects, music)
     let sounds = sound::import_sounds(&cfg.romfs, &out, progress)?;
 
-    // 6. manifest
+    // 6. Story Mode and Dojo: event flows, job / build / flag tables, hub map, lesson list
+    progress("modes", 0, 1);
+    let modes_report = modes::import_modes(&cfg.romfs, &out)?;
+    progress("modes", 1, 1);
+
+    // 7. manifest
     let manifest: Value = json!({
         "importer_version": IMPORTER_VERSION,
         "game": "SMM2",
         "build": build,
         "module_id": nso.module_id_hex(),
-        "stages": ["identify", "keys", "tables", "textures", "audio", "sprites", "meshes"],
+        "stages": ["identify", "keys", "tables", "textures", "audio", "sprites", "meshes", "modes"],
         "texture_styles": STYLES,
         "mesh_styles": meshes::MESH_STYLES,
         "textures": texture_count,
@@ -419,6 +429,9 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
         "mesh_vertices": counts.meshes.vertices,
         "tables": tables,
         "builtin_courses": courses.len(),
+        "story_flows": modes_report.story_flows,
+        "lesson_flows": modes_report.lesson_flows,
+        "lessons": modes_report.lessons,
     });
     write(
         &out.join("manifest.json"),
@@ -436,5 +449,6 @@ pub fn run(cfg: &ImportConfig, progress: Progress) -> Result<ImportReport> {
         meshes: counts.meshes.meshes,
         anims: counts.meshes.anims,
         builtin_courses_verified: courses.len(),
+        modes: modes_report,
     })
 }

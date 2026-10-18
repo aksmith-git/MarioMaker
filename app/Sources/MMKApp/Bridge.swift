@@ -25,6 +25,12 @@ final class EngineAssets: @unchecked Sendable {
 
     static func open(_ url: URL) throws -> EngineAssets {
         guard let h = mmk_assets_open(url.path) else { throw EngineError(lastEngineError()) }
+        // SMM1 costumes and Lanky Mario, when the SMM1 import has them (before any engine)
+        if let smm1 = AppPaths.findSMM1Cache() {
+            mmk_assets_add_smm1_sprites(h, smm1.appendingPathComponent("sprites").path)
+        }
+        let costumes = CostumeList.read(h)
+        Task { @MainActor in CostumeList.entries = costumes }
         return EngineAssets(handle: h, url: url)
     }
 

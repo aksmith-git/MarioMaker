@@ -140,6 +140,27 @@ size_t mmk_online_search(const char *server, const char *query, const char *sort
                          uint32_t limit, char *buf, size_t cap);
 bool mmk_online_download(const char *server, const char *code, const char *path);
 bool mmk_online_report(const char *server, const char *code, const char *what); // play / clear / like
+// Accounts and the rest (JSON in and out; token NULL = anonymous). action: register {name} →
+// {account, token}; me; vote {code, like}; clear {code, time_ms}; comments {code}; comment
+// {code, text}; maker {maker_id}; rankings {kind, limit}; endless {difficulty, cleared};
+// delete {code}; submit_replay {code, path}; record_replay {code, path}. Returns the result's
+// length (cap 0 sizes it), 0 on error (mmk_last_error).
+size_t mmk_online_call(const char *server, const char *token, const char *action, const char *args,
+                       char *buf, size_t cap);
+
+// SMM1 extras (options are off by default; core/crates/ffi/src/options.rs, costumes.rs).
+// Options: smm1_shell_kicks 0/1, smm1_layering 0/1, smb1_mushroom 0 off / 1 mystery / 2 weird,
+// costume -1 random or an SMM1 costume id. mmk_engine_option returns INT32_MIN for unknown names.
+bool mmk_engine_set_option(MmkEngine *engine, const char *name, int32_t value);
+int32_t mmk_engine_option(const MmkEngine *engine, const char *name);
+// The SMM1 sprite cache (`<smm1 cache>/sprites`, made by mmk import-smm1): costumes, Lanky Mario.
+// Add to the assets before reading the texture count or creating engines; returns textures added.
+uint32_t mmk_assets_add_smm1_sprites(MmkAssets *assets, const char *path);
+uint32_t mmk_assets_costume_count(const MmkAssets *assets);
+int32_t mmk_assets_costume_id(const MmkAssets *assets, uint32_t index);
+const char *mmk_assets_costume_name(const MmkAssets *assets, uint32_t index);
+bool mmk_audio_add_smm1_sprites(MmkAudio *audio, const char *path);
+void mmk_engine_use_costumes(MmkEngine *engine, const MmkAssets *assets);
 
 // Blocks until done; run off the main thread. update_* may be NULL. Writes <out_root>/smm2-<build>/.
 bool mmk_import_run(const char *romfs, const char *exefs, const char *update_romfs,
@@ -273,6 +294,99 @@ bool mmk_ui_set_picture(MmkUi *ui, MmkUiLayout *layout, const char *pane, const 
 bool mmk_ui_set_material_color(MmkUiLayout *layout, const char *pane, uint32_t which, const uint8_t *rgba);
 // Width (pane units) of text pane `pane`'s widest line; -1 if there is no such text pane.
 float mmk_ui_text_width(const MmkUiLayout *layout, const char *pane);
+
+// --- front end (core/crates/ffi/src/front.rs) --------------------------------------------------
+// The SMM2 screens of `mmk-front` (opening, title, Course World, 100 Mario, in-course screens),
+// the same ones mmk-play shows. The app creates the engine and hands it over; the front end
+// loads, steps and restarts courses on it. Per 60 Hz tick: mmk_front_tick, then draw
+// mmk_front_frame (layout quads drawn like mmk_ui_draw_list's, the course view where an item says
+// so) and play mmk_front_sounds. Main thread only.
+
+typedef struct MmkFront MmkFront;
+
+typedef struct {
+    void *user;
+    // value `key` (save data "saves", 100 Mario "hundred", settings): write it NUL-terminated
+    // into buf when it fits in cap and return its length; -1 when there is none
+    int64_t (*load_value)(void *user, const char *key, char *buf, size_t cap);
+    void (*store_value)(void *user, const char *key, const char *value);
+    void (*set_paused)(void *user, bool paused);   // music down while paused
+} MmkFrontHost;                                                        // 32 bytes
+
+enum { MMK_FRONT_BOOT = 1, MMK_FRONT_INSTANT_FADES = 2, MMK_FRONT_HUNDRED_SMM1 = 4 };
+typedef struct {
+    const char *smm2_ui;        // SMM2 UI import folder (required)
+    const char *smm1_ui;        // SMM1 import folder or NULL
+    const char *server;         // course server URL, NULL / "" none
+    const char *downloads;      // folder for server courses (NULL: temp)
+    const char *opening;        // force an opening (InDefault, InLink, …) or NULL
+    const char *script;         // captures: MMK_UI_SCRIPT presses, or NULL
+    const char *title_input;    // captures: MMK_UI_INPUT presses, or NULL
+    uint32_t flags;             // MMK_FRONT_BOOT | _INSTANT_FADES | _HUNDRED_SMM1
+    uint32_t title_start;       // 0 press-a-button, 1 Make / Play, 2 Play menu
+    int32_t title_select;       // Play menu button, -1 none
+    int32_t title_course;       // title demo course, -1 random
+} MmkFrontOptions;                                                     // 72 bytes
+
+typedef struct {
+    uint32_t menu;              // held: 1 up, 2 down, 4 confirm, 8 back, 16 left, 32 right
+    uint32_t buttons;           // engine buttons (MMK_BTN_*) for the course
+    uint32_t flags;             // bit 0 pause held, bit 1 skip held, bit 2 click this tick
+    float click_x, click_y;     // layout units (1280x720 view, origin centre, y up)
+    uint32_t text;              // typed key while MMK_FRONT_TYPING: a Unicode scalar, 8 erase,
+                                // 10 finish, 27 cancel, 0 none (one per tick)
+} MmkFrontInput;                                                       // 24 bytes
+
+typedef struct {
+    uint32_t kind;              // 0 layout quads, 1 the course view (the whole 16:9 view)
+    uint32_t ui;                // 0 SMM2 import's textures, 1 SMM1 import's
+    float width, height;        // layout size in layout units (origin centre, y up)
+    const MmkUiQuad *quads;
+    size_t quad_count;
+} MmkFrontItem;                                                        // 32 bytes
+
+typedef struct {
+    const char *name;           // <smm2 ui>/ui/sound/<name>.wav
+    float volume;
+    float delay;                // frames
+} MmkFrontSound;                                                       // 16 bytes
+
+enum { MMK_FRONT_COURSE_SHOWN = 1, MMK_FRONT_COURSE_DONE = 2, MMK_FRONT_PLAYING = 4, MMK_FRONT_NO_SCREEN = 8,
+       MMK_FRONT_TYPING = 16 };
+typedef struct {
+    uint32_t flags;             // MMK_FRONT_COURSE_SHOWN | _COURSE_DONE | _PLAYING | _NO_SCREEN | _TYPING
+    uint32_t _pad;
+    uint64_t engine_tick;
+} MmkFrontStatus;                                                      // 16 bytes
+
+// engine / assets (and audio, NULL = silent) must outlive the front end. NULL on error.
+MmkFront *mmk_front_new(const MmkFrontOptions *opts, MmkEngine *engine, const MmkAssets *assets,
+                        const MmkAudio *audio, MmkFrontHost host);
+void mmk_front_free(MmkFront *front);
+// library JSON: [{id (path), name, description, style, theme, playable, built_in, collection,
+// key, modified, meta: {clear_rate, bucket, maker, code, world_record_ms, plays, likes, clears,
+// attempts, uploaded, tags}}]
+void mmk_front_set_library(MmkFront *front, const char *json);
+void mmk_front_set_server(MmkFront *front, const char *server);
+void mmk_front_tick(MmkFront *front, const MmkFrontInput *input);
+// valid until the next mmk_front_frame
+size_t mmk_front_frame(MmkFront *front, const MmkFrontItem **out);
+size_t mmk_front_toast(const MmkFront *front, char *buf, size_t cap);   // 0 = none; cap 0 sizes it
+// the UI sounds started since the last call; valid until the next call
+size_t mmk_front_sounds(MmkFront *front, const MmkFrontSound **out);
+void mmk_front_status(const MmkFront *front, MmkFrontStatus *out);
+// textures of import ui (0 SMM2, 1 SMM1); the list grows as screens open layouts
+size_t mmk_front_texture_count(const MmkFront *front, uint32_t ui);
+bool mmk_front_texture(MmkFront *front, uint32_t ui, size_t index, MmkTextureInfo *out);
+// play a course file with the SMM2 screens (name NULL: the course's own); then status
+// MMK_FRONT_COURSE_DONE when the player leaves it
+bool mmk_front_play_course(MmkFront *front, const char *path, const char *name, bool intro);
+// captures (mmk-play --front-screen names): boot, title…, courseworld…, challenge…; course-*
+// over mmk_front_play_course; then run ticks at once (course_screen: until the menu has been
+// up `ticks` ticks; scripted: the smoke test's input)
+bool mmk_front_capture(MmkFront *front, const char *screen, uint32_t difficulty, uint32_t cleared);
+bool mmk_front_debug_course(MmkFront *front, const char *screen);
+void mmk_front_run_ticks(MmkFront *front, uint64_t ticks, bool course_screen, bool scripted);
 
 // --- meshes (core/crates/ffi/src/mesh.rs) ------------------------------------------------------
 // NSMBU / 3D World models from the asset cache (meshes/, anims/), loaded on first use and kept

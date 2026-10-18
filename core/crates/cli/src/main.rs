@@ -103,6 +103,14 @@ enum Cmd {
         /// Cache folder of one build.
         out: PathBuf,
     },
+    /// Import only the Story Mode / Dojo data (event flows, Story tables, hub map, lesson list)
+    /// into an existing SMM2 asset cache folder (the `modes` stage of `import`).
+    ImportModes {
+        /// Extracted RomFS (update applied).
+        romfs: PathBuf,
+        /// The cache folder, e.g. ~/smm-work/cache/smm2-3.0.3
+        out: PathBuf,
+    },
     /// Decode a BFLYT / BFLAN / BFFNT / MSBT file (Yaz0 removed) and print it as JSON.
     Lyt { file: PathBuf },
     /// Smoke-run courses headlessly with a scripted run-and-jump input: reports crashes, how far
@@ -168,6 +176,23 @@ enum Cmd {
         /// Frames per course (60 per second).
         #[arg(long, default_value_t = 3600)]
         frames: u32,
+        /// SMM1 extra: SMM1 shell physics (mid-air shell kicks, shell jumps).
+        #[arg(long)]
+        smm1_shell_kicks: bool,
+        /// SMM1 extra: SMM1 draw order (the player travels between blocks and pipes, coins behind
+        /// blocks, tracks in front of pipes, …).
+        #[arg(long)]
+        smm1_layering: bool,
+        /// SMM1 extra: Super Mushrooms in SMB1-style courses become Mystery Mushrooms or Weird
+        /// Mushrooms: off, mystery, weird.
+        #[arg(long, value_name = "off|mystery|weird")]
+        smb1_mushroom: Option<String>,
+        /// SMM1 extra: the Mystery Mushroom costume id, or "random" (default).
+        #[arg(long, value_name = "ID|random")]
+        costume: Option<String>,
+        /// Any engine option as NAME=VALUE (repeatable).
+        #[arg(long = "option", value_name = "NAME=VALUE")]
+        options: Vec<String>,
         /// Print each course's final state hash (compare two runs, e.g. in separate processes,
         /// to catch nondeterminism that would desync online play).
         #[arg(long)]
@@ -204,8 +229,13 @@ enum Cmd {
         trust_proxy: bool,
     },
     /// Upload a course (raw, zlib or .bcd needs decrypting first) to a course server.
+    /// Upload courses (raw, zlib, or .bcd with --keys); several at once seed a new server.
     Upload {
-        file: PathBuf,
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+        /// Course key table for encrypted .bcd files (an asset cache's keys/course_table.bin).
+        #[arg(long)]
+        keys: Option<PathBuf>,
         #[arg(long, default_value = "http://localhost:8640")]
         server: String,
         #[arg(long, default_value = "anonymous")]
@@ -355,6 +385,28 @@ fn export_textures(file: &PathBuf, out: &std::path::Path) -> Result<(), String> 
     };
     std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
     for blob in blobs {
+        if blob.starts_with(b"FRES") && blob.get(4) == Some(&3) {
+            // Wii U BFRES (SMM1): GX2 textures, written as PNG when they decode to RGBA8
+            for t in mmk_formats::bfres_wiiu::textures(&blob).map_err(|e| e.to_string())? {
+                println!(
+                    "{}",
+                    json!({ "name": t.name, "w": t.width, "h": t.height,
+                        "gx2_format": format!("{:#x}", t.format), "tile_mode": t.tile_mode })
+                );
+                if let Ok(img) = t.decode()
+                    && img.kind == mmk_formats::bflim::PixelKind::Rgba8
+                {
+                    write_png(
+                        &out.join(format!("{}.png", t.name)),
+                        t.width as usize,
+                        t.height as usize,
+                        &img.data,
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+            }
+            continue;
+        }
         let Some(b) = bntx::find_embedded(&blob) else {
             continue;
         };
@@ -422,6 +474,14 @@ fn audio_cmd(
             "codec": format!("{:?}", c.codec), "rate": c.sample_rate, "samples": c.samples,
             "samples_here": c.samples_here, "loop": w.loop_range(), "prefetch": w.prefetch })
     };
+    // Wii U waves (SMM1): converted to BWAV first
+    for (_, blob) in blobs.iter_mut() {
+        if blob.starts_with(b"FWAV") {
+            *blob = audio::Fwav::parse(blob)
+                .map_err(|e| e.to_string())?
+                .to_bwav();
+        }
+    }
     let mut found = false;
     for (container, blob) in &blobs {
         let mut sounds: Vec<(String, Bwav)> = Vec::new();
@@ -743,8 +803,31 @@ fn main() -> ExitCode {
             each,
             keys,
             frames,
+            smm1_shell_kicks,
+            smm1_layering,
+            smb1_mushroom,
+            costume,
+            options,
             checksum,
-        } => simulate(&files, each || checksum, keys, frames, checksum),
+        } => {
+            let mut o = mmk_sim::Options {
+                smm1_shell_kicks,
+                smm1_layering,
+                ..Default::default()
+            };
+            let assignments = smb1_mushroom
+                .map(|m| format!("smb1_mushroom={m}"))
+                .into_iter()
+                .chain(costume.map(|c| format!("costume={c}")))
+                .chain(options);
+            for a in assignments {
+                if let Err(e) = o.apply(&a) {
+                    eprintln!("{e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            simulate(&files, each || checksum, keys, frames, checksum, o)
+        }
         Cmd::MissingArt {
             files,
             assets,
@@ -947,13 +1030,16 @@ fn main() -> ExitCode {
                         eprintln!("skipped: {s}");
                     }
                     println!(
-                        "imported SMM1 {} UI: {} layouts, {} animations, {} textures, {} fonts, {} message files ({} skipped) into {}",
+                        "imported SMM1 {} UI: {} layouts, {} animations, {} textures, {} fonts, {} message files; {} costumes ({} frames, {} sounds) ({} skipped) into {}",
                         r.build,
                         r.layouts,
                         r.animations,
                         r.textures,
                         r.fonts,
                         r.messages,
+                        r.costumes,
+                        r.costume_textures,
+                        r.costume_sounds,
                         r.skipped.len(),
                         r.out_dir.display()
                     );
@@ -994,6 +1080,26 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Cmd::ImportModes { romfs, out } => match mmk_import::modes::import_modes(&romfs, &out) {
+            Ok(r) => {
+                println!(
+                    "imported {} Story flows, {} lesson flows, {} jobs, {} builds, {} flags, {} hub objects, {} lessons into {}",
+                    r.story_flows,
+                    r.lesson_flows,
+                    r.jobs,
+                    r.builds,
+                    r.flags,
+                    r.hub_objects,
+                    r.lessons,
+                    out.display()
+                );
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("import failed: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Cmd::ImportSmm2Ui {
             romfs,
             out,
@@ -1101,38 +1207,45 @@ fn main() -> ExitCode {
             }
         }
         Cmd::Upload {
-            file,
+            files,
+            keys,
             server,
             maker,
             token,
         } => {
-            let data = match std::fs::read(&file) {
-                Ok(raw) if raw.len() == mmk_formats::smm2::COURSE_SIZE => raw,
-                Ok(raw) => {
-                    let mut out = Vec::new();
-                    if flate2::read::ZlibDecoder::new(&raw[..])
-                        .read_to_end(&mut out)
-                        .is_err()
-                    {
-                        eprintln!("{}: not raw or zlib course data", file.display());
-                        return ExitCode::FAILURE;
+            let table = read_key_table(keys);
+            let client = online(server, token);
+            let (mut ok, mut failed) = (0usize, 0usize);
+            for file in &files {
+                let Some(data) = std::fs::read(file)
+                    .ok()
+                    .and_then(|raw| course_data(raw, table.as_ref()))
+                else {
+                    eprintln!(
+                        "{}: not course data (raw, zlib or .bcd with --keys)",
+                        file.display()
+                    );
+                    failed += 1;
+                    continue;
+                };
+                match client.upload(&data, &maker) {
+                    Ok(l) => {
+                        println!("{} {}", l.code, l.name);
+                        ok += 1;
                     }
-                    out
+                    Err(e) => {
+                        eprintln!("{}: {e}", file.display());
+                        failed += 1;
+                    }
                 }
-                Err(e) => {
-                    eprintln!("{}: {e}", file.display());
-                    return ExitCode::FAILURE;
-                }
-            };
-            match online(server, token).upload(&data, &maker) {
-                Ok(l) => {
-                    println!("{} {}", l.code, l.name);
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("upload: {e}");
-                    ExitCode::FAILURE
-                }
+            }
+            if files.len() > 1 {
+                eprintln!("uploaded {ok}, failed {failed}");
+            }
+            if failed == 0 {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
             }
         }
         Cmd::Register { name, server } => match mmk_online::Client::new(server).register(&name) {
@@ -1332,9 +1445,14 @@ fn read_key_table(path: Option<PathBuf>) -> Option<smm2::KeyTable> {
 
 /// One scripted run: hold right + run, jump in 24-frame bursts every 40 frames, and a long jump
 /// when stuck for a second. Returns (progress 0-1 toward the goal, deaths, cleared).
-fn simulate_course(course: &smm2::Course, frames: u32) -> (f32, u32, bool, u64) {
+fn simulate_course(
+    course: &smm2::Course,
+    frames: u32,
+    options: mmk_sim::Options,
+) -> (f32, u32, bool, u64) {
     use mmk_sim::input::{self, Input};
     let mut w = mmk_sim::World::from_course(course);
+    w.set_options(options);
     w.lives = 9999; // keep retrying for the whole run
     let start_x = w.player.x;
     let goal_x = w.level.goal.map(|g| g.0).unwrap_or(w.level.right);
@@ -1454,6 +1572,7 @@ fn simulate(
     keys: Option<PathBuf>,
     frames: u32,
     checksum: bool,
+    options: mmk_sim::Options,
 ) -> ExitCode {
     let table = read_key_table(keys);
     let (mut total, mut panics, mut clears) = (0usize, 0usize, 0usize);
@@ -1470,7 +1589,7 @@ fn simulate(
         };
         total += 1;
         let style = c.header.game_style.as_str_lossy();
-        let run = std::panic::catch_unwind(|| simulate_course(&c, frames));
+        let run = std::panic::catch_unwind(|| simulate_course(&c, frames, options));
         let line = match run {
             Ok((p, deaths, cleared, hash)) => {
                 progress += p;
@@ -1518,15 +1637,12 @@ fn gallery(
     // parts that aren't placeable objects of their own (header-made goal / start, track and
     // scroll nodes, sound effects)
     const SKIP: &[i16] = &[26, 27, 37, 38, 59, 89, 109];
-    // the editor offers these in 3D World only
-    const W3_ONLY: &[i16] = &[
-        50, 51, 65, 72, 85, 86, 96, 97, 106, 107, 112, 113, 114, 116, 117, 119,
-    ];
+    // (which parts a style offers: the editor's rules)
     const PAGE: i32 = 220;
     let parts: Vec<i16> = mmk_sim::level::SUPPORTED_PARTS
         .iter()
         .copied()
-        .filter(|p| !SKIP.contains(p) && (style == "3W" || !W3_ONLY.contains(p)))
+        .filter(|p| !SKIP.contains(p) && mmk_editor::rules::style_allows(style, *p))
         .collect();
     std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
     let mut written = Vec::new();
@@ -1543,10 +1659,12 @@ fn gallery(
         ed.course.header.goal_x = ((width - 10) * 10) as i16;
         for x in 0..width {
             for y in 0..2 {
-                ed.paint_ground(x, y).map_err(|e| format!("{e:?}"))?;
+                if !ed.protected(x, y) {
+                    ed.paint_ground(x, y).map_err(|e| format!("{e:?}"))?;
+                }
             }
         }
-        let mut x = 6;
+        let mut x = mmk_editor::rules::START_W + 1; // clear of the start zone
         let mut placed = 0;
         for &part in rest {
             let (w, _) = mmk_editor::default_size(part);

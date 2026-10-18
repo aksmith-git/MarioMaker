@@ -19,6 +19,7 @@ mmk-host = { path = "../host" }
 mmk-sim = { path = "../sim" }
 mmk-modes = { path = "../modes" }
 mmk-ui = { path = "../ui" }
+mmk-front = { path = "../front" }
 bytemuck = "1.25.2"
 # the wasm-bindgen feature is cpal's WebAudio backend (it only applies to wasm32)
 cpal = { version = "0.18.2", features = ["wasm-bindgen"] }
@@ -34,10 +35,14 @@ clap.workspace = true
 png = "0.18.1"
 pollster = "1.0.1"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 mmk-import = { path = "../import" }
+flate2.workspace = true
 console_error_panic_hook = "0.1.7"
 js-sys = "0.3.106"
 wasm-bindgen = "0.2.129"
 wasm-bindgen-futures = "0.4.79"
-web-sys = { version = "0.3.106", features = ["Document", "Element", "HtmlCanvasElement", "Performance", "Window", "console", "WebSocket", "MessageEvent", "BinaryType"] }
+web-sys = { version = "0.3.106", features = ["Document", "Element", "HtmlCanvasElement", "Performance", "Window", "console", "WebSocket", "MessageEvent", "BinaryType", "Storage"] }

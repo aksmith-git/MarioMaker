@@ -9,6 +9,7 @@
 //! - [`texture`]: cache textures decoded to RGBA8 for GPUs without BC support (WebGL2, iPhones).
 
 pub mod audio;
+pub mod costume_sound;
 pub mod course;
 pub mod frame;
 pub mod mesh;

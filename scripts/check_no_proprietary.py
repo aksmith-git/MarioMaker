@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Fail if any tracked (or staged) file looks like proprietary game content.
 
-Checks three things for every file git knows about:
-  1. extension   - container/asset/executable/key formats used by the Wii U and Switch
-  2. magic bytes - catches renamed files (e.g. a SARC saved as .dat)
+Checks these things for every file git knows about:
+  1. extension   - container/asset/executable/key formats used by the Wii U and Switch, and
+                   native binaries / translated shaders (the recomp builds those locally)
+  2. magic bytes - catches renamed files (e.g. a SARC saved as .dat, an AArch64 ELF, a Mach-O)
   3. key lines   - lines shaped like Switch prod.keys / title.keys entries
+  4. recomp      - nothing under recomp/private/ or recomp/generated/ (derived from the dump),
+                   and no text that looks like AArch64 disassembly or recompiled game code
 
 Usage:
   check_no_proprietary.py            # check every tracked file (CI)
@@ -41,6 +44,8 @@ BLOCKED_EXTENSIONS = {
     ".keys",
     # opaque archives (could hold anything)
     ".7z", ".rar",
+    # native binaries and translated shaders: the recomp generates these locally from the dump
+    ".elf", ".o", ".obj", ".a", ".lib", ".so", ".dylib", ".dll", ".exe", ".spv", ".nss", ".kip",
 }
 BLOCKED_NAMES = {"prod.keys", "title.keys", "dev.keys", "otp.bin", "seeprom.bin", "common.key", "game.key"}
 
@@ -74,7 +79,23 @@ MAGICS = [
     (0, b"7z\xbc\xaf\x27\x1c", "7-Zip archive"),
     (0, b"Rar!\x1a\x07", "RAR archive"),
     (0x10, b"NRO0", "Switch NRO executable"),
+    (0, b"\xcf\xfa\xed\xfe", "Mach-O binary"),
+    (0, b"\xca\xfe\xba\xbe", "Mach-O universal binary"),
+    (0, b"MZ", "Windows PE binary"),
+    (0, b"\x03\x02\x23\x07", "SPIR-V shader"),
 ]
+# Paths that hold files derived from the dump (recompiled code, translated shaders, extracted data)
+BLOCKED_PATH_PARTS = ("/recomp/private/", "/recomp/generated/", "/recomp/build/")
+# AArch64 disassembly lines ("71000123c0: f9400420  ldr x0, [x1, #8]" or "ldr x0, [x1]")
+ASM_LINE = re.compile(
+    r"\b(ldr|str|ldp|stp|ldrb|strb|ldrh|strh|adrp|movz|movk|blr|cbz|cbnz|tbz|tbnz|ldaxr|stlxr)"
+    r"\s+[xwqsdv][0-9]{1,2}\b",
+    re.IGNORECASE,
+)
+# recompiler output: guest-register accesses in generated C/C++ (ctx->x[3], X(3), r.x[3] ...)
+RECOMP_LINE = re.compile(r"(\b\w+->[xwvq]\[\d+\]|\bX\(\d+\)|\b(ctx|cpu|st)\.[xwvq]\[\d+\])")
+ASM_LIMIT = 200
+RECOMP_LIMIT = 500
 KEY_LINE = re.compile(
     r"^\s*(header_key|master_key_[0-9a-f]{2}|titlekek_[0-9a-f]{2}|key_area_key_\w+|package2_key_\w+"
     r"|[0-9a-f]{32})\s*=\s*[0-9a-f]{32,64}\s*$",
@@ -94,9 +115,17 @@ def wiiu_rpx(head: bytes) -> bool:
     return head[:4] == b"\x7fELF" and head[4] == 1 and head[5] == 2 and head[7:9] == b"\xca\xfe"
 
 
+def elf_aarch64(head: bytes) -> bool:
+    # ELF, little-endian, e_machine 0xB7 (AArch64): a Switch game binary or a host build product
+    return head[:4] == b"\x7fELF" and len(head) > 19 and head[18:20] == b"\xb7\x00"
+
+
 def check_file(path: Path) -> list[str]:
     problems: list[str] = []
     name = path.name.lower()
+    posix = "/" + path.as_posix().lstrip("/")
+    if any(part in posix for part in BLOCKED_PATH_PARTS):
+        problems.append("file is under a recomp folder for dump-derived output (private/generated/build)")
     if name in BLOCKED_NAMES or path.suffix.lower() in BLOCKED_EXTENSIONS:
         problems.append(f"blocked file type '{path.suffix or name}'")
     if not path.is_file():
@@ -111,6 +140,8 @@ def check_file(path: Path) -> list[str]:
             problems.append(f"content looks like {label}")
     if len(head) >= 9 and wiiu_rpx(head):
         problems.append("content looks like a Wii U RPX/RPL executable")
+    if elf_aarch64(head):
+        problems.append("content looks like an AArch64 ELF (game or host binary)")
     if size <= MAX_BYTES:
         try:
             text = path.read_text(encoding="utf-8")
@@ -118,6 +149,10 @@ def check_file(path: Path) -> list[str]:
             text = ""
         if KEY_LINE.search(text):
             problems.append("contains lines shaped like console key entries")
+        if len(ASM_LINE.findall(text)) > ASM_LIMIT:
+            problems.append("content looks like AArch64 disassembly")
+        if len(RECOMP_LINE.findall(text)) > RECOMP_LIMIT:
+            problems.append("content looks like recompiled game code (guest-register accesses)")
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
         if lines and all(BARE_KEY_LINE.match(ln) for ln in lines):
             problems.append("file is a list of bare 128/256-bit hex keys")

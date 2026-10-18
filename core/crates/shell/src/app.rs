@@ -106,6 +106,25 @@ impl Gfx {
     /// Draw and present one frame; false if the surface had no image to draw into (window
     /// hidden or occluded, surface being reconfigured).
     fn draw(&mut self, game: &mut Game) -> bool {
+        self.draw_with(|gpu, renderer, enc, view, _, size| {
+            let scene = game.scene();
+            renderer.encode(gpu, enc, view, size, &scene);
+        })
+    }
+
+    /// Draw and present one frame recorded by `encode` (gpu, renderer, encoder, target view, its
+    /// format, its size); false as `draw`.
+    fn draw_with(
+        &mut self,
+        encode: impl FnOnce(
+            &Gpu,
+            &mut Renderer,
+            &mut wgpu::CommandEncoder,
+            &wgpu::TextureView,
+            wgpu::TextureFormat,
+            (u32, u32),
+        ),
+    ) -> bool {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
             | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
@@ -131,13 +150,13 @@ impl Gfx {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("frame"),
             });
-        let scene = game.scene();
-        self.renderer.encode(
+        encode(
             &self.gpu,
+            &mut self.renderer,
             &mut enc,
             &view,
+            self.view_format,
             (self.config.width, self.config.height),
-            &scene,
         );
         self.gpu.queue.submit([enc.finish()]);
         self.window.pre_present_notify();
@@ -163,6 +182,8 @@ pub enum UserEvent {
     Sound(Arc<AudioOut>),
     /// Play the current course online from its start: the link, players, our player (0-based).
     Net(Box<dyn mmk_netplay::Link>, usize, usize),
+    /// Run this on the app (the web page starting or changing the front end).
+    Run(Box<dyn FnOnce(&mut App)>),
 }
 
 pub struct App {
@@ -184,11 +205,14 @@ pub struct App {
     /// Mouse position (window px) and Ctrl held, for the maker.
     mouse: (f64, f64),
     ctrl: bool,
+    shift: bool,
     /// Keeps sound playing (native builds).
     #[cfg(not(target_arch = "wasm32"))]
     pub audio: Option<crate::audio_out::AudioStream>,
     /// Sound output handed to games that arrive later (`UserEvent::Game`).
     sound: Option<Arc<AudioOut>>,
+    /// The SMM2 front end (menus, Course World, 100 Mario, in-course screens), when it runs.
+    pub front: Option<Box<crate::front_app::FrontApp>>,
 }
 
 pub fn log(msg: &str) {
@@ -216,14 +240,16 @@ impl App {
             idle: false,
             mouse: (0.0, 0.0),
             ctrl: false,
+            shift: false,
             #[cfg(not(target_arch = "wasm32"))]
             audio: None,
             sound: None,
+            front: None,
         }
     }
 
     /// Switch to `game` (keeping the window, GPU and sound output).
-    fn replace_game(&mut self, mut game: Game) {
+    pub fn replace_game(&mut self, mut game: Game) {
         if self.sound.is_some() {
             game.session.set_audio(self.sound.clone());
         }
@@ -285,10 +311,13 @@ impl App {
         // the browser reads texture files asynchronously: start the reads the last frame asked
         // for, and hold the game (briefly) while they are on their way
         #[cfg(target_arch = "wasm32")]
-        let loading = crate::web::pump_textures(&self.game.cache);
+        let loading = crate::web::pump_textures(&self.game.cache)
+            | crate::web::pump_ui(self.front.as_deref_mut());
         #[cfg(not(target_arch = "wasm32"))]
         let loading = false;
-        if self.game.editing {
+        if self.front_advance(if loading { 0.0 } else { dt }, pads) {
+            // the front end ran its ticks (and the course's)
+        } else if self.game.editing {
             // arrows / WASD scroll the maker view
             if let Some(m) = self.game.maker.as_mut() {
                 let b = input.buttons;
@@ -310,7 +339,16 @@ impl App {
             }
         }
         if let Some(gfx) = &mut self.gfx {
-            if gfx.draw(&mut self.game) {
+            let drawn = match &mut self.front {
+                Some(f) => {
+                    let game = &mut self.game;
+                    gfx.draw_with(|gpu, r, enc, view, format, size| {
+                        f.encode(gpu, enc, view, format, size, r, game)
+                    })
+                }
+                None => gfx.draw(&mut self.game),
+            };
+            if drawn {
                 // presenting waits for the display, which paces the loop
                 self.frames += 1;
                 gfx.window.request_redraw();
@@ -320,6 +358,17 @@ impl App {
                 self.idle = true;
                 event_loop.set_control_flow(ControlFlow::wait_duration(Duration::from_millis(16)));
             }
+        }
+    }
+
+    /// Advance the front end when it runs (true: it did).
+    fn front_advance(&mut self, dt: f64, pads: u32) -> bool {
+        match &mut self.front {
+            Some(f) => {
+                f.advance(dt, &self.keys, pads, &mut self.game);
+                true
+            }
+            None => false,
         }
     }
 
@@ -336,7 +385,7 @@ impl App {
             }
             return false;
         }
-        let ctrl = self.ctrl;
+        let (ctrl, shift) = (self.ctrl, self.shift);
         let m = self.game.maker.as_mut().expect("checked");
         let digit = [
             KeyCode::Digit1,
@@ -352,20 +401,64 @@ impl App {
         ]
         .iter()
         .position(|&k| k == code);
+        let arrow = match code {
+            KeyCode::ArrowLeft => Some((-1, 0)),
+            KeyCode::ArrowRight => Some((1, 0)),
+            KeyCode::ArrowUp => Some((0, 1)),
+            KeyCode::ArrowDown => Some((0, -1)),
+            _ => None,
+        };
+        // arrows draw a path while one is being drawn, and move the selection with Shift
+        if let Some(d) = arrow {
+            if m.drawing_path() {
+                return m.path_key(Some(d));
+            }
+            if shift && m.has_selection() {
+                return m.selection_op('m', d.0, d.1);
+            }
+            return false;
+        }
         match code {
             _ if digit.is_some() => m.select(digit.unwrap_or(0)),
+            KeyCode::Tab if shift => m.prev_tool(),
             KeyCode::Tab => m.next_tool(),
             KeyCode::KeyZ if ctrl => m.undo(),
             KeyCode::KeyY if ctrl => m.redo(),
             KeyCode::KeyS if ctrl => m.save(),
             #[cfg(not(target_arch = "wasm32"))]
             KeyCode::KeyU if ctrl => m.upload(),
+            KeyCode::KeyC if ctrl => return m.selection_op('c', 0, 0),
+            KeyCode::KeyX if ctrl => return m.selection_op('x', 0, 0),
+            KeyCode::KeyV if ctrl => return m.selection_op('v', 0, 0),
+            KeyCode::Delete => return m.selection_op('d', 0, 0),
+            KeyCode::Backspace if m.drawing_path() => return m.path_key(None),
+            KeyCode::Backspace => return m.selection_op('d', 0, 0),
+            KeyCode::Escape => m.cancel(),
             KeyCode::KeyW if !ctrl => m.modify('w'),
             KeyCode::KeyB => m.modify('b'),
             KeyCode::KeyF => m.modify('f'),
             KeyCode::KeyI => m.modify('i'),
+            KeyCode::KeyR => m.modify('r'),
+            KeyCode::KeyC => m.modify('c'),
+            KeyCode::KeyK => m.modify('k'),
+            KeyCode::KeyG => m.modify('g'),
+            KeyCode::KeyO => m.modify('o'),
+            KeyCode::KeyL => m.modify('l'),
+            KeyCode::KeyH => m.modify('h'),
+            KeyCode::Equal => m.modify(if shift { '^' } else { '+' }),
+            KeyCode::Minus => m.modify(if shift { 'v' } else { '-' }),
             KeyCode::KeyT => m.setting('t'),
             KeyCode::KeyN => m.setting('n'),
+            KeyCode::KeyA if !ctrl => m.setting('a'),
+            KeyCode::KeyV => m.setting('V'),
+            KeyCode::BracketLeft => m.setting('['),
+            KeyCode::BracketRight => m.setting(']'),
+            KeyCode::KeyQ => m.setting('q'),
+            KeyCode::Comma => m.setting(if shift { '<' } else { ',' }),
+            KeyCode::Period => m.setting(if shift { '>' } else { '.' }),
+            KeyCode::Semicolon => m.setting(';'),
+            KeyCode::Quote => m.setting('\''),
+            KeyCode::F1 => m.message = crate::maker::HELP.to_string(),
             KeyCode::Enter => {
                 self.game.play_maker_course();
                 self.keys.clear();
@@ -472,6 +565,12 @@ impl ApplicationHandler<UserEvent> for App {
                 self.game.session.go_online(link, players, me);
                 log(&format!("online: player {} of {players}", me + 1));
             }
+            UserEvent::Run(f) => {
+                f(self);
+                if let Some(g) = &self.gfx {
+                    g.window.request_redraw();
+                }
+            }
         }
     }
 
@@ -497,6 +596,17 @@ impl ApplicationHandler<UserEvent> for App {
                     ) {
                         self.ctrl = pressed;
                     }
+                    if matches!(code, KeyCode::ShiftLeft | KeyCode::ShiftRight) {
+                        self.shift = pressed;
+                    }
+                    // a text field of the front end takes the keys as typed text
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if pressed
+                        && let Some(f) = &mut self.front
+                        && f.key_text(code, event.text.as_deref())
+                    {
+                        return;
+                    }
                     if pressed && self.maker_key(code) {
                         return;
                     }
@@ -507,15 +617,20 @@ impl ApplicationHandler<UserEvent> for App {
                 self.mouse = (position.x, position.y);
                 self.maker_hover();
             }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button,
-                ..
-            } => {
+            WindowEvent::MouseInput { state, button, .. } => {
+                if state == ElementState::Pressed
+                    && let (Some(f), Some(g)) = (&mut self.front, &self.gfx)
+                {
+                    f.click(self.mouse, (g.config.width, g.config.height));
+                }
                 if self.game.editing
                     && let Some(m) = self.game.maker.as_mut()
                 {
-                    m.click(button == MouseButton::Right);
+                    if state == ElementState::Pressed {
+                        m.press(button == MouseButton::Right);
+                    } else {
+                        m.release();
+                    }
                 }
             }
             WindowEvent::RedrawRequested => self.frame(event_loop),

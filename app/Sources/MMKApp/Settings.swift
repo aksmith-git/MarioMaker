@@ -1,3 +1,4 @@
+import CMmk
 #if os(macOS)
 import AppKit
 #endif
@@ -34,6 +35,12 @@ enum SettingsKey {
     /// Int 0–3 (default 0): player 1's character, Mario / Luigi / Toad / Toadette (also set from
     /// the SMM2 pause menu's Settings).
     static let character = "player.character"
+    /// SMM1 extras (Phase 11), off by default: shell physics, draw order, SMB1 mushroom swap
+    /// (0 off / 1 Mystery / 2 Weird), costume (−1 random or an SMM1 costume id).
+    static let smm1ShellKicks = "smm1.shellKicks"
+    static let smm1Layering = "smm1.layering"
+    static let smb1Mushroom = "smm1.mushroom"
+    static let costume = "smm1.costume"
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
@@ -408,6 +415,10 @@ private struct GameSettings: View {
     @AppStorage(SettingsKey.hundredPresentation) private var hundred = "smm2"
     @AppStorage(SettingsKey.courseServer) private var server = ""
     @AppStorage(SettingsKey.character) private var character = 0
+    @AppStorage(SettingsKey.smm1ShellKicks) private var shellKicks = false
+    @AppStorage(SettingsKey.smm1Layering) private var layering = false
+    @AppStorage(SettingsKey.smb1Mushroom) private var mushroom = 0
+    @AppStorage(SettingsKey.costume) private var costume = -1
 
     var body: some View {
         Form {
@@ -425,6 +436,23 @@ private struct GameSettings: View {
             TextField("Course server", text: $server, prompt: Text("http://localhost:8640"))
             Text("Course World lists your library and, when set, an open-source course server (mmk server). It never talks to Nintendo's network.")
                 .font(.footnote).foregroundStyle(.secondary)
+            Section("Super Mario Maker extras") {
+                Toggle("SMM1 shell physics (mid-air kicks, shell jumps)", isOn: $shellKicks)
+                Toggle("SMM1 draw order", isOn: $layering)
+                Picker("Mushrooms in SMB1 courses", selection: $mushroom) {
+                    Text("Super Mushroom").tag(0)
+                    Text("Mystery Mushroom (costumes)").tag(1)
+                    Text("Weird Mushroom (Lanky Mario)").tag(2)
+                }
+                if mushroom == 1 {
+                    Picker("Costume", selection: $costume) {
+                        Text("Random").tag(-1)
+                        ForEach(CostumeList.entries, id: \.id) { c in Text(c.name).tag(c.id) }
+                    }
+                }
+                Text("Costumes and Lanky Mario need the SMM1 import (mmk import-smm1). Courses cleared with shell physics or a mushroom swap aren't sent as records, and online play uses SMM2 rules.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
     }
@@ -450,6 +478,21 @@ private struct AudioSettings: View {
                 Slider(value: value, in: 0...1)
                 Text("\(Int((value.wrappedValue * 100).rounded())) %").monospacedDigit().frame(width: 48, alignment: .trailing)
             }
+        }
+    }
+}
+
+/// The costumes the opened assets have art for (filled when game data opens), for Settings.
+@MainActor
+enum CostumeList {
+    struct Entry: Hashable, Sendable { var id: Int; var name: String }
+    static var entries: [Entry] = []
+
+    nonisolated static func read(_ assets: OpaquePointer) -> [Entry] {
+        let n = mmk_assets_costume_count(assets)
+        return (0..<n).map { i in
+            let name = mmk_assets_costume_name(assets, i).map { String(cString: $0) } ?? "Costume \(i)"
+            return Entry(id: Int(mmk_assets_costume_id(assets, i)), name: name)
         }
     }
 }

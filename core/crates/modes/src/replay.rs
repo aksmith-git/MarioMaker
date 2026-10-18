@@ -127,15 +127,21 @@ impl Replay {
         })
     }
 
-    /// Play the replay on `course` from its start (one player), stopping at the clear.
+    /// Play the replay on `course` from its start (one player), stopping at the clear. The
+    /// clear time is the goal touch (when the goal sequence starts), as the game's clear screen
+    /// and records count it; the replay must still play through to the finished clear.
     pub fn run(&self, course: &Course) -> Outcome {
         let mut w = World::from_course(course);
+        let mut touched = None;
         for (k, &b) in self.inputs.iter().enumerate() {
             w.step(Input { buttons: b });
+            if touched.is_none() && w.goal_phase != mmk_sim::world::GoalPhase::None {
+                touched = Some(k + 1);
+            }
             if w.cleared {
                 return Outcome {
                     frames: k + 1,
-                    cleared_at: Some(k + 1),
+                    cleared_at: Some(touched.unwrap_or(k + 1)),
                 };
             }
         }
@@ -186,6 +192,7 @@ mod tests {
         let mut w = World::from_course(&course);
         let mut r = Replay::new();
         let mut cleared = None;
+        let mut touch = None;
         for f in 0..MAX_FRAMES {
             let i = Input {
                 buttons: if f % 90 < 70 {
@@ -196,6 +203,9 @@ mod tests {
             };
             r.push(i);
             w.step(i);
+            if touch.is_none() && w.goal_phase != mmk_sim::world::GoalPhase::None {
+                touch = Some(f + 1);
+            }
             if w.cleared {
                 cleared = Some(f + 1);
                 break;
@@ -204,7 +214,8 @@ mod tests {
         assert!(cleared.is_some(), "the scripted run should reach the goal");
         let back = Replay::decode(&r.encode()).unwrap();
         let out = back.run(&course);
-        assert_eq!(out.cleared_at, cleared);
+        assert_eq!(out.cleared_at, touch, "timed at the goal touch");
+        assert!(touch < cleared, "the goal sequence runs after the touch");
         // one frame short doesn't clear
         let mut short = back.clone();
         short.inputs.pop();

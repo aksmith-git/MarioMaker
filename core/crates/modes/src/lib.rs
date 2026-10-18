@@ -8,10 +8,21 @@
 //! - [`replay`]: runs as per-frame inputs, re-simulated to verify clear times and drive ghosts.
 //! - [`challenge`]: one 100 Mario session over a local course library, tying the three together
 //!   for the app (the FFI is a thin wrapper over it).
+//! - [`endless`]: SMM2's Endless Challenge (`research/specs/endless-challenge.md`): lives, pending
+//!   1-Ups, skip, score, the run record our server keeps, the local course-pick rule and an
+//!   offline session.
+//! - [`coursebot`]: the Coursebot's 120 My Courses + 60 Downloaded slots (slot table, metadata,
+//!   Downloaded stats), the course-number space and the scene-change reasons of its screens;
+//!   [`coursebot::CoursebotStore`] keeps the files over a pluggable blob store.
+//! - [`dojo`]: Yamamura's Dojo lesson list (from the owner's imported `lessons/index.json`),
+//!   lesson starts and the saved completion marks / Maker Basics / Nina flags.
 //!
 //! Deterministic: randomness comes from a caller-seeded generator so runs can be replayed.
 
 pub mod challenge;
+pub mod coursebot;
+pub mod dojo;
+pub mod endless;
 pub mod hundred;
 pub mod pool;
 pub mod replay;

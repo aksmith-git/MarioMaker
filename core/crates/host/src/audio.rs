@@ -15,14 +15,16 @@ use std::sync::atomic::AtomicU64;
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 
-use mmk_audio::mixer::{MusicClock, SharedSet, shared_set};
-use mmk_audio::{Bank, Command, Mixer, OUTPUT_RATE, command_channel};
+use mmk_audio::mixer::{MusicClock, SET_BASE, SharedSet, SoundSet, shared_set};
+use mmk_audio::{Bank, Command, Mixer, OUTPUT_RATE, Play, Sound, command_channel};
 use mmk_sim::World;
 use mmk_sim::player::Form;
 use mmk_sim::world::{Event, GoalPhase};
 
+use crate::costume_sound::CostumeSounds;
+pub use crate::costume_sound::{COSTUME_EVENTS, CostumeReader};
 use crate::sound::Sounds;
-pub use crate::sound::{FileReader, Library, course_files};
+pub use crate::sound::{FileReader, Library, course_files, style_files};
 
 /// Hurry-up threshold (course timer frames), as in the sim.
 const HURRY_FRAMES: i32 = 100 * 60;
@@ -43,6 +45,8 @@ pub struct AudioOut {
     shared: SharedSet,
     clock: MusicClock,
     library: Option<Arc<Library>>,
+    /// SMM1 costume sounds (`costume_<id>_<event>.bwav` of the SMM1 sprite cache's `audio/`).
+    costumes: Option<CostumeReader>,
 }
 
 struct Inner {
@@ -74,7 +78,23 @@ impl AudioOut {
             shared,
             clock,
             library: None,
+            costumes: None,
         }
+    }
+
+    /// SMM1 costume sounds from an SMM1 sprite cache directory (`<root>/audio/`).
+    pub fn with_costume_dir(mut self, root: impl Into<PathBuf>) -> Self {
+        self.set_costume_dir(root);
+        self
+    }
+
+    /// [`AudioOut::with_costume_dir`] on an existing mixer; directors made before keep their
+    /// old setting.
+    pub fn set_costume_dir(&mut self, root: impl Into<PathBuf>) {
+        let dir = root.into().join("audio");
+        self.costumes = Some(Arc::new(move |name: &str| {
+            std::fs::read(dir.join(format!("{name}.bwav"))).ok()
+        }));
     }
 
     /// The sound database and waves of a cache directory (`<root>/audio/`).
@@ -115,17 +135,28 @@ impl AudioOut {
     /// A director sending this mixer the sounds of a world's ticks.
     pub fn director(&self) -> Director {
         match &self.library {
-            Some(lib) => Director {
-                tx: self.tx.clone(),
-                imp: Imp::Data(Box::new(Sounds::new(
+            Some(lib) => {
+                let mut s = Sounds::new(
                     self.tx.clone(),
                     lib.clone(),
                     self.shared.clone(),
                     self.clock.clone(),
                     self.rate,
-                ))),
-            },
-            None => Director::new(self.tx.clone(), &self.bank),
+                );
+                s.set_costumes(self.costumes.clone());
+                Director {
+                    tx: self.tx.clone(),
+                    imp: Imp::Data(Box::new(s)),
+                }
+            }
+            None => {
+                let mut d = Director::new(self.tx.clone(), &self.bank);
+                if let Imp::Legacy(l) = &mut d.imp {
+                    l.costume = CostumeSounds::new(self.costumes.clone());
+                    l.shared = Some(self.shared.clone());
+                }
+                d
+            }
         }
     }
 
@@ -265,6 +296,11 @@ struct Legacy {
     counting: bool,
     count_gap: u32,
     kick_alt: usize,
+    /// The worn SMM1 costume's sounds, added to the mixer's (otherwise empty) course set.
+    costume: CostumeSounds,
+    shared: Option<SharedSet>,
+    set: Arc<SoundSet>,
+    old_set: Option<Arc<SoundSet>>,
 }
 
 impl Legacy {
@@ -279,11 +315,40 @@ impl Legacy {
             counting: false,
             count_gap: 0,
             kick_alt: 0,
+            costume: CostumeSounds::default(),
+            shared: None,
+            set: Arc::new(SoundSet::default()),
+            old_set: None,
         }
     }
 
     fn send(&self, cmd: Command) {
         let _ = self.tx.try_send(cmd);
+    }
+
+    /// Add a sound to the course set (costume sounds); its id.
+    fn add_sound(&mut self, s: Sound) -> Option<u16> {
+        let shared = self.shared.as_ref()?;
+        let mut next = (*self.set).clone();
+        let id = SET_BASE + next.sounds.len() as u16;
+        next.sounds.push(s);
+        let next = Arc::new(next);
+        if let Ok(mut g) = shared.lock() {
+            *g = Some(next.clone());
+        }
+        self.old_set = Some(std::mem::replace(&mut self.set, next));
+        self.send(Command::LoadSet);
+        Some(id)
+    }
+
+    fn play_set(&self, id: Option<u16>, music: bool) {
+        if let Some(sound) = id {
+            self.send(Command::Play(if music {
+                Play::music(sound)
+            } else {
+                Play::sfx(sound)
+            }));
+        }
     }
 
     fn sfx(&self, id: Option<u16>) {
@@ -336,13 +401,38 @@ impl Legacy {
             return;
         }
         self.was_alive = alive;
+        let mut costume = std::mem::take(&mut self.costume);
+        costume.sync(world, &mut |s| self.add_sound(s));
+        self.costume = costume;
         for ev in &world.events {
             match ev {
-                Event::Jump => self.sfx(if world.player.form == Form::Small {
-                    self.ids.jump_small
-                } else {
-                    self.ids.jump_big
-                }),
+                // a costume jumps with its own sound, its second take every other jump
+                Event::Jump if self.costume.sound(world, "jump").is_some() => {
+                    let id = self.costume.jump(world);
+                    self.play_set(id, false);
+                }
+                Event::Jump => self.sfx(
+                    if matches!(world.player.form, Form::Small | Form::Costume) {
+                        self.ids.jump_small
+                    } else {
+                        self.ids.jump_big
+                    },
+                ),
+                Event::PowerUp if self.costume.sound(world, "powerup").is_some() => {
+                    self.play_set(self.costume.sound(world, "powerup"), false)
+                }
+                Event::Land | Event::Skid | Event::Taunt => {
+                    let e = match ev {
+                        Event::Land => "ground",
+                        Event::Skid => "slip",
+                        _ => "appeal",
+                    };
+                    self.play_set(self.costume.sound(world, e), false);
+                }
+                Event::Death if self.costume.sound(world, "down").is_some() => {
+                    self.stop_count();
+                    self.play_set(self.costume.sound(world, "down"), true);
+                }
                 Event::Coin => self.sfx(self.ids.coin),
                 Event::Stomp => self.sfx(self.ids.stomp),
                 Event::Kick | Event::EnemyDown => {
@@ -404,7 +494,11 @@ impl Legacy {
         self.star = star;
         let walking = world.goal_phase == GoalPhase::Walk;
         if walking && !self.walking {
-            self.music(self.ids.fanfare_clear, None);
+            // a costume's own clear jingle replaces the fanfare
+            match self.costume.sound(world, "goal") {
+                Some(id) => self.play_set(Some(id), true),
+                None => self.music(self.ids.fanfare_clear, None),
+            }
         }
         self.walking = walking;
         if self.counting {
@@ -596,5 +690,46 @@ mod tests {
         let mut out = vec![0.0f32; 64];
         a.render(&mut out);
         assert!((out[0] - 0.25 * OUTPUT_GAIN).abs() < 1e-6);
+    }
+
+    /// A costumed player's jump plays the costume's own sound, added to the course set when the
+    /// costume is put on; without the costume, the normal jump sound.
+    #[test]
+    fn costume_sounds_replace_the_jump() {
+        let b = bank();
+        let (tx, rx) = command_channel(64);
+        let mut d = Director::new(tx, &b);
+        let pcm: Vec<u8> = (0..64i16).flat_map(|v| (v * 100).to_le_bytes()).collect();
+        let wave = mmk_formats::audio::bwav::build(&[mmk_formats::audio::bwav::BuildChannel {
+            codec: mmk_formats::audio::Codec::Pcm16,
+            pan: 2,
+            sample_rate: 32000,
+            samples: 64,
+            coefs: [0; 16],
+            loop_range: None,
+            data: &pcm,
+        }]);
+        let reader: CostumeReader =
+            Arc::new(move |n: &str| (n == "costume_045_jump").then(|| wave.clone()));
+        let shared = shared_set();
+        if let Imp::Legacy(l) = &mut d.imp {
+            l.costume = CostumeSounds::new(Some(reader));
+            l.shared = Some(shared.clone());
+        }
+        let mut w = World::new();
+        d.start_course(&w);
+        drain(&rx);
+        w.player.form = Form::Costume;
+        w.player.costume = 45;
+        w.events = vec![Event::Jump];
+        d.after_step(&w);
+        let cmds = drain(&rx);
+        assert!(matches!(cmds[0], Command::LoadSet));
+        assert!(matches!(cmds[1], Command::Play(p) if p.sound == SET_BASE));
+        let set = shared.lock().unwrap().clone().unwrap();
+        assert_eq!(set.sounds[0].name, "costume_045_jump");
+        w.player.form = Form::Small;
+        d.after_step(&w);
+        assert_eq!(played(&b, &drain(&rx)), ["sfx:jump_small"]);
     }
 }

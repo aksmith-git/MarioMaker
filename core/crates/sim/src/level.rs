@@ -11,6 +11,9 @@ use mmk_formats::smm2::{Area, Course};
 use crate::actors::Kind;
 use crate::blocks::{BlockKind, Contents};
 
+mod v3;
+pub use v3::V3Tiles;
+
 pub const TILE: f32 = 16.0;
 const ATLAS_COLS: u32 = 16;
 const GROUND_ATLAS_BASE: u32 = 184;
@@ -71,6 +74,8 @@ pub struct TileDraw {
     pub atlas: u32,
     /// bit 0: mirror horizontally, bit 1: mirror vertically
     pub flip: u8,
+    /// Part of a pipe (drawn in front of the player with the SMM1 layering option).
+    pub pipe: bool,
 }
 
 impl TileDraw {
@@ -358,6 +363,8 @@ pub struct Level {
     pub spike_blocks: Vec<(i32, i32, u8)>,
     /// Vines (64): climb areas (centre x, bottom, top) in px.
     pub vines: Vec<(f32, f32, f32)>,
+    /// Tile parts of the 2.0 / 3.0 updates (level/v3.rs).
+    pub v3: V3Tiles,
     pub liquid: Option<LiquidSpec>,
     /// One-way walls (drawing): centre x, bottom y, orientation.
     pub oneway: Vec<(f32, f32, u8)>,
@@ -426,6 +433,8 @@ pub const SUPPORTED_PARTS: &[i16] = &[
     52, 53, 54, 55, 56, 57, 58, 60, 61, 62, 63, 64, 65, 66, 67, 68, 70, 71, 72, 73, 75, 76, 77, 82,
     83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 94, 95, 96, 97, 98, 99, 100, 102, 103, 104, 105, 106,
     107, 108, 109, 110, 112, 113, 114, 115, 116, 117, 119,
+    // 2.0 / 3.0 parts (level/v3.rs)
+    74, 78, 79, 80, 111, 120, 121, 122, 123, 124, 125, 126, 132,
 ];
 
 /// Parts whose alternate form (flag 0x4) the engine implements (or where the flag only picks a
@@ -434,6 +443,9 @@ pub const SUPPORTED_PARTS: &[i16] = &[
 const ALT_FORMS: &[i16] = &[
     0, 1, 2, 3, 10, 11, 12, 13, 15, 19, 23, 25, 28, 32, 34, 36, 40, 41, 42, 45, 46, 47, 48, 51, 52,
     54, 56, 61, 77, 84, 85, 96, 97, 100, 103, 104, 107, 108, 113,
+    // 2.0 / 3.0: the spike ball, the P Block that appears, the blue ON/OFF Trampoline; on a
+    // Mechakoopa the bit does nothing [obs]
+    74, 79, 111, 132,
 ];
 
 /// Game styles the engine plays.
@@ -443,7 +455,7 @@ pub const PLAYABLE_STYLES: &[&str] = &["M1", "M3", "MW", "WU", "3W"];
 const RIDES_TRACKS: &[i16] = &[
     0, 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 13, 15, 24, 47, 54, 18, 19, 20, 22, 23, 25, 28, 30, 31, 32,
     33, 34, 35, 36, 39, 40, 41, 42, 44, 45, 46, 48, 50, 51, 52, 56, 57, 58, 60, 61, 62, 63, 65, 68,
-    70, 76, 77, 82, 83, 91, 95, 96, 98, 102, 103, 105, 114, 117,
+    70, 76, 77, 82, 83, 91, 95, 96, 98, 102, 103, 105, 114, 117, 74, 111,
 ];
 
 /// Why a course is not fully playable yet: one entry per missing feature (empty = playable).
@@ -470,6 +482,8 @@ pub fn unsupported_features(course: &Course) -> Vec<String> {
                 out.insert(format!("part {} on a track", o.id));
             } else if o.flags & 0x4 != 0 && !ALT_FORMS.contains(&o.id) {
                 out.insert(format!("alternate form of part {}", o.id));
+            } else if let Some(why) = v3::unsupported(o) {
+                out.insert(why);
             } else if o.flags & 0x2 != 0 && o.id == 13 {
                 // winged Bill Blasters fly as actors: not yet
                 out.insert(format!("wings on part {}", o.id));
@@ -552,6 +566,7 @@ impl Level {
             scroll_nodes: Vec::new(),
             pink_coins: Vec::new(),
             vines: Vec::new(),
+            v3: V3Tiles::default(),
             tracks: Default::default(),
             creepers: Vec::new(),
             liquid: None,
@@ -606,6 +621,7 @@ impl Level {
             let (x, y) = (g.x as i32, g.y as i32);
             lvl.set(x, y, Cell::Solid);
             lvl.tiles.push(TileDraw {
+                pipe: false,
                 flip: 0,
                 x,
                 y,
@@ -644,11 +660,11 @@ impl Level {
             .values()
             .map(|c| (c.head.index, c.nodes.iter().map(|n| n.direction).collect()))
             .collect();
-        lvl.tracks = crate::track::Tracks::new(
+        lvl.tracks = crate::track::Tracks::with_ends(
             area.tracks
                 .iter()
                 .filter(|t| t.x != 0 || t.y != 0 || t.r#type != 0 || t.k0 != 0)
-                .map(|t| (t.x, t.y, t.r#type)),
+                .map(|t| (t.x, t.y, t.r#type, t.k0, t.k1)),
         );
 
         // tile-like objects: (x, y) is the centre of the bottom-left tile [toost LevelDrawer
@@ -830,7 +846,7 @@ impl Level {
                     path: o.extended_data.wrapping_sub(1).min(255) as u8,
                     sleeps: o.flags & 0x4 != 0,
                 }),
-                _ => None,
+                _ => v3::actor_kind(o, &lvl),
             };
             if o.id == 61 && o.flags & 0x4 == 0 && o.flags & 0x400 == 0 {
                 // the Chain Chomp's stake is solid (WanwanPile has a collision body)
@@ -901,6 +917,9 @@ impl Level {
                     clown: o.flags & 0x200 != 0,
                     alt: o.flags & 0x4 != 0,
                 });
+                continue;
+            }
+            if v3::place_tile(&mut lvl, o, tx, ty) {
                 continue;
             }
             let on_track = o.flags & 0x400 != 0;
@@ -996,6 +1015,7 @@ impl Level {
                         0x7E
                     };
                     lvl.tiles.push(TileDraw {
+                        pipe: false,
                         x: tx,
                         y: ty + dy,
                         atlas,
@@ -1018,6 +1038,7 @@ impl Level {
                 for dx in 0..w {
                     lvl.set(tx + dx, ty, Cell::Solid);
                     lvl.tiles.push(TileDraw {
+                        pipe: false,
                         x: tx + dx,
                         y: ty,
                         atlas: 49, // [inf] placeholder art (bridge) until the belt model is found
@@ -1089,9 +1110,10 @@ impl Level {
                 continue;
             }
             if o.id == 84 {
-                // snake block: path from the snake section (index = extended data & 0xF), head on
-                // the left when extended data bit 0x10 ("start from the other end") is set
-                let idx = (o.extended_data & 0xF) as u8;
+                // snake block: path from the snake section (extended data & 0xF is its index + 1:
+                // every sample course stores it so [obs corpus, 65 areas]), head on the left when
+                // extended data bit 0x10 ("start from the other end") is set
+                let idx = ((o.extended_data & 0xF) as u8).wrapping_sub(1);
                 let codes: Vec<u16> = area
                     .snake_blocks
                     .slots
@@ -1336,6 +1358,7 @@ impl Level {
                             }
                         };
                         lvl.tiles.push(TileDraw {
+                            pipe: false,
                             flip: 0,
                             x: tx + dx,
                             y: y_top,
@@ -1403,6 +1426,7 @@ impl Level {
             let row = (lo / TILE).floor() as i32;
             for y in sl.bottom..row {
                 self.tiles.push(TileDraw {
+                    pipe: false,
                     flip: 0,
                     x,
                     y,
@@ -1422,6 +1446,7 @@ impl Level {
                 }
             };
             self.tiles.push(TileDraw {
+                pipe: false,
                 flip: 0,
                 x,
                 y: row,
@@ -1453,7 +1478,13 @@ impl Level {
                     }
                 };
                 self.set(x, y, Cell::Solid);
-                self.tiles.push(TileDraw { x, y, atlas, flip });
+                self.tiles.push(TileDraw {
+                    x,
+                    y,
+                    atlas,
+                    flip,
+                    pipe: true,
+                });
             }
         }
     }
@@ -1473,6 +1504,7 @@ impl Level {
                 self.set(x, y, Cell::Solid);
                 let id = if y == height - 1 { 10 } else { 12 }; // top edge / interior
                 self.tiles.push(TileDraw {
+                    pipe: false,
                     flip: 0,
                     x,
                     y,
@@ -1621,6 +1653,7 @@ impl Level {
             scroll_nodes: Vec::new(),
             pink_coins: Vec::new(),
             vines: Vec::new(),
+            v3: V3Tiles::default(),
             tracks: Default::default(),
             creepers: Vec::new(),
             liquid: None,

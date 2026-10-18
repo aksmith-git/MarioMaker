@@ -9,8 +9,12 @@ use crate::fmath::DetMath;
 use crate::level::{Cell, Level, PipeDir, TILE};
 
 mod bosses;
+mod koopalings;
+pub use koopalings::{shot as koopaling_shot, who as koopaling_who};
+mod v3;
 mod w3;
 pub use bosses::{BossAttack, BossHit};
+pub use v3::{LASER_SIGN, MECHA_DOWN, MISSILE_LIFE, Seg, V3State};
 pub use w3::{CREEP_CELL, W3Look, W3State, creeper_corner, push as bully_push};
 
 pub const WALK_SPEED: f32 = 0.5;
@@ -312,6 +316,42 @@ pub enum Kind {
         path: u8,
         sleeps: bool,
     },
+    /// Spike (74): turns to the player, lifts a spiked ball (a snowball in snow themes) and
+    /// throws it (actors/v3.rs, like the other 2.0/3.0 parts below).
+    Spike,
+    /// A Spike's ball rolling along the ground (`snow`: a snowball).
+    SpikeBall {
+        snow: bool,
+    },
+    /// Pokey (78; `snow` = Snow Pokey): a walking cactus stack of `height` segments.
+    Pokey {
+        snow: bool,
+        height: u8,
+    },
+    /// Mechakoopa (111): `weapon` 0 plain, 1 Blasta (missiles), 2 Zappa (laser).
+    Mechakoopa {
+        weapon: u8,
+    },
+    /// Blasta Mechakoopa's homing missile.
+    MechaMissile,
+    /// Zappa Mechakoopa's laser beam.
+    MechaLaser,
+    /// ON/OFF Trampoline (132, 3D World; `blue` = the alternate colour).
+    OnOffTrampoline {
+        blue: bool,
+        width: u8,
+    },
+    /// A Koopaling (120–126; `who` 0 Lemmy, 1 Morton, 2 Larry, 3 Wendy, 4 Iggy, 5 Roy, 6 Ludwig)
+    /// (actors/koopalings.rs). `key`: holds a Key; `clown`: rides a Koopa Clown Car.
+    Koopaling {
+        who: u8,
+        key: bool,
+        clown: bool,
+    },
+    /// A Koopaling's projectile (`what`: see actors/koopalings.rs).
+    KoopalingShot {
+        what: u8,
+    },
 }
 
 impl Kind {
@@ -350,6 +390,7 @@ impl Kind {
                 | Kind::ShoeGoomba { .. }
                 | Kind::FishBone
         ) || self.w3_enemy()
+            || self.v3_enemy()
     }
     /// Clear-condition enemy class (clear.rs) of a defeated actor of this kind.
     pub fn defeat_class(self, buzzy: bool) -> Option<u8> {
@@ -442,6 +483,7 @@ impl Kind {
             Kind::Thwomp { .. }
                 | Kind::Lift { .. }
                 | Kind::Trampoline { .. }
+                | Kind::OnOffTrampoline { .. }
                 | Kind::TrackBlock { .. }
                 | Kind::TrackMount { .. }
                 | Kind::Crate { .. }
@@ -567,6 +609,9 @@ pub struct Actor {
     /// Riding a track, and the offset from the track point to (x, y).
     pub rail: Option<crate::track::Rail>,
     pub rail_off: (f32, f32),
+    /// Left its track at an open end: falls with its last speed (objects without gravity of
+    /// their own; enemies fall by their own rules).
+    pub derailed: bool,
     /// Counted toward a "defeat N" clear condition.
     pub tallied: bool,
     /// Carried by the player: the world positions it; it doesn't step on its own.
@@ -577,6 +622,14 @@ pub struct Actor {
     pub floor_ref: f32,
     /// 3D World enemy state and what the world senses for them (actors/w3.rs).
     pub w3: W3State,
+    /// SMM1 shell physics: a shell kicked by the mid-air wall assist — its stop point (x) and
+    /// kick direction (world/smm1.rs).
+    pub assist: Option<(f32, i32)>,
+    /// SMM1 extras: this Super Mushroom is a Weird Mushroom (1) or a Mystery Mushroom (2)
+    /// (`Options::smb1_mushroom`; SMM1 keeps them as Super Mushroom actors with a subtype).
+    pub smm1_item: u8,
+    /// State of the 2.0 / 3.0 parts (actors/v3.rs, actors/koopalings.rs).
+    pub v3: V3State,
 }
 
 impl Actor {
@@ -620,11 +673,15 @@ impl Actor {
             target_facing: 1,
             rail: None,
             rail_off: (0.0, 0.0),
+            derailed: false,
             tallied: false,
             held: false,
             camera: (0.0, 0.0),
             floor_ref: 0.0,
             w3: W3State::default(),
+            assist: None,
+            smm1_item: 0,
+            v3: V3State::default(),
         }
     }
 
@@ -722,6 +779,7 @@ impl Actor {
                 let top = self.y + 12.5 - self.aux_compression();
                 Some((self.x - 8.0, top - 4.0, self.x + 8.0, top, true))
             }
+            k if k.is_v3() => self.v3_solid_box(),
             _ => None,
         }
     }
@@ -1116,7 +1174,11 @@ impl Actor {
             Kind::TrackBlock { .. } => 16.0,
             Kind::TrackMount { .. } => 8.0,
             k if k.is_w3() => self.w3_size().0,
+            k if k.is_v3() => self.v3_size().0,
             _ if self.big => 16.0,
+            // the Weird Mushroom's contact box is 12 px wide, the Super Mushroom's 14 (SMM1
+            // 0x023c3ae4: half-width 6 for 7) [obs]
+            Kind::Mushroom if self.smm1_item == 1 => 7.0,
             _ => 8.0,
         }
     }
@@ -1142,6 +1204,7 @@ impl Actor {
             Kind::BabyBlooper { .. } => 8.0,
             Kind::TrackMount { h, .. } => h as f32 * TILE,
             k if k.is_w3() => self.w3_size().1,
+            k if k.is_v3() => self.v3_size().1,
             _ if self.big => 32.0,
             _ => 16.0,
         }
@@ -1330,10 +1393,24 @@ impl Actor {
     /// One frame; may return a new actor to add (a Fire Piranha's fireball). Uses `target`.
     pub fn step_spawning(&mut self, level: &Level) -> Option<Actor> {
         let before = (self.x, self.y);
-        let out = self.step_inner(level);
+        let out = if self.derailed && self.falls_when_derailed() {
+            // gravity as a falling lift's [inf: the rider's own FallDown state isn't decoded]
+            self.vy = (self.vy - 0.0625).max(-4.0);
+            self.x += self.vx;
+            self.y += self.vy;
+            None
+        } else {
+            self.step_inner(level)
+        };
         self.ride_track(level);
         self.moved = (self.x - before.0, self.y - before.1);
         out
+    }
+
+    /// Objects with no gravity of their own, which a derail must make fall (platforms and
+    /// mounted objects); everything else falls under its own rules once off the track.
+    fn falls_when_derailed(&self) -> bool {
+        self.kind.is_platform() || matches!(self.kind, Kind::TrackMount { .. })
     }
 
     /// On a track the rail sets the position (the actor's own motion is replaced); knocked off
@@ -1346,6 +1423,16 @@ impl Actor {
         }
         let before = r.point(&level.tracks);
         let (px, py) = r.step(&level.tracks);
+        if r.off {
+            // past an open end: it keeps its last motion and falls (FallDown)
+            self.rail = None;
+            self.derailed = true;
+            self.vx = px - before.0;
+            self.vy = py - before.1;
+            self.x = px + self.rail_off.0;
+            self.y = py + self.rail_off.1;
+            return;
+        }
         self.rail = Some(r);
         if self.kind == Kind::Claw {
             // the claw hangs from a pivot that rides the track
@@ -1663,6 +1750,7 @@ impl Actor {
                 Kind::Goomba | Kind::Goombrat | Kind::Koopa { .. } | Kind::Thwomp { .. } => {} // their own wing behaviour
                 Kind::Bowser { .. } | Kind::BoomBoom { .. } | Kind::BowserJr { .. } => {}
                 k if k.is_w3() => {} // their own wing behaviour (actors/w3.rs)
+                k if k.is_v3() => {} // their own wing behaviour (actors/v3.rs)
                 Kind::Piranha { .. } | Kind::Muncher if self.pipe.is_none() => {
                     self.step_winged_plant(level);
                     return None;
@@ -1716,6 +1804,15 @@ impl Actor {
             | Kind::Bully
             | Kind::Charvaargh
             | Kind::PiranhaCreeper { .. } => return self.step_w3(level),
+            Kind::Spike
+            | Kind::SpikeBall { .. }
+            | Kind::Pokey { .. }
+            | Kind::Mechakoopa { .. }
+            | Kind::MechaMissile
+            | Kind::MechaLaser
+            | Kind::OnOffTrampoline { .. }
+            | Kind::Koopaling { .. }
+            | Kind::KoopalingShot { .. } => return self.step_v3(level),
             Kind::BowserFire | Kind::Shuriken => self.step_boss_shot(),
             Kind::ChainChomp { chained } => self.step_chomp(level, chained),
             Kind::LavaBubble => self.step_lava_bubble(),

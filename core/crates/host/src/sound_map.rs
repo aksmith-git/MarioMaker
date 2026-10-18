@@ -114,6 +114,10 @@ pub fn player_mode(form: Form) -> &'static str {
         Form::Builder => "Builder",
         Form::Superball => "SuperBall",
         Form::Mega => "Mega",
+        // the Weird Mushroom's lanky Mario is the database's "Funny" mode (its own jump and
+        // power-up waves); a costume is "Chara"
+        Form::Lanky => "Funny",
+        Form::Costume => "Chara",
     }
 }
 

@@ -172,6 +172,37 @@ pad, then 20 (creeper) or 10 × {u8 1, u8 direction, u16 pad}. Note `index` is a
 Path directions: 1 left, 2 right, 3 down, 4 up, 5–12 corners (left→down, down→left, left→up,
 up→left, right→down, down→right, right→up, up→right), 13–16 ends (right, left, up, down).
 
+### 2.5 Links, warps and paths (project findings, verified on the 550-course sample)
+
+- **Link ids** tie a rider to its carrier. Every pipe, Lakitu's Cloud, Koopa Clown Car and swinging
+  claw has one (2955 of 2955 pipes); a part in a pipe (flag 0x1), in a clown car (0x200), on a cloud
+  (0x10000) or held by a claw (0x8000000) has the same id. Track pieces use the same numbers, stored
+  + 1; a part on a track (0x400) has the id of the piece it sits on, and that piece's byte +2 is 1
+  (657 of 657). Ids are small and mostly dense from 0 per area.
+- **Rider positions:** in a pipe, the mouth: base + (L − 1) tiles along the pipe, then ±8 px on both
+  axes (up: (+8, +8), down: (−8, −8), right: (+8, −8), left: (−8, +8)). In a clown car 24 px above it
+  (32 for big riders), on a cloud 8 px (16 big).
+- **Pipes:** the stored position is the base tile's centre: bottom-left for an up pipe, top-right
+  for down, bottom-right for left, top-left for right; width 2, height = length (2–27 seen).
+  Warp id k ≠ 0 joins the main-area pipe k with the sub-area pipe k (843 of 843 pairs cross areas).
+- **Doors / warp boxes:** ids 2k and 2k + 1 in the same area are a pair; both doors have the same
+  kind ((flags >> 18) & 3: 0 normal, 1 P, 2 key) and both boxes the same key flag (0x4).
+- **Big parts** store their doubled size (a big Goomba is 2×2, x on the tile edge).
+- **Track end codes:** a free end gets a cap, closed 0x70–0x77 or open 0x80–0x87 (horizontal: k0
+  right 0x71, k1 left 0x70; vertical: k0 top 0x72, k1 bottom 0x73; type 2: 0x75 / 0x74; type 3:
+  0x77 / 0x76; open = + 0x10). A shared end gets a joint code from one piece and 0x104 from the
+  other: straight runs 0x90 / 0x91 / 0x92 / 0x93 written by the k0 end; mixed joints use 0x94–0xA7.
+- **Paths** (snake, ! block, track block, creeper): one node per step, code = direction (1 left,
+  2 right, 3 down, 4 up), corner (5–12, old → new direction) or the closing end (13–16, last
+  direction). The part's extended data is slot + 1 (snake: low nibble). Snake heads are
+  {slot, count, 1, 0} with nodes {number, code, 0x100}; the others {1, slot, count, 0} with nodes
+  {1, code}.
+- **Areas:** horizontal areas are 27 tiles tall and 24–240 wide; vertical sub-areas are 48 wide and
+  28–168 tall in steps of 7. Unused sub-areas are 84 tiles wide. Management flag bit 6 is set in every
+  course whose sub-area holds anything. goal_x = (right − 152 px) × 10 / 16.
+- **Start / goal:** no ground tile and almost no part sits in columns 0–6 below start_y + 3 or on
+  the goal ground (below goal_y, the last 10 columns).
+
 ## 3. Object ids
 
 0–132, from Goomba (0) to ON/OFF trampoline (132). Full list in

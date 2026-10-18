@@ -1,0 +1,15 @@
+[package]
+name = "mmk-story"
+description = "Story Mode (Peach's castle) and lesson runtime: an event-flow interpreter over the game's own BFEVFL flows (imported from the owner's dump), the Story rules and save state"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+mmk-formats = { path = "../formats" }
+serde_json.workspace = true
+crc32fast.workspace = true
+
+[dev-dependencies]
+mmk-modes = { path = "../modes" }

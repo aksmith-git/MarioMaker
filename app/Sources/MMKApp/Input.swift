@@ -21,6 +21,11 @@ struct MenuInput: OptionSet {
 /// player. On iOS hardware keyboards are read through GameController (`GCKeyboard`, the same
 /// bindings mapped to HID codes) and the on-screen controls (`TouchInput`) are added in.
 final class InputState {
+    /// The front end has a text field open (macOS: keys go to `typed` instead of the game).
+    nonisolated(unsafe) static var typing = false
+    /// Typed keys waiting to be sent, one per tick (Unicode scalars; 8 erase, 10 finish, 27 cancel).
+    nonisolated(unsafe) static var typed: [UInt32] = []
+
     private var observers: [NSObjectProtocol] = []
     private var keys = KeyBindings.load()
     private var pad = PadBindings.load()
@@ -44,6 +49,20 @@ final class InputState {
             // only the game window; keep ⌘-shortcuts working
             guard event.window != nil, event.window === self.window else { return event }
             if event.type == .keyDown && event.modifierFlags.contains(.command) { return event }
+            // a text field of the front end is open: keys type (Return finishes, Esc cancels,
+            // Delete erases) instead of playing
+            if Self.typing && event.type == .keyDown {
+                switch event.keyCode {
+                case 36, 76: Self.typed.append(10)
+                case 51: Self.typed.append(8)
+                case 53: Self.typed.append(27)
+                default:
+                    for u in (event.characters ?? "").unicodeScalars where u.value >= 32 && u.value != 127 {
+                        Self.typed.append(u.value)
+                    }
+                }
+                return nil
+            }
             switch event.type {
             case .keyDown: self.keysDown.insert(event.keyCode)
             case .keyUp: self.keysDown.remove(event.keyCode)

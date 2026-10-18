@@ -221,7 +221,7 @@ Specs are private (`research/specs/`, gitignored): behaviour in prose/tables, no
   - ✅ formats: SLink2 users with containers (switch / random / blend / sequence), conditions,
     random ranges, property curves, user params, action triggers; the group tree (AGST),
     attenuation sets (AATN / AROC / AACL)
-  - ✅ import v6: `audio/sound.json` (616 gameplay users, groups, attenuation, per-theme
+  - ✅ import v7: `audio/sound.json` (616 gameplay users, groups, attenuation, per-theme
     effects, ground materials) + 2430 effect waves (`audio/se/`) + 234 streams
     (`audio/music/`, game names); `mmk import-sound <romfs> <cache>` runs only this stage
   - ✅ mixer: per-voice volume / pitch / pan / delay / duration / fade-in / low-pass, group
@@ -312,9 +312,16 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   - ✅ WebAudio (cpal) through the shared sound director, started on the first gesture
   - ✅ Gamepad API (gilrs) and keyboard; course picker: built-in courses of the import, or any
     `.bcd` / zlib / raw course file
+  - ✅ SMM2 menus (`mmk-front`) when the SMM2 UI import is in storage: copied from an
+    `mmk import-smm2-ui` folder, or made by the in-page dump import (identical to the desktop
+    import, all 4528 files); the UI cache reads JSON up front (13 MB, ~0.4 s) and textures on
+    request; opening, title over its demo courses, Play menu, Course World (the library: built-in
+    courses + opened files), Story Mode, 100 Mario, course card / HUD / pause / give up; UI sounds,
+    course music, keys, mouse clicks; saves in `localStorage`. No server listing in the browser
   - checked in headless Edge (CDP: import, courses, keys, a scripted Gamepad API pad, non-silent
-    WebAudio) and headless Firefox (WebDriver BiDi). Open: Safari (OPFS `createWritable`),
-    a real controller in a browser, touch controls, mobile memory limits, menus (layout player)
+    WebAudio, the menus) and headless Firefox (WebDriver BiDi; before the menus). Open: Safari
+    (OPFS `createWritable`), a real controller in a browser, touch controls, mobile memory
+    limits, the course server from the browser (HTTP), Firefox with the menus
 - 🔄 iOS/iPadOS: the same Swift package cross-compiled (`swift build --triple`, core linked from
   `core/target/aarch64-apple-ios{,-sim}/release`), bundled by `scripts/make-ios-app.sh`
   (DECISIONS.md "iOS packaging"); `scripts/check.sh --ios` builds it for the Simulator. AppKit
@@ -330,7 +337,20 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   owner's iPad (`ios-install-tailscale <app> --device ipad` once signed), tap-to-select in layout
   menus, iCloud placeholder files in picked folders, the in-app importer on iOS
 - 🔄 Engine-drawn menus everywhere (layout player), so every platform shows the same screens:
-  SMM2 title + Play menu and the SMM1 100 Mario screens in the Swift app; not yet in `mmk-play`
+  ✅ the SMM2 front end is Rust (`mmk-front`: opening, fades, title + Play menu, Course World over
+  a library folder and the course server, Endless / SMM1-layout 100 Mario, in-course HUD / card /
+  pause / settings / clear / give up / time up / game over, UI sounds) and `mmk-play` runs it by
+  default (Windows, Linux, macOS); headless captures (`--front-screen`) match the Swift app's to
+  within rounding on every deterministic screen. ✅ the Swift app runs `mmk-front` too, through
+  the `mmk_front_*` C API (DECISIONS.md "The Swift app runs the Rust front end"): its own screen
+  classes (~4 500 lines) are deleted; it keeps its renderer, audio, input, touch controls and the
+  SwiftUI library / Settings. Its DebugCaptures before vs after on the 30 front-end screens of the
+  comparison set (macOS, 1024×640 window): 27 pixel-identical, course-pause 0.11 % and
+  course-settings 0.11 % of pixels (the selection frame's Loop phase), smm1-walk 0.35 % (the
+  random course name on the map's balloon); real-time navigation (hub → list → course page →
+  play) and the `MMK_SCREENSHOT` smoke test run; `scripts/check.sh --ios` builds. ✅ the web build runs
+  it too (UI cache over an in-memory file source filled from OPFS, textures on request). Open:
+  Settings screens, ghosts in the Apple app, a server listing in the browser (HTTP fetch)
 
 ### Phase 9 — SMM2 single-player like-for-like 🔄 (owner request 2026-10-18)
 - 🔄 SMM2 layouts through the same layout player (private map: `research/specs/smm2-layouts.md`):
@@ -354,12 +374,16 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
       title (Settings > Game, `MMK_BOOT`, `MMK_BOOT_OPENING`)
     - ✅ scene fades `Cmn_Fade_00` (black 30 + 30 for scene changes without parameters, black
       circle from the opening; white, blocks available) over every screen (`SceneFade`)
-    - ✅ Course World: hub `Nwk_Title_00` (background loops, Courses / Endless Challenge;
-      Leaderboards, Network Play, Ninji Speedruns, Super Worlds say they need Nintendo's
-      network), course list `Nwk_CourseListGeneral_00` (Hot / Popular / New tabs, rows with
-      style logo, maker, likes, plays, tags, date, clear mark; open row with description, world
-      record, clears / attempts, course ID, Play) over the library (dataset index statistics) and
-      the open-source course server (Settings > Game; `mmk_online_*`)
+    - ✅ Course World: hub `Nwk_Title_00` (background loops, Courses / Leaderboards / Endless
+      Challenge / the player card; Network Play, Ninji Speedruns, Super Worlds say they need
+      Nintendo's network), course list `Nwk_CourseListGeneral_00` (Hot / Popular / New tabs, rows
+      with style logo, maker, likes, plays, tags, date, clear mark; open row with description,
+      world record, clears / attempts, course ID, Play, and for server courses More info / View
+      comments) over the library (dataset index statistics) and the open-source course server
+      (Settings > Game; `mmk_online_*`); the online screens of Phase 10 in `mmk-front`
+    - ✅ clicks / taps (`FrontInput::click`) on the title, the hub, the course list (tabs, rows,
+      an open row's buttons), the online screens, the Endless menu and map, and the SMM1 100
+      Mario screens; text entry (`FrontInput::text`) for names, tokens and comments
     - ✅ 100 Mario Challenge in SMM2's Endless Challenge screens (default; SMM1's kept in
       Settings > Game): `Nwk_EndlessModeMenu_00` difficulty tabs (SMM1 unlocks), New Game /
       Continue, the map `Nwk_WorldMap_00` (ChangeMap, Telop, Mario out of the castle, walks
@@ -461,17 +485,100 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   per air time); "goal as Cat" condition; drawn with the cat suit's meshes and Climb animations
 - ✅ 3D World two-stage run: 2.25 until the dash stage (75 f, 60 as Cat), then 3.0 (star 3.6),
   ×1.05 jump while dashing
-- ⬜ Every part (0–132, incl. 2.0/3.0 items from the update dump), Yoshi, shoes, clown cars,
-  power-ups per style, Koopalings, Master Sword, etc.
-- 🔄 Course Maker (editor): core crate `editor` ✅ (place / erase parts with default sizes, child items,
-  flags, ground painting auto-tiled from a corpus-derived table, theme / night / timer / autoscroll /
-  style / name / length, undo-redo, save; tests play the saved course in the sim) · maker UI, copy,
-  sub-area links, pipes/doors, paths, tracks ⬜ · first maker UI ✅ in the portable shell
-  (`mmk-play --edit <file>`): engine-drawn course, ghost preview, 24-part palette, place/erase with
-  the mouse, scroll, undo/redo, save, Enter test-play / E back · SMM2 maker layouts ⬜
-- ⬜ Story Mode (Peach's castle jobs, built-in courses from the owner's dump), Coursebot, Lessons
+- 🔄 Every part (0–132, incl. 2.0/3.0 items from the update dump): the 2.0/3.0 enemies, blocks
+  and gizmos ✅ (below; from the v3.0.3 binary, editor-built test courses in
+  `crates/editor/tests/v3_parts.rs`, `MMK_WRITE_COURSES=<dir>` writes them) · second style
+  power-ups, Master Sword, wearable boxes/masks (81, 127–131), Koopalings in Clown Cars ⬜
+  - ✅ Spike (74): SMB1/SMB3 Gabon3rd walks 0.5 and throws in bursts of 2 when the player is
+    32–288 px ahead (ball flies level at 1.5); SMW/NSMBU/3D World GabonWU stands, faces the player
+    (3D World 50-frame Turn), waits 0–59 then 120 (SMW 160) + 0–29 frames, lifts and throws on the
+    style's animation frames; balls roll 1.2 (slopes speed them up, walls break them, landings
+    bounce ×0.6); snow theme: snowballs that are kicked (1.7–5.2) or carried; the 0x4 form is the
+    ball itself
+  - ✅ Pokey (78): 1–8 segments (default 4), 0.25 px/f, turns at walls and ledges, ±1.5 px sway;
+    stomps only on the head (whole stack), fire/shells/tails/slides knock out one segment and the
+    ones above hop down; Snow Pokey (ground pound defeats it, Run picks up a snowball); winged hops
+  - ✅ Mechakoopa (111; kind = (flags >> 18) & 3): walks 0.5, re-aims every 60–80 frames; stomps
+    and ground pounds knock it down for 480 frames (slide/bounce rules, shake below 61, 18-frame
+    revival), kicked or carried and thrown while down; fire-proof; Blasta's missile (three-phase
+    homing, explodes at frame 300 breaking blocks like a Bob-omb) and Zappa's laser (69-frame
+    telegraph, grows 10 px/f to 320 for 40 frames); winged patrol; night-Ground hops
+  - ✅ P Block (79, 3D World): solid / outline swapped while a P Switch runs (both kinds); P Switch
+    time 540 frames from the binary
+  - ✅ Dash Block (80, 3D World): standing on it sets a 120-frame dash at 4.0 px/f along the
+    player's facing (jumps keep it; a wall or a turn ends it)
+  - ✅ ON/OFF Trampoline (132, 3D World): bounces like the Mushroom Trampoline only while its
+    colour's ON/OFF state is on, else a plain platform
+  - ✅ Koopalings (120–126): shared action (3 HP, 5 fireballs per HP (big 10), hop between
+    volleys of wand magic (1/2/3 shots at 3/2/1 HP, aimed ±10° within 60°), shell after a hit:
+    65-frame wait then 1–3 shell hops (NSMBU: 60-frame flinch, 300-frame shell slide), Key drop);
+    Larry (higher 1-HP jumps), Wendy (bouncing rings, 1/2/3 alive), Iggy (walks, fast magic),
+    Lemmy (rides his ball, 1/3/5 bouncing balls), Morton (ground pound: 80-frame stun, two
+    crawling flames), Roy (dives into the ground and comes up elsewhere), Ludwig (hovering shell,
+    fans of 3/5 slow shots) · Clown Car rides, Roy's ceiling exits, Morton's winged feints, wing
+    flight ⬜
+- ⬜ Yoshi variants, shoes, clown cars, power-ups per style, Master Sword, etc. (rest of the
+  "every part" list)
+- 🔄 Course Maker (editor): core crate `editor` — each step tested by saving the course, re-opening
+  it byte-identically and playing it in the sim (`unsupported_features` empty):
+  - ✅ parts: place / erase / resize (semisolid, mushroom platform, bridge, pipe, belt, lift, slopes,
+    vine, Bill Blaster, seesaw, trampolines, snake block, tree) with sizes, forms and composition from
+    the game's editor part table; big parts stored doubled; child items; ground auto-tiled
+  - ✅ both areas: main / sub switching, sub-area theme / night / vertical (48 wide, 28–168 tall in 7s),
+    area sizes (24–240), goal follows the right edge
+  - ✅ links: pipes (length / direction / colour, main↔sub warp ids, contents), door pairs (normal,
+    P, key), warp box pairs, link ids shared with tracks — encoded like the sample courses
+  - ✅ tracks (straight + 45°, corpus end codes, open / closed ends, parts on tracks: 0x400 + piece
+    link id) · snake block / ! block / track block / Piranha Creeper paths · ⬜ laying bends and
+    junctions, clear pipes, Lakitu-cloud / clown-car / claw riders (kept when editing a file)
+  - ✅ selection: rectangle copy / cut / paste / move / delete (parts, ground, tracks; all or nothing)
+  - ✅ settings: clear condition (category / CRC32 / magnitude), autoscroll incl. custom nodes and
+    speed, liquid mode / speed / heights, timer 10–500
+  - ✅ placement rules: the game's per-area part counters from v1.0.0 (100 enemies & gizmos, 100
+    power-ups, 2000 plain blocks & coins, 200 terrain parts, 1 checkpoint, 5 pink / big coins, 4
+    door and 4 warp-box pairs, 3 Bowsers, 10 path blocks, 5 snakes …; each reached exactly in the
+    sample), the validators' size ranges, style-only parts, header ranges (timer, start / goal
+    heights, area sizes, custom autoscroll main-area only); overlap layers, start / goal zones and
+    containers from the sample · v3 parts' limits (120–132) and per-part flag masks ⬜
+  - ✅ shell maker UI (`mmk-play --edit <file>`): engine-drawn area, ghost preview, 40-part palette,
+    keys for everything above (README) · SMM2 maker layouts ⬜
+- 🔄 Story Mode (Peach's castle): core ✅, screens ⬜
+  - ✅ BFEVFL reader (`mmk_formats::bfevfl`, all 24 Story + 51 lesson flows parse) and a flow
+    interpreter (`mmk_story::flow`: host-implemented actors, waits, sub-flow arguments, forks)
+  - ✅ the game's own flows run the Story (`mmk_story::Story`): jobs activated by the Chief, the
+    givers and the Taskmaster, builds enabled by the flows, NPC chains and moves (move flags
+    settle when the hub is rebuilt), the three crises blocking the Chief, the kidnapping, the
+    ending and staff roll, Builder Mario, post-game jobs 117–119 and the ten 1000-coin statue
+    stages, the all-clear Coursebot gear; the rules behind the flows' queries / actions: payment
+    on a job's first clear, collected coins on every clear, a failure pays nothing and passes no
+    day, builds paid in full when ordered and counted down per cleared job in parallel, pop-up
+    queue, coins / days 0–9999, hub gates, hub coins and daily flags
+  - ✅ a job's course: 5 lives, TOO BAD → Try Again / Call Luigi / Give Up, Luigi's clear stamps
+    the job until Mario clears it, "struggling" play type after two attempts (`JobPlay`)
+  - ✅ `StoryState`: quest.dat's meaning as JSON (jobs, builds, days, coins, ordered job, flags,
+    talk words, gear, Builder / Superball unlocks)
+  - ✅ import stage `modes` (importer v6; also `mmk import-modes <romfs> <cache>`): flows, jobs /
+    builds / flags with English fields, the hub map, the clear-condition copy
+  - ✅ tests: synthetic flows for every rule; the whole Story from the opening to the post-game
+    through the owner's flows (467 courses) when a cache is present
+  - ⬜ screens: hub (2D list of `hub_things()` or the 3D hub), Taskmaster list / job window, Chief
+    build menu, reward / progress pop-ups, TOO BAD window, ending, staff roll; castle progress %
+    (map-part weights not found yet)
+- 🔄 Coursebot: core ✅ (`mmk_modes::coursebot`: 120 + 60 slots behind the game's slot table, drag =
+  swap of My Courses entries, files never renamed; metadata with clear check, upload code, Super
+  World, Downloaded server / local stats; course-number space; scene reasons → list modes; upload
+  gate; JSON; `CoursebotStore` over a pluggable blob store; starts empty) · screens ⬜
+- 🔄 Lessons (Yamamura's Dojo): core ✅ (`mmk_modes::dojo`: catalogue from the imported
+  `lessons/index.json`, 3 levels × 15 Maker Lessons, the 4 power-up lessons, Maker Basics, lesson
+  starts with descriptors, completion bits, Maker Basics → 10 title courses, Nina's flag;
+  `mmk_story::lesson` runs a lesson flow for the screen — all 50 run to `EndLesson` in the test)
+  · Dojo menus, lesson screen (editor puppeteering), `SPRH` demo replays ⬜
 - 🔄 Endless Challenge: its menus and map present the 100 Mario Challenge (above); SMM2's own
-  endless rules ⬜
+  rules ✅ (`mmk_modes::endless`: 5 lives [ext], pending 1-Ups max 3 per course paid at the goal,
+  misses / Start Over cost a life, free unlimited skip rolled back to the course-start snapshot (a
+  skip during a miss demo costs the life), 50 points per second left, quit restores the snapshot,
+  skip hint on the 4th attempt, 48-entry history and map position, clear-rate pick rule, offline
+  `Session`) · screens on the SMM2 rules ⬜
 - ⬜ Ninji speedruns / event courses (offline with local data), records and medals
 
 ### Phase 10 — Online with an open-source server ⬜ (owner request 2026-10-18)
@@ -491,8 +598,31 @@ Not Nintendo's network: the engine talks to an open-source server the owner can 
   ghosts in the Swift app ⬜ · server hardening ✅ (request thread pool, CORS preflight for browsers,
   per-address limits on writes and new accounts → 429, `--trust-proxy`, `/api/health`) ·
   SMMDB import ⬜ · ⏳ owner: keep this or connect to another open-source server
+- ✅ Endless runs held by the server: `/api/endless` status, `/<d>/start|next|result|suspend|
+  finish|history`; batches of 10 by clear-rate band (≥ 20 attempts), no repeats in a run, never
+  the player's own or banned courses, widening reported; best per difficulty feeds the
+  `endless_<d>` rankings; Endless plays count in course statistics; `mmk-online` client calls
 - 🔄 Course World client: browse (SMM2 course list over the server and the library) and play ✅,
-  play / clear reports ✅; like/boo, comment, upload from the editor ⬜
+  play / clear reports ✅; in the Rust front end (`mmk-front`, 2026-10-18) ✅: account (player
+  card → `Nwk_PlayerInfo_00`: create with a typed name, sign in with a token, sign out; token in
+  the host's store), like / boo on a server course's clear screen and pause menu (the game's
+  judge buttons),
+  comments (`Nwk_CommentViewer_00`) and posting (`Nwk_CommentPosting_00`, typed), course page
+  (`Nwk_CourseListWindow_00` + `Nwk_CourseDetail_00`: likes, plays, first clear, world record),
+  maker profiles (their uploaded courses), leaderboards (`Nwk_CourseListMaker_00`: maker points,
+  clears, first clears, records, Endless per difficulty), clears sent as replays the server
+  verifies (fallback: the time), the record's ghost raced from the course page, Endless runs
+  reported; `mmk-play` host on threads (`--server` / `$MMK_SERVER`), tested against a local
+  `mmk server` with captures `account`, `courseworld-leaderboards`, `courseworld-course-page`,
+  `-comments`, `-post`, `-maker`, `-play`, `-pause`, `-clear` · comments from the pause / clear
+  screens ⬜ ·
+  upload from the editor ⬜ (no Course Maker in the front end yet) · the Swift app ✅ (the same
+  screens through `mmk_front_*`; its host makes the calls on threads, records server-course runs
+  and sends them as replays — tested against a live server in `mmk-ffi`: a verified record, a
+  like, a comment; the account screen signed in from UserDefaults; macOS types from the keyboard,
+  iOS through a text prompt) · ghosts in the Swift app ⬜ (the engine snapshot draws one world) ·
+  the server times a replay to the end of the clear sequence, the clear screen to the goal touch
+  (16.35 s vs 9.18 s in one run) ⬜
 - ✅ Local multiplayer (co-op, up to 4: Mario, Luigi, Toad, Toadette as the models' _2/_3/_4
   variants): extra players run the same rules, rejoin beside player 1 [inf: bubble], any player
   clears; `mmk-play --players N` (one pad each), FFI `mmk_engine_set_players / step_players`;
@@ -511,23 +641,65 @@ Not Nintendo's network: the engine talks to an open-source server the owner can 
 - ✅ Accounts without Nintendo services; moderation for self-hosters (`--admin-token`: ban/unban,
   delete any course)
 
-### Phase 11 — SMM1 extras, each behind a setting ⬜ (owner request 2026-10-18)
-From the owner's SMM1 (Wii U) dump, as options layered on SMM2 play:
-- ⬜ Costumes (Mystery Mushroom): costume characters, their walk/jump art and sounds, the 100 Mario
-  costume rewards
-- ⬜ Lanky Mario (Weird Mushroom): the tall form and its floatier jump
-- ⬜ Pipes drawn over the player (SMM1 layering), as a display setting
-- ⬜ Mid-air shell kicks / shell jumps (SMM1 physics quirk), as a physics setting
-- ⬜ Other SMM1-only behaviours worth offering (to survey: SMM1 sound effects, Big Mushroom in all
-  styles, …)
+### Phase 11 — SMM1 extras, each behind a setting 🔄 (owner request 2026-10-18)
+From the owner's SMM1 (Wii U) dump, as engine options layered on SMM2 play (`mmk_sim::Options`,
+all off = SMM2; FFI `mmk_engine_set_option`, `mmk-play` / `mmk simulate` flags). Rules from
+Block.rpx v208 (private spec research/specs/smm1-extras.md).
+- ✅ Mid-air shell kicks / shell jumps (`smm1_shell_kicks`): SMM1's flat 10 px falling stomp
+  window, still shells kicked without a bounce, the kicker's 16 / 8 / 4 no-hit windows and the
+  5-frame contact window, the 4.0 catch-up re-kick, and the mid-air wall assist (hop 3.51855, the
+  shell parks a tile short of the wall) — the "shell jump"
+- ✅ SMM1 draw order (`smm1_layering`): SMM1 draws the player in front of pipes in play (the
+  "pipes over the player" memory is the editor, and pipe travel); the option applies SMM1's
+  depth ladder: passing through a pipe the player is in front of blocks but behind the pipe,
+  coins behind blocks, tracks over pipes, the vine / pole / death depths
+- ✅ Lanky Mario (`smb1_mushroom=weird`, SMB1 courses' Super Mushrooms become Weird Mushrooms):
+  Super's body, jump launch +0.5 (≈ 6.3-tile standing jump), float cue, SMM1 pickup/damage rules,
+  the narrower item box; art imported (`M1_Player_SlimMarioMdl`, `M1_Item_kinokofunny`)
+- ✅ Costumes (`smb1_mushroom=mystery`, `costume` = id or random): small Mario's body and physics,
+  crouch, air turn, Up taunt, no helmets, Sonic's spin; costume ids as SMM1's; random pick from the
+  costumes with art; art (115 costumes, 24 × 24 frames) and sounds (jump/jump2, power-up, taunt,
+  landing, skid, death and clear jingles) imported by `mmk import-smm1` into `<cache>/sprites`
+- ⬜ Swift Settings toggles and the costume picker (FFI ready; app being rewritten separately)
+- ⬜ Options in replays / online play (replays and rollback sessions don't carry options yet: keep
+  them off for records)
+- ⬜ 100 Mario costume rewards (rules in smm1-100mario-code.md §7) and costume ownership
+- ⬜ Lanky Mario's float-cue and jump sounds (`M1_HEN_JUMP*`: not imported); pickup freeze length
+  for costumes [?]; Inkling squid frames while swimming; the random Weird Mushroom easter egg
+  (1 in 20, pity at 100; its gates are not understood)
+- ⬜ SMM2 mode fixes found on the way (fidelity log): still-shell stomps shouldn't bounce, SMM2's
+  kicker windows and wall assist
+- ⬜ Other SMM1-only behaviours (surveyed, research/specs/smm1-extras-misc.md §B): per-enemy pipe
+  spawn intervals (Goomba 140, others 180, no pipe colours); SMM1 spawn caps; Clown Car weight
+  classes; attack reactions (shells vs Lava Bubbles, Blooper stomps, Fish Bones in lava, star vs
+  Munchers); helmet reactions; behaviour presets (Green Koopa, Spike Top, pipe Blooper, Dry
+  Bones, Magikoopa); stacking heights; SMM1 sound effects (14 built-in + recordings); Big Mushroom
+  in other styles [?]
+
+### Recomp — native SMM2 v3.0.3 by static recompilation 🔄 (owner request 2026-10-18)
+Separate from SMCraft, in `recomp/`; approach in DECISIONS.md (base: LAS Recomp, MIT; Wonder
+framework ideas; Ryujinx as the reference). Nothing counts as done without the evidence below.
+- ✅ Approach chosen and recorded; proprietary-content guard extended for recomp output
+- ⬜ Toolchain: fork LAS Recomp into `recomp/` (MIT notices, upstream commit), retarget to SMM2
+  v3.0.3 (`main` + `sdk` modules), first-launch local recompilation from the player's dump
+- ⬜ Mods: 100 Mario Challenge on SMM2's Endless Challenge (100 lives, SMM1 run rules, courses from
+  our server or the local library); Mystery Mushroom costumes (model, sounds, physics swaps)
+
+| Platform | Builds | Boots to title | Plays courses | Frames match Ryujinx | Input replays in sync |
+|---|---|---|---|---|---|
+| macOS (Apple Silicon, Metal) | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| Windows (x64, Vulkan) | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| Linux (x64, Vulkan) | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| iOS / iPadOS (arm64, Metal, AOT) | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| Web (wasm + WebGPU) | ⬜ feasibility decided after the native ports | | | | |
 
 ---
 
 ## Phase 1 detail
 
 ### Done
-- Repo initialised; remote `aksmith-git/MarioMaker` (private). `.gitignore` excludes dumps, keys,
-  extracted data and `research/`.
+- Repo initialised. Public home: https://github.com/smcraft-git/smcraft (published as snapshots;
+  2026-10-18). `.gitignore` excludes dumps, keys, extracted data and `research/`.
 - Proprietary-content guard (`scripts/check_no_proprietary.py`) + tests + CI workflow + pre-commit hook.
 - Toolchain installed and pinned outside the repo — see [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md).
 - `tools/inventory.py`: identifies extracted files by magic (through Yaz0/zstd), looks inside SARCs.

@@ -9,11 +9,13 @@
 //! centre, y up. Texture coordinates: (0, 0) = top-left of the texture.
 
 pub mod cache;
+pub mod files;
 pub mod font;
 pub mod player;
 mod text;
 
 pub use cache::{ARG_PLACEHOLDER, LayoutRes, TexRef, TextureEntry, UiCache, UiError};
+pub use files::{DirFiles, Fetch, MemFiles, UiFiles};
 pub use font::FontRes;
 pub use player::{LayoutPlayer, PaneGlobal, PaneInfo, PaneOverride};
 

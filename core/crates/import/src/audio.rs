@@ -191,8 +191,8 @@ pub fn import_audio(
 }
 
 /// [`M1_SOUNDS`] plus each other style's variant of every sound effect and fanfare
-/// (`<style>.<id>`, the game's `M1_` name with the style's prefix). Music is per course (see
-/// [`export_music`]); variants a style doesn't have are skipped.
+/// (`<style>.<id>`, the game's `M1_` name with the style's prefix). Music comes from the sound
+/// database stage (`crate::sound`); variants a style doesn't have are skipped.
 pub fn all_style_sounds(styles: &[&str]) -> Vec<SoundDef> {
     let mut v = M1_SOUNDS.to_vec();
     for s in styles.iter().filter(|s| **s != "M1") {

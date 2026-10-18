@@ -30,6 +30,7 @@ use mmk_sim::actors::{Kind, Mode};
 use mmk_sim::player::Form;
 use mmk_sim::world::{Event, GoalPhase};
 
+use crate::costume_sound::{CostumeReader, CostumeSounds};
 use crate::sound_map::{self as map, THEME_VALUES, bgm_key};
 
 /// Reads a file of the cache's `audio/` folder by its relative path (`se/x.bwav`).
@@ -143,6 +144,8 @@ pub struct Sounds {
     /// Blocks bumping last tick (tile → bump frames).
     bumps: BTreeMap<(i32, i32), u32>,
     note_hits: usize,
+    /// The worn SMM1 costume's sounds (Phase 11).
+    costume: CostumeSounds,
     /// What the last tick played (for tests and diagnostics): user, key.
     pub log: Vec<(String, String)>,
 }
@@ -191,6 +194,7 @@ impl Sounds {
             footstep: 0,
             bumps: BTreeMap::new(),
             note_hits: 0,
+            costume: CostumeSounds::default(),
             log: Vec::new(),
         }
     }
@@ -268,6 +272,7 @@ impl Sounds {
 
     /// A fresh set for a new style: groups from the database, the style's waves.
     fn build_set(&mut self, world: &World) {
+        self.costume.forget();
         let db = &self.lib.db;
         let groups: Vec<GroupDef> = db
             .groups
@@ -323,6 +328,37 @@ impl Sounds {
         }
         self.old_set = Some(std::mem::replace(&mut self.set, set));
         self.send(Command::LoadSet);
+    }
+
+    /// Where the SMM1 costume sounds are read from (None: no costume sounds).
+    pub fn set_costumes(&mut self, read: Option<CostumeReader>) {
+        self.costume = CostumeSounds::new(read);
+    }
+
+    /// Add a sound to the set (costume sounds); its id.
+    fn add_sound(&mut self, s: Sound) -> Option<u16> {
+        if self.set.sounds.len() >= (u16::MAX - SET_BASE) as usize {
+            return None;
+        }
+        let mut next = (*self.set).clone();
+        let id = SET_BASE + next.sounds.len() as u16;
+        next.sounds.push(s);
+        self.publish(next);
+        Some(id)
+    }
+
+    /// Play a sound by id at the player (costume sounds).
+    fn play_id(&mut self, world: &World, sound: u16, music: bool) {
+        let e = Self::player_emitter(world);
+        let (pan, _) = self.pan_gain(world, e, None).unwrap_or((0.0, 1.0));
+        self.send(Command::Play(if music {
+            Play::music(sound)
+        } else {
+            Play {
+                pan,
+                ..Play::sfx(sound)
+            }
+        }));
     }
 
     /// The sound id of `wave`, loading it into the set if needed.
@@ -788,6 +824,9 @@ impl Sounds {
     #[allow(clippy::collapsible_match)]
     pub fn after_step(&mut self, world: &World) {
         self.log.clear();
+        let mut costume = std::mem::take(&mut self.costume);
+        costume.sync(world, &mut |s| self.add_sound(s));
+        self.costume = costume;
         let alive = world.player.alive();
         if alive && !self.was_alive {
             // the death sequence ended and the course restarted
@@ -823,6 +862,35 @@ impl Sounds {
         let mut coin_done = false;
         for ev in &events {
             match ev {
+                // a costume jumps with its own sound (its second take every other jump)
+                Event::Jump if self.costume.sound(world, "jump").is_some() => {
+                    if let Some(id) = self.costume.jump(world) {
+                        self.play_id(world, id, false);
+                    }
+                }
+                Event::PowerUp if self.costume.sound(world, "powerup").is_some() => {
+                    if let Some(id) = self.costume.sound(world, "powerup") {
+                        self.play_id(world, id, false);
+                    }
+                }
+                Event::Land | Event::Skid | Event::Taunt => {
+                    let e = match ev {
+                        Event::Land => "ground",
+                        Event::Skid => "slip",
+                        _ => "appeal",
+                    };
+                    if let Some(id) = self.costume.sound(world, e) {
+                        self.play_id(world, id, false);
+                    }
+                }
+                Event::Death if self.costume.sound(world, "down").is_some() => {
+                    self.stop_count(world);
+                    if let Some(id) = self.costume.sound(world, "down") {
+                        self.play_id(world, id, true);
+                    }
+                    self.fanfare = true;
+                    self.over = Over::None;
+                }
                 Event::Jump => {
                     let p = &world.player;
                     // launched by a spring or trampoline the player stood on: its sound
@@ -1151,7 +1219,13 @@ impl Sounds {
         // the clear fanfare as the player steps off the pole and walks to the castle
         let walking = world.goal_phase == GoalPhase::Walk;
         if walking && !self.walking {
-            self.play_music("FanfareGoal", 0, None);
+            // a costume's own clear jingle replaces the fanfare
+            match self.costume.sound(world, "goal") {
+                Some(id) => self.play_id(world, id, true),
+                None => {
+                    self.play_music("FanfareGoal", 0, None);
+                }
+            }
         }
         self.walking = walking;
 
@@ -1456,16 +1530,28 @@ fn snapshot(world: &World) -> BTreeMap<u32, Snap> {
 /// and the current area's theme music (hosts that read files asynchronously fetch these
 /// before the course starts).
 pub fn course_files(db: &SoundDb, world: &World) -> Vec<String> {
-    let style = &world.level.style;
+    let kinds: Vec<Kind> = world.actors.iter().map(|a| a.kind).collect();
+    files_for(
+        db,
+        &world.level.style,
+        world.level.theme,
+        &[world.level.night],
+        &kinds,
+    )
+}
+
+/// [`course_files`] for a course known only by its style and theme (day and night music;
+/// objects' sounds are read when first played).
+pub fn style_files(db: &SoundDb, style: &str, theme: u8) -> Vec<String> {
+    files_for(db, style, theme, &[false, true], &[])
+}
+
+fn files_for(db: &SoundDb, style: &str, theme: u8, nights: &[bool], kinds: &[Kind]) -> Vec<String> {
     let mut waves = Vec::new();
     let music = format!("CourseSceneBGM_{style}");
     for hurry in [false, true] {
-        for night in [false, world.level.night] {
-            db.waves_of(
-                &music,
-                &bgm_key(world.level.theme, night, hurry),
-                &mut waves,
-            );
+        for night in std::iter::once(false).chain(nights.iter().copied()) {
+            db.waves_of(&music, &bgm_key(theme, night, hurry), &mut waves);
         }
     }
     for k in map::MUSIC_KEYS {
@@ -1481,8 +1567,8 @@ pub fn course_files(db: &SoundDb, world: &World) -> Vec<String> {
     for k in map::COMMON_KEYS {
         db.waves_of("CourseSceneBGM_Common", k, &mut waves);
     }
-    for a in &world.actors {
-        for b in map::actor_users(a.kind) {
+    for &kind in kinds {
+        for b in map::actor_users(kind) {
             let u = user(b);
             if db.user(&u).is_some() {
                 for k in map::ACTOR_KEYS {

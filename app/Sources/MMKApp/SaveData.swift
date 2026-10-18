@@ -31,8 +31,20 @@ final class SaveStore: ObservableObject {
     @Published private(set) var courses: [String: CourseRecord] = [:]
     private let url: URL
 
+    private var observer: NSObjectProtocol?
+
     init(url: URL = AppPaths.saves) {
         self.url = url
+        reload()
+        // the front end keeps the same file (mmk-front's `Saves`): read it again when it writes
+        observer = NotificationCenter.default.addObserver(forName: .mmkSavesChanged, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reload() }
+        }
+    }
+
+    deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
+
+    func reload() {
         if let data = try? Data(contentsOf: url), let f = try? JSONDecoder.saves.decode(File.self, from: data) {
             courses = f.courses
         }

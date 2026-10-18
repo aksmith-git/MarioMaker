@@ -1,0 +1,12 @@
+[package]
+name = "mmk-front"
+description = "SMM2 front end on the layout player: opening, title, Course World, Endless / 100 Mario, in-course screens, fades and UI sounds, platform-neutral"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+mmk-ui = { path = "../ui" }
+mmk-modes = { path = "../modes" }
+serde_json.workspace = true

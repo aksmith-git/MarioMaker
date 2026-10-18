@@ -4,7 +4,7 @@
 
 use std::ffi::{CStr, c_char};
 
-use mmk_online::{Client, Listing};
+use mmk_online::Client;
 use serde_json::{Value, json};
 
 use crate::{guard, set_error};
@@ -16,12 +16,7 @@ fn str_arg<'a>(p: *const c_char) -> Option<&'a str> {
     unsafe { CStr::from_ptr(p) }.to_str().ok()
 }
 
-fn listing_json(l: &Listing) -> Value {
-    json!({
-        "code": l.code, "name": l.name, "maker": l.maker, "style": l.style, "theme": l.theme,
-        "plays": l.plays, "clears": l.clears, "likes": l.likes, "difficulty": l.difficulty,
-    })
-}
+use mmk_online::listing_json;
 
 /// Copy `s` into `buf` (NUL-terminated when it fits) and return its length; `cap` 0 sizes it.
 fn give(s: &str, buf: *mut c_char, cap: usize) -> usize {
@@ -132,6 +127,63 @@ pub unsafe extern "C" fn mmk_online_report(
     })
 }
 
+/// One account-side call, JSON in and out (so the C API stays one function): the actions of
+/// [`mmk_online::call`], plus `submit_replay {code, path}` (a replay file) → listing and
+/// `record_replay {code, path}` (written) → `{}`.
+pub fn call(
+    server: &str,
+    token: Option<&str>,
+    action: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    let c = Client::new(server).with_token(token.filter(|t| !t.is_empty()).map(str::to_string));
+    let s = |k: &str| args[k].as_str().unwrap_or_default();
+    Ok(match action {
+        "submit_replay" => {
+            let bytes = std::fs::read(s("path")).map_err(|e| format!("{}: {e}", s("path")))?;
+            listing_json(&c.submit_replay(s("code"), &bytes)?)
+        }
+        "record_replay" => {
+            let bytes = c.record_replay(s("code"))?;
+            std::fs::write(s("path"), bytes).map_err(|e| format!("{}: {e}", s("path")))?;
+            json!({})
+        }
+        _ => return mmk_online::call(server, token, action, args),
+    })
+}
+
+/// [`call`] for C: `token` may be NULL (anonymous), `args` a JSON object (NULL: `{}`). Writes the
+/// JSON result and returns its length (`cap` 0 sizes it); 0 on error (`mmk_last_error`).
+///
+/// # Safety
+/// Strings NUL-terminated, `buf` writable for `cap` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_online_call(
+    server: *const c_char,
+    token: *const c_char,
+    action: *const c_char,
+    args: *const c_char,
+    buf: *mut c_char,
+    cap: usize,
+) -> usize {
+    guard(0, || {
+        let (Some(server), Some(action)) = (str_arg(server), str_arg(action)) else {
+            set_error("bad arguments");
+            return 0;
+        };
+        let args: Value = str_arg(args)
+            .and_then(|a| serde_json::from_str(a).ok())
+            .unwrap_or_else(|| json!({}));
+        match call(server, str_arg(token), action, &args) {
+            Ok(v) => give(&v.to_string(), buf, cap),
+            Err(e) => {
+                set_error(format!("{action}: {e}"));
+                0
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +213,22 @@ mod tests {
             unsafe { CStr::from_ptr(b.as_ptr()) }.to_str().unwrap(),
             "abc"
         );
+    }
+
+    #[test]
+    fn call_reports_bad_actions_and_unreachable_servers() {
+        assert!(call("http://127.0.0.1:9", None, "nope", &json!({})).is_err());
+        assert!(call("http://127.0.0.1:9", None, "me", &json!({})).is_err());
+        let n = unsafe {
+            mmk_online_call(
+                c"http://127.0.0.1:9".as_ptr(),
+                std::ptr::null(),
+                c"rankings".as_ptr(),
+                c"{\"kind\":\"records\"}".as_ptr(),
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        assert_eq!(n, 0);
     }
 }

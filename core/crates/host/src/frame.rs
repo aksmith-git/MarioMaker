@@ -73,8 +73,23 @@ pub fn place(s: &Sprite, tex_w: f32, tex_h: f32, quad: Option<Quad>) -> [f32; 8]
     out
 }
 
-/// Texture index and BFRES quad of a (model, texture) name; None if the cache lacks the texture.
-type Resolved = Option<(u32, Option<Quad>)>;
+/// Texture index and BFRES quad of a (model, texture) name, and whether it is a stand-in drawn
+/// at its own size (an SMM1 costume without its art: small Mario); None if the cache lacks it.
+type Resolved = Option<(u32, Option<Quad>, bool)>;
+
+/// Model name prefix of the SMM1 costumes (`SMM1_Costume_<id>`, the importer's costume cache).
+pub const COSTUME_PREFIX: &str = "SMM1_Costume_";
+
+/// Small Mario's frame for a costume frame (costumes have a few poses he lacks).
+fn costume_stand_in(frame: &str) -> &str {
+    match frame.split_once('.') {
+        Some(("b_dash", n)) => ["walk.0", "walk.1", "walk.2"][n.parse::<usize>().unwrap_or(0) % 3],
+        Some(("jump_fall", _)) => "jump.0",
+        Some(("pole", _)) => "climb.0",
+        Some(("appeal" | "shoes_wait", _)) => "wait.0",
+        _ => frame,
+    }
+}
 
 /// Resolves the sim's (model, texture) names against an asset cache, once per name. Clear it
 /// (`reset`) when the cache changes.
@@ -106,8 +121,30 @@ impl SpriteResolver {
         let found = *self.lookup.entry(key).or_insert_with(|| {
             let resolve_tex = |model: &str, tex: &str| {
                 let i = cache.texture_index(model, tex)?;
-                Some((i as u32, cache.sprite_quad(model, tex)))
+                Some((i as u32, cache.sprite_quad(model, tex), false))
             };
+            // the other SMM1 extras without their art: the nearest SMM2 art
+            let smm1_stand_in = match key.0 {
+                "M1_Player_SlimMarioMdl" => Some(("M1_Player_SpMarioMdl", key.1)),
+                "M1_Item_kinokofunny" | "M1_Item_CharaKinoko" => Some(("M1_Item_kinoko", "wait.0")),
+                _ => None,
+            };
+            if let Some((model, tex)) = smm1_stand_in {
+                return resolve_tex(key.0, key.1).or_else(|| {
+                    resolve_tex(model, tex)
+                        .or_else(|| resolve_tex(model, "wait.0"))
+                        .map(|(i, q, _)| (i, q, true))
+                });
+            }
+            if key.0.starts_with(COSTUME_PREFIX) {
+                // an SMM1 costume: its own art, else small Mario standing in
+                return resolve_tex(key.0, key.1).or_else(|| {
+                    let model = "M1_Player_MarioMdl";
+                    resolve_tex(model, costume_stand_in(key.1))
+                        .or_else(|| resolve_tex(model, "wait.0"))
+                        .map(|(i, q, _)| (i, q, true))
+                });
+            }
             // the sim names SMB1 models; other styles use the same names with their own prefix
             // (M3_, MW_, …) and fall back to the SMB1 art where a style has no such model
             let styled = key
@@ -136,12 +173,19 @@ impl SpriteResolver {
                 .or_else(|| wu_field.as_deref().and_then(|m| resolve_tex(m, m)))
         });
         let (texture, p) = match found {
-            Some((texture, quad)) => {
+            Some((texture, quad, stand_in)) => {
                 let t = &cache.textures[texture as usize];
-                (
-                    Some(texture),
-                    place(s, t.width as f32, t.height as f32, quad),
-                )
+                let (tw, th) = (t.width as f32, t.height as f32);
+                let p = if stand_in {
+                    // drawn at its own size around the same origin
+                    let mut own = *s;
+                    own.x = s.x + s.w / 2.0 - tw / 2.0;
+                    (own.w, own.h) = (tw, th);
+                    place(&own, tw, th, quad)
+                } else {
+                    place(s, tw, th, quad)
+                };
+                (Some(texture), p)
             }
             None => (None, place(s, s.w.max(1.0), s.h.max(1.0), None)),
         };
@@ -268,5 +312,60 @@ mod tests {
         assert!(out.iter().all(|s| s.texture.is_none()));
         assert!(out.windows(2).all(|p| p[0].layer <= p[1].layer));
         assert_eq!(clear_color(&w, &Cache::default()), 0x0000_00ff);
+    }
+
+    /// Without its art an SMM1 costume is drawn as small Mario at his own size (16 × 16 on his
+    /// quad), centred where the 24 × 24 costume would stand.
+    #[test]
+    fn costume_without_art_stands_in_as_small_mario() {
+        let px = mmk_assets::Mtex {
+            format: MtexFormat::Rgba8,
+            variant: mmk_assets::MtexVariant::Unorm,
+            width: 16,
+            height: 16,
+            channel_select: [2, 3, 4, 5],
+            data: vec![0; 16 * 16 * 4],
+        }
+        .to_bytes();
+        let files: std::collections::HashMap<String, Vec<u8>> = [
+            ("/c/manifest.json".to_string(), b"{}".to_vec()),
+            (
+                "/c/textures/index.json".to_string(),
+                br#"{"M1_Player_MarioMdl":{"wait.0":{"w":16,"h":16},"walk.1":{"w":16,"h":16}}}"#
+                    .to_vec(),
+            ),
+            (
+                "/c/textures/M1_Player_MarioMdl/wait.0.mtex".to_string(),
+                px.clone(),
+            ),
+            ("/c/textures/M1_Player_MarioMdl/walk.1.mtex".to_string(), px),
+            (
+                "/c/sprites.json".to_string(),
+                br#"{"version":1,"models":{"M1_Player_MarioMdl":{"quads":{
+                    "wait.0":{"rect":[-8,0,8,16],"uv":[0,0,1,1]},
+                    "walk.1":{"rect":[-8,0,8,16],"uv":[0,0,1,1]}}}}}"#
+                    .to_vec(),
+            ),
+        ]
+        .into();
+        let read = |p: &std::path::Path| {
+            files
+                .get(p.to_str().unwrap())
+                .cloned()
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+        };
+        let cache = Cache::load("/c", &read).unwrap();
+        let mut s = sprite(None, 88.0, 32.0, 24.0, 24.0);
+        s.image.model = "SMM1_Costume_045";
+        s.image.texture = "b_dash.1";
+        let mut r = SpriteResolver::default();
+        let d = r.resolve_one("M1", &s, &cache);
+        assert_eq!(
+            d.texture,
+            cache
+                .texture_index("M1_Player_MarioMdl", "walk.1")
+                .map(|i| i as u32)
+        );
+        assert_eq!((d.x, d.y, d.w, d.h), (92.0, 32.0, 16.0, 16.0));
     }
 }

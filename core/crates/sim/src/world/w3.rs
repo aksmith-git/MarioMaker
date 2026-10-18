@@ -824,6 +824,67 @@ mod tests {
     }
 
     #[test]
+    fn a_creeper_stalk_can_be_stood_on() {
+        let mut lvl = Level::flat(60);
+        // out of its base to the right, along the ground at 2 tiles up
+        lvl.creepers.push((0, vec![2, 2, 2, 2, 2, 14]));
+        let kind = Kind::PiranhaCreeper {
+            path: 0,
+            sleeps: false,
+        };
+        lvl.spawns.push(spawn(kind, 200.0, 64.0));
+        let mut w = World::with_level(lvl);
+        w.player.x = 40.0;
+        // stop while it's out (it retracts after reaching the end)
+        for _ in 0..400 {
+            run(&mut w, 0, 1);
+            if w.level
+                .solids
+                .iter()
+                .filter(|s| s.owner >= CREEPER_OWNER)
+                .count()
+                >= 6
+            {
+                break;
+            }
+        }
+        let tops: Vec<f32> = w
+            .level
+            .solids
+            .iter()
+            .filter(|s| s.owner >= CREEPER_OWNER)
+            .map(|s| s.y1)
+            .collect();
+        assert!(tops.len() >= 4, "stalk boxes: {tops:?}");
+        let top = tops[0];
+        // drop the player onto the stalk, behind the head
+        w.player.x = 232.0;
+        w.player.y = top + 3.0;
+        w.player.vy = 0.0;
+        w.player.invuln = 999;
+        run(&mut w, 0, 4);
+        assert!(
+            (w.player.y - top).abs() < 0.5,
+            "stands at {} on {top}",
+            w.player.y
+        );
+    }
+
+    #[test]
+    fn a_block_bumped_under_a_creeper_head_tramples_it() {
+        let (mut w, kind) = creeper_out();
+        let i = w.actors.iter().position(|a| a.kind == kind).unwrap();
+        // line the head's bottom up with the top of a block row
+        let (_, ay0, _, _) = w.actors[i].bbox();
+        let ty = (ay0 / TILE).round() as i32 - 1;
+        w.actors[i].y += (ty + 1) as f32 * TILE - ay0;
+        let tx = (w.actors[i].x / TILE).floor() as i32;
+        assert!(!w.actors[i].creeper_trampled());
+        w.bump_top(tx, ty);
+        assert!(w.actors[i].creeper_trampled());
+    }
+
+    #[test]
     fn fire_and_shells_trample_a_creeper_head_and_a_star_defeats_it() {
         let (mut w, kind) = creeper_out();
         shoot(&mut w, kind);

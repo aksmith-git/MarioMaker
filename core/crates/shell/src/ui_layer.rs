@@ -4,7 +4,7 @@
 //! shader; the target is an sRGB view. One pipeline per blend mode, one sampler per wrap/filter
 //! combination, one draw per run of quads sharing textures, samplers and blend.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use mmk_ui::{Quad, TEXTURE_NONE, UiCache};
 use wgpu::util::DeviceExt;
@@ -102,6 +102,10 @@ pub struct UiLayer {
     pipeline_layout: wgpu::PipelineLayout,
     /// The cache's textures by id (None: unusable on this device).
     textures: Vec<Option<wgpu::TextureView>>,
+    /// Textures whose pixels are on their way (the web build's cache): not drawn yet.
+    waiting: HashSet<u32>,
+    /// The cache's revision when `waiting` was last looked at.
+    revision: u64,
     white: wgpu::TextureView,
     pipelines: HashMap<u32, wgpu::RenderPipeline>,
     samplers: HashMap<u32, wgpu::Sampler>,
@@ -188,6 +192,8 @@ impl UiLayer {
             bind_layout,
             pipeline_layout,
             textures: Vec::new(),
+            waiting: HashSet::new(),
+            revision: 0,
             white: white_tex.create_view(&wgpu::TextureViewDescriptor::default()),
             pipelines: HashMap::new(),
             samplers: HashMap::new(),
@@ -195,13 +201,39 @@ impl UiLayer {
         }
     }
 
-    /// Upload the cache's textures added since the last call (after opening a layout or font).
+    /// Upload the cache's textures added since the last call (after opening a layout or font),
+    /// and those whose pixels arrived since.
     pub fn sync(&mut self, gpu: &Gpu, cache: &UiCache) {
+        let upload = |e: &mmk_ui::TextureEntry| {
+            crate::texture::plan(&e.texture, gpu.bc)
+                .map(|up| crate::render::upload(gpu, &e.name, &up))
+        };
+        if cache.revision() != self.revision && !self.waiting.is_empty() {
+            self.revision = cache.revision();
+            let arrived: Vec<u32> = self
+                .waiting
+                .iter()
+                .copied()
+                .filter(|&id| cache.textures[id as usize].ready)
+                .collect();
+            for id in &arrived {
+                self.waiting.remove(id);
+                self.textures[*id as usize] = upload(&cache.textures[*id as usize]);
+            }
+            if !arrived.is_empty() {
+                // bind groups made meanwhile hold the white stand-in
+                self.binds.clear();
+            }
+        }
         while self.textures.len() < cache.textures.len() {
-            let e = &cache.textures[self.textures.len()];
-            let view = crate::texture::plan(&e.texture, gpu.bc)
-                .map(|up| crate::render::upload(gpu, &e.name, &up));
-            self.textures.push(view);
+            let id = self.textures.len();
+            let e = &cache.textures[id];
+            if e.ready {
+                self.textures.push(upload(e));
+            } else {
+                self.textures.push(None);
+                self.waiting.insert(id as u32);
+            }
         }
     }
 
@@ -332,6 +364,9 @@ impl UiLayer {
         let mut batches: Vec<(u32, u32, u32, BindKey)> = Vec::new();
         let (sx, sy) = (2.0 / size[0], 2.0 / size[1]);
         for q in quads {
+            if self.waiting.contains(&q.tex0) || self.waiting.contains(&q.tex1) {
+                continue;
+            }
             let (h0, h1) = (self.has(q.tex0), self.has(q.tex1));
             let shader_flags = (q.flags & 0x000F_F000) | h0 as u32 | (h1 as u32) << 1;
             let linear = if q.flags & mmk_ui::FLAG_LINEAR != 0 {
@@ -362,6 +397,9 @@ impl UiLayer {
                 Some(b) if b.2 == blend && b.3 == key && b.0 + b.1 == end - 6 => b.1 += 6,
                 _ => batches.push((end - 6, 6, blend, key)),
             }
+        }
+        if verts.is_empty() {
+            return;
         }
         let buffer = gpu
             .device

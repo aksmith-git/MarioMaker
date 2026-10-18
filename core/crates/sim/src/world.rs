@@ -20,6 +20,8 @@ const SNAKE_OWNER: u32 = 0x8000_0000;
 const EXCL_OWNER: u32 = 0x9000_0000;
 /// Solid owner ids of tree canopies: base + tree.
 const TREE_OWNER: u32 = 0x9800_0000;
+/// Solid ids of Piranha Creeper stalk boxes (actor index × 128 + box).
+const CREEPER_OWNER: u32 = 0x9C00_0000;
 use crate::fmath::DetMath;
 use crate::player::{Control, Form, Player, Pose, STAR_FRAMES};
 use crate::render::{Sprite, SpriteImage};
@@ -27,6 +29,11 @@ use crate::warp::{self, SideHold, Transit};
 
 mod bosses;
 mod debug;
+mod smm1;
+use smm1::Smm1Shell;
+mod koopalings;
+mod v3;
+pub use v3::v3_dash_frames;
 mod w3;
 
 /// SMM2 shows 24 × 13.5 tiles.
@@ -85,10 +92,17 @@ pub enum Event {
     /// A clear-condition count went up / the condition is now met.
     ConditionCount,
     ConditionMet,
+    /// SMM1 extras: a costumed player landed, started a skid, began the taunt (their costume
+    /// sounds); Lanky Mario's float cue during a held jump.
+    Land,
+    Skid,
+    Taunt,
+    LankyFloat,
 }
 
-/// P-switch duration: [ext] about 10 s (not found in the binary).
-pub const P_FRAMES: i32 = 600;
+/// P-switch duration: 540 frames, reloaded by every press (the course switch state's P timer,
+/// 0x71016c4a48 in v3.0.3) [obs].
+pub const P_FRAMES: i32 = 540;
 
 /// Pipe generator timing by pipe colour 0–3 (green, red, blue, yellow), frames.
 const GEN_INTERVAL: [i32; 4] = [180, 60, 240, 120];
@@ -273,6 +287,10 @@ pub struct World {
     pub wind: f32,
     wind_n: i32,
     prev_jump_claw: bool,
+    /// Engine options (SMM1 extras); kept across restarts.
+    pub options: crate::options::Options,
+    /// World state of the 2.0 / 3.0 parts (world/v3.rs).
+    pub v3: v3::V3World,
 }
 
 impl Default for World {
@@ -375,6 +393,11 @@ impl World {
         w
     }
 
+    /// Use these engine options from now on (hosts call this on every world they make).
+    pub fn set_options(&mut self, options: crate::options::Options) {
+        self.options = options;
+    }
+
     pub fn with_level(level: Level) -> Self {
         Self::with_areas(vec![level])
     }
@@ -465,8 +488,10 @@ impl World {
             exclamations: Vec::new(),
             held_by: None,
             prev_jump_claw: false,
+            v3: v3::V3World::default(),
             wind: 0.0,
             wind_n: 0,
+            options: Default::default(),
         };
         w.field_model = Box::leak(field_model(&w.level.style, w.level.theme).into_boxed_str());
         w.reset_course();
@@ -506,6 +531,7 @@ impl World {
         self.player_trail.clear();
         self.trees_shaken.clear();
         self.p_timer = 0;
+        self.v3 = v3::V3World::default();
         self.p_bricks.clear();
         self.p_coins.clear();
         self.donut_ride = None;
@@ -593,6 +619,14 @@ impl World {
     }
 
     fn add_actor(&mut self, mut a: Actor) {
+        // SMM1 extras: Super Mushrooms of SMB1 courses become Weird / Mystery Mushrooms
+        if a.kind == Kind::Mushroom && self.style == crate::player::Style::M1 {
+            a.smm1_item = match self.options.smb1_mushroom {
+                crate::options::MushroomSwap::Off => 0,
+                crate::options::MushroomSwap::Weird => 1,
+                crate::options::MushroomSwap::Mystery => 2,
+            };
+        }
         a.id = self.next_id;
         self.next_id += 1;
         self.actors.push(a);
@@ -986,6 +1020,10 @@ impl World {
             self.player.held = None;
             return;
         };
+        if self.actors[i].kind.is_v3() {
+            self.v3_carry(i);
+            return;
+        }
         let p = &self.player;
         let (x, y, facing, pvx) = (p.x + p.facing as f32 * 11.0, p.y + 2.0, p.facing, p.vx);
         let crate_held = matches!(self.actors[i].kind, Kind::Crate { .. } | Kind::Stone);
@@ -1079,6 +1117,11 @@ impl World {
             .iter()
             .filter_map(|a| match a.kind {
                 Kind::Trampoline { width, .. } => Some((
+                    a.x - width as f32 * 8.0,
+                    a.x + width as f32 * 8.0,
+                    a.y + 16.0,
+                )),
+                Kind::OnOffTrampoline { width, .. } if a.v3_bouncy(self.on_off) => Some((
                     a.x - width as f32 * 8.0,
                     a.x + width as f32 * 8.0,
                     a.y + 16.0,
@@ -1286,7 +1329,8 @@ impl World {
             | Kind::StyleItem
             | Kind::SuperHammer => {
                 self.actors[j].mode = Mode::Dead;
-                self.collect_item(kind, ax, ay);
+                let sub = self.actors[j].smm1_item;
+                self.collect_item(kind, ax, ay, sub);
             }
             _ => {}
         }
@@ -1509,6 +1553,7 @@ impl World {
         } else {
             self.player.step(input, &self.level);
         }
+        self.v3_dash(prev_x);
         let shoe_safe = self.player.shoe.is_some() && self.player.on_ground;
         if self.player.spiked && !shoe_safe && self.player.hurt() {
             self.events.push(if self.player.alive() {
@@ -1603,6 +1648,7 @@ impl World {
         if was_ground && !self.player.on_ground && self.player.vy > 3.0 {
             self.events.push(Event::Jump);
         }
+        self.smm1_player_events();
         self.check_hidden_blocks(prev_head);
         if prev_vy > 0.0 && self.player.vy <= 0.0 {
             self.hit_exclamation_blocks();
@@ -1650,6 +1696,7 @@ impl World {
         self.collect_coins();
         self.step_donuts();
         self.step_p_switch();
+        self.step_v3();
         self.step_area_timer();
 
         // blocks, actors, effects
@@ -1692,6 +1739,8 @@ impl World {
             }
             at
         };
+        // SMM1 shell physics: shells kicked by the mid-air wall assist
+        self.step_shell_assist();
         for a in &mut self.actors {
             if a.held {
                 continue;
@@ -1724,6 +1773,7 @@ impl World {
         for n in born {
             self.add_actor(n);
         }
+        self.koopaling_world();
         self.step_generators();
         self.step_blasters();
         self.fire_hazards();
@@ -2217,7 +2267,17 @@ impl World {
         let mut kills = 0;
         let mut scores = Vec::new();
         for a in &mut self.actors {
-            let (ax0, _, ax1, _) = a.bbox();
+            let (ax0, ay0, ax1, _) = a.bbox();
+            // a Piranha Creeper's head over the block is trampled (2 pieces back) like a stomp
+            // [obs 3W pass 2: blkhit on the head → Damage]
+            if matches!(a.kind, Kind::PiranhaCreeper { .. })
+                && (ay0 - top).abs() < 2.0
+                && ax1 > x0
+                && ax0 < x1
+            {
+                a.creeper_trample(false);
+                continue;
+            }
             let on_top = (a.y - top).abs() < 2.0 && ax1 > x0 && ax0 < x1;
             if !on_top || !a.solid_contact() {
                 continue;
@@ -2491,9 +2551,10 @@ impl World {
                         && e.kind.is_enemy()
                         && f.mode != Mode::Dead
                     {
-                        let fx = f.x;
+                        let (fx, fy) = (f.x, f.y);
                         f.mode = Mode::Dead;
-                        if let Some(down) = w3::fire_hit(e, fx) {
+                        if let Some(down) = w3::fire_hit(e, fx).or_else(|| v3::fire_hit(e, fx, fy))
+                        {
                             if down {
                                 scores.push((Self::chain_score(0), e.x, e.y + 24.0));
                             }
@@ -2516,6 +2577,12 @@ impl World {
                     continue;
                 }
                 if w3::shell_hit(a, b) {
+                    continue;
+                }
+                if let Some(hit) = v3::shell_hit(a, b) {
+                    if let Some((x, y)) = hit {
+                        scores.push((Self::chain_score(0), x, y + 24.0));
+                    }
                     continue;
                 }
                 let walkers = a.kind.is_walker() && b.kind.is_walker();
@@ -2598,9 +2665,9 @@ impl World {
             if a.kind.is_item() {
                 if overlap(contact, ab) {
                     let kind = a.kind;
-                    let (ax, ay) = (a.x, a.y);
+                    let (ax, ay, sub) = (a.x, a.y, a.smm1_item);
                     self.actors[i].mode = Mode::Dead;
-                    self.collect_item(kind, ax, ay);
+                    self.collect_item(kind, ax, ay, sub);
                 }
                 i += 1;
                 continue;
@@ -2844,6 +2911,13 @@ impl World {
                 i += 1;
                 continue;
             }
+            if a.kind.is_v3() {
+                if self.v3_contact(i, jump_held) {
+                    return;
+                }
+                i += 1;
+                continue;
+            }
             if a.kind.is_w3() {
                 if self.w3_contact(i, jump_held) {
                     return;
@@ -2885,7 +2959,8 @@ impl World {
                     (p.vy > 0.0 && head <= ay + 6.0) || (a.vy < 0.0 && ay >= head - 6.0);
                 let from_above = p.vy < 0.0 && p.y >= ay + ah * 0.5;
                 let free = p.yoshi.is_none() && p.clown.is_none() && p.car.is_none();
-                if what != 3 && from_below && p.helmet.is_none() {
+                // (a costume can't wear a shell, SMM1 costume spec §1)
+                if what != 3 && from_below && p.helmet.is_none() && p.form != Form::Costume {
                     self.actors[i].mode = Mode::Dead;
                     self.player.helmet = Some(what);
                     self.events.push(Event::PowerUp);
@@ -2970,6 +3045,8 @@ impl World {
             let d = ay + ah - p.y;
             let falling = p.vy <= 0.0;
             let w = match (a.big, falling) {
+                // SMM1 (0x0234aa14): a flat 10 for ordinary enemies when falling
+                (false, true) if self.options.smm1_shell_kicks => 10.0,
                 (false, true) => 7.0 + (-p.vy).max(0.0),
                 (false, false) => 3.0,
                 (true, true) => 12.0,
@@ -3085,9 +3162,19 @@ impl World {
                 i += 1;
                 continue;
             }
+            // SMM1 shell physics (Options::smm1_shell_kicks, world/smm1.rs)
+            if self.options.smm1_shell_kicks && matches!(a.kind, Kind::Shell { .. }) {
+                match self.smm1_shell_contact(i, stomp, jump_held) {
+                    Smm1Shell::Done => {
+                        i += 1;
+                        continue;
+                    }
+                    Smm1Shell::Hurt => {}
+                }
+            }
             if still_shell {
-                let dir = if ax >= p.x { 1 } else { -1 };
-                let pvx = p.vx;
+                let dir = if ax >= self.player.x { 1 } else { -1 };
+                let pvx = self.player.vx;
                 self.actors[i].kick(dir, pvx);
                 if stomp {
                     self.player.bounce(jump_held);
@@ -3133,7 +3220,8 @@ impl World {
         Kind::StyleItem
     }
 
-    fn collect_item(&mut self, kind: Kind, x: f32, y: f32) {
+    /// `smm1_item`: the Super Mushroom's SMM1 subtype (1 Weird, 2 Mystery; `Actor::smm1_item`).
+    fn collect_item(&mut self, kind: Kind, x: f32, y: f32, smm1_item: u8) {
         match kind {
             Kind::StyleItem => {
                 let form = match self.style {
@@ -3153,6 +3241,17 @@ impl World {
                 self.add_score(ITEM_SCORE, x, y + 16.0);
             }
             // the power-up sound plays for every pickup, also when the form does not change
+            Kind::Mushroom if smm1_item == 1 => {
+                // Weird Mushroom (SMB1 only): Lanky Mario from small or Super
+                self.player.power_up(Form::Lanky);
+                self.events.push(Event::PowerUp);
+                self.add_score(ITEM_SCORE, x, y + 16.0);
+            }
+            Kind::Mushroom if smm1_item == 2 => {
+                self.take_mystery_mushroom();
+                self.events.push(Event::PowerUp);
+                self.add_score(ITEM_SCORE, x, y + 16.0);
+            }
             Kind::Mushroom => {
                 self.player.power_up(Form::Super);
                 self.events.push(Event::PowerUp);
@@ -3925,7 +4024,11 @@ impl World {
                 )
                 && overlap(reach, a.bbox())
             {
-                a.die_fall(px);
+                if a.kind.is_v3() {
+                    a.v3_tail_hit(px, reach.1);
+                } else {
+                    a.die_fall(px);
+                }
                 hits += 1;
             }
         }
@@ -4311,6 +4414,31 @@ impl World {
             }
         }
         self.snakes.retain(|s| !s.gone());
+        // Piranha Creeper stalks can be stood on (3D World)
+        for (ai, a) in self.actors.iter().enumerate() {
+            let Kind::PiranhaCreeper { path, .. } = a.kind else {
+                continue;
+            };
+            if !a.alive() {
+                continue;
+            }
+            let Some((_, codes)) = self.level.creepers.iter().find(|(p, _)| *p == path) else {
+                continue;
+            };
+            for (k, (x0, y0, x1, y1)) in a.creeper_solids(codes).into_iter().enumerate() {
+                self.level.solids.push(crate::level::Solid {
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    dx: 0.0,
+                    dy: 0.0,
+                    top_only: false,
+                    owner: CREEPER_OWNER + ai as u32 * 128 + k as u32,
+                    slope: 0.0,
+                });
+            }
+        }
         if let Some(id) = ride {
             if let Some(s) = self.level.solids.iter().find(|s| s.owner == id) {
                 self.player.x += s.dx;
@@ -4328,10 +4456,10 @@ impl World {
             }
             // Mushroom Trampoline: landing launches at once — 6.0, or 4.43 with jump held; jump
             // pressed within 6 frames of a plain bounce re-launches at 4.43 − 0.1·frames
-            let tramp = self
-                .actors
-                .iter()
-                .any(|a| a.id == id && matches!(a.kind, Kind::Trampoline { .. }));
+            let on = self.on_off;
+            let tramp = self.actors.iter().any(|a| {
+                a.id == id && (matches!(a.kind, Kind::Trampoline { .. }) || a.v3_bouncy(on))
+            });
             if tramp {
                 self.player.vy = if jump_held { 4.43 } else { 6.0 };
                 self.tramp_late = if jump_held { 0 } else { 1 };
@@ -4994,6 +5122,16 @@ impl World {
     // ---------------------------------------------------------------- drawing
 
     pub fn sprites(&self) -> Vec<Sprite> {
+        let mut out = self.sprites_in_layers();
+        if self.options.smm1_layering {
+            for s in &mut out {
+                s.layer = smm1::smm1_layer(s.layer);
+            }
+        }
+        out
+    }
+
+    fn sprites_in_layers(&self) -> Vec<Sprite> {
         let mut out = Vec::new();
         let field = self.field_model;
         let (x0, x1) = (self.camera_x - TILE, self.camera_x + VIEW_W + TILE);
@@ -5059,7 +5197,12 @@ impl World {
         for t in &self.level.tiles {
             let (px, py) = (t.x as f32 * TILE, t.y as f32 * TILE);
             if visible(px, py) {
-                let mut s = tile(px, py, t.atlas, 10);
+                let layer = if t.pipe && self.options.smm1_layering {
+                    smm1::PIPE_LAYER
+                } else {
+                    10
+                };
+                let mut s = tile(px, py, t.atlas, layer);
                 s.flip_x = t.flip & 1 != 0;
                 s.flip_y = t.flip & 2 != 0;
                 out.push(s);
@@ -5217,6 +5360,8 @@ impl World {
         }
         self.clown_sprites(&mut out);
         self.w3_sprites(&mut out);
+        self.v3_sprites(&mut out);
+        self.koopaling_sprites(&mut out);
         // Chain Chomp stakes and chains (the chain is cosmetic: 4 links, stake to Chomp)
         for a in &self.actors {
             if a.kind != (Kind::ChainChomp { chained: true }) || !visible(a.home_x, a.home_y) {
@@ -5976,6 +6121,13 @@ impl World {
                     false,
                 )
             }
+            // SMM1 extras: the Weird Mushroom's own art; the Mystery Mushroom's (24 × 24)
+            Kind::Mushroom if a.smm1_item == 1 => {
+                ("M1_Item_kinokofunny", "kinokofunny.0", 16.0, 16.0, false)
+            }
+            Kind::Mushroom if a.smm1_item == 2 => {
+                ("M1_Item_CharaKinoko", "Add_kinoko", 24.0, 24.0, false)
+            }
             Kind::Mushroom => ("M1_Item_kinoko", "wait.0", 16.0, 16.0, false),
             Kind::SuperHammer => ("M1_Item_hammer", "wait.0", 16.0, 16.0, false),
             // SMB1's Big Mushroom: one 16×16 texture drawn through a 32×32 quad
@@ -6212,6 +6364,15 @@ impl World {
             | Kind::Bully
             | Kind::Charvaargh
             | Kind::PiranhaCreeper { .. } => a.w3_look()?,
+            Kind::Spike
+            | Kind::SpikeBall { .. }
+            | Kind::Pokey { .. }
+            | Kind::Mechakoopa { .. }
+            | Kind::MechaMissile
+            | Kind::MechaLaser
+            | Kind::OnOffTrampoline { .. }
+            | Kind::Koopaling { .. }
+            | Kind::KoopalingShot { .. } => a.v3_look()?,
             Kind::LavaBubble => ("M1_Enemy_bubble", "wait.0", 16.0, 16.0, false),
             // [placeholder: the egg uses Yoshi's hatching frame; drawn per style by the remap]
             Kind::YoshiEgg { .. } => ("M1_Player_Yoshi", "born_body.0", 32.0, 32.0, false),
@@ -6461,6 +6622,9 @@ impl World {
         if matches!(a.kind, Kind::Fireball | Kind::EnemyFire) || a.kind.w3_centred() {
             s.y = a.y + a.height() / 2.0;
         }
+        if a.kind.is_v3() {
+            s.y = a.y + a.v3_draw_dy();
+        }
         if matches!(a.kind, Kind::Piranha { .. }) {
             // in a pipe: behind the pipe; a down-facing pipe hangs the plant upside down
             if a.pipe.is_some() {
@@ -6516,6 +6680,9 @@ impl World {
             // builder outfit (3W_Player_MarioBuilder)
             Form::Cat => "M1_Player_NekoMarioMdl",
             Form::Builder => "M1_Player_BuilderMarioMdl",
+            // SMM1 extras (SMB1 only): Lanky Mario's own art; a costume is drawn below
+            Form::Lanky => "M1_Player_SlimMarioMdl",
+            Form::Costume => "M1_Player_MarioMdl",
         };
         // the multiplayer characters are the model's variants: _2 Luigi, _3 Toad, _4 Toadette
         // (star power is a palette effect in the game; not drawn yet [⬜])
@@ -6594,8 +6761,23 @@ impl World {
             Form::Cape if !p.on_ground && p.vy <= -0.99 && p.vy >= -1.01 => {
                 ("M1_Player_MantMario", "down1.0")
             }
+            // a lanky jump plays the walk animation fast (3×) in the air (SMM1 0x02683e00)
+            Form::Lanky if p.lanky_jump && !p.on_ground && p.pose == Pose::Jump => (
+                model,
+                ["walk.0", "walk.1", "walk.2"][(self.tick as usize / 2) % 3],
+            ),
             _ => (model, frame),
         };
+        let layer = if self.in_pipe() {
+            5
+        } else if self.options.smm1_layering {
+            smm1::player_layer(p)
+        } else {
+            50
+        };
+        if form == Form::Costume {
+            return Some(smm1::costume_sprite(p, layer, self.tick));
+        }
         // carrying (not in SMB1): the carry poses, named per style
         let frame = if p.held.is_some() {
             let k = ((p.walk_phase / 6.0) as usize) % 3;
@@ -6640,7 +6822,7 @@ impl World {
             flip_x: p.facing < 0,
             flip_y: false,
             // behind terrain while sliding through a pipe
-            layer: if self.in_pipe() { 5 } else { 50 },
+            layer,
         })
     }
 

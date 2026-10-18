@@ -343,3 +343,42 @@ fn springs_wall_kicks_pow_and_bob_ombs() {
     r.s.after_step(&w);
     assert_eq!(r.played(), ["sfx:Boom"]);
 }
+
+#[test]
+fn costumes_keep_their_sounds() {
+    let mut r = rig();
+    let read: crate::costume_sound::CostumeReader = Arc::new(|n: &str| {
+        matches!(
+            n,
+            "costume_045_jump" | "costume_045_jump2" | "costume_045_goal"
+        )
+        .then(|| wave(480, false))
+    });
+    r.s.set_costumes(Some(read));
+    let mut w = world();
+    r.s.start_course(&w);
+    r.played();
+    w.player.form = Form::Costume;
+    w.player.costume = 45;
+    w.events = vec![Event::Jump];
+    r.s.after_step(&w);
+    assert_eq!(r.played(), ["sfx:costume_045_jump"]);
+    r.s.after_step(&w);
+    assert_eq!(
+        r.played(),
+        ["sfx:costume_045_jump2"],
+        "the second take every other jump"
+    );
+    // the costume's clear jingle replaces the clear fanfare
+    w.events.clear();
+    w.goal_phase = GoalPhase::Walk;
+    r.s.after_step(&w);
+    assert_eq!(r.played(), ["music:costume_045_goal"]);
+    // without the costume: the style's jump
+    let mut w = world();
+    r.s.start_course(&w);
+    r.played();
+    w.events = vec![Event::Jump];
+    r.s.after_step(&w);
+    assert_eq!(r.played(), ["sfx:JumpSmall"]);
+}

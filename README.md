@@ -1,10 +1,18 @@
 # SMCraft
 
-An open-source, native macOS (Apple Silicon) engine that plays Super Mario Maker 2 courses and
-adds Super Mario Maker 1's 100 Mario Challenge.
+An open-source engine that plays Super Mario Maker 2 courses (and Super Mario Maker's 100 Mario
+Challenge) on macOS, iOS/iPadOS, Windows, Linux and the web, with its own open-source course
+server for sharing courses, records and online play. Home: https://github.com/smcraft-git/smcraft
 
-**Status:** Phase 5 (vertical slice, SMB1 style) and 5b (native app shell) in progress: Rust core +
-Swift/Metal app that imports your own dump, lists your courses and plays SMB1-style ones.
+SMCraft contains **no Nintendo assets, text, code or keys**. It reads art, sound, layouts and
+course keys from **your own** game dump at runtime (see "Your game data" below); without one it
+plays with placeholder art. Behaviour is written from scratch, matched to the original game.
+
+**Status:** playable and in active development. All five game styles and their themes, almost
+every course part (including the 2.0 / 3.0 update enemies), the SMM2 menus, Course World over
+your library or a server, 100 Mario / Endless Challenge, a Course Maker, accounts with verified
+world records, and online co-op through relay rooms. Visual fidelity of the NSMBU and 3D World
+styles, effects, audio detail, Story Mode screens and the full maker interface are in progress.
 See [PROGRESS.md](PROGRESS.md).
 
 ## What is and isn't in this repository
@@ -70,8 +78,10 @@ The app is called SMCraft; the name, bundle id and version live only in
   `mmk import-smm1`, found in `MMK_UI_CACHE`, `…/SMCraft/assets/smm1-*` or `~/smm-work/cache/smm1-*`:
   tabs over the world map, Mario's walk, the intro card, pause, clear, game over, ending and
   credits). Hold **−** or **Tab** (controller −; Settings "Skip course") through the 3-step
-  countdown to skip a course; letting go cancels. Without either import, simple stand-in screens
-  are used (`MMK_UI_SMM1=off` forces them for the SMM1 presentation).
+  countdown to skip a course; letting go cancels. 100 Mario needs the SMM2 UI import.
+- **One front end everywhere:** with the SMM2 UI import every screen above is drawn by the Rust
+  front end (`mmk-front`, through the `mmk_front_*` C API) — the same code and pixels as
+  `mmk-play` on Windows, Linux and the web. Mouse clicks and taps select layout buttons.
 - **Save data:** best time, clears and attempts per course in
   `~/Library/Application Support/SMCraft/saves.json`, keyed by a hash of the course data.
 
@@ -103,14 +113,14 @@ registered at launch (`SettingsKey.registerDefaults`).
 | `MMK_START_X/Y=<px>` | start the player somewhere else (with the two above) |
 | `MMK_ASSETS=<dir>` | asset cache to use; `placeholder` = none |
 | `MMK_SUPPORT_DIR=<dir>` | data folder instead of `~/Library/Application Support/SMCraft` |
-| `MMK_UI_SCREENSHOT=<png>` [`MMK_UI_SCREENSHOT_DELAY=<s>`] [`MMK_UI_SCREEN=import\|settings`] | capture the window (UI included) and quit; with `MMK_COURSE`, `MMK_UI_PAUSE_TICKS=<n>` pauses after n ticks and `MMK_UI_SCRIPTED=1` uses the scripted run. More screens: `challenge`, `challenge-intro`/`-map`, `-walk`, `-pause`, `-clear`, `-skip`, `-card`, `-gameover`, `-ending` (`DebugCapture.swift`); `MMK_UI_TICKS=<n>` holds SMM1 layout screens at tick n; `MMK_UI_DIFFICULTY=<0-3>`, `MMK_UI_CLEARED=<n>`. SMM2 in-course screens over `MMK_COURSE`: `course-clear`, `course-gameover`, `course-timeup`, `course-retire`, `course-death` shown `MMK_UI_COURSE_AT=<s>` seconds in; `MMK_UI_INTRO=0` skips the course card |
-| `MMK_UI2_CACHE=<dir>` | SMM2 UI import to use; `MMK_UI_SMM2=off` = no SMM2 title / in-course layouts |
+| `MMK_UI_SCREENSHOT=<png>` [`MMK_UI_SCREENSHOT_DELAY=<s>`] [`MMK_UI_SCREEN=<screen>`] | capture the window (UI included) and quit. Screens: `import`, `settings`, and the front end's, named as `mmk-play --front-screen` names them: `boot`, `title`, `title-main`, `title-play`, `courseworld`, `courseworld-list`, `storymode`, `challenge`, `challenge-map`, `-walk`, `-pause`, `-clear`, `-skip`, `-card`, `-gameover`, `-ending` (`MMK_UI_DIFFICULTY=<0-3>`, `MMK_UI_CLEARED=<n>`); with `MMK_COURSE`: the course card, `course-clear`, `course-gameover`, `course-timeup`, `course-retire`, `course-settings`, `course-death`, `MMK_UI_PAUSE_TICKS` (pause), `MMK_UI_INTRO=0` (straight into play); `MMK_UI_SCRIPTED=1` uses the scripted run. `MMK_UI_TICKS=<n>` runs n front-end ticks at once and holds there (`DebugCapture.swift`) |
+| `MMK_UI2_CACHE=<dir>` | SMM2 UI import to use; `MMK_UI_SMM2=off` = no front end (library and plain play) |
 | `MMK_BOOT=on\|off`, `MMK_BOOT_OPENING=<InDefault…InKoopaling>` | force / skip the opening; pick one |
-| `MMK_UI_SCREEN=boot\|courseworld\|courseworld-list\|course-settings` | more captures (`DebugCapture.swift`); `MMK_UI_SCRIPT=<tick>:<button>,…` presses menu buttons at global menu ticks |
+| `MMK_UI_SCRIPT=<tick>:<button>,…`, `MMK_UI_INPUT=<tick>:<button>,…` | captures: press menu buttons at global UI ticks / title buttons at title ticks |
 | `MMK_HUNDRED=smm1\|smm2` | 100 Mario presentation for captures (over Settings) |
-| `MMK_LIVES=on` | with `MMK_COURSE`: play with lives (else no lives, like Course World) |
+| `MMK_LIVES=on` | with `MMK_COURSE` and no SMM2 UI import: play with lives |
 | `MMK_DEBUG_SOUND=1` | log every SMM2 UI sound played |
-| `MMK_UI_CACHE=<dir>` | SMM1 UI import to use; `MMK_UI_SMM1=off` = stand-in 100 Mario screens |
+| `MMK_UI_CACHE=<dir>` | SMM1 UI import to use; `MMK_UI_SMM1=off` = no SMM1-layout 100 Mario |
 | `MMK_DEBUG_MISSING_ART=1` | draw boxes for sprites whose art isn't in the cache |
 | `MMK_CPU_TEXTURES=1` | decode BC textures on the CPU, as on GPUs without BC support |
 | `MMK_TOUCH=on`, `MMK_TOUCH_HOLD=right,jump,…` | iOS: show the touch controls even with a controller connected; hold controls from launch |
@@ -152,8 +162,21 @@ A second front end written in Rust (winit + wgpu + gilrs + cpal) that plays a co
 same core; see [docs/architecture.md](docs/architecture.md) §5b. Linux needs `libasound2-dev` and
 `libudev-dev` to build.
 
+Without a course, and with the SMM2 UI import (`mmk import-smm2-ui`; `--ui-cache`,
+`$MMK_UI_CACHE` or `~/smm-work/cache/smm2-ui-3.0.3`), it starts like the Swift app: the opening,
+the title, Course World over a course folder (`--library`, default `~/smm-work/courses`) and a
+course server (`--server`), 100 Mario (`--hundred smm1` for SMM1's screens), with the SMM2
+in-course screens (`mmk-front`). With a server, Course World is online on SMM2's own screens:
+an account from the hub's player card, leaderboards, course pages, comments, likes / boos on
+the clear screen, maker profiles, clears sent as verified replays, the record's ghost. Menus:
+arrows/WASD, Return/Z/Space confirm, Esc/P back, mouse clicks; − or Tab held skips a 100 Mario
+course. `--no-opening` starts on the title, `--no-menus` plays the
+demo strip.
+
 ```sh
 cd core
+cargo run --release -p mmk-shell                            # SMM2 front end (menus)
+cargo run --release -p mmk-shell -- --front-screen courseworld --ticks 60 --screenshot cw.png  # headless capture
 cargo run --release -p mmk-shell -- path/to/course.zlib     # window; assets: $MMK_ASSETS or ~/smm-work/cache/smm2-3.0.3
 cargo run --release -p mmk-shell -- --assets placeholder    # demo strip with placeholder art
 cargo run --release -p mmk-shell -- course.zlib --screenshot out.png --ticks 150   # headless smoke test
@@ -177,13 +200,19 @@ starts on the demo strip with placeholder art. **Import game data…** takes a f
 - an asset cache made by `mmk import` (e.g. `~/smm-work/cache/smm2-3.0.3`): copied in about
   15 s; or
 - a folder holding your dump's extracted `romfs/` and `exefs/`: imported in the page by the same
-  importer as `mmk import` (about 35 s, needs about 1.5 GB of memory while it runs).
+  importers as `mmk import` and `mmk import-smm2-ui` (a few minutes, needs about 1.5 GB of
+  memory while it runs);
+- an SMM2 UI import made by `mmk import-smm2-ui` (e.g. `~/smm-work/cache/smm2-ui-3.0.3`, about
+  200 MB), or a folder holding it next to an asset cache.
 
 Either way the result goes into the browser's own storage for this site (the origin private
-file system, about 1.3 GB) and stays there for the next visit; nothing is uploaded anywhere.
-**Remove game data** deletes it. Then pick a built-in course from the list, or **Open course
-file…** (`.bcd`, `.course.zlib` or raw course data). Sound starts on the first click or key
-press (browsers block it before that).
+file system, about 1.5 GB) and stays there for the next visit; nothing is uploaded anywhere.
+**Remove game data** deletes it. With the SMM2 UI import stored the page starts on the SMM2
+menus (opening, title, Course World, Story Mode, 100 Mario; arrows / Enter / Esc or clicks;
+`?opening=0` skips the opening), and courses picked from the list or opened with **Open course
+file…** (`.bcd`, `.course.zlib` or raw course data) play with the course card, HUD and pause
+menu; without it the page plays them directly. Sound starts on the first click or key press
+(browsers block it before that).
 
 ### Course Maker (`mmk-play --edit`)
 
@@ -192,10 +221,41 @@ cargo run --release -p mmk-shell -- --edit my-course.bin            # edit (a ne
 cargo run --release -p mmk-shell -- --edit new.bin --style M3       # new course in SMB3 style
 ```
 
-Mouse: left places the selected part (or paints ground), right erases. 1–9/0 and Tab pick the
-part, arrows scroll, Ctrl+Z / Ctrl+Y undo / redo, Ctrl+S saves. On the part under the cursor: W
-wings, B big, F alternate form, I put the selected part inside it (a block's item). T cycles
-the theme, N toggles night. Enter test-plays; E goes back to editing.
+A debug-grade UI until the SMM2 maker layouts are drawn; the strip at the bottom says what
+happened (F1 lists the keys).
+
+| Keys / mouse | Does |
+|---|---|
+| left click / drag | place the selected part, paint ground while dragging |
+| right click / drag | erase (a part, then a track piece, then ground); cancels a two-click action |
+| 1–9, 0, Tab / Shift+Tab | pick the part (the palette also has Select, Track, Door, Warp Box, Scroll Node) |
+| arrows | scroll |
+| Door / Warp Box / Track tool | click one end, then the other (tracks: straight or 45°, even length) |
+| W / F / B | wings / alternate form / big, on the part under the cursor |
+| I | put the selected palette part inside the part under the cursor (block item, pipe contents, key) |
+| = / − (Shift: height) | resize the part under the cursor (semisolids, platforms, bridges, pipes, belts, lifts, slopes, vines …) |
+| R / C | turn / recolour the pipe under the cursor (R on empty space turns new pipes) |
+| L | link pipes: L on a pipe, A to the other area, L on its pipe |
+| K | door kind under the cursor: normal → P door → key door |
+| G | put the part under the cursor on the nearest track (or take it off) |
+| O | open / close the free track end under the cursor |
+| H | draw the path of a snake block, ! block, track block or Piranha Creeper: arrows add steps, Backspace removes one, H again saves it |
+| Select tool | drag a rectangle; Ctrl+C copy, Ctrl+X cut, Ctrl+V paste at the cursor, Delete / Backspace delete, Shift+arrows move |
+| A / V / [ ] | other area / sub-area vertical or horizontal / area smaller or bigger |
+| T / N | theme / night |
+| Q | autoscroll: none, slow, normal, fast, custom (Scroll Node tool adds the nodes) |
+| , / . (Shift: ×10) | timer −/+ 10 s |
+| ; | clear condition (none, defeat the Goombas, collect the coins, as Super Mario, no damage, no landing) |
+| ' | liquid (castle lava, forest water): stays, rises or falls, rises and falls |
+| Ctrl+Z / Ctrl+Y / Ctrl+S / Ctrl+U | undo / redo / save / upload (`--server`) |
+| Esc | drop the selection or a half-done action |
+| Enter / E | test-play / back to editing |
+
+The editor follows the game's placement rules: the start and goal areas stay clear, parts don't
+overlap ground or each other (semisolids and platforms may), containers only take what the game
+allows, and the game's per-area part limits (100 enemies and gizmos, 100 power-ups, 2000 blocks
+and coins, 1 checkpoint, 4 door pairs …), size ranges and style-only parts are enforced. The editing core is `core/crates/editor`;
+`cargo run -p mmk-editor --example sample_course -- out.bin` writes a course that uses most of it.
 
 ## Online: the open-source course server
 
