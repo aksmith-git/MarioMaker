@@ -289,10 +289,15 @@ impl Session {
                         .map(|p| format!("({:.1}, {:.1})", p.x, p.y))
                         .collect();
                     crate::app::log(&format!(
-                        "online: frame {}, lead {}, {} rollbacks, players at {}",
+                        "online: frame {}, lead {}, {} rollbacks, {} checks{}, players at {}",
                         net.frame,
                         net.lead(),
                         net.rollbacks,
+                        net.checks_compared,
+                        match net.desync {
+                            Some(f) => format!(" — DESYNC from frame {f}"),
+                            None => String::new(),
+                        },
                         at.join(" ")
                     ));
                 }

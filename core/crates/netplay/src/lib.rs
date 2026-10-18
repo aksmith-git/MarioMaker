@@ -29,14 +29,48 @@ pub const MAX_RESEND: usize = 64;
 /// up a start: whoever starts first waits for the others.
 pub const MAX_LEAD: usize = MAX_ROLLBACK - 2;
 
+/// Frames between desync checks (a hash of the state at a frame every peer has all inputs for).
+pub const CHECK_EVERY: usize = 60;
+
 /// Something rollback can drive: the world stepped with one input per player.
 pub trait Game: Clone {
     fn advance(&mut self, inputs: &[Input]);
+    /// A hash of the state, equal on every peer when the sims agree (0: no checking).
+    fn checksum(&self) -> u64 {
+        0
+    }
+}
+
+/// FNV-1a over 64-bit words.
+fn fnv(h: u64, x: u64) -> u64 {
+    x.to_le_bytes()
+        .iter()
+        .fold(h, |h, &b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3))
 }
 
 impl Game for World {
     fn advance(&mut self, inputs: &[Input]) {
         self.step_players(inputs);
+    }
+
+    fn checksum(&self) -> u64 {
+        let mut h = 0xcbf2_9ce4_8422_2325;
+        h = fnv(h, self.tick);
+        h = fnv(h, (self.score as u64) << 32 | self.coins as u64);
+        for p in std::iter::once(&self.player).chain(&self.others) {
+            for v in [p.x, p.y, p.vx, p.vy] {
+                h = fnv(h, v.to_bits() as u64);
+            }
+            h = fnv(h, p.facing as u64);
+        }
+        h = fnv(h, self.actors.len() as u64);
+        for a in &self.actors {
+            for v in [a.x, a.y, a.vx, a.vy] {
+                h = fnv(h, v.to_bits() as u64);
+            }
+            h = fnv(h, (a.timer as u32 as u64) << 8 | (a.dir as u8 as u64));
+        }
+        h
     }
 }
 
@@ -101,6 +135,16 @@ pub struct Session<G: Game> {
     timelines: Vec<Timeline>,
     /// Per player: how many of our inputs they have confirmed (from their packets' acks).
     acked: Vec<usize>,
+    /// Our state hashes at check frames (recent), peers' hashes not compared yet, and the
+    /// first check frame where a peer's hash differed from ours (the sims disagree).
+    checks: VecDeque<(usize, u64)>,
+    peer_checks: VecDeque<(usize, u64)>,
+    /// Per player: the newest check frame taken from their packets (each counted once).
+    peer_seen: Vec<usize>,
+    next_check: usize,
+    pub desync: Option<usize>,
+    /// Check hashes compared with a peer's so far.
+    pub checks_compared: u64,
     /// Snapshot before frame `n` (the last MAX_ROLLBACK frames).
     snapshots: VecDeque<(usize, G)>,
     /// Earliest frame whose inputs changed since it was simulated.
@@ -116,6 +160,12 @@ impl<G: Game> Session<G> {
             local,
             timelines: vec![Timeline::default(); players],
             acked: vec![0; players],
+            checks: VecDeque::new(),
+            peer_checks: VecDeque::new(),
+            peer_seen: vec![0; players],
+            next_check: CHECK_EVERY,
+            desync: None,
+            checks_compared: 0,
             snapshots: VecDeque::new(),
             dirty: None,
             rollbacks: 0,
@@ -188,6 +238,68 @@ impl<G: Game> Session<G> {
         let inp = self.inputs(f);
         self.game.advance(&inp);
         self.frame += 1;
+        self.take_checks();
+    }
+
+    /// Frames every peer's inputs are known for (the state before this frame is final).
+    fn confirmed(&self) -> usize {
+        self.timelines
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != self.local)
+            .map(|(_, t)| t.through)
+            .min()
+            .unwrap_or(self.frame)
+            .min(self.frame)
+    }
+
+    /// Hash the states at check frames that have become final.
+    fn take_checks(&mut self) {
+        let c = self.confirmed();
+        while self.next_check <= c {
+            let k = self.next_check;
+            self.next_check += CHECK_EVERY;
+            let state = if k == self.frame {
+                Some(&self.game)
+            } else {
+                self.snapshots.iter().find(|(n, _)| *n == k).map(|(_, g)| g)
+            };
+            let Some(h) = state.map(Game::checksum) else {
+                continue; // fell out of the window (a caller ignored can_advance)
+            };
+            self.checks.push_back((k, h));
+            if self.checks.len() > 16 {
+                self.checks.pop_front();
+            }
+            let theirs: Vec<u64> = self
+                .peer_checks
+                .iter()
+                .filter(|(f, _)| *f == k)
+                .map(|&(_, h)| h)
+                .collect();
+            self.peer_checks.retain(|(f, _)| *f > k);
+            for t in theirs {
+                self.compare(k, h, t);
+            }
+        }
+    }
+
+    fn compare(&mut self, frame: usize, ours: u64, theirs: u64) {
+        self.checks_compared += 1;
+        if ours != theirs && self.desync.is_none() {
+            self.desync = Some(frame);
+        }
+    }
+
+    fn peer_check(&mut self, frame: usize, hash: u64) {
+        if let Some(&(_, ours)) = self.checks.iter().find(|(f, _)| *f == frame) {
+            self.compare(frame, ours, hash);
+        } else if frame >= self.next_check {
+            self.peer_checks.push_back((frame, hash));
+            if self.peer_checks.len() > 64 {
+                self.peer_checks.pop_front();
+            }
+        }
     }
 
     /// The packet to send this frame: our inputs from the oldest one some peer hasn't confirmed
@@ -214,6 +326,7 @@ impl<G: Game> Session<G> {
                 .enumerate()
                 .map(|(i, t)| if i == self.local { end } else { t.through } as u32)
                 .collect(),
+            check: self.checks.back().map(|&(f, h)| (f as u32, h)),
         }
     }
 
@@ -221,6 +334,14 @@ impl<G: Game> Session<G> {
         let from = p.player as usize;
         if let (Some(&a), Some(mine)) = (p.acks.get(self.local), self.acked.get_mut(from)) {
             *mine = (*mine).max(a as usize);
+        }
+        if let Some((f, h)) = p.check
+            && from != self.local
+            && let Some(seen) = self.peer_seen.get_mut(from)
+            && f as usize > *seen
+        {
+            *seen = f as usize;
+            self.peer_check(f as usize, h);
         }
         for (k, &b) in p.inputs.iter().enumerate() {
             self.remote_input(
@@ -232,8 +353,8 @@ impl<G: Game> Session<G> {
     }
 }
 
-/// Wire format: player (u8), first frame (u32 LE), count (u8), inputs (u16 LE each), then ack
-/// count (u8) and acks (u32 LE each).
+/// Wire format: player (u8), first frame (u32 LE), count (u8), inputs (u16 LE each), ack count
+/// (u8) and acks (u32 LE each), then optionally a desync check: frame (u32 LE), hash (u64 LE).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Packet {
     pub player: u8,
@@ -241,6 +362,8 @@ pub struct Packet {
     pub inputs: Vec<u16>,
     /// Per player: how many of their inputs the sender has without a gap (its own: its frame).
     pub acks: Vec<u32>,
+    /// The sender's latest desync check: (frame, state hash).
+    pub check: Option<(u32, u64)>,
 }
 
 impl Packet {
@@ -255,6 +378,10 @@ impl Packet {
         for a in &self.acks {
             v.extend(a.to_le_bytes());
         }
+        if let Some((f, h)) = self.check {
+            v.extend(f.to_le_bytes());
+            v.extend(h.to_le_bytes());
+        }
         v
     }
 
@@ -263,14 +390,22 @@ impl Packet {
         let first_frame = u32::from_le_bytes(rest.get(..4)?.try_into().ok()?);
         let n = *rest.get(4)? as usize;
         let data = rest.get(5..5 + 2 * n)?;
-        let acks = match rest[5 + 2 * n..].split_first() {
-            Some((&k, a)) => a
-                .get(..4 * k as usize)?
-                .chunks(4)
-                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect(),
-            None => Vec::new(),
+        let (acks, tail): (Vec<u32>, &[u8]) = match rest[5 + 2 * n..].split_first() {
+            Some((&k, a)) => (
+                a.get(..4 * k as usize)?
+                    .chunks(4)
+                    .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect(),
+                &a[4 * k as usize..],
+            ),
+            None => (Vec::new(), &[]),
         };
+        let check = (tail.len() >= 12).then(|| {
+            (
+                u32::from_le_bytes(tail[..4].try_into().unwrap()),
+                u64::from_le_bytes(tail[4..12].try_into().unwrap()),
+            )
+        });
         Some(Self {
             player,
             first_frame,
@@ -279,6 +414,7 @@ impl Packet {
                 .map(|c| u16::from_le_bytes([c[0], c[1]]))
                 .collect(),
             acks,
+            check,
         })
     }
 }
@@ -388,6 +524,8 @@ mod tests {
             a.rollbacks > 0 && b.rollbacks > 0,
             "predictions were corrected"
         );
+        assert_eq!((a.desync, b.desync), (None, None));
+        assert!(a.checks_compared > 0 && b.checks_compared > 0);
         // replay with every input known: the reference result
         let mut reference = world;
         for f in 0..330 {
@@ -468,6 +606,58 @@ mod tests {
         }
     }
 
+    /// A toy game whose peer 1 drifts at frame 200 (a determinism bug).
+    #[derive(Clone)]
+    struct Toy {
+        v: i64,
+        frame: usize,
+        buggy: bool,
+    }
+
+    impl Game for Toy {
+        fn advance(&mut self, inputs: &[Input]) {
+            self.v += inputs.iter().map(|i| i.buttons as i64).sum::<i64>();
+            self.frame += 1;
+            if self.buggy && self.frame == 200 {
+                self.v += 1;
+            }
+        }
+        fn checksum(&self) -> u64 {
+            self.v as u64
+        }
+    }
+
+    #[test]
+    fn a_drifting_peer_is_caught_by_the_checks() {
+        let toy = |buggy| Toy {
+            v: 0,
+            frame: 0,
+            buggy,
+        };
+        let mut a = Session::new(toy(false), 2, 0);
+        let mut b = Session::new(toy(true), 2, 1);
+        for f in 0..400 {
+            let (pa, pb) = (a.packet(), b.packet());
+            a.receive(&pb);
+            b.receive(&pa);
+            a.advance(Input {
+                buttons: (f % 7) as u32,
+            });
+            b.advance(Input {
+                buttons: (f % 5) as u32,
+            });
+        }
+        // the first check after the drift (frame 240) differs; earlier ones agreed
+        assert_eq!(a.desync, Some(240));
+        assert_eq!(b.desync, Some(240));
+        // one comparison per check frame (packets repeat the latest check)
+        assert!(
+            (4..=6).contains(&a.checks_compared),
+            "{}",
+            a.checks_compared
+        );
+    }
+
     #[test]
     fn udp_links_exchange_packets() {
         let pa = 40000 + (std::process::id() % 10000) as u16;
@@ -487,6 +677,7 @@ mod tests {
             first_frame: 7,
             inputs: vec![16, 0],
             acks: vec![],
+            check: None,
         };
         a.send(&p);
         let mut got = Vec::new();
@@ -507,6 +698,7 @@ mod tests {
             first_frame: 1234,
             inputs: vec![1, 16, 0x30],
             acks: vec![7, 0, 1234567],
+            check: Some((120, 0xDEAD_BEEF_0123_4567)),
         };
         assert_eq!(Packet::parse(&p.to_bytes()), Some(p));
         assert_eq!(Packet::parse(&[1, 2]), None);
