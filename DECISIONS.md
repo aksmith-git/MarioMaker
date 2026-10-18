@@ -673,3 +673,16 @@ renderers upload a texture when a sprite first uses it. Measured on the same cou
   late or lossy peer missed are resent (up to 64 per packet). Found by a two-browser test where
   the late joiner missed the first frames and both sides stalled.
 - The relay holds no accounts or course data; rooms expire 30 s after their members go quiet.
+
+## 2026-10-18 — Replays: verified records, and when to bump SIM_VERSION
+- A clear can be proven by its replay (per-frame inputs, `mmk_modes::replay`). The server plays it
+  on the stored course and takes the clear time from the simulation, so a record can't be typed
+  in (`mmk server --verified-records` makes that the only way). The record holder's replay is
+  served for ghosts.
+- A replay only means something for the sim that recorded it. `replay::SIM_VERSION` is stamped into
+  every replay and servers refuse other versions. While fidelity passes keep changing physics,
+  bump it **once per release build**, not per commit; a server upgraded to a new release keeps
+  its old records but needs new replays for new ones.
+- Replays play one player, offline, from the course start (deaths and respawns are inside the
+  deterministic run; a restart starts a new replay). Verification runs on the server's request
+  thread (a 10-minute run simulates in well under a second in release builds).

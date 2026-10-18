@@ -419,8 +419,10 @@ Not Nintendo's network: the engine talks to an open-source server the owner can 
   (maker points [inf weights], courses cleared, first clears, world records, Endless Challenge per
   difficulty; `mmk rankings`) · verified records ✅ (`mmk_modes::replay`: a clear sent as its
   per-frame inputs, re-simulated by the server, which takes the time from the replay; record runs
-  served for ghosts; `--verified-records`; `mmk-play --code … --token` submits on clear) · ghost
-  racing in the players ⬜ ·
+  served for ghosts; `--verified-records`; `mmk-play --code … --token` submits on clear) · ghosts ✅
+  in the portable shell (`mmk-play --code … --ghost` races the record's run, `--ghost-file`,
+  `--record-replay`; drawn half transparent, 2D styles; the 3D styles' player is a mesh ⬜) ·
+  ghosts in the Swift app ⬜ ·
   SMMDB import ⬜ · ⏳ owner: keep this or connect to another open-source server
 - ⬜ Course World client: browse, play, like/boo, comment, upload from the editor
 - ✅ Local multiplayer (co-op, up to 4: Mario, Luigi, Toad, Toadette as the models' _2/_3/_4

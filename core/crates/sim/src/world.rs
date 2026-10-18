@@ -6481,7 +6481,8 @@ impl World {
         Some(s)
     }
 
-    fn player_sprite(&self) -> Option<Sprite> {
+    /// Player 1's sprite (also used to draw a replay's player as a ghost).
+    pub fn player_sprite(&self) -> Option<Sprite> {
         self.player_sprite_of(&self.player, self.main_char)
     }
 

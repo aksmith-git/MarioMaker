@@ -53,6 +53,13 @@ pub struct Actions {
     pub restart: bool,
 }
 
+/// A replay playing in its own world (drawn as a ghost).
+pub struct Ghost {
+    pub world: World,
+    pub replay: mmk_modes::replay::Replay,
+    pub frame: usize,
+}
+
 pub struct Session {
     pub world: World,
     course: Option<Course>,
@@ -70,6 +77,8 @@ pub struct Session {
     pub scripted: Option<fn(u64) -> Input>,
     /// Local multiplayer: inputs of players 2–4 for the next ticks (set by the app each frame).
     pub extra_inputs: Vec<Input>,
+    /// A replay racing alongside (`set_ghost`).
+    pub ghost: Option<Ghost>,
     /// Recording the run since the course (re)started as a replay (`record_replays`), and the
     /// replay of the last clear, until taken.
     recording: bool,
@@ -102,6 +111,7 @@ impl Session {
             phase_frames: 0,
             scripted: None,
             extra_inputs: Vec::new(),
+            ghost: None,
             recording: false,
             replay: mmk_modes::replay::Replay::new(),
             cleared_replay: None,
@@ -144,11 +154,33 @@ impl Session {
     }
 
     /// Start the course again (fresh lives, score and timer).
+    /// Race `replay` (e.g. the course record's): it plays in its own world from the course start,
+    /// a frame per tick, restarting with the course.
+    pub fn set_ghost(&mut self, replay: mmk_modes::replay::Replay) {
+        self.ghost = Some(Ghost {
+            world: self.fresh_world(),
+            replay,
+            frame: 0,
+        });
+    }
+
+    fn fresh_world(&self) -> World {
+        match &self.course {
+            Some(c) => World::from_course(c),
+            None => World::new(),
+        }
+    }
+
     /// Record each run (one player, offline) as a replay; a clear's is kept for
     /// `take_cleared_replay`.
     pub fn record_replays(&mut self) {
         self.recording = true;
         self.replay = mmk_modes::replay::Replay::new();
+    }
+
+    /// The run so far since the course (re)started (empty unless recording).
+    pub fn replay(&self) -> &mmk_modes::replay::Replay {
+        &self.replay
     }
 
     /// The replay of the last clear, once.
@@ -158,6 +190,11 @@ impl Session {
 
     pub fn restart(&mut self) {
         self.replay = mmk_modes::replay::Replay::new();
+        if let Some(mut g) = self.ghost.take() {
+            g.world = self.fresh_world();
+            g.frame = 0;
+            self.ghost = Some(g);
+        }
         self.world = match &self.course {
             Some(c) => World::from_course(c),
             None => World::new(),
@@ -273,6 +310,12 @@ impl Session {
                 self.replay.push(input);
             }
             self.world.step(input);
+            if let Some(g) = &mut self.ghost
+                && let Some(&b) = g.replay.inputs.get(g.frame)
+            {
+                g.world.step(Input { buttons: b });
+                g.frame += 1;
+            }
         } else {
             let mut all = vec![input];
             all.extend(
@@ -354,5 +397,38 @@ mod tests {
             s.frame(TICK, Input::default(), Actions::default());
         }
         assert!(s.world.player.x > x0 + 32.0);
+    }
+
+    #[test]
+    fn a_recorded_run_replays_as_a_ghost_in_step() {
+        // record a run on the demo strip
+        let mut a = Session::new(None);
+        a.record_replays();
+        a.scripted = Some(scripted_run);
+        for _ in 0..240 {
+            a.frame(TICK, Input::default(), Actions::default());
+        }
+        let run = a.replay.clone();
+        assert_eq!(run.inputs.len() as u64, a.world.tick);
+        // a fresh session races it: the ghost is where the recorded player was, frame by frame
+        let mut b = Session::new(None);
+        b.set_ghost(run.clone());
+        let mut c = Session::new(None);
+        for f in 0..240 {
+            let i = Input {
+                buttons: run.inputs[f],
+            };
+            b.tick(Input::default());
+            c.tick(i);
+            let g = &b.ghost.as_ref().unwrap().world.player;
+            assert_eq!(
+                (g.x, g.y),
+                (c.world.player.x, c.world.player.y),
+                "frame {f}"
+            );
+        }
+        // the ghost restarts with the course
+        b.restart();
+        assert_eq!(b.ghost.as_ref().unwrap().frame, 0);
     }
 }

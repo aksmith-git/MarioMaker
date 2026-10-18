@@ -100,6 +100,16 @@ mod native {
         /// Maker name for uploads.
         #[arg(long, default_value = "anonymous")]
         maker: String,
+        /// With --code: race the course record's run as a ghost (or a replay file's, --ghost-file).
+        #[arg(long)]
+        ghost: bool,
+        /// Save your run as a replay file (`.mmkr`): on each clear, or with --screenshot, the
+        /// scripted run when it's taken.
+        #[arg(long)]
+        record_replay: Option<PathBuf>,
+        /// Race this replay file (`.mmkr`) as a ghost.
+        #[arg(long)]
+        ghost_file: Option<PathBuf>,
         /// Account token for the course server (default $MMK_TOKEN): with --code, each clear is
         /// sent as a replay the server verifies (world records).
         #[arg(long)]
@@ -201,6 +211,26 @@ mod native {
             None => None,
         };
         let mut game = Game::load(source_ref, if args.edit { None } else { course.as_deref() })?;
+        let ghost = match (&args.ghost_file, args.ghost, &args.code, &args.server) {
+            (Some(p), _, _, _) => {
+                Some(std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?)
+            }
+            (None, true, Some(code), Some(server)) => Some(
+                mmk_online::Client::new(server.clone())
+                    .record_replay(code)
+                    .map_err(|e| format!("ghost for {code}: {e}"))?,
+            ),
+            (None, true, _, _) => return Err("--ghost needs --code and --server".into()),
+            _ => None,
+        };
+        if let Some(bytes) = ghost {
+            let r = mmk_modes::replay::Replay::decode(&bytes).ok_or("the ghost isn't a replay")?;
+            if r.sim_version != mmk_modes::replay::SIM_VERSION {
+                log("ghost: recorded with another engine version; it may not follow the course");
+            }
+            log(&format!("ghost: {} frames", r.inputs.len()));
+            game.session.set_ghost(r);
+        }
         // a server course: each clear goes to the server as a replay it verifies (records)
         if let (Some(code), Some(server)) = (&args.code, &args.server) {
             let token = args
@@ -225,6 +255,19 @@ mod native {
                     });
                 }));
             }
+        }
+        if let Some(p) = args.record_replay.clone() {
+            game.session.record_replays();
+            let mut next = game.on_clear.take();
+            game.on_clear = Some(Box::new(move |r: mmk_modes::replay::Replay| {
+                match std::fs::write(&p, r.encode()) {
+                    Ok(()) => log(&format!("replay saved: {}", p.display())),
+                    Err(e) => log(&format!("{}: {e}", p.display())),
+                }
+                if let Some(f) = &mut next {
+                    f(r);
+                }
+            }));
         }
         if args.edit {
             let editor = match &course {
@@ -328,6 +371,9 @@ mod native {
             return Ok(());
         }
         if let Some(path) = &args.screenshot {
+            if args.record_replay.is_some() {
+                game.session.record_replays();
+            }
             let msg = mmk_shell::headless::screenshot(
                 &mut game,
                 path,
@@ -336,6 +382,10 @@ mod native {
                 !args.idle,
                 !args.cpu_textures,
             )?;
+            if let Some(p) = &args.record_replay {
+                std::fs::write(p, game.session.replay().encode())
+                    .map_err(|e| format!("{}: {e}", p.display()))?;
+            }
             println!("{msg}");
             return Ok(());
         }
