@@ -655,3 +655,51 @@ fn caller_pane_overrides_win_over_animations() {
     assert!(p.set_pane("P_Box", PaneOverride::default())); // removes it
     assert!(!p.set_pane("P_None", o));
 }
+
+#[test]
+fn caller_picture_texture_material_colour_and_text_width() {
+    let mut c = sample_cache();
+    let icon = c.add_texture_file("Icons", "Star", tex(16, 16));
+    assert_eq!(c.texture_file("Icons", "Star"), Some(icon));
+    assert_eq!(c.texture_file("Icons", "Missing"), None); // in memory: no files
+    let mut p = LayoutPlayer::new(c.layout("Sample").unwrap());
+    let pic = |p: &LayoutPlayer| *pictures(&p.draw_list())[0];
+    // a texture of the caller's choice wins over the material's (and its pattern animation)
+    let own = pic(&p).tex0;
+    assert!(p.set_picture_texture("P_Box", Some(icon)));
+    assert_eq!(pic(&p).tex0, icon.id);
+    p.play("Move", 4.0);
+    assert_eq!(pic(&p).tex0, icon.id);
+    p.stop(None);
+    assert!(p.set_picture_texture("P_Box", None));
+    assert_eq!(pic(&p).tex0, own);
+    assert!(!p.set_picture_texture("T_Label", Some(icon)));
+    // material colours
+    assert!(p.set_material_color("P_Box", None, Some([1, 2, 3, 4])));
+    assert_eq!(pic(&p).white, [1, 2, 3, 4]);
+    assert_eq!(p.material_color("P_Box"), Some((None, Some([1, 2, 3, 4]))));
+    assert!(p.set_material_color("P_Box", None, None));
+    assert_eq!(pic(&p).white, [200, 100, 50, 255]);
+    assert!(!p.set_material_color("T_Label", None, Some([0; 4])));
+    // text width: grows with the text, none for a picture
+    p.set_text("T_Label", "A");
+    let one = p.text_width("T_Label").unwrap();
+    p.set_text("T_Label", "AA\nA");
+    let two = p.text_width("T_Label").unwrap();
+    assert!(one > 0.0 && two > one);
+    assert_eq!(p.text_width("P_Box"), None);
+}
+
+#[test]
+fn shared_message_tables() {
+    let mut c = sample_cache();
+    let mut msgs = HashMap::new();
+    msgs.insert("Goal".to_string(), "Reach it".to_string());
+    c.add_messages("GoalTable", msgs);
+    assert_eq!(
+        c.table_message("GoalTable", "Goal").as_deref(),
+        Some("Reach it")
+    );
+    assert_eq!(c.table_message("GoalTable", "Nope"), None);
+    assert_eq!(c.table_message("NoTable", "Goal"), None);
+}

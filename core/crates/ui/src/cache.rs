@@ -68,8 +68,9 @@ pub struct LayoutRes {
     pub fonts: Vec<Option<Arc<FontRes>>>,
     /// Message label → plain text (this layout's MSBT file).
     pub messages: HashMap<String, String>,
-    /// Message label → text with each value tag (numbers, names: tag groups 2 and 4) replaced
-    /// by [`ARG_PLACEHOLDER`], for callers that fill in values (`LayoutPlayer::message`).
+    /// Message label → text with each value tag (numbers, names: tag groups 2 and 4, SMM2's
+    /// number tags group 250) replaced by [`ARG_PLACEHOLDER`], for callers that fill in values
+    /// (`LayoutPlayer::message`).
     pub templates: HashMap<String, String>,
     /// Part layouts by name.
     pub parts: HashMap<String, Arc<LayoutRes>>,
@@ -162,7 +163,8 @@ impl UiCache {
         }
         let mut message_files = HashMap::new();
         // <archive>/<group>/<Layout>.json (SMM1) or <archive>/<Layout>.json (SMM2), keyed by
-        // layout name; LayoutMsg wins over CommonMsg
+        // layout name; LayoutMsg wins over CommonMsg over ReferenceMsg (SMM2's shared tables:
+        // clear conditions, part names, …)
         fn add_json(dir: &Path, out: &mut HashMap<String, PathBuf>) {
             let Ok(files) = std::fs::read_dir(dir) else {
                 return;
@@ -175,7 +177,7 @@ impl UiCache {
                 }
             }
         }
-        for archive in ["CommonMsg", "LayoutMsg"] {
+        for archive in ["ReferenceMsg", "CommonMsg", "LayoutMsg"] {
             let base = dir.join("ui/messages").join(archive);
             add_json(&base, &mut message_files);
             let Ok(groups) = std::fs::read_dir(&base) else {
@@ -318,7 +320,9 @@ impl UiCache {
                     .iter()
                     .filter_map(|p| match p {
                         MsgPart::Text(t) => Some(t.clone()),
-                        MsgPart::Tag { group: 2 | 4, .. } => Some(ARG_PLACEHOLDER.to_string()),
+                        MsgPart::Tag {
+                            group: 2 | 4 | 250, ..
+                        } => Some(ARG_PLACEHOLDER.to_string()),
                         _ => None,
                     })
                     .collect();
@@ -328,6 +332,37 @@ impl UiCache {
         self.messages.insert(layout.to_string(), out.clone());
         self.templates.insert(layout.to_string(), templates.clone());
         (out, templates)
+    }
+
+    /// Message `label` of message table `table` (a layout's, or a shared one such as SMM2's
+    /// `GoalCondition`), with [`ARG_PLACEHOLDER`] for each value it takes.
+    pub fn table_message(&mut self, table: &str, label: &str) -> Option<String> {
+        self.messages_for(table).1.get(label).cloned()
+    }
+
+    /// Texture `ui/textures/<group>/<stem>.mtex` of the import (loaded once), for callers that
+    /// put a texture of their choice into a picture (`LayoutPlayer::set_picture_texture`).
+    pub fn texture_file(&mut self, group: &str, stem: &str) -> Option<TexRef> {
+        let name = format!("{group}/{stem}");
+        if let Some(&id) = self.texture_ids.get(&name) {
+            let t = &self.textures[id as usize].texture;
+            return Some(TexRef {
+                id,
+                width: t.width,
+                height: t.height,
+            });
+        }
+        if stem.contains(['/', '\\']) || group.contains(['/', '\\']) || stem.starts_with('.') {
+            return None;
+        }
+        let path = self.root.as_ref()?.join(format!("ui/textures/{name}.mtex"));
+        let tex = Mtex::parse(&read(&path).ok()?).ok()?;
+        Some(self.add_texture(name, tex))
+    }
+
+    /// Register a texture from memory under `<group>/<stem>` (tests, tools).
+    pub fn add_texture_file(&mut self, group: &str, stem: &str, texture: Mtex) -> TexRef {
+        self.add_texture(format!("{group}/{stem}"), texture)
     }
 
     /// Load (once) a layout with its parts, textures, fonts and messages.

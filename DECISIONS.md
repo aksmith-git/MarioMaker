@@ -131,6 +131,65 @@ and actor turn from Ryujinx captures, material render info (translucency, emissi
   frame the first frame's colours and keeps each frame's texture (SMM2 button shadows); a part
   property with material usage 1 takes only the enclosing material's colours (Course Maker icon
   tint). Would change with a frame-by-frame comparison against the game.
+
+## 2026-10-18 — SMM2 in-course screens: the game's layouts, inferred flow, lives kept
+Library courses (not 100 Mario runs, not the title demo) get SMM2's in-course layouts when the
+SMM2 UI import is there (`SMM2Course.swift`, `CourseScreens`); otherwise the drawn HUD strip and
+the SwiftUI menus as before (`MMK_UI_SMM2=off`). Layouts, animations, texts and icons are the
+game's, read at run time; the flow between them is not in the data:
+- **Lives stay.** SMM2's Course World and Story Mode have no lives; the engine has 5 and a game
+  over. We keep the engine's rule and show it the way SMM2 shows lives elsewhere: HUD `Type`
+  frame 1 (the Endless Challenge variant: lives counter with the character icon; its 1-Up
+  progress hidden) and the course card `Play_CourseIn_00` `AnimEndlessMode` (× lives) at the
+  start and after each death, `Play_GameOver_00` when they run out [?: owner may prefer
+  infinite retries like Course World].
+- **Course card** on a black `Cmn_Fade_00` (FadeOutB held, FadeInB after): course name, maker
+  when known, the clear-condition sentence + icon (the icon placed just left of the centred
+  sentence: the game aligns them, the layout leaves it at a fixed place [inf]). The 3D player
+  figure in its middle is not drawn (no layout).
+- **HUD** `Play_PlayScene_00`: `Skin` frame = style (M1, M3, MW, WU, 3W — the data's order),
+  `TypeCharacter` = character; number widths from the value tags' kinds (9 → 2 digits, 10 → 3,
+  16 → 9, matching the samples "99", "999", "123456789") [inf]; `TimeCaution` from 100 s left
+  [inf]; clear condition: icon + "n/N" (`TypeMission` 0) or icon alone (1), `W_MissionClear_00`
+  shown when met, `InMissionFailed` when broken [inf]; pink coins: one slot per coin in the
+  course, rightmost slots, `Type<style>` frame 1 = collected, `Get` pop, the frame's left end
+  moved to the first slot [inf]. Keys: `Play_KeyIcon_00` icons in a row under the score — a
+  departure (the game shows held keys with the player). Pop-ups that need in-course positions
+  (points, condition met balloon, Ninji panes) are hidden.
+- **Clear-condition icons and sentences:** icons are the textures of
+  `Model/<style>_Lyt_Mission_RGBA8` (StaticModel.pack), imported to `ui/textures/MissionIcon/`
+  and put into `Cmn_MissionIcon`'s `P_DummyIcon_00` (the course's style, else another's);
+  sentences are ReferenceMsg `GoalCondition` templates filled with the count and a name from
+  `PartsIconName(_plural)`. Condition → (label, part, icon) is our table, matched by the
+  internal names shared by the condition list, the name table and the icon textures; "at least
+  N" (`_02`) is always used [inf]; no table entry → our own short wording.
+- **Pause** `Cmn_PauseMenu_00`: `Type` 3 (Start Over + Exit Course; no Edit, likes, comments),
+  `TypeCourseInfo` 1 (Course World block: mode, title, condition line, maker, best time; Mii,
+  flag, badges, tags hidden); "Retry" instead of "Start Over" once a checkpoint was reached; the
+  close button is the Continue item and the selection starts there (as in our SMM1 pause); a
+  black dim at 82% stands in for the game's blurred capture behind the panel and the HUD fades
+  out [inf]. Settings and "Mario's Moves" are hidden.
+- **Exit Course** → "You gave up..." `Play_CourseRetire_00` with Exit / Keep playing [inf: how
+  the game uses that screen in single play].
+- **Clear:** `Play_CourseClear_00` `InNet`, `Type` 2 with the network parts hidden, the button
+  pair (Start Over / Quit, labels "0000"/"0001" [inf]) centred because Comment / Tag are gone.
+  The banner (`N_Cap_00`) and the give-up screen's purple card are authored off screen and shown
+  through panes that distort a frame capture (`PF_*`, `P_Wave_*`: indirect textures over a
+  `Dummy` placeholder the game replaces with the capture); we draw `N_Cap_00` in place,
+  undistorted, and keep the "COURSE CLEAR!" glow lettering white because the letter-shaped
+  holes would otherwise show only the band [inf]. `RegionLanguageType` 1 for English [inf].
+- **Time up:** `Play_TimeUp_00` over the death when the timer runs out (engine: dying with
+  0 frames left), then the usual death handling.
+- **Player additions:** a caller texture for a picture's material (`set_picture_texture`,
+  textures from `ui/textures/<group>/`), forced material colours (`set_material_color`), text
+  width (`text_width`); shared message tables (`UiCache::table_message`); SMM2 number tags
+  (group 250) become value placeholders in templates.
+- **Fonts:** Switch BFFNT sheets are stored bottom row first like the Wii U ones (SMM2's number
+  fonts came out upside down), and one-channel sheets are read as luminance as well as coverage
+  so the SMB3 / SMW digits keep their shading [inf: matches how the font colours interpolate].
+
+What would change it: footage of the game's course start / death / clear / give-up sequences,
+the frame-capture effects, and the owner's choice on lives.
 ## 2026-10-18 — 3D World enemies (96, 65, 51, 50, 114, 117, 86, 107): own modules, one state struct
 Ant Trooper, Stingby, Skipsqueak, Hop-Chops, Porcupuffer, Bully, Charvaargh and Piranha Creeper
 live in `actors/w3.rs` and `world/w3.rs`, like the bosses: the shared files only gain variants,

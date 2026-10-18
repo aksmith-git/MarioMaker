@@ -451,6 +451,142 @@ pub unsafe extern "C" fn mmk_ui_message(
     })
 }
 
+/// Copy message `label` of message table `table` (a layout's, or a shared SMM2 table such as
+/// `GoalCondition` or `PartsIconName_plural`) into `buf` like `mmk_ui_message`. Returns the full
+/// length in bytes, 0 if there is no such message; `cap` 0 sizes it.
+///
+/// # Safety
+/// `ui` must be a live handle; `table` and `label` valid NUL-terminated strings; `buf` writable
+/// for `cap` bytes (or NULL with `cap` 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_ui_table_message(
+    ui: *mut MmkUi,
+    table: *const c_char,
+    label: *const c_char,
+    buf: *mut c_char,
+    cap: usize,
+) -> usize {
+    guard(0, || {
+        let (Some(u), Some(table), Some(label)) = (
+            unsafe { ui.as_mut() },
+            unsafe { str_arg(table, "table") },
+            unsafe { str_arg(label, "label") },
+        ) else {
+            return 0;
+        };
+        let Some(text) = u.cache.table_message(table, label) else {
+            return 0;
+        };
+        let bytes = text.as_bytes();
+        if !buf.is_null() && cap > 0 {
+            let n = bytes.len().min(cap - 1);
+            unsafe {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, n);
+                *buf.add(n) = 0;
+            }
+        }
+        bytes.len()
+    })
+}
+
+/// Draw picture pane `pane` (`[PartPane/…/]Pane`) of `layout` with the import's texture
+/// `ui/textures/<group>/<name>.mtex` (e.g. group "MissionIcon": the clear-condition icons), or
+/// with its own texture again when `name` is NULL. False if the texture or the picture is
+/// missing. New textures are listed by `mmk_ui_texture_count` / `mmk_ui_texture`.
+///
+/// # Safety
+/// `ui` and `layout` must be live handles (the layout opened from `ui`); `pane` and `group`
+/// valid NUL-terminated strings; `name` one or NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_ui_set_picture(
+    ui: *mut MmkUi,
+    layout: *mut MmkUiLayout,
+    pane: *const c_char,
+    group: *const c_char,
+    name: *const c_char,
+) -> bool {
+    guard(false, || {
+        let (Some(u), Some(l), Some(pane), Some(group)) = (
+            unsafe { ui.as_mut() },
+            unsafe { layout.as_mut() },
+            unsafe { str_arg(pane, "pane") },
+            unsafe { str_arg(group, "group") },
+        ) else {
+            return false;
+        };
+        let tex = if name.is_null() {
+            None
+        } else {
+            let Some(name) = (unsafe { str_arg(name, "name") }) else {
+                return false;
+            };
+            match u.cache.texture_file(group, name) {
+                Some(t) => Some(t),
+                None => {
+                    set_error(format!("no texture {group}/{name}"));
+                    return false;
+                }
+            }
+        };
+        let ok = l.player.set_picture_texture(pane, tex);
+        if !ok {
+            set_error(format!("no textured picture pane '{pane}'"));
+        }
+        ok
+    })
+}
+
+/// Force the material colours of picture / window pane `pane` over its animations: `which` 0
+/// black, 1 white; `rgba` NULL gives that colour back to the animations. False if there is no
+/// such pane.
+///
+/// # Safety
+/// `layout` must be a live handle; `pane` a valid NUL-terminated string; `rgba` 4 bytes or NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_ui_set_material_color(
+    layout: *mut MmkUiLayout,
+    pane: *const c_char,
+    which: u32,
+    rgba: *const u8,
+) -> bool {
+    guard(false, || {
+        let (Some(l), Some(pane)) = (unsafe { layout.as_mut() }, unsafe { str_arg(pane, "pane") })
+        else {
+            return false;
+        };
+        let c = (!rgba.is_null()).then(|| {
+            let s = unsafe { std::slice::from_raw_parts(rgba, 4) };
+            [s[0], s[1], s[2], s[3]]
+        });
+        let (black, white) = l.player.material_color(pane).unwrap_or((None, None));
+        let ok = if which == 0 {
+            l.player.set_material_color(pane, c, white)
+        } else {
+            l.player.set_material_color(pane, black, c)
+        };
+        if !ok {
+            set_error(format!("no picture or window pane '{pane}'"));
+        }
+        ok
+    })
+}
+
+/// Width (the pane's own units) of the widest line of text pane `pane`'s text (the caller's, else
+/// the layout's); −1 if there is no such text pane.
+///
+/// # Safety
+/// `layout` must be a live handle; `pane` a valid NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_ui_text_width(layout: *const MmkUiLayout, pane: *const c_char) -> f32 {
+    guard(-1.0, || {
+        let (Some(l), Some(pane)) = (unsafe { layout.as_ref() }, unsafe { str_arg(pane, "pane") })
+        else {
+            return -1.0;
+        };
+        l.player.text_width(pane).unwrap_or(-1.0)
+    })
+}
+
 /// Evaluate the layout with its bound animations and return the quads to draw, back to front.
 /// `*out` stays valid until the next call on this layout.
 ///

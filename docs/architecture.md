@@ -106,6 +106,10 @@ the sim and the screen/speakers, so placement and sound rules exist once.
     Menus: `mmk_ui_pane_rect` (a pane's corners in layout space, global alpha, shown),
     `mmk_ui_set_pane` (force translate / size / scale / alpha over the animations),
     `mmk_ui_add_clone` (a copy of a part pane that follows the original's animations).
+    SMM2 in-course screens: `mmk_ui_table_message` (shared tables such as `GoalCondition`),
+    `mmk_ui_set_picture` (an import texture in a picture, e.g. a clear-condition icon),
+    `mmk_ui_set_material_color`, `mmk_ui_text_width`; `mmk_engine_play_status` (keys, pink
+    coins, style, character, checkpoint, time-out death, goal sequence).
   - `mmk_texture_decode_rgba(info, out, len)`: any cache or UI texture as RGBA8 (BCn decoded by
     `host::texture`), for GPUs without BC support (iPhones, iPads before M1; `MMK_CPU_TEXTURES=1`).
   - `mmk_last_error()` for messages; every entry point catches panics and returns an error code.
@@ -169,9 +173,14 @@ ui/layouts/<Layout>.json              BFLYT 9.0 + its BFLAN animations + texture
 ui/textures/<Layout>/<name>.mtex      every texture of the archive's timg/__Combined.bntx
 ui/fonts/<Font>.json, <Font>/sheet_n.mtex   bitmap fonts (BFFNT 4.1, BNTX sheets) and the
                                       scalable-font combinations rasterised (smm2_font)
-ui/messages/<LayoutMsg|CommonMsg>/<Layout>.json
+ui/messages/<LayoutMsg|CommonMsg|ReferenceMsg>/<Table>.json   (ReferenceMsg: GoalCondition,
+                                      PartsIconName, … shared tables)
+ui/textures/MissionIcon/<style>_Lyt_M_<name>.mtex   clear-condition icons of the five styles
+                                      (`Model/<style>_Lyt_Mission_RGBA8`, BFRES textures)
 courses/title_course_data_<n>.bcd
 ```
+Switch bitmap-font sheets are stored bottom row first (flipped at import, like the Wii U ones);
+one-channel sheets are written as luminance + alpha.
 Layout archives: `Layout/<Name>.Nin_NX_NVN.szs` (and `Layout/*.szs` in `Pack/Layout*.pack` when
 not loose). Fonts: a layout names a combination (`MessageFont.fcpx`); `formats::bfcpx` reads it
 (font files, character ranges, scale, baseline shift) and unmasks the BFTTF/BFOTF files of
@@ -213,6 +222,20 @@ the course. Choices go back to `AppModel` (library, Built-in filter, 100 Mario C
 library has a Title button. Without a demo course the scene runs in a `UIScreenView`. Captures:
 `MMK_UI_SCREEN=title|title-main|title-play`, `MMK_UI_SELECT=<n>`,
 `MMK_UI_INPUT=<tick>:<button>,…`, `MMK_TITLE_COURSE=<n>`, `MMK_TITLE=off` skips the title.
+
+### SMM2 in-course screens (app)
+`SMM2Course.swift`: `CourseScreens` (a `UIScene`) holds the HUD (`Play_PlayScene_00`, plus
+`Play_KeyIcon_00` per key held), the course card (`Play_CourseIn_00` over `Cmn_Fade_00`), pause
+(`Cmn_PauseMenu_00`), clear (`Play_CourseClear_00`), give up (`Play_CourseRetire_00`), time up
+(`Play_TimeUp_00`), game over (`Play_GameOver_00`) and the selection frame (`Cmn_Cursor_00`).
+`AppModel` attaches it to a library course's `GameSession` (`attachSMM2`) when the SMM2 UI import
+is there; the session steps it at 60 Hz, feeds it `mmk_engine_hud` / `mmk_engine_play_status` /
+`mmk_engine_clear_condition` every frame (`CourseSnapshot`), drives the phases (`.intro`,
+`.paused`, `.cleared`, `.retire`, `.gameOver`) from its menu input and the engine's death / clear
+events, and waits for a button's Decide animation before acting. The Renderer draws its layers
+in the overlay pass and leaves out the drawn HUD strip. `SMM2Condition` maps the engine's clear
+condition to the import's icon and `GoalCondition` sentence. Without the import (or with
+`MMK_UI_SMM2=off`) the session keeps the drawn HUD and the SwiftUI menus.
 
 ### 100 Mario screens (app)
 `ChallengeScreens.swift` sequences SMM1 layouts in plain Swift classes (`UIScene`: 60 Hz `step`,

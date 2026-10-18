@@ -160,6 +160,9 @@ fn uv_rect(u0: f32, v0: f32, u1: f32, v1: f32) -> [[f32; 2]; 4] {
     [[u0, v0], [u1, v0], [u0, v1], [u1, v1]]
 }
 
+/// Black and white material colours a caller forces (`LayoutPlayer::set_material_color`).
+pub type MaterialColors = (Option<[u8; 4]>, Option<[u8; 4]>);
+
 /// Values a caller forces on a pane over its animations (`LayoutPlayer::set_pane`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PaneOverride {
@@ -215,6 +218,12 @@ pub struct LayoutPlayer {
     /// textures [inf: SMM2's Course Maker / World Maker icons are tinted this way; SMM1 only
     /// uses 0].
     pane_overrides: HashMap<String, (Arc<LayoutRes>, Pane, u8)>,
+    /// First texture of a material set by the caller (`set_picture_texture`), by material index;
+    /// wins over texture-pattern animations.
+    material_textures: HashMap<usize, TexRef>,
+    /// Material colours set by the caller (`set_material_color`), by material index: black,
+    /// white (0–255 RGBA); win over animations.
+    material_colors: HashMap<usize, MaterialColors>,
 }
 
 /// A pane's values after the bound animations (`LayoutPlayer::pane_info`), in its parent's space.
@@ -320,6 +329,8 @@ impl LayoutPlayer {
             visibility: HashMap::new(),
             basic_overrides: HashMap::new(),
             pane_overrides: HashMap::new(),
+            material_textures: HashMap::new(),
+            material_colors: HashMap::new(),
         }
     }
 
@@ -538,6 +549,92 @@ impl LayoutPlayer {
         }
     }
 
+    /// Width in the pane's own units of the text a caller gave text pane `path` (`set_text`, else
+    /// the text stored in the layout), widest line; for placing things next to it.
+    pub fn text_width(&self, path: &str) -> Option<f32> {
+        let (parts, name) = Self::split(path);
+        let p = self.part_ref(&parts)?;
+        let &i = p.res.pane_index.get(name)?;
+        let PaneKind::Text(t) = &p.res.nodes[i].pane.kind else {
+            return None;
+        };
+        let font = p.res.fonts.get(t.font as usize)?.as_ref()?;
+        let s = p.texts.get(name).map(String::as_str).unwrap_or(&t.text);
+        Some(text::text_width(font, s, t.font_size, t.char_space))
+    }
+
+    /// Draw picture pane `path` (`[PartPane/…/]Pane`) with `texture` as its material's first
+    /// texture (e.g. the clear-condition icon the game puts into a placeholder picture), or give
+    /// it back its own (`None`). False if there is no such picture or it is untextured.
+    pub fn set_picture_texture(&mut self, path: &str, texture: Option<TexRef>) -> bool {
+        let (parts, name) = Self::split(path);
+        let Some(p) = self.part_mut(&parts) else {
+            return false;
+        };
+        let Some(&i) = p.res.pane_index.get(name) else {
+            return false;
+        };
+        let PaneKind::Picture(pic) = &p.res.nodes[i].pane.kind else {
+            return false;
+        };
+        let m = pic.material as usize;
+        if p.res
+            .layout
+            .materials
+            .get(m)
+            .is_none_or(|mat| mat.tex_maps.is_empty())
+        {
+            return false;
+        }
+        match texture {
+            Some(t) => p.material_textures.insert(m, t),
+            None => p.material_textures.remove(&m),
+        };
+        true
+    }
+
+    /// The colours `set_material_color` forces on pane `path`'s material (black, white).
+    pub fn material_color(&self, path: &str) -> Option<MaterialColors> {
+        let (parts, name) = Self::split(path);
+        let p = self.part_ref(&parts)?;
+        let &i = p.res.pane_index.get(name)?;
+        let m = match &p.res.nodes[i].pane.kind {
+            PaneKind::Picture(pic) => pic.material as usize,
+            PaneKind::Window(w) => w.content.material as usize,
+            _ => return None,
+        };
+        p.material_colors.get(&m).copied()
+    }
+
+    /// Force the black / white colours of picture or window pane `path`'s material over its
+    /// animations (`None` leaves that colour to them; both `None` gives the material back).
+    /// False if there is no such pane.
+    pub fn set_material_color(
+        &mut self,
+        path: &str,
+        black: Option<[u8; 4]>,
+        white: Option<[u8; 4]>,
+    ) -> bool {
+        let (parts, name) = Self::split(path);
+        let Some(p) = self.part_mut(&parts) else {
+            return false;
+        };
+        let Some(&i) = p.res.pane_index.get(name) else {
+            return false;
+        };
+        let m = match &p.res.nodes[i].pane.kind {
+            PaneKind::Picture(pic) => pic.material as usize,
+            PaneKind::Window(w) => w.content.material as usize,
+            _ => return false,
+        };
+        if black.is_none() && white.is_none() {
+            p.material_colors.remove(&m);
+        } else {
+            p.material_colors.insert(m, (black, white));
+        }
+        true
+    }
+
     /// Force a pane (`[PartPane/…/]Pane`) visible or hidden over its animations, or give it back
     /// to them (`None`). False if there is no such pane.
     pub fn set_visible(&mut self, path: &str, visible: Option<bool>) -> bool {
@@ -640,6 +737,21 @@ impl LayoutPlayer {
     fn states(&self) -> (Vec<PaneState>, Vec<MatState>) {
         let (mut panes, mut mats) = self.base_states();
         self.apply_animations(&mut panes, &mut mats);
+        for (&m, &(black, white)) in &self.material_colors {
+            if let Some(ms) = mats.get_mut(m) {
+                if let Some(c) = black {
+                    ms.black = rgba_f(c);
+                }
+                if let Some(c) = white {
+                    ms.white = rgba_f(c);
+                }
+            }
+        }
+        for (&m, &t) in &self.material_textures {
+            if let Some(slot) = mats.get_mut(m).and_then(|ms| ms.pattern.first_mut()) {
+                *slot = Some(t);
+            }
+        }
         for (&i, o) in &self.overrides {
             let st = &mut panes[i];
             if let Some(t) = o.translate {

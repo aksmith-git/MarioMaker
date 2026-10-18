@@ -103,6 +103,19 @@ typedef struct {
     uint8_t met, violated, _pad[2];
 } MmkCondition;                                                        // 20 bytes
 bool mmk_engine_clear_condition(const MmkEngine *engine, MmkCondition *out);   // false: none
+
+// What the SMM2 in-course screens show besides MmkHud (core/crates/ffi/src/play_status.rs)
+typedef struct {
+    uint32_t keys;              // keys held
+    uint32_t pink_coins, pink_total;   // collected this attempt / in the course
+    uint32_t style;             // 0 SMB1, 1 SMB3, 2 SMW, 3 NSMBU, 4 3D World
+    uint32_t character;         // 0 Mario, 1 Luigi, 2 Toad, 3 Toadette
+    int32_t time_frames;        // frames left, -1 = no timer
+    uint32_t flags;             // bit 0 checkpoint reached, bit 1 dying because time ran out,
+                                // bit 2 goal sequence running
+    uint32_t area;              // 0 main, 1 sub
+} MmkPlayStatus;                                                       // 32 bytes
+void mmk_engine_play_status(const MmkEngine *engine, MmkPlayStatus *out);
 // Background clear colour 0xRRGGBBAA (theme sky; black when the theme has no background art)
 uint32_t mmk_engine_clear_color(const MmkEngine *engine);
 // View flags: bit 0 = draw upside down (underground night)
@@ -235,6 +248,18 @@ bool mmk_ui_set_pane(MmkUiLayout *layout, const char *pane, uint32_t flags, floa
                      float w, float h, float sx, float sy, float alpha);
 // Copy part pane `part` as `name`, moved by (dx, dy); it follows the original's animations.
 bool mmk_ui_add_clone(MmkUiLayout *layout, const char *part, const char *name, float dx, float dy);
+// Message `label` of table `table` (a layout's, or a shared SMM2 one: GoalCondition,
+// PartsIconName_plural, …), value tags as U+FFFC. Length; 0 = none; cap 0 sizes it.
+size_t mmk_ui_table_message(MmkUi *ui, const char *table, const char *label, char *buf, size_t cap);
+// Draw picture `pane` with the import's texture ui/textures/<group>/<name>.mtex (name NULL:
+// its own texture again), e.g. group "MissionIcon" for the clear-condition icons.
+bool mmk_ui_set_picture(MmkUi *ui, MmkUiLayout *layout, const char *pane, const char *group,
+                        const char *name);
+// Force a picture / window pane's material colour over its animations: which 0 black, 1 white;
+// rgba (4 bytes) NULL gives it back to the animations.
+bool mmk_ui_set_material_color(MmkUiLayout *layout, const char *pane, uint32_t which, const uint8_t *rgba);
+// Width (pane units) of text pane `pane`'s widest line; -1 if there is no such text pane.
+float mmk_ui_text_width(const MmkUiLayout *layout, const char *pane);
 
 // --- meshes (core/crates/ffi/src/mesh.rs) ------------------------------------------------------
 // NSMBU / 3D World models from the asset cache (meshes/, anims/), loaded on first use and kept

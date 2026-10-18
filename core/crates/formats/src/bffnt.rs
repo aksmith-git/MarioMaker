@@ -304,14 +304,25 @@ impl Font {
             P::Bc5 => PixelKind::Bc5,
             f => return Err(bad(format!("sheet format {f:?} not supported"))),
         };
-        Ok(Image {
+        // a one-channel sheet (white + coverage in alpha) is read as luminance too: the font's
+        // black → white colours interpolate by it, so shaded glyphs (SMM2's SMB3 / SMW number
+        // fonts) keep their dark inner pixels [inf]
+        let channel_select = match tex.channel_select {
+            [1, 1, 1, c] if (2..=5).contains(&c) => [c, c, c, c],
+            s => s,
+        };
+        let mut img = Image {
             width: tex.width as u32,
             height: tex.height as u32,
             kind,
             srgb: tex.variant == crate::bntx::Variant::Srgb,
-            channel_select: tex.channel_select,
+            channel_select,
             data,
-        })
+        };
+        // like the Wii U sheets, stored bottom row first (SMM2's number fonts come out upside
+        // down and in reverse row order otherwise)
+        img.flip_vertical();
+        Ok(img)
     }
 
     /// Untile and decode sheet `i`. Glyph coverage ends up in alpha (RGB = 1).
@@ -361,7 +372,7 @@ mod tests {
     /// '0' (index 0) and 'é' (index 1, a code above 0xFF) through a v4 scan CMAP.
     fn sample_font_nx() -> Vec<u8> {
         use crate::fixtures::{W, sample_bntx};
-        let px: Vec<u8> = (0..16 * 8 * 4).map(|i| (i % 7) as u8).collect();
+        let px: Vec<u8> = (0..16 * 8 * 4).map(|i| (i % 251) as u8).collect();
         let sheet = sample_bntx("Font", 0x0B01, 16, 8, 4, [1, 1, 1, 2], &[px]);
         let mut w = W::le();
         w.bytes(b"FFNT")
@@ -434,9 +445,9 @@ mod tests {
             (img.width, img.height, img.kind),
             (16, 8, crate::bflim::PixelKind::Rgba8)
         );
-        assert_eq!(img.channel_select, [1, 1, 1, 2]);
-        // top row first: pixel (1, 0) is bytes 4..8 of the linear source
-        assert_eq!(&img.data[4..8], &[4, 5, 6, 0]);
+        assert_eq!(img.channel_select, [2, 2, 2, 2]);
+        // stored bottom row first: output pixel (1, 0) is source pixel (1, 7), bytes 452..456
+        assert_eq!(&img.data[4..8], &[201, 202, 203, 204]);
     }
 
     #[test]

@@ -11,6 +11,8 @@ final class GameSession: ObservableObject, Identifiable {
         case playing, paused, cleared, gameOver
         /// 100 Mario with the SMM1 layouts: the intro card after a death, the skip's Pass animation.
         case card, skipping
+        /// SMM2 layouts: the course card (start, after a death), "You gave up..." after Exit Course.
+        case intro, retire
     }
 
     enum PauseItem: String, CaseIterable {
@@ -75,6 +77,13 @@ final class GameSession: ObservableObject, Identifiable {
     private var sceneHeld: MenuInput = []
     /// Debug: pause automatically after this many ticks (screenshots of the pause menu).
     var autoPauseTick: UInt64?
+    /// SMM2 layouts over a library course (HUD, course card, pause, clear, give up, time up, game
+    /// over); nil: the drawn HUD strip and the SwiftUI menus. Drawn by the Renderer.
+    private(set) var smm2: CourseScreens?
+    private var smm2Accumulator = 0.0
+    /// An SMM2 button's Decide animation runs, then this happens (at the screens' tick).
+    private var smm2Pending: (at: Int, action: () -> Void)?
+    private var timeUpShown = false
 
     private weak var saves: SaveStore?
     private static let tick = 1.0 / 60.0
@@ -140,6 +149,110 @@ final class GameSession: ObservableObject, Identifiable {
         return h
     }
 
+    /// Use the SMM2 in-course layouts; `intro` starts with the course card.
+    func attachSMM2(_ screens: CourseScreens, info: CourseCardInfo, intro: Bool) {
+        smm2 = screens
+        screens.info = info
+        screens.update(smm2Snapshot())
+        if intro {
+            screens.showIntro(lives: Int(hud.lives))
+            setPhase(.intro)
+        } else {
+            screens.startPlaying()
+        }
+    }
+
+    private func smm2Snapshot() -> CourseSnapshot {
+        var s = CourseSnapshot()
+        s.hud = hud
+        mmk_engine_play_status(engine, &s.status)
+        var c = MmkCondition()
+        if mmk_engine_clear_condition(engine, &c) { s.condition = SMM2Condition(c) }
+        return s
+    }
+
+    /// One 60 Hz tick of the SMM2 screens: animations, the card's end, pending button actions.
+    private func smm2Tick(_ s: CourseScreens, pressed: MenuInput) {
+        if let f = DebugCapture.freezeTicks, s.mode != .play, s.sinceMode >= f { return }
+        s.step(UIInput())
+        if let p = smm2Pending, s.tick >= p.at {
+            smm2Pending = nil
+            p.action()
+            return
+        }
+        guard smm2Pending == nil else { return }
+        switch phase {
+        case .intro:
+            // the card runs its length; confirm skips it once it has been up half a second
+            if s.sinceMode >= s.introLength || (s.sinceMode > 30 && pressed.contains(.confirm)) {
+                s.endIntro()
+                lastTime = CACurrentMediaTime()
+                accumulator = 0
+                setPhase(.playing)
+                heldStart = true
+            }
+        case .gameOver:
+            if s.sinceMode >= s.gameOverLength || (s.sinceMode > 60 && !pressed.intersection([.confirm, .back]).isEmpty) {
+                exit()
+            }
+        default:
+            break
+        }
+    }
+
+    /// Menu input on the SMM2 pause / clear / give-up screens.
+    private func smm2Menu(_ s: CourseScreens, pressed: MenuInput) {
+        guard smm2Pending == nil else { return }
+        switch phase {
+        case .paused:
+            let n = CourseScreens.pauseParts.count
+            if pressed.contains(.up) { s.pauseSelect((s.pauseSelection + n - 1) % n) }
+            if pressed.contains(.down) { s.pauseSelect((s.pauseSelection + 1) % n) }
+            if pressed.contains(.back) {
+                resume()
+            } else if pressed.contains(.confirm) {
+                let item: PauseItem = [.resume, .restart, .exit][s.pauseSelection]
+                let wait = s.pauseDecide()
+                smm2Pending = (s.tick + max(1, wait), { [weak self] in self?.choose(item) })
+            }
+        case .cleared:
+            guard s.clearReady else { break }
+            if pressed.contains(.left) { s.clearSelect(0) }
+            if pressed.contains(.right) { s.clearSelect(1) }
+            if pressed.contains(.confirm) {
+                let again = s.clearSelection == 0
+                let wait = s.clearDecide()
+                smm2Pending = (s.tick + max(1, wait), { [weak self] in
+                    if again { self?.restart() } else { self?.exit() }
+                })
+            }
+        case .retire:
+            guard s.retireReady else { break }
+            if pressed.contains(.left) { s.retireSelect(0) }
+            if pressed.contains(.right) { s.retireSelect(1) }
+            if pressed.contains(.back) {
+                keepPlaying()
+            } else if pressed.contains(.confirm) {
+                let leave = s.retireSelection == 0
+                let wait = s.retireDecide()
+                smm2Pending = (s.tick + max(1, wait), { [weak self] in
+                    if leave { self?.exit() } else { self?.keepPlaying() }
+                })
+            }
+        default:
+            break
+        }
+    }
+
+    /// "Keep playing" on the give-up screen: back into the course.
+    private func keepPlaying() {
+        smm2?.hideRetire()
+        lastTime = CACurrentMediaTime()
+        accumulator = 0
+        setPhase(.playing)
+        heldStart = true
+    }
+
     // MARK: per frame
 
     /// Advance to `now`: fixed-step the engine while playing, else drive the menus.
@@ -161,6 +274,21 @@ final class GameSession: ObservableObject, Identifiable {
                 uiAccumulator -= Self.tick
                 overlayTick(o)
             }
+        }
+        if let s = smm2 {
+            if let freeze = DebugCapture.freezeTicks, s.mode != .play {
+                while s.sinceMode < freeze { smm2Tick(s, pressed: []) }
+            } else {
+                smm2Accumulator = min(smm2Accumulator + dt, 0.25)
+                var first = true
+                while smm2Accumulator >= Self.tick {
+                    smm2Accumulator -= Self.tick
+                    smm2Tick(s, pressed: first ? pressed : [])
+                    first = false
+                }
+            }
+            s.update(smm2Snapshot())
+            smm2Menu(s, pressed: pressed)
         }
         if let (scene, _) = sceneOverlay {
             if let freeze = DebugCapture.freezeTicks {
@@ -189,6 +317,8 @@ final class GameSession: ObservableObject, Identifiable {
                 observeTick()
                 if let t = autoPauseTick, engineTick >= t { autoPauseTick = nil; pause() }
             }
+        case _ where smm2 != nil:
+            break    // driven by smm2Tick / smm2Menu
         case .paused:
             let items = pauseItems
             if pressed.contains(.up) { pauseSelection = (pauseSelection + items.count - 1) % items.count }
@@ -207,8 +337,8 @@ final class GameSession: ObservableObject, Identifiable {
             }
         case .gameOver where overlay != nil && run != nil:
             exit()   // the run shows Cmn_GameOver_00 as its own screen
-        case .card, .skipping:
-            break    // driven by overlayTick
+        case .card, .skipping, .intro, .retire:
+            break    // driven by overlayTick / smm2Tick
         case .cleared, .gameOver:
             // a short beat so a held jump doesn't skip the screen
             if phaseFrames > 30 && !pressed.intersection([.confirm, .back]).isEmpty { exit() }
@@ -232,6 +362,37 @@ final class GameSession: ObservableObject, Identifiable {
                 return
             }
             wasDying = dying
+            return
+        }
+        if let s = smm2 {
+            var st = MmkPlayStatus()
+            mmk_engine_play_status(engine, &st)
+            if dying && st.flags & 2 != 0 && !timeUpShown {
+                timeUpShown = true
+                s.showTimeUp()
+            }
+            if wasDying && !dying {
+                // the engine restarted the course after the death sequence
+                timeUpShown = false
+                wasDying = dying
+                if h.lives == 0 {
+                    s.showGameOver()
+                    setPhase(.gameOver)
+                } else {
+                    newAttempt()
+                    s.showIntro(lives: Int(h.lives))
+                    setPhase(.intro)
+                }
+                return
+            }
+            wasDying = dying
+            if h.flags & 1 != 0 {
+                let ticks = goalTicks ?? attemptTicks
+                clearTicks = ticks
+                if let courseKey { newBest = saves?.addClear(courseKey, ticks: ticks) ?? false }
+                setPhase(.cleared)
+                s.showClear(ticks: ticks)
+            }
             return
         }
         if wasDying && !dying, let run {
@@ -324,6 +485,30 @@ final class GameSession: ObservableObject, Identifiable {
 
     func debugCard() { showRetryCard() }
 
+    /// Debug captures of the SMM2 screens without playing there.
+    func debugSMM2(_ screen: String) {
+        guard let s = smm2 else { return }
+        switch screen {
+        case "course-clear":
+            clearTicks = 2345
+            setPhase(.cleared)
+            s.showClear(ticks: 2345)
+        case "course-gameover":
+            s.showGameOver()
+            setPhase(.gameOver)
+        case "course-timeup":
+            s.showTimeUp()
+        case "course-retire":
+            pause()
+            choose(.exit)
+        case "course-death":
+            s.showIntro(lives: max(0, Int(hud.lives) - 1))
+            setPhase(.intro)
+        default:
+            break
+        }
+    }
+
     private func newAttempt() {
         attemptTicks = 0
         goalTicks = nil
@@ -342,6 +527,7 @@ final class GameSession: ObservableObject, Identifiable {
     func pause() {
         guard phase == .playing else { return }
         pauseSelection = 0
+        smm2?.showPause()
         if let o = overlay, let run {
             if o.mode == .skip { o.skipCancel() }
             o.showPause(modeLine: run.pauseLine, course: run.course?.name ?? title,
@@ -353,6 +539,7 @@ final class GameSession: ObservableObject, Identifiable {
     func resume() {
         guard phase == .paused else { return }
         overlay?.hidePause()
+        smm2?.hidePause()
         lastTime = CACurrentMediaTime()
         accumulator = 0
         setPhase(.playing)
@@ -370,12 +557,20 @@ final class GameSession: ObservableObject, Identifiable {
         run?.applyCounters(to: engine)
         livesGained = 0
         wasDying = false
+        timeUpShown = false
         newAttempt()
         lastTime = CACurrentMediaTime()
         accumulator = 0
         setPhase(.playing)
         heldStart = true
         showRetryCard()
+        if let s = smm2 {
+            // Start Over: the course card again
+            s.clearAll()
+            s.update(smm2Snapshot())
+            s.showIntro(lives: Int(hud.lives))
+            setPhase(.intro)
+        }
     }
 
     func exit() { onExit?() }
@@ -384,7 +579,15 @@ final class GameSession: ObservableObject, Identifiable {
         switch item {
         case .resume: resume()
         case .restart: restart()
-        case .exit: exit()
+        case .exit:
+            if let s = smm2 {
+                // Exit Course: "You gave up..." with Exit / Keep playing first
+                s.hidePause()
+                s.showRetire()
+                setPhase(.retire)
+            } else {
+                exit()
+            }
         case .skip: run?.skipped(); exit()
         case .saveQuit: run?.saveAndQuit(); exit()
         }
@@ -400,8 +603,8 @@ struct GameView: View {
         ZStack {
             MetalView(session: session)
             switch session.phase {
-            case .playing, .card, .skipping: EmptyView()
-            case _ where session.overlay != nil: EmptyView()   // SMM1 layouts, drawn by the Renderer
+            case .playing, .card, .skipping, .intro, .retire: EmptyView()
+            case _ where session.overlay != nil || session.smm2 != nil: EmptyView()   // layouts, drawn by the Renderer
             case .paused: PauseMenu(session: session)
             case .cleared: ResultCard(title: "Course clear!", detail: clearDetail, action: session.run == nil ? "Back to library" : "Next", session: session)
             case .gameOver: ResultCard(title: "Game over", detail: "Out of lives.", action: session.run == nil ? "Back to library" : "Continue", session: session)

@@ -10,7 +10,10 @@
 //!                                       bitmap fonts (Font/BmpFont_<region>.szs, BFFNT v4) and
 //!                                       the scalable-font combinations (Font/Fcpx.szs +
 //!                                       Font/ScalableFont.szs), rasterised (`super::smm2_font`)
-//! ui/messages/<LayoutMsg|CommonMsg>/<File>.json   MSBT tables of the chosen language
+//! ui/messages/<LayoutMsg|CommonMsg|ReferenceMsg>/<File>.json   MSBT tables of the chosen
+//!                                       language (ReferenceMsg: clear conditions, part names …)
+//! ui/textures/MissionIcon/<name>.mtex   the clear-condition icons of every game style
+//!                                       (`Model/<style>_Lyt_Mission_RGBA8`, BFRES textures)
 //! courses/title_course_data_<n>.bcd     the title screen's demo courses (as in the RomFS)
 //! ```
 //! Layout archives: `Layout/*.szs` (zstd/Yaz0 → SARC → `<Name>.arc` SARC with `blyt/`,
@@ -34,7 +37,7 @@ use serde_json::{Value, json};
 use crate::smm1::{font_to_json, to_mtex};
 use crate::{ImportError, Progress, Result, read, write};
 
-pub const SMM2_UI_IMPORTER_VERSION: u32 = 1;
+pub const SMM2_UI_IMPORTER_VERSION: u32 = 2;
 
 #[derive(Clone, Debug)]
 pub struct Smm2UiConfig {
@@ -168,7 +171,8 @@ fn bntx_to_mtex(t: &bntx::Texture) -> Option<Mtex> {
     })
 }
 
-/// Messages of `archive` (`LayoutMsg` / `CommonMsg`) in `language`: member path → table.
+/// Messages of `archive` (`LayoutMsg` / `CommonMsg` / `ReferenceMsg`) in `language`: member
+/// path → table.
 fn messages(romfs: &Path, archive_name: &str, language: &str) -> Result<Vec<(String, Msbt)>> {
     let path = romfs.join(format!("Message/{archive_name}_{language}.szs"));
     let sarc = Sarc::parse(archive::unwrap(read(&path)?).map_err(fmt_err(&path))?)
@@ -230,6 +234,41 @@ fn region(language: &str) -> &'static str {
         Some("TW") => "TW",
         _ => "US",
     }
+}
+
+/// Texture group (`ui/textures/<group>/`) of the clear-condition icons.
+pub const MISSION_ICONS: &str = "MissionIcon";
+
+/// The clear-condition icon models `<style>_Lyt_Mission_RGBA8` of the five styles: loose in
+/// `Model/`, else members of `Pack/*.pack` (v3.0.3 keeps them in `StaticModel.pack`).
+fn mission_icon_models(romfs: &Path) -> Vec<(String, Vec<u8>)> {
+    let wanted: Vec<String> = ["M1", "M3", "MW", "WU", "3W"]
+        .iter()
+        .map(|s| format!("{s}_Lyt_Mission_RGBA8.Nin_NX_NVN.zs"))
+        .collect();
+    let mut out: Vec<(String, Vec<u8>)> = Vec::new();
+    for w in &wanted {
+        if let Ok(d) = fs::read(romfs.join("Model").join(w)) {
+            out.push((format!("Model/{w}"), d));
+        }
+    }
+    for path in sorted_files(&romfs.join("Pack"), ".pack") {
+        if out.len() == wanted.len() {
+            break;
+        }
+        let Ok(data) = fs::read(&path) else { continue };
+        let Ok(sarc) = archive::unwrap(data).and_then(Sarc::parse) else {
+            continue;
+        };
+        for (member, d) in sarc.files() {
+            let file = member.rsplit('/').next().unwrap_or(member);
+            if wanted.iter().any(|w| w == file) && !out.iter().any(|(n, _)| n.ends_with(file)) {
+                let pack = path.file_name().unwrap().to_string_lossy();
+                out.push((format!("Pack/{pack}/{member}"), d.to_vec()));
+            }
+        }
+    }
+    out
 }
 
 pub fn run_smm2_ui(cfg: &Smm2UiConfig, progress: Progress) -> Result<Smm2UiReport> {
@@ -356,7 +395,7 @@ pub fn run_smm2_ui(cfg: &Smm2UiConfig, progress: Progress) -> Result<Smm2UiRepor
     // --- messages (read first: the baked fonts cover their characters)
     let mut tables = Vec::new();
     let mut message_files = Vec::new();
-    for archive_name in ["LayoutMsg", "CommonMsg"] {
+    for archive_name in ["LayoutMsg", "CommonMsg", "ReferenceMsg"] {
         match messages(&cfg.romfs, archive_name, &cfg.language) {
             Ok(list) => {
                 for (i, (stem, m)) in list.iter().enumerate() {
@@ -498,13 +537,54 @@ pub fn run_smm2_ui(cfg: &Smm2UiConfig, progress: Progress) -> Result<Smm2UiRepor
         }
     }
 
+    // --- clear-condition icons (the HUD and pause menu put one into Cmn_MissionIcon's picture)
+    let mut mission_icons = 0usize;
+    for (name, data) in mission_icon_models(&cfg.romfs) {
+        progress("condition icons", mission_icons, 0);
+        let ctx = PathBuf::from(&name);
+        let blobs: Vec<Vec<u8>> = match archive::unwrap(data) {
+            Ok(d) => match Sarc::parse(d.clone()) {
+                Ok(s) => s.files().map(|(_, b)| b.to_vec()).collect(),
+                Err(_) => vec![d],
+            },
+            Err(e) => {
+                report.skipped.push(format!("{}: {e}", ctx.display()));
+                continue;
+            }
+        };
+        for blob in blobs {
+            let Some(b) = bntx::find_embedded(&blob) else {
+                continue;
+            };
+            match bntx::parse(b) {
+                Ok(texs) => {
+                    for t in &texs {
+                        let Some(m) = bntx_to_mtex(t) else {
+                            report
+                                .skipped
+                                .push(format!("{name}/{}: format {:?}", t.name, t.format));
+                            continue;
+                        };
+                        write(
+                            &ui.join(format!("textures/{MISSION_ICONS}/{}.mtex", t.name)),
+                            &m.to_bytes(),
+                        )?;
+                        mission_icons += 1;
+                        report.textures += 1;
+                    }
+                }
+                Err(e) => report.skipped.push(format!("{name}: {e}")),
+            }
+        }
+    }
+
     // --- manifest
     let manifest = json!({
         "importer_version": SMM2_UI_IMPORTER_VERSION,
         "game": "SMM2",
         "build": build,
         "language": cfg.language,
-        "stages": ["identify", "layouts", "messages", "fonts", "scalable fonts"],
+        "stages": ["identify", "layouts", "messages", "fonts", "scalable fonts", "condition icons"],
         "layouts": layout_names,
         "animations": report.animations,
         "textures": report.textures,
@@ -513,6 +593,7 @@ pub fn run_smm2_ui(cfg: &Smm2UiConfig, progress: Progress) -> Result<Smm2UiRepor
         "baked_fonts": baked_info,
         "messages": message_files,
         "title_courses": title_courses,
+        "mission_icons": mission_icons,
         "missing_part_layouts": missing_parts,
         "skipped": report.skipped,
     });
