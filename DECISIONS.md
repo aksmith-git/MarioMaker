@@ -26,6 +26,43 @@ corpus predates 2.0, every part has an editor-built test course and sim tests.
   earlier [ext] 600.
 **What would change it:** frame-stepping v3.0.3 in Ryujinx (see each spec's "How to verify").
 
+## 2026-10-18 — The SMM2 front end lives in Rust (`mmk-front`); hosts only draw, play and input
+**Decision:** the SMM2 presentation — opening, scene fades, title and Play menu, Course World,
+100 Mario in SMM2's Endless screens or SMM1's, the in-course HUD / card / pause / settings /
+clear / give up / time up / game over screens, the course-play rules around them (when the
+engine steps, deaths, retries, the run's results) and the UI sound resolution — is the crate
+`core/crates/front` (`mmk-front`), a port of the Swift app's screens, platform-neutral:
+- **In:** per 60 Hz tick a `FrontInput` (menu buttons held, pause, skip, an optional click in
+  layout units) and a `Host` (the engine: load / step / restart a course and read a
+  `CourseStatus`; the library and the server listing; small key → string storage; a random
+  number). The front end never touches files, sockets, the sim or a GPU.
+- **Out:** `Front::frame()` — layout draw lists in order (`DrawItem::Layout`: quads, layout
+  size, which import's textures) with `DrawItem::Course` where the engine's picture goes (the
+  whole 16:9 view), plus a message (the Swift app's toasts); `Front::take_sounds()` — `SoundCue`s
+  (WAV names of the SMM2 UI import's `ui/sound/`, volume, delay in frames).
+- Scene changes are deferred `Go` values run when the fade has covered the screen, so screens
+  stay plain state machines without callbacks; captures make fades instant, as the Swift app's
+  frozen captures do (`MMK_FADES=1` keeps them).
+- `mmk-play` uses it by default when no course is given and the SMM2 UI import is found
+  (`--ui-cache`, `$MMK_UI_CACHE`, `~/smm-work/cache/smm2-ui-3.0.3`); its host is
+  `shell/src/front_host.rs` (library = a course folder + the asset cache's built-in courses,
+  scanned on a thread; server through `mmk-online` on a thread; saves and settings as files in
+  `~/.mmk-play`), its drawing `front_app.rs` (one `UiLayer` per import, the course with the game
+  renderer), its sound `ui_sound.rs` (UI clips mixed into the game's output stream).
+- **Verification:** `mmk-play --front-screen NAME --ticks N --screenshot out.png` renders the
+  same screens as the Swift app's `MMK_UI_SCREENSHOT` / `MMK_UI_SCREEN` / `MMK_UI_TICKS`; the
+  deterministic ones match it to within rounding (max channel difference ≤ 5).
+- Departures of the portable front end: Story Mode and Coursebot open the course list (over the
+  built-in Story Mode courses / the library) instead of the Swift app's SwiftUI library; dates in
+  the course list use the C library's local time zone (UTC on Windows for now); messages are drawn
+  with the shell's bitmap font.
+**Why:** one implementation for every platform (the owner's "same screens everywhere"), testable
+headless, and the Swift app can switch to it through the FFI (next step: a `mmk_front_*` C API —
+create with the UI import(s) and a host vtable of C callbacks, `tick(input)`, `frame()` returning
+draw items whose quads the existing `UILayer` already draws, `sounds()` — replacing the Swift
+screen classes). **Would change:** a web front end needs the UI cache read asynchronously (OPFS)
+before `Ui` can open layouts on demand; until then the web build keeps its plain HUD.
+
 ## 2026-10-18 — Name: SMCraft
 **Decision:** the project, app and window titles are **SMCraft** (owner's choice). App bundle id
 `dev.smcraft.app`; the macOS data folder becomes `Application Support/SMCraft` (an existing `MMK`

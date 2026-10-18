@@ -32,6 +32,8 @@ pub struct Game {
     /// course server as a verified time.
     pub on_clear: Option<Box<dyn FnMut(mmk_modes::replay::Replay)>>,
     ghost_sprites: Vec<DrawSprite>,
+    /// No placeholder HUD strip (the front end draws the SMM2 HUD layout over the course).
+    pub no_hud: bool,
 }
 
 impl Game {
@@ -72,7 +74,17 @@ impl Game {
             hud: HudText::default(),
             on_clear: None,
             ghost_sprites: Vec::new(),
+            no_hud: false,
         }
+    }
+
+    /// Play `course` (None: the demo strip) from its start, keeping the sound output.
+    pub fn set_course(&mut self, course: Option<Course>) {
+        let audio = self.session.audio.clone();
+        self.session = Session::new(course);
+        self.session.set_audio(audio);
+        self.resolver.reset();
+        self.planner.reset();
     }
 
     /// What to draw now.
@@ -159,7 +171,14 @@ impl Game {
             let d = self.resolver.resolve_one(&style, &sp, &self.cache);
             self.ghost_sprites.push(d);
         }
-        self.hud = HudText::of(w, self.session.phase);
+        self.hud = if self.no_hud {
+            HudText {
+                strip: String::new(),
+                banner: None,
+            }
+        } else {
+            HudText::of(w, self.session.phase)
+        };
         Scene {
             sprites: &self.sprites,
             camera: (w.camera_x, w.camera_y),

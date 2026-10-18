@@ -19,6 +19,9 @@ core/                       Cargo workspace (Rust, toolchain pinned in rust-tool
                             `smm1` stage: Wii U content folders → SMM1 UI cache; `smm2_ui` +
                             `smm2_font`: SMM2 RomFS → SMM2 UI cache (scalable fonts rasterised)
     ui/                     layout player: SMM1 and SMM2 layouts + animations → draw list of quads
+    front/                  SMM2 front end on the layout player (opening, fades, title, Course World,
+                            100 Mario, in-course screens, UI sounds), platform-neutral: input +
+                            Host trait in, draw items + sound cues out (`mmk-play` uses it)
     assets/                 runtime asset-cache format: reader, writer, placeholder-pack builder
     sim/                    deterministic simulation (world, player, actors, camera, rules)
     audio/                  mixer: voices, loops, effects → interleaved f32 PCM

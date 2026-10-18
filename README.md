@@ -152,8 +152,18 @@ A second front end written in Rust (winit + wgpu + gilrs + cpal) that plays a co
 same core; see [docs/architecture.md](docs/architecture.md) §5b. Linux needs `libasound2-dev` and
 `libudev-dev` to build.
 
+Without a course, and with the SMM2 UI import (`mmk import-smm2-ui`; `--ui-cache`,
+`$MMK_UI_CACHE` or `~/smm-work/cache/smm2-ui-3.0.3`), it starts like the Swift app: the opening,
+the title, Course World over a course folder (`--library`, default `~/smm-work/courses`) and a
+course server (`--server`), 100 Mario (`--hundred smm1` for SMM1's screens), with the SMM2
+in-course screens (`mmk-front`). Menus: arrows/WASD, Return/Z/Space confirm, Esc/P back, − or
+Tab held skips a 100 Mario course. `--no-opening` starts on the title, `--no-menus` plays the
+demo strip.
+
 ```sh
 cd core
+cargo run --release -p mmk-shell                            # SMM2 front end (menus)
+cargo run --release -p mmk-shell -- --front-screen courseworld --ticks 60 --screenshot cw.png  # headless capture
 cargo run --release -p mmk-shell -- path/to/course.zlib     # window; assets: $MMK_ASSETS or ~/smm-work/cache/smm2-3.0.3
 cargo run --release -p mmk-shell -- --assets placeholder    # demo strip with placeholder art
 cargo run --release -p mmk-shell -- course.zlib --screenshot out.png --ticks 150   # headless smoke test
