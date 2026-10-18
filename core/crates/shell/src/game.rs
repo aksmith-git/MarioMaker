@@ -28,6 +28,10 @@ pub struct Game {
     planner: mmk_host::mesh::MeshPlanner,
     mesh_draws: Vec<mmk_host::mesh::MmkMeshDraw>,
     mesh_frame: crate::mesh::MeshFrame,
+    /// Called with the replay of each clear (`Session::record_replays`), e.g. to send it to the
+    /// course server as a verified time.
+    pub on_clear: Option<Box<dyn FnMut(mmk_modes::replay::Replay)>>,
+    ghost_sprites: Vec<DrawSprite>,
 }
 
 impl Game {
@@ -66,6 +70,8 @@ impl Game {
             resolver: SpriteResolver::default(),
             sprites: Vec::new(),
             hud: HudText::default(),
+            on_clear: None,
+            ghost_sprites: Vec::new(),
         }
     }
 
@@ -127,6 +133,7 @@ impl Game {
                 clear: mmk_host::clear_color(w, &self.cache),
                 hud: &self.hud,
                 meshes: &self.mesh_frame,
+                ghost: &[],
             };
         }
         let w = &self.session.world;
@@ -144,6 +151,14 @@ impl Game {
             }
             None => self.mesh_frame.clear(),
         }
+        self.ghost_sprites.clear();
+        if let Some(g) = &self.session.ghost
+            && let Some(sp) = g.world.player_sprite()
+        {
+            let style = g.world.level.style.clone();
+            let d = self.resolver.resolve_one(&style, &sp, &self.cache);
+            self.ghost_sprites.push(d);
+        }
         self.hud = HudText::of(w, self.session.phase);
         Scene {
             sprites: &self.sprites,
@@ -152,6 +167,7 @@ impl Game {
             clear: mmk_host::clear_color(w, &self.cache),
             hud: &self.hud,
             meshes: &self.mesh_frame,
+            ghost: &self.ghost_sprites,
         }
     }
 }

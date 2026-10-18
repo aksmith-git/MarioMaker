@@ -20,6 +20,7 @@ pub mod costumes;
 pub mod course_info;
 pub mod import;
 pub mod mesh;
+pub mod online;
 pub mod options;
 pub mod play_status;
 pub mod ui;
@@ -425,6 +426,19 @@ pub unsafe extern "C" fn mmk_engine_step(engine: *mut MmkEngine, input: *const M
         e.world.step(Input { buttons });
         if let Some(d) = &mut e.director {
             d.after_step(&e.world);
+        }
+    })
+}
+
+/// Player 1's character (the pause menu's Settings): 0 Mario, 1 Luigi, 2 Toad, 3 Toadette.
+///
+/// # Safety
+/// `engine` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmk_engine_set_character(engine: *mut MmkEngine, character: u32) {
+    guard((), || {
+        if let Some(e) = unsafe { engine.as_mut() } {
+            e.world.main_char = (character as usize).min(3);
         }
     })
 }

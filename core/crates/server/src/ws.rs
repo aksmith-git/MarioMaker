@@ -247,6 +247,7 @@ mod tests {
             first_frame: 5,
             inputs: vec![1, 2, 3],
             acks: vec![],
+            check: None,
         };
         a.write_all(&client_frame(&data_bytes(&p))).unwrap();
         assert_eq!(parse_data(&server_frame(&mut b)), Some(p));

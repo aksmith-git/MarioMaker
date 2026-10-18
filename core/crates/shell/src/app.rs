@@ -303,6 +303,11 @@ impl App {
             }
         } else if !loading {
             self.game.session.frame(dt, input, actions);
+            if let Some(r) = self.game.session.take_cleared_replay()
+                && let Some(f) = &mut self.game.on_clear
+            {
+                f(r);
+            }
         }
         if let Some(gfx) = &mut self.gfx {
             if gfx.draw(&mut self.game) {

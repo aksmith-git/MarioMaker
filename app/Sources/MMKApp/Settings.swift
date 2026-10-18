@@ -23,11 +23,23 @@ enum SettingsKey {
     static let usePlaceholder = "assets.placeholder"
     /// Bool (default true, iOS): on-screen d-pad and buttons while no controller is connected.
     static let touchControls = "input.touch"
+    /// Bool (default true): play SMM2's opening (`Boot_BootScene_00`) at launch.
+    static let bootOpening = "boot.opening"
+    /// String (default "smm2"): the 100 Mario Challenge's screens: "smm2" (SMM2's Endless
+    /// Challenge menus and in-course screens) or "smm1" (SMM1's own layouts).
+    static let hundredPresentation = "hundred.presentation"
+    /// String (default empty): the open-source course server Course World also lists courses
+    /// from (e.g. "http://localhost:8640"); empty = the local library only.
+    static let courseServer = "online.server"
+    /// Int 0–3 (default 0): player 1's character, Mario / Luigi / Toad / Toadette (also set from
+    /// the SMM2 pause menu's Settings).
+    static let character = "player.character"
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
             volumeMaster: 1.0, volumeMusic: 1.0, volumeSfx: 1.0,
             integerScale: true, fullscreen: false, usePlaceholder: false, touchControls: true,
+            bootOpening: true, hundredPresentation: "smm2", courseServer: "", character: 0,
         ])
     }
 }
@@ -188,6 +200,7 @@ struct SettingsView: View {
             ControllerSettings().tabItem { Label("Controller", systemImage: "gamecontroller") }
             DisplaySettings().tabItem { Label("Display", systemImage: "display") }
             AudioSettings().tabItem { Label("Audio", systemImage: "speaker.wave.2") }
+            GameSettings().tabItem { Label("Game", systemImage: "flag.checkered") }
         }
         .frame(width: 520, height: 420)
     }
@@ -201,6 +214,7 @@ struct SettingsView: View {
                 ControllerSettings().tabItem { Label("Controller", systemImage: "gamecontroller") }
                 DisplaySettings().tabItem { Label("Display", systemImage: "display") }
                 AudioSettings().tabItem { Label("Audio", systemImage: "speaker.wave.2") }
+                GameSettings().tabItem { Label("Game", systemImage: "flag.checkered") }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -383,6 +397,34 @@ private struct DisplaySettings: View {
             #else
             Toggle("On-screen controls (hidden while a controller is connected)", isOn: $touchControls)
             #endif
+        }
+        .formStyle(.grouped)
+    }
+}
+
+/// Front-end choices: the opening at launch, how 100 Mario is presented, the course server.
+private struct GameSettings: View {
+    @AppStorage(SettingsKey.bootOpening) private var opening = true
+    @AppStorage(SettingsKey.hundredPresentation) private var hundred = "smm2"
+    @AppStorage(SettingsKey.courseServer) private var server = ""
+    @AppStorage(SettingsKey.character) private var character = 0
+
+    var body: some View {
+        Form {
+            Picker("Character", selection: $character) {
+                Text("Mario").tag(0)
+                Text("Luigi").tag(1)
+                Text("Toad").tag(2)
+                Text("Toadette").tag(3)
+            }
+            Toggle("Opening at launch (SMM2 logo scene)", isOn: $opening)
+            Picker("100 Mario Challenge screens", selection: $hundred) {
+                Text("Super Mario Maker 2 (Endless Challenge style)").tag("smm2")
+                Text("Super Mario Maker (original)").tag("smm1")
+            }
+            TextField("Course server", text: $server, prompt: Text("http://localhost:8640"))
+            Text("Course World lists your library and, when set, an open-source course server (mmk server). It never talks to Nintendo's network.")
+                .font(.footnote).foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
     }

@@ -114,8 +114,13 @@ typedef struct {
     uint32_t flags;             // bit 0 checkpoint reached, bit 1 dying because time ran out,
                                 // bit 2 goal sequence running
     uint32_t area;              // 0 main, 1 sub
-} MmkPlayStatus;                                                       // 32 bytes
+    float player_x, player_y;   // player 1 in the view (px from its bottom-left; feet)
+    int32_t restart_in;         // frames until the death sequence restarts the course, -1 alive
+    uint32_t _pad;
+} MmkPlayStatus;                                                       // 48 bytes
 void mmk_engine_play_status(const MmkEngine *engine, MmkPlayStatus *out);
+// Player 1's character: 0 Mario, 1 Luigi, 2 Toad, 3 Toadette
+void mmk_engine_set_character(MmkEngine *engine, uint32_t character);
 // Background clear colour 0xRRGGBBAA (theme sky; black when the theme has no background art)
 uint32_t mmk_engine_clear_color(const MmkEngine *engine);
 // View flags: bit 0 = draw upside down (underground night)
@@ -127,6 +132,14 @@ void mmk_engine_debug_teleport(MmkEngine *engine, float x, float y);
 bool mmk_course_info(const MmkAssets *assets, const uint8_t *data, size_t len, MmkCourseInfo *out);
 // SMM2 course code "XXX-XXX-XXX" of a server data id; returns its length (cap 0 sizes it)
 size_t mmk_smm2_course_code(uint32_t data_id, char *buf, size_t cap);
+
+// The open-source course server (core/crates/ffi/src/online.rs; blocking, off the main thread).
+// JSON array of listings {code, name, maker, style, theme, plays, clears, likes, difficulty};
+// returns its length (cap 0 sizes it), 0 on error (mmk_last_error). sort: new / popular / hard.
+size_t mmk_online_search(const char *server, const char *query, const char *sort, uint32_t offset,
+                         uint32_t limit, char *buf, size_t cap);
+bool mmk_online_download(const char *server, const char *code, const char *path);
+bool mmk_online_report(const char *server, const char *code, const char *what); // play / clear / like
 
 // Blocks until done; run off the main thread. update_* may be NULL. Writes <out_root>/smm2-<build>/.
 bool mmk_import_run(const char *romfs, const char *exefs, const char *update_romfs,

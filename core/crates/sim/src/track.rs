@@ -5,13 +5,15 @@
 //! object tile (x + 1, y + 1), i.e. px (16x + 24, 16y + 24); an on-track object's reference point
 //! (its tile centre) lies exactly on the piece it links to. Each piece joins two points one tile
 //! from its centre: type 0 horizontal, 1 vertical, 2 diagonal down to the right, 3 diagonal up to
-//! the right; types 4–7 are quarter circles between the same corner points as the diagonals
-//! (radius 32 px; which way each bulges is a guess). Pieces sharing an end point are joined.
+//! the right; types 4–7 are bends between the same corner points as the diagonals: an 8-px
+//! straight lead, a quarter circle of radius 24 px (the rail follower's arc radius,
+//! 0x7100340720) [obs], and another 8-px lead (which way each bulges is a guess [inf]). Pieces sharing an end point are joined.
 //! Junctions (types 8–15) are rare and not built yet. A rider reaching a free end turns back
 //! (closed end); open ends, where the rider falls off, are not told apart yet [?].
 
 use std::collections::HashMap;
 
+use crate::fmath::DetMath;
 use crate::level::TILE;
 
 /// Normal and winged rider speeds, px/frame.
@@ -24,14 +26,22 @@ enum Seg {
         a: (f32, f32),
         b: (f32, f32),
     },
-    /// Centre, radius, start and end angle (radians).
+    /// A bend: a straight 8-px lead from `e0`, an arc about `c` of radius `r` from angle `a0` to
+    /// `a1` (radians), and a straight 8-px lead to `e1`.
     Arc {
         c: (f32, f32),
         r: f32,
         a0: f32,
         a1: f32,
+        e0: (f32, f32),
+        e1: (f32, f32),
     },
 }
+
+/// Straight lead at each end of a bend (px): the follower's arcs have radius 24 px
+/// (0x7100340720, const 0x7101c8a740) and join the tile-centre track lines half a tile in [obs].
+const BEND_LEAD: f32 = 8.0;
+const BEND_RADIUS: f32 = 24.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Piece {
@@ -46,9 +56,26 @@ impl Piece {
         let t = (s / self.len).clamp(0.0, 1.0);
         match self.seg {
             Seg::Line { a, b } => (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t),
-            Seg::Arc { c, r, a0, a1 } => {
-                let a = a0 + (a1 - a0) * t;
-                (c.0 + r * a.cos(), c.1 + r * a.sin())
+            Seg::Arc {
+                c,
+                r,
+                a0,
+                a1,
+                e0,
+                e1,
+            } => {
+                let arc = self.len - 2.0 * BEND_LEAD;
+                let at = |a: f32| (c.0 + r * a.dcos(), c.1 + r * a.dsin());
+                let s = s.clamp(0.0, self.len);
+                if s < BEND_LEAD {
+                    let (p, k) = (at(a0), s / BEND_LEAD);
+                    (e0.0 + (p.0 - e0.0) * k, e0.1 + (p.1 - e0.1) * k)
+                } else if s > BEND_LEAD + arc {
+                    let (p, k) = (at(a1), (s - BEND_LEAD - arc) / BEND_LEAD);
+                    (p.0 + (e1.0 - p.0) * k, p.1 + (e1.1 - p.1) * k)
+                } else {
+                    at(a0 + (a1 - a0) * ((s - BEND_LEAD) / arc))
+                }
             }
         }
     }
@@ -62,9 +89,11 @@ impl Piece {
                 (dx / l, dy / l)
             }
             Seg::Arc { a0, a1, .. } => {
-                let a = a0 + (a1 - a0) * (s / self.len).clamp(0.0, 1.0);
+                let arc = self.len - 2.0 * BEND_LEAD;
+                let k = ((s - BEND_LEAD) / arc).clamp(0.0, 1.0);
+                let a = a0 + (a1 - a0) * k;
                 let sign = (a1 - a0).signum();
-                (-a.sin() * sign, a.cos() * sign)
+                (-a.dsin() * sign, a.dcos() * sign)
             }
         }
     }
@@ -116,18 +145,29 @@ impl Tracks {
                         6 => ((1.0, -1.0), PI, FRAC_PI_2),      // (−1,−1) → (1,1), bulging up-left
                         _ => ((-1.0, 1.0), 3.0 * FRAC_PI_2, 2.0 * PI), // bulging down-right
                     };
+                    // the ends are the tile centres one tile out (as for the diagonals); the
+                    // 24-px arc's centre sits half a tile in from the corner tile's centre
+                    let o = at(cc.0, cc.1);
+                    let dir = |a: f32| (a.dcos(), a.dsin());
+                    let (d0, d1) = (dir(a0), dir(a1));
+                    let r_out = 2.0 * TILE;
                     Seg::Arc {
-                        c: at(cc.0, cc.1),
-                        r: 2.0 * TILE,
+                        c: (
+                            o.0 + BEND_LEAD * (d0.0 + d1.0),
+                            o.1 + BEND_LEAD * (d0.1 + d1.1),
+                        ),
+                        r: BEND_RADIUS,
                         a0,
                         a1,
+                        e0: (o.0 + r_out * d0.0, o.1 + r_out * d0.1),
+                        e1: (o.0 + r_out * d1.0, o.1 + r_out * d1.1),
                     }
                 }
                 _ => continue,
             };
             let len = match seg {
                 Seg::Line { a, b } => ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt(),
-                Seg::Arc { r, a0, a1, .. } => r * (a1 - a0).abs(),
+                Seg::Arc { r, a0, a1, .. } => r * (a1 - a0).abs() + 2.0 * BEND_LEAD,
             };
             let mut p = Piece {
                 seg,
@@ -272,6 +312,32 @@ impl Rail {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bends_are_a_24_px_arc_between_8_px_leads() {
+        let t = Tracks::new([(0, 0, 4)]);
+        let p = t.pieces[0];
+        assert!((p.len - (16.0 + 12.0 * std::f32::consts::PI)).abs() < 1e-3);
+        // the ends are the tile centres one tile from the piece centre (24, 24)
+        let (a, b) = (p.point(0.0), p.point(p.len));
+        assert!(
+            (a.0 - 8.0).abs() < 1e-3 && (a.1 - 40.0).abs() < 1e-3,
+            "{a:?}"
+        );
+        assert!(
+            (b.0 - 40.0).abs() < 1e-3 && (b.1 - 8.0).abs() < 1e-3,
+            "{b:?}"
+        );
+        // the lead runs straight, then the arc is 24 px from its centre (16, 16)
+        let l = p.point(4.0);
+        assert!(
+            (l.0 - 12.0).abs() < 1e-3 && (l.1 - 40.0).abs() < 1e-3,
+            "{l:?}"
+        );
+        let m = p.point(p.len / 2.0);
+        let d = ((m.0 - 16.0).powi(2) + (m.1 - 16.0).powi(2)).sqrt();
+        assert!((d - 24.0).abs() < 1e-3, "{d}");
+    }
 
     #[test]
     fn pieces_join_and_riders_follow_corners() {

@@ -1,7 +1,7 @@
 //! SMM1 extras (Phase 11, `crate::options::Options`): rules from the original Super Mario Maker
 //! that hosts can switch on over SMM2 play. Behaviour specs: research/specs/smm1-extras.md.
 
-use super::{Event, KICK_SCORE, World};
+use super::{Event, World};
 use crate::actors::{Kind, Mode};
 use crate::level::{Cell, TILE};
 use crate::player::STOMP_BOUNCE;
@@ -143,7 +143,10 @@ impl World {
             self.player.on_ground = false;
             self.player.slope = None;
         }
-        self.add_score(KICK_SCORE, ax, ay + 24.0);
+        // scored on the stomp chain, as the SMM2 kick (0x7100644610)
+        let n = self.player.stomp_chain;
+        self.player.stomp_chain += 1;
+        self.add_score(Self::chain_score(n), ax, ay + 24.0);
         self.events.push(Event::Kick);
     }
 

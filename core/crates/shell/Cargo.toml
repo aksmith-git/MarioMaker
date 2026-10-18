@@ -17,6 +17,8 @@ mmk-editor = { path = "../editor" }
 mmk-formats = { path = "../formats" }
 mmk-host = { path = "../host" }
 mmk-sim = { path = "../sim" }
+mmk-modes = { path = "../modes" }
+mmk-ui = { path = "../ui" }
 bytemuck = "1.25.2"
 # the wasm-bindgen feature is cpal's WebAudio backend (it only applies to wasm32)
 cpal = { version = "0.18.2", features = ["wasm-bindgen"] }

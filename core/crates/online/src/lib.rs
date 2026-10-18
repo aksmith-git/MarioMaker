@@ -24,6 +24,8 @@ pub struct Listing {
     pub maker_id: String,
     pub record_ms: u64,
     pub record_holder: String,
+    /// The record was proven by a replay the server re-simulated.
+    pub record_verified: bool,
     pub first_clear: String,
 }
 
@@ -45,6 +47,7 @@ impl Listing {
             maker_id: s("maker_id"),
             record_ms: n("record_ms"),
             record_holder: s("record_holder"),
+            record_verified: v["record_verified"].as_bool().unwrap_or(false),
             first_clear: s("first_clear"),
         })
     }
@@ -190,8 +193,18 @@ impl Client {
         Ok((a, Self::list(&v)))
     }
 
-    /// Leaderboard `kind` (maker_points, clears, first_clears, records): (rank, score, maker ID,
-    /// name), best first.
+    /// Report an Endless Challenge run (`easy`, `normal`, `expert`, `super_expert`) that cleared
+    /// `cleared` courses; the account's best on that difficulty.
+    pub fn endless(&self, difficulty: &str, cleared: u64) -> Result<u64> {
+        let v = self.post_json(
+            &format!("/api/endless/{difficulty}"),
+            &serde_json::json!({ "cleared": cleared }),
+        )?;
+        v["best"].as_u64().ok_or_else(|| format!("refused: {v}"))
+    }
+
+    /// Leaderboard `kind` (maker_points, clears, first_clears, records, endless_<difficulty>):
+    /// (rank, score, maker ID, name), best first.
     pub fn rankings(&self, kind: &str, limit: usize) -> Result<Vec<(u32, i64, String, String)>> {
         let v = self.get_json(&format!("/api/rankings/{kind}?limit={limit}"))?;
         Ok(v["rankings"]
@@ -209,6 +222,34 @@ impl Client {
                     .collect()
             })
             .unwrap_or_default())
+    }
+
+    /// Prove a clear with a replay (`mmk_modes::replay`): the server re-simulates it and records
+    /// its time (a verified record when it is the best).
+    pub fn submit_replay(&self, code: &str, replay: &[u8]) -> Result<Listing> {
+        let mut r = self
+            .auth(ureq::post(&format!(
+                "{}/api/courses/{code}/replay",
+                self.base
+            )))
+            .header("Content-Type", "application/octet-stream")
+            .send(replay)
+            .map_err(|e| e.to_string())?;
+        let s = r.body_mut().read_to_string().map_err(|e| e.to_string())?;
+        let v: Value = serde_json::from_str(&s).map_err(|e| e.to_string())?;
+        Listing::from_json(&v).ok_or_else(|| format!("refused: {v}"))
+    }
+
+    /// The verified record's replay (to race as a ghost).
+    pub fn record_replay(&self, code: &str) -> Result<Vec<u8>> {
+        let mut r = ureq::get(&format!("{}/api/courses/{code}/replay", self.base))
+            .call()
+            .map_err(|e| e.to_string())?;
+        r.body_mut()
+            .with_config()
+            .limit(1 << 20)
+            .read_to_vec()
+            .map_err(|e| e.to_string())
     }
 
     /// Remove a course (yours, or any with the admin token).
@@ -389,6 +430,9 @@ mod tests {
         assert_eq!(c.comments(&mine.code).unwrap()[0].text, "hi");
         assert_eq!(c.maker(&acc.maker_id).unwrap().1.len(), 1);
         assert_eq!(c.rankings("records", 10).unwrap()[0].2, acc.maker_id);
+        assert_eq!(me.endless("normal", 12).unwrap(), 12);
+        assert_eq!(me.endless("normal", 3).unwrap(), 12);
+        assert_eq!(c.rankings("endless_normal", 5).unwrap()[0].1, 12);
         me.delete(&mine.code).unwrap();
         assert!(c.info(&mine.code).is_err());
         let _ = std::fs::remove_dir_all(&dir);

@@ -10,16 +10,20 @@
 //! | GET | `/api/courses/<code>` | metadata |
 //! | GET | `/api/courses/<code>/data` | course data (bytes) |
 //! | POST | `/api/courses/<code>/play`, `/clear` | statistics |
+//! | GET | `/api/health` | liveness: counts and the replay engine version |
 //! | GET | `/api/pool?min=&max=&count=` | random courses by difficulty value (fail rate 0–100) |
 //! | POST | `/api/accounts` (body `{"name"}`) | new account → `{account, token}` (token shown once) |
 //! | GET | `/api/me` | the caller's account |
 //! | GET | `/api/makers/<maker id>` | a maker's profile and courses |
 //! | POST | `/api/courses/<code>/like`, `/boo` | one vote per account (replaces its earlier vote) |
 //! | POST | `/api/courses/<code>/clear` (body `{"time_ms"}`, optional) | clear; first clear / record |
+//! | POST | `/api/courses/<code>/replay` (body: replay, `mmk_modes::replay`) | clear proven by a replay: re-simulated, its time can set a verified record |
+//! | GET | `/api/courses/<code>/replay` | the verified record's replay (for ghosts) |
 //! | GET, POST | `/api/courses/<code>/comments` (POST body `{"text"}`) | comments |
 //! | DELETE | `/api/courses/<code>` | remove (the uploader, or the admin) |
 //! | POST | `/api/admin/ban/<account id>`, `/api/admin/unban/<id>` | moderation (admin token) |
-//! | GET | `/api/rankings/<maker_points\|clears\|first_clears\|records>?limit=` | leaderboards |
+//! | POST | `/api/endless/<easy\|normal\|expert\|super_expert>` (body `{"cleared"}`) | Endless Challenge run; keeps the best |
+//! | GET | `/api/rankings/<maker_points\|clears\|first_clears\|records\|endless_<difficulty>>?limit=` | leaderboards |
 //!
 //! Accounts (`accounts` module) are a name and a secret token sent as `Authorization: Bearer
 //! <token>`; uploads, votes and comments from an account carry its name and maker ID. Anonymous
@@ -28,6 +32,7 @@
 //! The difficulty value is 100 − clear rate once a course has been played, as SMM1's 100 Mario
 //! bands use it. Courses are identified by SMM2-style codes (XXX-XXX-XXX).
 
+pub mod limits;
 pub mod ws;
 
 use std::collections::HashMap;
@@ -71,6 +76,8 @@ pub struct Meta {
     /// Best clear time (ms, 0 none) and its holder's maker ID; the first clearer's.
     pub record_ms: u64,
     pub record_holder: String,
+    /// The record was set by a replay the server re-simulated (its run is at `…/replay`).
+    pub record_verified: bool,
     pub first_clear: String,
 }
 
@@ -90,6 +97,7 @@ impl Meta {
             "attempts": self.attempts, "likes": self.likes, "difficulty": self.difficulty(),
             "boos": self.boos, "maker_id": self.maker_id, "record_ms": self.record_ms,
             "record_holder": self.record_holder, "first_clear": self.first_clear,
+            "record_verified": self.record_verified,
         })
     }
 
@@ -114,6 +122,7 @@ impl Meta {
             maker_id: s("maker_id"),
             record_ms: n("record_ms"),
             record_holder: s("record_holder"),
+            record_verified: v["record_verified"].as_bool().unwrap_or(false),
             first_clear: s("first_clear"),
         })
     }
@@ -125,6 +134,8 @@ pub struct Store {
     inner: Mutex<Inner>,
     /// Moderation token (None: no admin).
     admin: Option<String>,
+    /// Records only from verified replays (typed-in times count as clears only).
+    verified_records: bool,
 }
 
 struct Inner {
@@ -139,6 +150,8 @@ struct Inner {
     comments: HashMap<String, Vec<Comment>>,
     /// maker ID → codes of the courses they cleared.
     cleared: HashMap<String, Vec<String>>,
+    /// Endless Challenge: difficulty → maker ID → best run (courses cleared).
+    endless: HashMap<String, HashMap<String, u64>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -258,6 +271,24 @@ impl Store {
                     .collect()
             })
             .unwrap_or_default();
+        let endless = social["endless"]
+            .as_object()
+            .map(|o| {
+                o.iter()
+                    .map(|(d, v)| {
+                        let best = v
+                            .as_object()
+                            .map(|m| {
+                                m.iter()
+                                    .filter_map(|(who, n)| Some((who.clone(), n.as_u64()?)))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        (d.clone(), best)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         Ok(Self {
             dir,
             inner: Mutex::new(Inner {
@@ -269,12 +300,26 @@ impl Store {
                 votes,
                 comments,
                 cleared,
+                endless,
             }),
             admin: None,
+            verified_records: false,
         })
     }
 
+    /// (courses, accounts) held.
+    pub fn counts(&self) -> (usize, usize) {
+        let g = self.inner.lock().unwrap();
+        (g.courses.len(), g.accounts.list.len())
+    }
+
     /// Enable moderation with this admin token.
+    /// Accept record times only from replays the server re-simulates.
+    pub fn with_verified_records(mut self, on: bool) -> Self {
+        self.verified_records = on;
+        self
+    }
+
     pub fn with_admin(mut self, token: Option<String>) -> Self {
         self.admin = token.filter(|t| !t.is_empty());
         self
@@ -309,7 +354,8 @@ impl Store {
             .collect();
         self.write_json(
             "social.json",
-            &json!({ "votes": votes, "comments": comments, "cleared": g.cleared }),
+            &json!({ "votes": votes, "comments": comments, "cleared": g.cleared,
+                     "endless": g.endless }),
         )
     }
 
@@ -365,8 +411,46 @@ impl Store {
         Ok(out)
     }
 
-    /// A clear by `who` (maker ID, if signed in) in `time_ms` (0 unknown).
+    /// A clear by `who` (maker ID, if signed in) in `time_ms` (0 unknown). The time can set the
+    /// record unless the server takes records only from replays.
     pub fn clear(&self, code: &str, who: Option<&str>, time_ms: u64) -> Result<Meta, StoreError> {
+        let time = if self.verified_records { 0 } else { time_ms };
+        self.clear_inner(code, who, time, None)
+    }
+
+    /// A clear by `who` proven by a replay (`mmk_modes::replay`): the server plays it on the
+    /// course and the clear time is the replay's own. Errors when it doesn't clear.
+    pub fn clear_replay(&self, code: &str, who: &str, replay: &[u8]) -> Result<Meta, StoreError> {
+        use mmk_modes::replay::{Replay, SIM_VERSION};
+        let r = Replay::decode(replay).ok_or_else(|| StoreError::Bad("not a replay".into()))?;
+        if r.sim_version != SIM_VERSION {
+            return Err(StoreError::Bad(format!(
+                "replay from engine version {} (this server plays {SIM_VERSION})",
+                r.sim_version
+            )));
+        }
+        let course = mmk_formats::smm2::Course::parse(&self.data(code)?)
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        let time = r
+            .run(&course)
+            .time_ms()
+            .ok_or_else(|| StoreError::Bad("the replay doesn't clear the course".into()))?;
+        self.clear_inner(code, Some(who), time, Some(replay))
+    }
+
+    /// The record holder's replay, when the record was verified.
+    pub fn record_replay(&self, code: &str) -> Option<Vec<u8>> {
+        self.get(code).filter(|m| m.record_verified)?;
+        fs::read(self.dir.join(format!("replays/{code}.mmkr"))).ok()
+    }
+
+    fn clear_inner(
+        &self,
+        code: &str,
+        who: Option<&str>,
+        time_ms: u64,
+        replay: Option<&[u8]>,
+    ) -> Result<Meta, StoreError> {
         let mut g = self.inner.lock().unwrap();
         let i = *g.by_code.get(code).ok_or(StoreError::NotFound)?;
         let m = &mut g.courses[i];
@@ -383,6 +467,16 @@ impl Store {
             if time_ms > 0 && (m.record_ms == 0 || time_ms < m.record_ms) {
                 m.record_ms = time_ms;
                 m.record_holder = who.to_string();
+                m.record_verified = replay.is_some();
+                let path = self.dir.join(format!("replays/{code}.mmkr"));
+                match replay {
+                    Some(r) => fs::create_dir_all(self.dir.join("replays"))
+                        .and_then(|_| fs::write(&path, r))
+                        .map_err(|e| StoreError::Io(e.to_string()))?,
+                    None => {
+                        let _ = fs::remove_file(&path);
+                    }
+                }
             }
         }
         let out = g.courses[i].clone();
@@ -520,6 +614,7 @@ impl Store {
             maker_id: account.map(|a| a.maker_id.clone()).unwrap_or_default(),
             record_ms: 0,
             record_holder: String::new(),
+            record_verified: false,
             first_clear: String::new(),
         };
         fs::write(self.dir.join(format!("courses/{code}.bin")), data)
@@ -544,6 +639,25 @@ impl Store {
             .map_err(|e| StoreError::Io(e.to_string()))
     }
 
+    /// An Endless Challenge run on `difficulty` that cleared `cleared` courses; the account's best
+    /// on that difficulty is kept. Returns the best.
+    pub fn endless(&self, difficulty: &str, who: &str, cleared: u64) -> Result<u64, StoreError> {
+        if !ENDLESS.contains(&difficulty) {
+            return Err(StoreError::NotFound);
+        }
+        let mut g = self.inner.lock().unwrap();
+        let best = g
+            .endless
+            .entry(difficulty.to_string())
+            .or_default()
+            .entry(who.to_string())
+            .or_insert(0);
+        *best = (*best).max(cleared);
+        let out = *best;
+        self.save_social(&g)?;
+        Ok(out)
+    }
+
     /// Leaderboard `kind`: maker_points (likes − boos on their courses [inf: SMM2 adds points
     /// for likes and takes them for boos; the exact weights weren't decoded]), clears (courses
     /// cleared), first_clears, records (world records held). Banned accounts are left out.
@@ -563,6 +677,15 @@ impl Store {
                 "clears" => g.cleared.get(&a.maker_id).map_or(0, |c| c.len() as i64),
                 "first_clears" => count(&|m| m.first_clear == a.maker_id),
                 "records" => count(&|m| m.record_holder == a.maker_id),
+                k if k
+                    .strip_prefix("endless_")
+                    .is_some_and(|d| ENDLESS.contains(&d)) =>
+                {
+                    g.endless
+                        .get(&k["endless_".len()..])
+                        .and_then(|m| m.get(&a.maker_id))
+                        .map_or(0, |&n| n as i64)
+                }
                 _ => -1,
             }
         };
@@ -753,6 +876,17 @@ pub fn handle(
                 Err(e) => store_err(e),
             }
         }
+        ("POST", ["api", "courses", code, "replay"]) => match signed_in() {
+            Some(a) => match store.clear_replay(code, &a.maker_id, body) {
+                Ok(m) => json(200, m.to_json()),
+                Err(e) => store_err(e),
+            },
+            None => err(401, "sign in"),
+        },
+        ("GET", ["api", "courses", code, "replay"]) => match store.record_replay(code) {
+            Some(b) => (200, "application/octet-stream", b),
+            None => err(404, "no verified record"),
+        },
         ("GET", ["api", "courses", code, "comments"]) => json(
             200,
             json!({ "comments": store.comments(code).iter().map(Comment::to_json)
@@ -784,6 +918,17 @@ pub fn handle(
                 Err(e) => store_err(e),
             }
         }
+        ("POST", ["api", "endless", difficulty]) => match signed_in() {
+            Some(a) => {
+                let v: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+                let n = v["cleared"].as_u64().unwrap_or(0);
+                match store.endless(difficulty, &a.maker_id, n) {
+                    Ok(best) => json(200, json!({ "difficulty": difficulty, "best": best })),
+                    Err(e) => store_err(e),
+                }
+            }
+            None => err(401, "sign in"),
+        },
         ("GET", ["api", "rankings", kind]) => {
             let limit = q
                 .get("limit")
@@ -794,6 +939,14 @@ pub fn handle(
                 Some(rows) => json(200, json!({ "kind": kind, "rankings": rows })),
                 None => err(404, "no such ranking"),
             }
+        }
+        ("GET", ["api", "health"]) => {
+            let (courses, accounts) = store.counts();
+            json(
+                200,
+                json!({ "ok": true, "courses": courses, "accounts": accounts,
+                        "sim_version": mmk_modes::replay::SIM_VERSION }),
+            )
         }
         ("GET", ["api"]) | ("GET", [""]) => {
             json(200, json!({ "server": "mmk-server", "version": 1 }))
@@ -873,36 +1026,116 @@ pub fn start_relay(
     Ok(hub)
 }
 
+/// Endless Challenge difficulties.
+pub const ENDLESS: &[&str] = &["easy", "normal", "expert", "super_expert"];
+
+/// How `serve` runs.
+#[derive(Clone, Copy, Debug)]
+pub struct ServeOptions {
+    /// Request threads (replay verification and big uploads don't hold up other requests).
+    pub threads: usize,
+    pub limits: limits::Limits,
+    /// Take the client address from `X-Forwarded-For` (only behind a reverse proxy you run).
+    pub trust_proxy: bool,
+}
+
+impl Default for ServeOptions {
+    fn default() -> Self {
+        Self {
+            threads: 8,
+            limits: limits::Limits::default(),
+            trust_proxy: false,
+        }
+    }
+}
+
+/// CORS headers for browsers (any origin: the API is public and uses bearer tokens, not
+/// cookies).
+fn cors(
+    resp: tiny_http::Response<std::io::Cursor<Vec<u8>>>,
+) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    let h = |k: &str, v: &str| tiny_http::Header::from_bytes(k, v).unwrap();
+    resp.with_header(h("Access-Control-Allow-Origin", "*"))
+        .with_header(h(
+            "Access-Control-Allow-Methods",
+            "GET, POST, DELETE, OPTIONS",
+        ))
+        .with_header(h(
+            "Access-Control-Allow-Headers",
+            "Authorization, Content-Type, X-Maker",
+        ))
+        .with_header(h("Access-Control-Max-Age", "86400"))
+}
+
 pub fn serve(store: Store, addr: &str) -> Result<(), String> {
-    let server = tiny_http::Server::http(addr).map_err(|e| e.to_string())?;
-    for mut req in server.incoming_requests() {
-        let method = req.method().as_str().to_string();
-        let url = req.url().to_string();
-        let headers: Vec<(String, String)> = req
-            .headers()
-            .iter()
-            .map(|h| {
-                (
-                    h.field.as_str().as_str().to_string(),
-                    h.value.as_str().to_string(),
-                )
+    serve_with(store, addr, ServeOptions::default())
+}
+
+pub fn serve_with(store: Store, addr: &str, opts: ServeOptions) -> Result<(), String> {
+    let server = std::sync::Arc::new(tiny_http::Server::http(addr).map_err(|e| e.to_string())?);
+    let store = std::sync::Arc::new(store);
+    let gate = std::sync::Arc::new(limits::Gate::new(opts.limits));
+    let workers: Vec<_> = (0..opts.threads.max(1))
+        .map(|_| {
+            let (server, store, gate) = (server.clone(), store.clone(), gate.clone());
+            std::thread::spawn(move || {
+                while let Ok(req) = server.recv() {
+                    respond(&store, &gate, opts.trust_proxy, req);
+                }
             })
-            .collect();
-        let mut body = Vec::new();
-        let _ = std::io::Read::read_to_end(
-            &mut std::io::Read::take(req.as_reader(), MAX_UPLOAD as u64 + 1),
-            &mut body,
-        );
-        let (status, ctype, out) = handle(&store, &method, &url, &headers, &body);
-        let resp = tiny_http::Response::from_data(out)
-            .with_status_code(status)
-            .with_header(tiny_http::Header::from_bytes("Content-Type", ctype).unwrap())
-            .with_header(
-                tiny_http::Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap(),
-            );
-        let _ = req.respond(resp);
+        })
+        .collect();
+    for w in workers {
+        let _ = w.join();
     }
     Ok(())
+}
+
+fn respond(store: &Store, gate: &limits::Gate, trust_proxy: bool, mut req: tiny_http::Request) {
+    let method = req.method().as_str().to_string();
+    let url = req.url().to_string();
+    let headers: Vec<(String, String)> = req
+        .headers()
+        .iter()
+        .map(|h| {
+            (
+                h.field.as_str().as_str().to_string(),
+                h.value.as_str().to_string(),
+            )
+        })
+        .collect();
+    let reply = |req: tiny_http::Request, status: u16, ctype: &str, out: Vec<u8>| {
+        let resp = tiny_http::Response::from_data(out)
+            .with_status_code(status)
+            .with_header(tiny_http::Header::from_bytes("Content-Type", ctype).unwrap());
+        let _ = req.respond(cors(resp));
+    };
+    if method == "OPTIONS" {
+        // CORS preflight
+        return reply(req, 204, "text/plain", Vec::new());
+    }
+    let forwarded = headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("x-forwarded-for"))
+        .and_then(|(_, v)| v.split(',').next()?.trim().parse().ok());
+    let ip = match (trust_proxy, forwarded) {
+        (true, Some(ip)) => Some(ip),
+        _ => req.remote_addr().map(|a| a.ip()),
+    };
+    let path = url.split('?').next().unwrap_or("");
+    if let (Some(ip), Some(kind)) = (ip, limits::kind_of(&method, path))
+        && !gate.allow(ip, kind, std::time::Instant::now())
+    {
+        let body = serde_json::to_vec(&json!({ "error": "too many requests, slow down" })).unwrap();
+        return reply(req, 429, "application/json", body);
+    }
+    let mut body = Vec::new();
+    let _ = std::io::Read::read_to_end(
+        &mut std::io::Read::take(req.as_reader(), MAX_UPLOAD as u64 + 1),
+        &mut body,
+    );
+    let (status, ctype, out) = handle(store, &method, &url, &headers, &body);
+    reply(req, status, ctype, out);
 }
 
 #[cfg(test)]
@@ -1079,6 +1312,25 @@ mod tests {
             );
             assert_eq!(r["rankings"][0]["score"], 1, "{kind}");
         }
+        assert_eq!(
+            call("POST", "/api/endless/expert", None, br#"{"cleared":3}"#).0,
+            401
+        );
+        for n in [7, 4] {
+            let (st, e) = call(
+                "POST",
+                "/api/endless/expert",
+                Some(&token),
+                format!(r#"{{"cleared":{n}}}"#).as_bytes(),
+            );
+            assert_eq!((st, e["best"].as_u64()), (200, Some(7)));
+        }
+        let (_, r) = call("GET", "/api/rankings/endless_expert", None, b"");
+        assert_eq!(r["rankings"][0]["score"], 7);
+        assert_eq!(
+            call("POST", "/api/endless/silly", Some(&token), b"{}").0,
+            404
+        );
         let (_, r) = call("GET", "/api/rankings/maker_points", None, b"");
         assert_eq!(r["rankings"].as_array().map(Vec::len), Some(0));
         assert_eq!(call("GET", "/api/rankings/nope", None, b"").0, 404);
@@ -1116,5 +1368,68 @@ mod tests {
             200
         );
         assert!(store.get(&code).is_none());
+    }
+
+    #[test]
+    fn replays_prove_record_times() {
+        use mmk_modes::replay::Replay;
+        use mmk_sim::{Input, World, input};
+        let dir = tmp("replays");
+        let store = Store::open(&dir).unwrap().with_verified_records(true);
+        // a flat course and a run that clears it
+        let mut ed = mmk_editor::Editor::new("M1");
+        for tx in 0..ed.size().0 {
+            let _ = ed.paint_ground(tx, 0);
+        }
+        let data = ed.save().unwrap();
+        let course = mmk_formats::smm2::Course::parse(&data).unwrap();
+        let mut w = World::from_course(&course);
+        let mut r = Replay::new();
+        while !w.cleared && r.inputs.len() < 20_000 {
+            let jump = if r.inputs.len() % 90 >= 70 {
+                input::JUMP
+            } else {
+                0
+            };
+            let i = Input {
+                buttons: input::RIGHT | input::RUN | jump,
+            };
+            r.push(i);
+            w.step(i);
+        }
+        assert!(w.cleared);
+        let (st, _, v) = handle(&store, "POST", "/api/accounts", &[], br#"{"name":"Rex"}"#);
+        assert_eq!(st, 201);
+        let v: Value = serde_json::from_slice(&v).unwrap();
+        let token = v["token"].as_str().unwrap().to_string();
+        let auth = [("Authorization".to_string(), format!("Bearer {token}"))];
+        let m = store.upload(&data, "rex").unwrap();
+        let url = format!("/api/courses/{}/replay", m.code);
+        // typed-in times don't make records on this server
+        let (_, _, b) = handle(
+            &store,
+            "POST",
+            &format!("/api/courses/{}/clear", m.code),
+            &auth,
+            br#"{"time_ms":1}"#,
+        );
+        let v: Value = serde_json::from_slice(&b).unwrap();
+        assert_eq!(v["record_ms"], 0);
+        // a replay that stops short is refused
+        let mut short = r.clone();
+        short.inputs.truncate(r.inputs.len() - 1);
+        assert_eq!(handle(&store, "POST", &url, &auth, &short.encode()).0, 400);
+        assert_eq!(handle(&store, "POST", &url, &[], &r.encode()).0, 401);
+        let (st, _, b) = handle(&store, "POST", &url, &auth, &r.encode());
+        assert_eq!(st, 200);
+        let v: Value = serde_json::from_slice(&b).unwrap();
+        let ms = (r.inputs.len() as u64 * 1000).div_ceil(60);
+        assert_eq!(
+            (v["record_ms"].as_u64(), v["record_verified"].as_bool()),
+            (Some(ms), Some(true))
+        );
+        let (st, _, ghost) = handle(&store, "GET", &url, &[], b"");
+        assert_eq!((st, Replay::decode(&ghost)), (200, Some(r)));
+        let _ = fs::remove_dir_all(&dir);
     }
 }

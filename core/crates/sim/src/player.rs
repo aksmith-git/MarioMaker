@@ -48,6 +48,12 @@ const SKID_DECEL: f32 = 0.12;
 const SKID_DECEL_ICE: f32 = 0.028;
 const SKID_DECEL_ICE_STAR: f32 = 0.038;
 const SKID_REACCEL: f32 = 0.25;
+/// Cat scratch (ClimbAttack, 17-frame animation) and slide attack (ClimbSlidingAttack, 44)
+/// lengths [obs: 3W_Player_Animation_MarioClimb].
+pub const CAT_SCRATCH_FRAMES: i32 = 17;
+const CAT_SLIDE_FRAMES: i32 = 44;
+/// Frames the Turn state holds the stopped player (counter +0x242c = 8) [obs].
+const SKID_PAUSE: i32 = 8;
 
 const JUMP_BASE: f32 = 3.628;
 const GRAVITY_GROUND: f32 = -0.34;
@@ -231,7 +237,7 @@ fn band(speed_f: f32, facing: i32, t: &[f32; 4]) -> usize {
 }
 
 /// Move `v` toward `target` by at most `a` (§1.3 step 4).
-fn approach(v: f32, target: f32, a: f32) -> f32 {
+pub(crate) fn approach(v: f32, target: f32, a: f32) -> f32 {
     if v < target {
         (v + a).min(target)
     } else {
@@ -255,11 +261,42 @@ pub enum Pose {
     Spin,
 }
 
+/// SMW cape flight: MantFlyingUp (0x47), MantFlying (0x48), MantSlide (0x4a).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CapeState {
+    None,
+    /// The climb: frames left of the 72-frame state counter.
+    Rise(i32),
+    /// Gliding: the cape's pose stage (0 up2 … 5 down4) steps one at a time toward `target`
+    /// every 8 frames (2 after a change made with the stored lift at 3.5); `mode` 0 neutral,
+    /// 1 pulled back, 2 diving; `lift` is the stored climb from a dive.
+    Fly {
+        stage: u8,
+        target: u8,
+        mode: u8,
+        counter: u8,
+        quick: bool,
+        lift: f32,
+    },
+    /// Landed from a glide: skidding to a stop without control.
+    Slide,
+}
+
+/// MantFlying per-stage minimum vy and vy change (0x7101d09cd8 / 0x7101d09cf0) [obs].
+const CAPE_MIN_VY: [f32; 6] = [-1.0, -3.0, -3.0, -3.5, -3.5, -4.0];
+const CAPE_DVY: [f32; 6] = [-0.06, -0.06, -0.18, -0.24, -0.3, -0.36];
+/// Stored lift by fall speed, index clamp(int(−2·vy), 0, 8) (0x7101d09cb4) [obs].
+const CAPE_LIFT: [f32; 9] = [0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 0.75, 1.0, 3.5];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SkidPhase {
     None,
+    /// Turn phase 0: braking to a stop.
     Braking,
-    Reaccel,
+    /// Phase 1: stopped, frames left of the 8-frame hold.
+    Pause(i32),
+    /// Phase 2: the `turned` animation (frames left) with the 0.25 re-acceleration.
+    Turned(i32),
 }
 
 #[derive(Clone, Debug)]
@@ -314,9 +351,9 @@ pub struct Player {
     /// Wearing a Goomba's Shoe (Some(stiletto)): spikes and Munchers underfoot are safe, stomps
     /// defeat most enemies; a hit knocks the shoe off instead of costing a form.
     pub shoe: Option<bool>,
-    /// The "shoe" is a Dry Bones Shell (rides like the shoe [inf]).
+    /// The "shoe" is a Dry Bones Shell (ridden with the shoe states, +0x4b0) [obs].
     pub shoe_karon: bool,
-    /// Wearing a shell as a helmet: 1 Buzzy, 2 Spiny. It takes one hit [inf]; a Spiny helmet
+    /// Wearing a shell as a helmet: 1 Buzzy, 2 Spiny. It takes one hit [obs 0x71009ee7b0]; a Spiny helmet
     /// also knocks out what the player jumps into from below.
     pub helmet: Option<u8>,
     /// Flying a Koopa Clown Car (its actor id).
@@ -336,6 +373,13 @@ pub struct Player {
     pub p_meter: i32,
     p_hold: i32,
     pub flight: i32,
+    /// SMW cape flight and the cape run meter (0…30: frames running at ≥ 2.1 px/f); a cape
+    /// dive landed this frame (the world shakes as for a POW); the head hit something last
+    /// frame.
+    pub cape: CapeState,
+    pub cape_meter: i32,
+    pub cape_quake: bool,
+    ceiling: bool,
     /// Raccoon / cape: attack (tail swing, cape spin) frames left; flap and slow-fall frames.
     pub attack: i32,
     pub flap: i32,
@@ -361,14 +405,19 @@ pub struct Player {
     pub cat_climb: i32,
     pub cat_wall: i32,
     cat_climbed: f32,
-    cat_climb_used: bool,
+    cat_climbs: u8,
+    cat_reattach: i32,
     pub dive: bool,
-    /// Flung by a sideways spring: frames the push speed is held (no air control) [inf].
+    /// Sideways spring pushes: frames left in which another push counts as consecutive (10
+    /// after each push), and how many came in a row (to 4) [obs 0x71009f37e0].
     pub side_push: i32,
+    pub side_chain: i32,
     /// Stunned by a Sledge Bro's landing quake (QuakeDamage 0x4e: no movement until the
     /// 100-frame counter runs out) [obs].
     pub stun: i32,
     pub roll: i32,
+    /// Cat slide attack: frames left of its 44-frame animation.
+    pub cat_slide: i32,
     roll_used: bool,
     /// Riding Yoshi (his actor id), the re-mount lockout, and what the world must do with
     /// Yoshi this frame (dismounted / knocked off by a hit).
@@ -439,6 +488,10 @@ impl Player {
             p_meter: 0,
             p_hold: 0,
             flight: 0,
+            cape: CapeState::None,
+            cape_meter: 0,
+            cape_quake: false,
+            ceiling: false,
             attack: 0,
             flap: 0,
             slow_fall: 0,
@@ -454,11 +507,14 @@ impl Player {
             cat_climb: 0,
             cat_wall: 0,
             cat_climbed: 0.0,
-            cat_climb_used: false,
+            cat_climbs: 0,
+            cat_reattach: 0,
             dive: false,
             side_push: 0,
+            side_chain: 0,
             stun: 0,
             roll: 0,
+            cat_slide: 0,
             roll_used: false,
             yoshi: None,
             yoshi_lock: 0,
@@ -470,6 +526,17 @@ impl Player {
             prop_used: false,
             prev_down: false,
             prev_spin: false,
+        }
+    }
+
+    /// Length of the `turned` animation that ends the Turn state (per-style PlayerAnmTable →
+    /// model): the pixel styles 1 frame, NSMBU 24 (`ice_turned` 29), 3D World `Turn` 12.
+    fn turned_frames(&self) -> i32 {
+        match self.style {
+            Style::WU if self.on_ice => 29,
+            Style::WU => 24,
+            Style::W3 => 12,
+            _ => 1,
         }
     }
 
@@ -561,19 +628,18 @@ impl Player {
             return false;
         }
         if self.car.is_some() {
-            // the car takes the hit [inf from its Damaged animations]
+            // the car takes the hit (KoopaCar Damage 0x71006cec20) [obs]
             self.car_hit = true;
             self.invuln = INVULN_DAMAGE;
             return true;
         }
-        if self.shoe.take().is_some() {
-            // [ext] a hit in the shoe only knocks the shoe off
-            self.shoe_karon = false;
-            self.invuln = INVULN_DAMAGE;
-            return true;
-        }
-        if self.helmet.take().is_some() {
-            // the helmet takes the hit [inf]
+        // the damage entry (0x71009d41d0) [obs]: gliding with the cape (SMW) the hit only
+        // spins the player out of the flight; otherwise Yoshi (0x7100a1fff0), then the shoe
+        // (0x71009fc4c0), then the helmet (0x71009ee7b0: it flies off as a shell, 127 frames
+        // of invincibility) take the hit before the form does
+        if self.style == Style::MW && matches!(self.cape, CapeState::Fly { .. }) {
+            self.cape = CapeState::None;
+            self.spinning = true;
             self.invuln = INVULN_DAMAGE;
             return true;
         }
@@ -586,6 +652,16 @@ impl Player {
             self.vy = 4.628;
             self.vx = 0.0;
             self.on_ground = false;
+            return true;
+        }
+        if self.shoe.take().is_some() {
+            // a hit in the shoe only knocks the shoe off
+            self.shoe_karon = false;
+            self.invuln = INVULN_DAMAGE;
+            return true;
+        }
+        if self.helmet.take().is_some() {
+            self.invuln = INVULN_DAMAGE;
             return true;
         }
         match self.form {
@@ -697,57 +773,86 @@ impl Player {
         if self.on_ground {
             self.dash = if run && dir != 0 { self.dash + 1 } else { 0 };
         }
-        if self.form == Form::Cat && self.attack > 4 && self.vx.abs() >= 2.0 {
-            // cat slide attack: speed held for its first 12 frames [inf: decel after is the
-            // normal table rather than 0.075]
-            self.vx = 2.5 * self.facing as f32;
-            self.pose = Pose::Walk;
+        if self.cat_slide > 0 {
+            // cat slide attack (ClimbSlidingAttack 0x7100a1d030 / 0x7100a1d150) [obs]: 2.5 px/f
+            // forward with no accel for 12 frames, then down to 0 at 0.075 (ice 0.0375) until
+            // the 44-frame animation ends; then it stops dead unless a direction is held (on
+            // ice it halves instead). No steering meanwhile.
+            let elapsed = CAT_SLIDE_FRAMES - self.cat_slide;
+            if elapsed < 12 {
+                self.vx = 2.5 * self.facing as f32;
+            } else {
+                let decel = if self.on_ice { 0.0375 } else { 0.075 };
+                self.vx = approach(self.vx, 0.0, decel);
+            }
+            self.cat_slide -= 1;
+            if self.cat_slide == 0 {
+                if self.on_ice {
+                    self.vx *= 0.5;
+                } else if dir == 0 {
+                    self.vx = 0.0;
+                }
+            }
+            self.pose = Pose::Slide;
             return;
         }
         let t = self.thresholds();
         let star = self.star > 0;
         let (walk_max, run_max) = (t[1], self.run_max());
 
-        // skid (§2.3): reversing at |v| ≥ 2.5 brakes at 0.12, then re-accelerates at 0.25
+        // skid = the Turn state (entry 0x7100a197a0, exec 0x7100a19b40) [obs]: on the ground
+        // with the stick against the facing and |v| ≥ 2.5 (3D World: ≥ 2.0, never on ice).
+        // The player turns to face the stick, brakes to a stop (0.12; ice 0.028, ice + star
+        // 0.038), holds still for 8 frames, then re-accelerates at 0.25 toward the normal
+        // ground target until the `turned` animation ends. Letting go of the direction (or
+        // pressing back) ends it at once.
+        let skid_from = if self.style == Style::W3 {
+            2.0
+        } else {
+            SKID_ENTER
+        };
         if self.skid == SkidPhase::None
             && dir != 0
-            && self.vx != 0.0
-            && dir != self.vx.signum() as i32
-            && self.vx.abs() >= SKID_ENTER
+            && dir != self.facing
+            && self.vx.abs() >= skid_from
+            && !(self.style == Style::W3 && self.on_ice)
         {
             self.skid = SkidPhase::Braking;
+            self.facing = dir;
+        }
+        if self.skid != SkidPhase::None && dir != self.facing {
+            self.skid = SkidPhase::None;
         }
         match self.skid {
-            SkidPhase::Braking => {
-                self.facing = if dir != 0 { dir } else { self.facing };
+            SkidPhase::Braking | SkidPhase::Pause(_) => {
                 let decel = match (self.on_ice, star) {
                     (false, _) => SKID_DECEL,
                     (true, false) => SKID_DECEL_ICE,
                     (true, true) => SKID_DECEL_ICE_STAR,
                 };
+                // (the stop is seen the frame after the speed reaches 0: the state reads the
+                // speed before this frame's integration)
+                let stopped = self.vx.abs() <= f32::EPSILON;
                 self.vx = approach(self.vx, 0.0, decel);
                 self.pose = Pose::Skid;
-                if self.vx == 0.0 {
-                    self.skid = if dir != 0 {
-                        SkidPhase::Reaccel
-                    } else {
-                        SkidPhase::None
-                    };
-                }
+                self.skid = match self.skid {
+                    SkidPhase::Braking if stopped => SkidPhase::Pause(SKID_PAUSE),
+                    // the hold counter ticks before the state runs: 7 frames waiting, then
+                    // the `turned` animation starts on the 8th
+                    SkidPhase::Pause(n) if n > 1 => SkidPhase::Pause(n - 1),
+                    SkidPhase::Pause(_) => SkidPhase::Turned(self.turned_frames()),
+                    other => other,
+                };
                 return;
             }
-            SkidPhase::Reaccel => {
-                // [?] end of the second phase is not in the spec: it ends when the stick lets go
-                // or walk speed is reached in the new direction
-                let target = if dir == 0 {
-                    0.0
-                } else {
-                    dir as f32 * if run { run_max } else { walk_max }
-                };
+            SkidPhase::Turned(n) => {
+                let target = dir as f32 * if run { run_max } else { walk_max };
                 self.vx = approach(self.vx, target, SKID_REACCEL);
-                if dir == 0 || self.vx.abs() >= walk_max {
-                    self.skid = SkidPhase::None;
-                }
+                self.skid = if n > 1 {
+                    SkidPhase::Turned(n - 1)
+                } else {
+                    SkidPhase::None
+                };
                 self.pose = Pose::Walk;
                 return;
             }
@@ -834,10 +939,6 @@ impl Player {
     }
 
     fn air(&mut self, inp: Input) {
-        if self.side_push > 0 {
-            self.side_push -= 1;
-            return;
-        }
         let dir = inp.dir_x();
         if dir == 0 {
             // no direction: accel 0 → momentum preserved
@@ -941,8 +1042,8 @@ impl Player {
         {
             self.throw = true;
         }
-        // raccoon tail swing / cape spin / cat scratch on Run (player-physics.md §5.4)
-        // [inf: 16 frames]
+        // raccoon tail swing / cape spin / cat scratch on Run (player-physics.md §5.4); the
+        // cape spin and the hammer last 16 frames [inf]
         if run
             && !self.prev_run
             && matches!(
@@ -954,13 +1055,22 @@ impl Player {
             && self.cat_climb == 0
         {
             // the raccoon's tail_attack animation is 18 frames (TailAttack 0x7100a034e0 ends
-            // with it) [obs]
-            self.attack = if self.form == Form::Raccoon { 18 } else { 16 };
+            // with it); the cat's scratch is ClimbAttack (0x7100a1c170 / 0x7100a1c230), which
+            // ends with its 17-frame animation and leaves normal movement alone [obs]
+            self.attack = match self.form {
+                Form::Raccoon => 18,
+                Form::Cat => CAT_SCRATCH_FRAMES,
+                _ => 16,
+            };
             if self.form == Form::Cat {
-                if self.on_ground {
-                    // slide attack: 2.5 px/f forward for 12 frames, then the normal decel
+                if self.on_ground && self.crouch {
+                    // crouching, the attack is the slide (ClimbSlidingAttack, entered from the
+                    // crouch check 0x7100a1b3f0) [obs]
+                    self.attack = 0;
+                    self.cat_slide = CAT_SLIDE_FRAMES;
+                    self.crouch = false;
                     self.vx = 2.5 * self.facing as f32;
-                } else if !self.roll_used && !self.in_water {
+                } else if !self.on_ground && !self.roll_used && !self.in_water {
                     // rolling attack: a small rise (vy 2.4, gravity −0.1) once per air time
                     self.vy = 2.4;
                     self.roll = 24;
@@ -1000,7 +1110,7 @@ impl Player {
 
         // crouch: big forms on the ground with Down held (kept through a crouch jump)
         if self.on_ground {
-            let want = self.big() && inp.held(input::DOWN) && !self.sliding;
+            let want = self.big() && inp.held(input::DOWN) && !self.sliding && self.cat_slide == 0;
             if want != self.crouch && (want || self.can_stand(level)) {
                 self.crouch = want;
             }
@@ -1017,6 +1127,7 @@ impl Player {
             self.exit_window -= 1;
         }
         let vy_before = self.vy;
+        let (vx_before, face_before) = (self.vx, self.facing);
         if self.in_water {
             self.swim(inp, pressed);
         } else {
@@ -1027,6 +1138,8 @@ impl Player {
             if self.on_ground {
                 if self.sliding {
                     self.slide(level);
+                } else if self.cape == CapeState::Slide {
+                    self.cape_slide(level);
                 } else {
                     self.ground(inp);
                 }
@@ -1068,6 +1181,9 @@ impl Player {
                     self.skid = SkidPhase::None;
                 }
             } else {
+                // leaving the ground ends the Turn state and the cat slide
+                self.cat_slide = 0;
+                self.skid = SkidPhase::None;
                 self.air(inp);
             }
 
@@ -1084,9 +1200,13 @@ impl Player {
             } else {
                 self.vy = (self.vy + g).max(FALL_CAP);
             }
+            self.step_cape(inp, jump, vy_before, vx_before, face_before);
         }
         if self.chain_window > 0 {
             self.chain_window -= 1;
+        }
+        if self.side_push > 0 {
+            self.side_push -= 1;
         }
         if self.chain_lock > 0 {
             self.chain_lock -= 1;
@@ -1119,7 +1239,11 @@ impl Player {
             } else if self.slow_fall > 0 {
                 self.slow_fall -= 1;
                 self.vy = self.vy.max(-1.0);
-            } else if self.form == Form::Cape && jump && self.vy < 0.0 {
+            } else if self.form == Form::Cape
+                && self.cape == CapeState::None
+                && jump
+                && self.vy < 0.0
+            {
                 self.vy = self.vy.max(-1.0);
             }
         } else {
@@ -1142,6 +1266,23 @@ impl Player {
 
         let sensors = self.sensors();
         self.move_and_collide(level, sensors);
+        self.ceiling = self.head_hit.is_some() || self.head_solid.is_some();
+        // the cape lands: a dive (stage 5) shakes the ground (0x71009f5f50), any other glide
+        // slides to a stop (MantSlide); the climb just ends
+        self.cape_quake = false;
+        if self.on_ground {
+            self.cape = match self.cape {
+                CapeState::Fly { stage: 5, .. } => {
+                    self.cape_quake = true;
+                    CapeState::None
+                }
+                CapeState::Fly { .. } => CapeState::Slide,
+                CapeState::Slide => CapeState::Slide,
+                _ => CapeState::None,
+            };
+        } else if self.cape == CapeState::Slide {
+            self.cape = CapeState::None;
+        }
         // landing from a jump advances the chain count 0 → 1 → 2 → 0 and opens its window
         if self.on_ground && self.in_jump {
             self.in_jump = false;
@@ -1214,9 +1355,9 @@ impl Player {
         }
     }
 
-    /// Slip: downhill toward 4.0 px/f with the slide accel of the slope (gentle 0.05, steep
-    /// 0.17 [inf: steepness index for the two slope kinds]); on flat ground it slows by 0.09
-    /// and ends at rest.
+    /// Slip: downhill toward 4.0 px/f with the slide accel of the slope class (table
+    /// 0x7101d09700: gentle, class 2, 0.05; steep, class 3, 0.07) [obs]; on flat ground it
+    /// slows by 0.09 and ends at rest.
     fn slide(&mut self, level: &Level) {
         let slope = level
             .slope_at(self.x)
@@ -1224,7 +1365,7 @@ impl Player {
             .map(|(_, s)| {
                 (
                     if s.rising { -1.0 } else { 1.0 },
-                    if s.steep { 0.17 } else { 0.05 },
+                    if s.steep { 0.07 } else { 0.05 },
                 )
             });
         match slope {
@@ -1297,22 +1438,33 @@ impl Player {
     /// Cat wall climb (§5.4 Neko): pushing into a wall in the air climbs it at 1.0 px/f (1.5
     /// with run) for up to 120 frames or 120 px, gravity 0; reaching the top pops up (vy 4.8).
     /// Then WallClimbFall: gravity −0.085, max fall −2.0 while still on the wall. Jump → the
-    /// wall jump; stick away or the wall ending lets go. One climb per air time [inf].
+    /// wall jump; stick away or the wall ending lets go. The wall is only taken while falling
+    /// (attach check 0x7100a1aa30); the first two attachments of an air time climb, later ones
+    /// only slide (count +0x271c, bumped in WallClimb enter 0x7100a1b5b0, cleared on landing);
+    /// after letting go the wall can't be taken again for 16 frames (+0x2714) [obs].
     fn cat_wall_climb(&mut self, inp: Input, pressed: bool, level: &Level) -> bool {
         let dir = inp.dir_x();
+        if self.cat_reattach > 0 {
+            self.cat_reattach -= 1;
+        }
         if self.cat_climb == 0 {
-            if self.cat_climb_used
+            if self.cat_reattach > 0
                 || self.held.is_some()
                 || self.shoe.is_some()
                 || dir == 0
+                || self.vy >= 0.0
                 || !self.wall_at(level, dir)
             {
                 return false;
             }
-            self.cat_climb = 1;
+            if self.cat_climbs < 2 {
+                self.cat_climb = 1;
+                self.cat_climbs += 1;
+            } else {
+                self.cat_climb = -1;
+            }
             self.cat_wall = dir;
             self.cat_climbed = 0.0;
-            self.cat_climb_used = true;
             self.spinning = false;
         }
         let w = self.cat_wall;
@@ -1323,10 +1475,12 @@ impl Player {
             self.vx = -w as f32 * 2.25;
             self.facing = -w;
             self.cat_climb = 0;
+            self.cat_reattach = 16;
             return true;
         }
         if dir == -w {
             self.cat_climb = 0;
+            self.cat_reattach = 16;
             return false;
         }
         if self.cat_climb > 0 {
@@ -1334,6 +1488,7 @@ impl Player {
                 // over the top
                 self.vy = 4.8;
                 self.cat_climb = 0;
+                self.cat_reattach = 16;
                 return true;
             }
             let speed = if inp.held(input::RUN) { 1.5 } else { 1.0 };
@@ -1348,6 +1503,7 @@ impl Player {
         // sliding down after the climb
         if !self.wall_at(level, w) {
             self.cat_climb = 0;
+            self.cat_reattach = 16;
             return false;
         }
         self.vy = (self.vy - 0.085).max(-2.0);
@@ -1378,7 +1534,8 @@ impl Player {
             self.pound = 0;
             self.wall_slide = 0;
             self.cat_climb = 0;
-            self.cat_climb_used = false;
+            self.cat_climbs = 0;
+            self.cat_reattach = 0;
             self.dive = false;
             self.roll_used = false;
             return;
@@ -1498,12 +1655,169 @@ impl Player {
             }
             self.attack = self.attack.max(8);
         }
-        if pressed && self.on_ground && self.p_meter >= 630 && self.form == Form::Cape {
-            // cape flight (simplified): a high launch, then the glide [inf: MantFlying dives ⬜]
-            self.flight = 72;
+        // SMW cape meter (0x71009f5d10) [obs]: +1 a frame running on the ground with Run and a
+        // direction held at ≥ 2.1 px/f, up to 30; anything else empties it, except that a full
+        // meter is kept in the air
+        if self.style == Style::MW {
+            if running {
+                self.cape_meter = (self.cape_meter + 1).min(30);
+            } else if !(self.cape_meter == 30 && !self.on_ground) {
+                self.cape_meter = 0;
+            }
         }
-        if self.form == Form::Cape && self.flight > 60 && !self.on_ground {
-            self.vy = self.vy.max(3.628);
+    }
+
+    /// SMW cape flight [obs]. A jump rising faster than 1.0 with a full cape meter (Jump exec
+    /// 0x71009f1450) starts MantFlyingUp (0x71009f60a0 / 0x71009f61a0): a 72-frame counter
+    /// holds vy at the jump launch speed (3.628 + the speed bonus) with no gravity; letting go
+    /// of Jump after 11 frames, or a ceiling, ends it; then vy falls by 0.3 a frame and at 0
+    /// the glide (MantFlying 0x71009f68c0 / 0x71009f6990) starts if Run is held. Gliding, the
+    /// speed heads for 3.25 forward (0.06 a frame, only while diving), vy = max(vy, minimum of
+    /// the cape stage) + the stage's change, and a dive's stored lift is paid back as +0.75 a
+    /// frame in stage 0 while moving forward. Run released at stage 0 ends it. Called after
+    /// gravity; `vy0` / `vx0` / `face0` are this frame's values before the movement code.
+    fn step_cape(&mut self, inp: Input, jump: bool, vy0: f32, vx0: f32, face0: i32) {
+        if self.form != Form::Cape || self.in_water {
+            self.cape = CapeState::None;
+            return;
+        }
+        let run = inp.held(input::RUN);
+        match self.cape {
+            CapeState::None => {
+                if self.in_jump && !self.on_ground && vy0 > 1.0 && self.cape_meter == 30 {
+                    self.cape = CapeState::Rise(72);
+                }
+            }
+            CapeState::Rise(t) => {
+                // the state counter ticks before the state runs
+                let mut t = (t - 1).max(0);
+                let mut vy = vy0;
+                if self.ceiling {
+                    t = 0;
+                    vy = 0.0;
+                }
+                if t < 61 && !jump {
+                    t = 0;
+                }
+                if t == 0 {
+                    self.vy = vy - 0.3;
+                    self.cape = if self.vy > 0.0 {
+                        CapeState::Rise(0)
+                    } else if run {
+                        CapeState::Fly {
+                            stage: 0,
+                            target: 2,
+                            mode: 0,
+                            counter: 8,
+                            quick: false,
+                            lift: 0.0,
+                        }
+                    } else {
+                        CapeState::None
+                    };
+                } else {
+                    self.vy = JUMP_BASE + jump_bonus(self.vx.abs());
+                    self.cape = CapeState::Rise(t);
+                }
+            }
+            CapeState::Fly {
+                mut stage,
+                target,
+                mode,
+                mut counter,
+                quick,
+                mut lift,
+            } => {
+                if !run && stage == 0 {
+                    self.cape = CapeState::None;
+                    return;
+                }
+                // the glide steers by itself: undo this frame's air control and turning
+                self.vx = vx0;
+                self.facing = face0;
+                let new_mode = if self.ceiling {
+                    0
+                } else if vy0 < 0.0 && run {
+                    match inp.dir_x() {
+                        0 => 0,
+                        d if d == self.facing => 2,
+                        _ => 1,
+                    }
+                } else {
+                    1
+                };
+                if new_mode == 2 {
+                    lift = 0.0;
+                }
+                let (mut mode, mut target, mut quick) = (mode, target, quick);
+                if new_mode != mode {
+                    mode = new_mode;
+                    quick = (lift - 3.5).abs() <= f32::EPSILON;
+                    target = [2, 0, 5][mode as usize];
+                    counter = 0;
+                }
+                if mode == 2 {
+                    self.vx = approach(self.vx, self.facing as f32 * 3.25, 0.06);
+                }
+                let k = ((-2.0 * vy0) as i32).clamp(0, 8) as usize;
+                lift = lift.max(CAPE_LIFT[k]);
+                let base = vy0.max(CAPE_MIN_VY[stage as usize]);
+                let mut add = CAPE_DVY[stage as usize];
+                if stage == 0 && lift != 0.0 {
+                    if self.ceiling || lift < vy0 {
+                        lift = 0.0;
+                    }
+                    if self.vx * self.facing as f32 > 0.0 {
+                        add = 0.75;
+                    }
+                }
+                self.vy = (base + add).max(FALL_CAP);
+                // the cape's own update at the end of the frame (0x7100987080)
+                if counter <= 1 {
+                    if stage != target {
+                        stage = if target > stage { stage + 1 } else { stage - 1 };
+                    }
+                    counter = if quick { 2 } else { 8 };
+                } else {
+                    counter -= 1;
+                }
+                self.cape = CapeState::Fly {
+                    stage,
+                    target,
+                    mode,
+                    counter,
+                    quick,
+                    lift,
+                };
+            }
+            CapeState::Slide => {}
+        }
+    }
+
+    /// The cape's pose stage while gliding (0 up2 … 5 down4).
+    pub fn cape_stage(&self) -> Option<u8> {
+        match self.cape {
+            CapeState::Fly { stage, .. } => Some(stage),
+            _ => None,
+        }
+    }
+
+    /// MantSlide (0x71009f6df0) [obs]: on flat ground the speed is capped at 3.25 and runs down
+    /// at 0.06 (ice 0.02) with no control; it ends at a stop. On a slope it becomes the slip.
+    fn cape_slide(&mut self, level: &Level) {
+        let on_slope = level
+            .slope_at(self.x)
+            .is_some_and(|(sy, _)| (self.y - sy).abs() < 6.0);
+        if on_slope {
+            self.cape = CapeState::None;
+            self.sliding = true;
+            return;
+        }
+        let decel = if self.on_ice { 0.02 } else { 0.06 };
+        self.vx = approach(self.vx.clamp(-3.25, 3.25), 0.0, decel);
+        self.pose = Pose::Slide;
+        if self.vx == 0.0 {
+            self.cape = CapeState::None;
         }
     }
 
@@ -1515,16 +1829,25 @@ impl Player {
             .find(|v| (x - v.0).abs() <= 10.0 && y + 8.0 >= v.1 && y + 4.0 <= v.2)
     }
 
-    /// Grab a vine the player overlaps: Up, or Down in the air [inf: grab input not traced].
+    /// Grab a vine the player overlaps (grab check 0x7100a12cb0) [obs]: Up held, not carrying
+    /// anything, not rising, and the re-grab lock run out. The side: the near one at |v| ≥ 1.5
+    /// (the facing flipped), else the side the player is on.
     fn try_grab(&mut self, inp: Input, level: &Level) -> bool {
-        if self.climb_lock > 0 || self.in_water {
+        if self.climb_lock > 0 || self.in_water || self.held.is_some() || self.vy > 0.0 {
             return false;
         }
-        let want = inp.held(input::UP) || (inp.held(input::DOWN) && !self.on_ground);
+        let want = inp.held(input::UP);
         let Some(v) = want.then(|| Self::vine_at(level, self.x, self.y)).flatten() else {
             return false;
         };
-        self.climbing = Some((v.0, if self.x < v.0 { -1 } else { 1 }));
+        let side = if self.vx.abs() >= 1.5 {
+            -self.facing
+        } else if self.x <= v.0 {
+            -1
+        } else {
+            1
+        };
+        self.climbing = Some((v.0, side));
         self.vx = 0.0;
         self.vy = 0.0;
         self.crouch = false;
@@ -1928,6 +2251,41 @@ mod tests {
     }
 
     #[test]
+    fn skid_stops_holds_8_frames_then_turns() {
+        let level = Level::flat(800);
+        let mut p = Player::new(56.0, 32.0);
+        let right = Input {
+            buttons: input::RIGHT | input::RUN,
+        };
+        let left = Input {
+            buttons: input::LEFT | input::RUN,
+        };
+        for _ in 0..200 {
+            p.step(right, &level);
+        }
+        // 3.0 / 0.12 = 25 braking frames, then 9 more frames stopped (the stop is noticed a
+        // frame late, then the 8-frame hold), then the 0.25 re-acceleration
+        let mut speeds = Vec::new();
+        for _ in 0..40 {
+            p.step(left, &level);
+            speeds.push(p.vx);
+        }
+        let first_stop = speeds.iter().position(|v| *v == 0.0).unwrap();
+        let moving_again = speeds.iter().rposition(|v| *v == 0.0).unwrap() + 1;
+        assert_eq!(moving_again - first_stop, 10);
+        assert!((speeds[moving_again] + SKID_REACCEL).abs() < 1e-6);
+        assert_eq!(p.facing, -1);
+        // letting go mid-brake ends the skid: normal deceleration from then on
+        let mut q = Player::new(56.0, 32.0);
+        for _ in 0..200 {
+            q.step(right, &level);
+        }
+        q.step(left, &level);
+        q.step(Input::default(), &level);
+        assert_ne!(q.pose, Pose::Skid);
+    }
+
+    #[test]
     fn stands_on_ground_and_falls_into_pit() {
         let level = Level::flat(10); // ground ends at x = 160 px
         let mut p = Player::new(56.0, 32.0);
@@ -2121,6 +2479,118 @@ mod tests {
             c.step(run, &level);
         }
         assert!(c.dashing(), "the cat dashes after 60 frames ({})", c.dash);
+    }
+
+    #[test]
+    fn cat_slide_attack_from_a_crouch_and_scratch() {
+        let level = Level::flat(100);
+        let mut p = cat(&level);
+        let down = Input {
+            buttons: input::DOWN,
+        };
+        p.step(down, &level);
+        assert!(p.crouch);
+        p.step(
+            Input {
+                buttons: input::DOWN | input::RUN,
+            },
+            &level,
+        );
+        assert_eq!(p.cat_slide, CAT_SLIDE_FRAMES - 1);
+        let mut speeds = vec![p.vx];
+        for _ in 0..50 {
+            p.step(down, &level);
+            speeds.push(p.vx);
+        }
+        assert!(speeds[..12].iter().all(|v| *v == 2.5), "{speeds:?}");
+        assert!((speeds[12] - (2.5 - 0.075)).abs() < 1e-5, "{speeds:?}");
+        // the 44-frame animation ends with no direction held: a dead stop
+        assert_eq!(p.cat_slide, 0);
+        assert_eq!(p.vx, 0.0);
+        // standing, Run is the scratch: 17 frames, movement untouched
+        let mut q = cat(&level);
+        q.step(
+            Input {
+                buttons: input::RUN,
+            },
+            &level,
+        );
+        assert_eq!(q.attack, CAT_SCRATCH_FRAMES - 1);
+        assert_eq!(q.vx, 0.0);
+    }
+
+    #[test]
+    fn cape_meter_climb_glide_and_dive() {
+        let level = Level::flat(400);
+        let mut p = Player::new(56.0, 32.0);
+        p.style = Style::MW;
+        p.form = Form::Cape;
+        let run_right = input::RIGHT | input::RUN;
+        // 30 frames at ≥ 2.1 px/f fill the meter
+        let mut frames = 0;
+        while p.cape_meter < 30 {
+            p.step(Input { buttons: run_right }, &level);
+            frames += 1;
+            assert!(frames < 200);
+        }
+        // the jump turns into the climb: vy held at the launch speed while Jump is held
+        p.step(
+            Input {
+                buttons: run_right | input::JUMP,
+            },
+            &level,
+        );
+        p.step(
+            Input {
+                buttons: run_right | input::JUMP,
+            },
+            &level,
+        );
+        assert!(matches!(p.cape, CapeState::Rise(_)), "{:?}", p.cape);
+        let launch = JUMP_BASE + 0.3;
+        for _ in 0..20 {
+            p.step(
+                Input {
+                    buttons: run_right | input::JUMP,
+                },
+                &level,
+            );
+            assert!((p.vy - launch).abs() < 1e-5, "{}", p.vy);
+        }
+        // release Jump: vy drains by 0.3 a frame, then the glide starts (Run held)
+        let mut glide = false;
+        for _ in 0..40 {
+            p.step(Input { buttons: run_right }, &level);
+            if p.cape_stage().is_some() {
+                glide = true;
+                break;
+            }
+        }
+        assert!(glide);
+        // forward held while falling: the dive stage climbs to 5, one step per 8 frames
+        let mut stage5 = false;
+        for _ in 0..80 {
+            p.step(Input { buttons: run_right }, &level);
+            if p.cape_stage() == Some(5) {
+                stage5 = true;
+                break;
+            }
+            if p.on_ground {
+                break;
+            }
+        }
+        assert!(stage5);
+        assert!(p.vx > 3.0, "dives toward 3.25: {}", p.vx);
+        // landing in the dive shakes the ground
+        let mut quake = false;
+        for _ in 0..200 {
+            p.step(Input { buttons: run_right }, &level);
+            quake |= p.cape_quake;
+            if p.on_ground {
+                break;
+            }
+        }
+        assert!(quake);
     }
 
     #[test]

@@ -10,6 +10,63 @@ the `mmk` CLI, `mmk-play`, the `MMK_*` environment variables and the C API prefi
 **Why:** a rename of every crate and symbol would churn the whole tree while parallel work is in
 flight; the internal prefix is invisible to players. A full internal rename can follow later.
 
+## 2026-10-18 — SMM2 front end driven by the game's scene code; what is inferred
+The opening, the title, the scene fades, Course World and the Endless Challenge menus follow the
+owner's v3.0.3 binary, read as prose in the private `research/specs/smm2-frontend.md` (states,
+their order, the fade types, the opening's odds, which button the cursor starts on) [obs]; the
+layouts, animations, texts and sounds are the game's own data from the owner's import.
+- **Opening** (`Boot_BootScene_00`): the boot page's choice — the newest update opening not seen
+  yet (Koopalings, Link, co-op; seen flags in UserDefaults `boot.openingsSeen`), else 66 % default,
+  8 % characters, 8 % Goombas, 2 % co-op, 8 % Link, 4 % Koopalings, 4 % Bowser; InMain; then the
+  title under the black circle fade. Not skippable, as in the game; Settings > Game turns it off.
+- **Fades:** `Cmn_Fade_00` drawn over every screen by both Metal renderers (a black veil over
+  SwiftUI screens). Scene changes without parameters use the black fade (30 + 30); the opening
+  hands over with the black circle. How long the screen stays covered while the next one loads
+  is 2 ticks here [inf].
+- **Inferred [inf]:** how long a button's Decide plays before its action (the title's 24 ticks
+  kept), the Course World cursor start (Courses), the course list's tab meanings over our sources,
+  the death iris in Course World play (the circle closes on the player 60 frames before the
+  restart), the Endless map's order (Telop with Mario out of the castle, then the walk), the dots
+  hidden until reached, which container child a context picks for sounds.
+- **Departures:** Make says "coming soon" (no editor in the app); the network-only Course World
+  buttons say so; the player card, ID search, Miis, flags, badges, thumbnails, comments are
+  hidden; no ending for an Endless-styled run (back to the menu with the result).
+What would change it: reading the Course World / Endless sequences' Disp states and the
+course-in / death sequence in full; footage of the game.
+
+## 2026-10-18 — Course World without lives (owner's decision)
+SMM2's Course World and Story Mode have no lives, so library / Course World / Story Mode play
+has unlimited retries: HUD `Type` 0, course card `AnimDefault` at the start only, no game over;
+after a death the black circle closes on the player and opens on the restart [inf: the iris].
+100 Mario (either presentation) and the Endless-styled menus keep lives: HUD `Type` 1, card
+`AnimEndlessMode` after each death, `Play_GameOver_00`. Supersedes "Lives stay" below.
+
+## 2026-10-18 — 100 Mario Challenge presented with SMM2's Endless Challenge screens
+Default presentation (Settings > Game `hundred.presentation` = smm2; smm1 keeps SMM1's own
+layouts). Rules stay SMM1's (`core/crates/modes`). `Nwk_EndlessModeMenu_00` + `Nwk_WorldMap_00`
+for the menu and the map between courses; SMM2's in-course screens with lives for the courses.
+The menu's New Game / Continue buttons are drawn from a second instance of the layout over the
+first: in the layout they sit under the map frame's opaque bottom band (drawn after them), where
+the game shows them [inf]. Locked tiers (SMM1's unlock rule; SMM2 has none) are greyed.
+
+## 2026-10-18 — Course World over the library and the open-source server
+The course list shows library courses (statistics, tags and dates from the dataset's
+`index.json` when present, else this player's own) and the courses of the server set in
+Settings > Game (`online.server`; none by default). The FFI links `mmk-online` (`ureq`, rustls)
+for `mmk_online_search / download / report`; Swift runs them off the main thread. Server
+courses are downloaded into `courses/Course World/` before playing; plays and clears are
+reported. Never Nintendo's network.
+
+## 2026-10-18 — Menu sounds from the game's SLink2 data, as WAV in the UI import
+Which sound a button or animation plays is the game's data: `Pack/Static.pack`
+`Param/Layout/<Layout>.byml` (SLink user, button → sound type, animations with sounds) and
+`SLink2/SLink2DB.szs` (XLNK: user → event key → sound, volume, delay; containers by condition or
+in sequence). `mmk import-smm2-ui` v4 writes `ui/sound/sounds.json` and the referenced sounds as
+16-bit WAV (`formats::xlink`, `import::smm2_ui_sound`); the app plays them with AVAudioPlayer
+(`UISound`, master × effects volume). The conditions themselves are not evaluated: the
+controller variant, the title's "back", the course style's pause jingle are chosen by context
+[inf]. Missing: sounds not in `Sound/Resource/*.bars` or the bars packs (the pause jingles).
+
 ## 2026-10-18 — iOS packaging: one Swift package, cross-compiled, bundled by a script
 The iOS / iPadOS app is the macOS Swift package built for iOS, not a second project.
 - **Build:** `swift build -c release --triple arm64-apple-ios17.0[-simulator] --sdk <sdk>`. The
@@ -145,7 +202,8 @@ Library courses (not 100 Mario runs, not the title demo) get SMM2's in-course la
 SMM2 UI import is there (`SMM2Course.swift`, `CourseScreens`); otherwise the drawn HUD strip and
 the SwiftUI menus as before (`MMK_UI_SMM2=off`). Layouts, animations, texts and icons are the
 game's, read at run time; the flow between them is not in the data:
-- **Lives stay.** SMM2's Course World and Story Mode have no lives; the engine has 5 and a game
+- **Lives stay** (superseded 2026-10-18 by "Course World without lives" for library play; still
+  how 100 Mario runs show lives). SMM2's Course World and Story Mode have no lives; the engine has 5 and a game
   over. We keep the engine's rule and show it the way SMM2 shows lives elsewhere: HUD `Type`
   frame 1 (the Endless Challenge variant: lives counter with the character icon; its 1-Up
   progress hidden) and the course card `Play_CourseIn_00` `AnimEndlessMode` (× lives) at the
@@ -209,20 +267,30 @@ open or not modelled:
   ceil(frames / rate), with the frame counts from the model files and the rates from
   `EnemyModelParams` (which of its two rate fields is the normal size is read off the 2D files).
   Model yaw turns take DirDeg·2 / 8 frames.
-- **Ant Trooper:** the winged flyer (shared with other winged walkers) uses the generic flight;
-  the horn's top is taken to hurt a stomping player (its "Needle" collider was not traced).
-- **Skipsqueak:** the player flag it watches is set on a jump launch and each swim stroke; that it
-  lasts one frame is [inf] (read as "left the ground rising" or a stroke's kick).
+- **Ant Trooper:** the winged one flies as the binary's wing flyer (level at 0.5, 8-px bob, wall
+  turn) and keeps its wings when stomped; the horned one's top hurts only while it walks on the
+  floor (spin jumps bounce off, except off the big one's live Needle). The hover helper's
+  "pressed" re-centring is not modelled (its trigger bit is unclear).
+- **Skipsqueak:** the player flag it watches lasts one frame (cleared by the player's pre-update),
+  read as "left the ground rising" or a stroke's kick; spring high jumps (two frames) are not
+  told apart.
 - **Porcupuffer:** the surface-jump window's vertical centre stays as before [?].
-- **Bully:** the winged chase is the older approximation (FlyChase / FlyLand / FlyReturn only
-  partly read). The player's Pushed state is approximated by setting its speed (3.0, every 4th
-  push 4.0 up); its control lock lives in the player code. The shell's own bounce is [inf].
+- **Bully:** the winged one lives on the ground and flies only as the binary does (up walls and
+  ledges after the player, back onto a ledge it was knocked off); ObjJump is not modelled. The
+  player's Pushed state is approximated by setting its speed (3.0, every 4th push 4.0 up); its
+  control lock lives in the player code. The shell's own bounce is [inf].
 - **Charvaargh:** the side leap is exact (heading curves from the model, body boxes along the
-  head's path, which the posed skeleton follows to within a few px). Not modelled: the vertical
-  leap out of the background, the chained leap, spacing between several Charvaarghs. One hook in
-  `actors.rs`: it is exempt from the fell-into-a-pit kill, as it dives far below the lava.
-- **Piranha Creeper:** which hits trample the head (stomps, by the animation names) and that the
-  trampled head and the stalk are harmless are [inf]; PreStop (blocked growth) is not modelled.
+  head's path). The vertical leap rides the model's root bone (sampled every 10 frames), its body
+  along the head's path (within ≈ 25 px of the posed bones) and touching only at the course's
+  depth; the chained leap reads the actor's camera view (one view: the game checks every
+  player's). Several Charvaarghs share the area's list (turn, spacing) through
+  `World::w3_charvaarghs`, which needs a one-line call in `World::step` ahead of the actor loop;
+  without it each one leaps on its own. One hook in `actors.rs`: it is exempt from the
+  fell-into-a-pit kill, as it dives far below the lava.
+- **Piranha Creeper:** PreStop, the trample rules (stomps, spins, slides, fireballs, shells; ground
+  pound 4 pieces; 16-frame cooldown) and the head hurting while trampled follow the binary. Not
+  modelled: the stalk as solid terrain (it is; whether its NeedleCube surface hurts is open) and
+  tramples by blocks bumped from below — both need the world's terrain / block code.
 
 ## 2026-10-18 — Bosses (Bowser, Boom Boom / Pom Pom, Bowser Jr.): HP through one hit path
 Every boss hit goes through `Actor::boss_hit(attack)`, which applies the spec's HP rules. Bowser:
@@ -275,6 +343,12 @@ Punpun's Throw and Lapse states, or Ryujinx measurements.
 - **Crate split:** parsers in `formats`, import in `import`, evaluation in a new `ui` crate (no
   file I/O in the player itself; tests build layouts in memory), C ABI in `ffi/src/ui.rs`, Swift
   in `UILayer.swift` / `UIPreview.swift` — kept out of the files other work is changing.
+
+## 2026-10-18 — Layout player: shared window colours win over texture-only materials [inf]
+A window with "one material for all frames" gives its frames the first frame's colours even when
+a frame's own material is texture-only (the Endless map frame's dark red corners), and a
+texture-only content takes them too (SMM2's dark name balloons with white text). Layouts have no
+scissor clipping yet: lists hide the rows outside their scissor instead.
 
 ## 2026-10-18 — Layout player semantics where the format leaves room (verify against the game)
 Chosen from how the SMM1 data is authored and checked visually on the owner's dump:
@@ -673,3 +747,29 @@ renderers upload a texture when a sprite first uses it. Measured on the same cou
   late or lossy peer missed are resent (up to 64 per packet). Found by a two-browser test where
   the late joiner missed the first frames and both sides stalled.
 - The relay holds no accounts or course data; rooms expire 30 s after their members go quiet.
+
+## 2026-10-18 — Replays: verified records, and when to bump SIM_VERSION
+- A clear can be proven by its replay (per-frame inputs, `mmk_modes::replay`). The server plays it
+  on the stored course and takes the clear time from the simulation, so a record can't be typed
+  in (`mmk server --verified-records` makes that the only way). The record holder's replay is
+  served for ghosts.
+- A replay only means something for the sim that recorded it. `replay::SIM_VERSION` is stamped into
+  every replay and servers refuse other versions. While fidelity passes keep changing physics,
+  bump it **once per release build**, not per commit; a server upgraded to a new release keeps
+  its old records but needs new replays for new ones.
+- Replays play one player, offline, from the course start (deaths and respawns are inside the
+  deterministic run; a restart starts a new replay). Verification runs on the server's request
+  thread (a 10-minute run simulates in well under a second in release builds).
+
+## 2026-10-18 — The sim's float math is platform-independent
+- Online peers on different systems step the same world, and the server (Linux) re-simulates
+  replays recorded on any platform, so the sim must produce identical bits everywhere.
+  Arithmetic and `sqrt` are exact IEEE operations; transcendental functions (`sin`, `cos`,
+  `atan2`, `hypot`, …) come from each platform's math library and differ in the last bits.
+- The sim calls them through `mmk_sim::fmath::DetMath` (`.dsin()`, `.dcos()`, …), backed by the
+  pure-Rust `libm` crate (musl's algorithms), identical on every target including wasm.
+  `core/crates/sim/clippy.toml` forbids the `f32`/`f64` platform versions in the sim, so CI and
+  `scripts/check.sh` reject new uses. Rust never fuses multiply-adds on its own, so no FMA issue.
+- Effect when switched: 1 of the 550 sample courses ended in a different state (its trig hit a
+  last-bit difference between Apple's library and musl's) — the case this prevents across
+  machines. Front ends (rendering, audio) may keep using the platform functions.

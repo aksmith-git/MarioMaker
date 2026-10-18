@@ -8,3 +8,8 @@ publish.workspace = true
 
 [dependencies]
 serde_json.workspace = true
+mmk-formats = { path = "../formats" }
+mmk-sim = { path = "../sim" }
+
+[dev-dependencies]
+mmk-editor = { path = "../editor" }

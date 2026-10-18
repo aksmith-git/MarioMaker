@@ -170,6 +170,26 @@ final class UILayout {
         return w >= 0 ? w : nil
     }
 
+    /// Set `s` into text pane `pane`, breaking lines between words so that none is wider than
+    /// `width` (pane units; the game breaks texts such as course descriptions itself — layout
+    /// text panes don't wrap). At most `lines` lines; the rest is cut.
+    func wrappedText(_ pane: String, _ s: String, width: Float, lines: Int = 2) {
+        var out: [String] = []
+        var line = ""
+        for word in s.split(separator: " ", omittingEmptySubsequences: false).map(String.init) {
+            let candidate = line.isEmpty ? word : line + " " + word
+            text(pane, candidate)
+            if !line.isEmpty, let w = textWidth(pane), w > width {
+                out.append(line)
+                line = word
+            } else {
+                line = candidate
+            }
+        }
+        if !line.isEmpty { out.append(line) }
+        text(pane, out.prefix(max(1, lines)).joined(separator: "\n"))
+    }
+
     /// Draw picture `pane` with the import's texture `ui/textures/<group>/<name>.mtex` (`nil`:
     /// its own texture again). False when the texture or the picture is missing.
     @discardableResult
@@ -335,6 +355,9 @@ final class UIScreenRenderer: NSObject, MTKViewDelegate {
         let layers = scene.layers
         for l in layers { l.apply(tick: scene.tick) }
         ui.encode(enc, layers: layers)
+        // a scene fade over the screen (SMM2's Cmn_Fade_00, its own import)
+        let fade = SceneFade.shared.layers
+        if !fade.isEmpty, let fui = LayoutUI.smm2 { fui.encode(enc, layers: fade) }
         enc.endEncoding()
         cmd.present(drawable)
         cmd.commit()

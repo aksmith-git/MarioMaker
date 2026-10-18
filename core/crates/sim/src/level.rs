@@ -125,10 +125,11 @@ impl Slope {
         self.bottom as f32 * TILE + rise
     }
 
-    /// Steepness index for the slope physics tables (player-physics.md §5.2): gentle → 1,
-    /// steep → 3 ([inf] mapping).
+    /// Steepness index for the slope physics tables (player-physics.md §5.2). The player's
+    /// terrain sensor (0x71009b0010) classes the surface angle: < 7.03° 0, < 20.3° 1, < 35.8° 2,
+    /// < 54.2° 3, else 4 [obs] — so the gentle slope (26.6°) is 2 and the steep one (45°) 3.
     pub fn steepness(&self) -> usize {
-        if self.steep { 3 } else { 1 }
+        if self.steep { 3 } else { 2 }
     }
 }
 
@@ -965,7 +966,10 @@ impl Level {
                 continue;
             }
             if o.id == 108 {
-                // blinking block (108-blinking-block.md): the plain group starts solid [inf]
+                // blinking block (108-blinking-block.md): the tile hit test (0x71003e14a0,
+                // attribute 13) makes variant 0 solid while the area's blink state is 0 — its
+                // value at the start — and variant 1 solid while it is 1 [obs]; the variant is the
+                // 0x4 flag [inf]
                 let alt = o.flags & 0x4 != 0;
                 lvl.blink_blocks.push((tx, ty, alt));
                 lvl.set(tx, ty, if alt { Cell::Empty } else { Cell::Solid });

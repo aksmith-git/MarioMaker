@@ -145,13 +145,21 @@ struct CourseCardInfo {
     /// "Story Mode" for the built-in courses, else "Course World" (`Cmn_PauseMenu_00` T_Mode_*).
     var builtIn = false
     var bestTicks: Int?
+    /// The play has lives (100 Mario / Endless Challenge): the HUD's lives counter and the
+    /// course card with "× lives". Library / Course World / Story Mode play has none: unlimited
+    /// retries, no game over (DECISIONS.md "Course World without lives").
+    var lives = false
+    /// `Cmn_PauseMenu_00` mode label (`T_Mode_*`); nil: Story Mode / Course World by `builtIn`.
+    var modeLabel: String?
+    /// The mode line's own text instead of a label (the 100 Mario Challenge's "n/total").
+    var modeText: String?
 }
 
 /// The SMM2 layouts over a library course. Hosts step it at 60 Hz (`step`) and feed it the
 /// engine's state (`update`); `GameSession` decides when each screen appears.
 @MainActor
 final class CourseScreens: UIScene {
-    enum Mode: Equatable { case play, intro, pause, clear, retire, gameOver }
+    enum Mode: Equatable { case play, intro, pause, options, clear, retire, gameOver }
 
     let ui: LayoutUI
     let hud: UILayout
@@ -176,6 +184,7 @@ final class CourseScreens: UIScene {
     private lazy var retireL = ui.layout("Play_CourseRetire_00")
     private lazy var timeUpL = ui.layout("Play_TimeUp_00")
     private lazy var gameOverL = ui.layout("Play_GameOver_00")
+    private lazy var optionsL = ui.layout("Cmn_OptionWindow_00")
     /// The game's selection frame, sized to the selected button's bounding pane (as on the title).
     private lazy var cursor: UILayout? = {
         let c = ui.layout("Cmn_Cursor_00")
@@ -187,6 +196,20 @@ final class CourseScreens: UIScene {
     private var closing: (UILayout, Int)?
     private var timeUpUntil = 0
     private var fadeInUntil = 0
+    /// The death iris (`Cmn_Fade_00` black circle on the player): its own instance, apart from
+    /// the course card's black.
+    private lazy var iris: UILayout? = {
+        let f = ui.layout("Cmn_Fade_00")
+        for p in ["P_FadeB_00", "P_FadeW_00", "W_CircleW_00", "N_Block_00", "N_CaptureFade_00"] { f?.visible(p, false) }
+        return f
+    }()
+    private var irisUntil = 0
+    private var irisClosed = false
+    /// The skip countdown (`Play_SlidePassIconKey_00`) and its "Skip!" (`Play_SlidePassIcon_00`).
+    private lazy var skipKey = ui.layout("Play_SlidePassIconKey_00")
+    private lazy var skipIcon = ui.layout("Play_SlidePassIcon_00")
+    private(set) var skipping = false
+    private var skipShownUntil = 0
 
     var style: Int { Int(min(snap.status.style, 4)) }
     private var skin: String { SMM2Condition.styles[style] }
@@ -200,8 +223,12 @@ final class CourseScreens: UIScene {
         switch mode {
         case .play:
             if tick < fadeInUntil, let f = fade { l.append(f) }
+            if irisClosed || tick < irisUntil, let i = iris { l.append(i) }
+            if skipping || tick < skipShownUntil, let k = skipKey { l.append(k) }
+            if let p = skipIcon, p.isPlaying("Pass") { l.append(p) }
         case .intro: l += [fade, intro].compactMap { $0 }
         case .pause: l += [fade, pauseL].compactMap { $0 }
+        case .options: l += [fade, pauseL, optionsL].compactMap { $0 }
         case .clear: if let c = clearL { l.append(c) }
         case .retire: if let r = retireL { l.append(r) }
         case .gameOver: if let g = gameOverL { l.append(g) }
@@ -233,6 +260,7 @@ final class CourseScreens: UIScene {
     private var cursorTarget: (UILayout, String)? {
         switch mode {
         case .pause: pauseL.map { ($0, "\(Self.pauseParts[pauseSelection])/B_Btn_00") }
+        case .options: optionsL.map { ($0, "\(Self.optionParts[optionSelection])/B_Btn_00") }
         case .clear where clearReady: clearL.map { ($0, "\(Self.clearParts[clearSelection])/B_Btn_00") }
         case .retire where retireReady: retireL.map { ($0, "\(Self.retireParts[retireSelection])/B_Btn_00") }
         default: nil
@@ -395,10 +423,89 @@ final class CourseScreens: UIScene {
         hud.play("Out", at: tick)
     }
 
+    /// HUD and card variants for the play's rules: Type 1 with the lives counter when the play
+    /// has lives, Type 0 (coins, score, time) when it hasn't.
+    func applyRules() {
+        hud.hold("Type", info.lives ? 1 : 0)
+    }
+
+    // MARK: skip (100 Mario: hold the skip key)
+
+    /// Ticks the skip key must be held: the three countdown steps of 32 frames [inf, as SMM1].
+    static let skipHold = 96
+
+    func skipBegin() {
+        guard let s = skipKey else { return }
+        for a in ["CountDown_00", "CountDown_01", "CountDown_02"] { s.stop(a) }
+        s.play("In", at: tick)
+        s.play("CountDown_00", at: tick)
+        s.play("CountDown_01", at: tick + 32)
+        s.play("CountDown_02", at: tick + 64)
+        skipping = true
+        skipStart = tick
+    }
+
+    private(set) var skipStart = 0
+
+    func skipCancel() {
+        guard skipping else { return }
+        skipping = false
+        skipShownUntil = 0
+    }
+
+    /// The hold is complete: "Skip!" (Pass). Returns its length in ticks.
+    func skipPass() -> Int {
+        skipping = false
+        guard let p = skipIcon else { return 1 }
+        if let s = p.message("T_Pass_00") { p.text("T_Pass_00", s) }
+        p.play("In", at: tick)
+        p.play("Loop", at: tick, loop: true)
+        p.play("Pass", at: tick)
+        return Int(max(1, p.length("Pass")))
+    }
+
+    // MARK: death iris
+
+    /// Layout position of a point of the 384 × 216 view (px from its bottom-left).
+    static func layoutPoint(viewX x: Float, viewY y: Float) -> SIMD2<Float> {
+        let cx = max(0, min(384, x)), cy = max(0, min(216, y))
+        return SIMD2((cx - 192) * 1280 / 384, (cy - 108) * 720 / 216)
+    }
+
+    /// The black circle closes on `center` (layout units) [inf: the circle and its timing are
+    /// read from the fade layout; that a death ends with it is inferred].
+    func irisOut(at center: SIMD2<Float>) {
+        guard let i = iris else { return }
+        i.visible("N_Pos_00", true)
+        i.visible("W_CircleB_00", true)
+        i.setPane("N_Pos_00", translate: center)
+        i.stop("InCircleB")
+        i.play("OutCircleB", at: tick)
+        irisUntil = tick + Int(max(1, i.length("OutCircleB")))
+        irisClosed = true
+    }
+
+    /// The course restarted: the circle opens on the player.
+    func irisIn(at center: SIMD2<Float>) {
+        guard let i = iris else { return }
+        i.visible("N_Pos_00", true)
+        i.visible("W_CircleB_00", true)
+        i.setPane("N_Pos_00", translate: center)
+        i.stop("OutCircleB")
+        i.play("InCircleB", at: tick)
+        irisUntil = tick + Int(max(1, i.length("InCircleB")))
+        irisClosed = false
+    }
+
     // MARK: course card
 
-    /// The course card on black: name, maker, condition, lives (`AnimEndlessMode`), at the
-    /// start and after each death [inf]. `lives` is the count the attempt starts with.
+    /// The card's animation: `AnimEndlessMode` ("× lives") when the play has lives, else
+    /// `AnimDefault`.
+    private var introAnim: String { info.lives ? "AnimEndlessMode" : "AnimDefault" }
+
+    /// The course card on black: name, maker, condition, and lives when the play has them, at
+    /// the start (and after each death in a play with lives) [inf]. `lives` is the count the
+    /// attempt starts with.
     func showIntro(lives: Int) {
         guard let c = intro, fade != nil else { return }
         hudOut()
@@ -431,12 +538,15 @@ final class CourseScreens: UIScene {
             c.hold("Mission", 0)
         }
         c.text("T_Zanki_00", ui.format(table: "Play_CourseIn_00", "T_Zanki_Number", ["\(lives)"]) ?? "\(lives)")
-        c.stop("AnimEndlessMode")
-        c.play("AnimEndlessMode", at: tick)
+        for a in ["AnimEndlessMode", "AnimDefault"] { c.stop(a) }
+        c.play(introAnim, at: tick)
+        UISound.shared.anim("Play_CourseIn_00", introAnim)
+        irisClosed = false
+        irisUntil = 0
         setMode(.intro)
     }
 
-    var introLength: Int { Int(max(1, intro?.length("AnimEndlessMode") ?? 1)) }
+    var introLength: Int { Int(max(1, intro?.length(introAnim) ?? 1)) }
 
     /// The card is gone: fade the black away, bring the HUD in.
     func endIntro() {
@@ -458,8 +568,9 @@ final class CourseScreens: UIScene {
 
     // MARK: pause (`Cmn_PauseMenu_00`)
 
-    /// Pause items top to bottom: the close button (continue), Start Over / Retry, Exit Course.
-    static let pauseParts = ["L_CloseBtn_00", "L_RetryBtn_00", "L_ExitBtn_00"]
+    /// Pause items top to bottom: the close button (continue), Start Over / Retry, Exit Course,
+    /// Settings.
+    static let pauseParts = ["L_CloseBtn_00", "L_RetryBtn_00", "L_ExitBtn_00", "L_OptionBtn_00"]
     private(set) var pauseSelection = 0
 
     func showPause() {
@@ -468,13 +579,17 @@ final class CourseScreens: UIScene {
         // Course World information block [inf]
         p.hold("Type", 3)
         p.hold("TypeCourseInfo", 1)
-        let modeLabel = info.builtIn ? "T_Mode_Quest" : "T_Mode_Network"
-        if let m = p.message(modeLabel) { p.text("T_Mode_00", m) }
+        let modeLabel = info.modeLabel ?? (info.builtIn ? "T_Mode_Quest" : "T_Mode_Network")
+        if let t = info.modeText { p.text("T_Mode_00", t) } else if let m = p.message(modeLabel) { p.text("T_Mode_00", m) }
+        // a run's exit is "Quit" (save and quit) [inf]
+        if info.lives, let q = p.message("L_ExitSaveBtn_00-T_Btn_00") { p.text("L_ExitBtn_00/T_Btn_00", q) }
         p.text("T_CourseTitle_00", info.name)
         for n in ["L_MiiIcon_00", "P_GoodIcon_00", "L_GoodCount_00", "N_TagAll_00", "L_KeyBtn_00",
-                  "L_OptionBtn_00", "N_PlayerInfo_01/L_Flag_00", "N_PlayerInfo_01/L_BadgeList_00"] {
+                  "N_PlayerInfo_01/L_Flag_00", "N_PlayerInfo_01/L_BadgeList_00"] {
             p.visible(n, false)
         }
+        if let s = p.message("L_OptionBtn_00-T_Btn_00") { p.text("L_OptionBtn_00/T_Btn_00", s) }
+        p.visible("L_OptionBtn_00/L_NewIcon_00", false)
         if let m = info.maker, !m.isEmpty {
             p.visible("N_PlayerInfo_00", nil)
             p.text("T_PlayerName_00", m)
@@ -511,13 +626,16 @@ final class CourseScreens: UIScene {
         hudOut()
         p.stop("Out")
         p.play("In", at: tick)
+        // the pause jingle of the course's game style
+        UISound.shared.key("Cmn_PauseMenu_00", "In_Layout", context: ["In_Layout_\(skin)"])
         setMode(.pause)
-        pauseSelect(0)
+        pauseSelect(0, sound: false)
     }
 
-    func pauseSelect(_ i: Int) {
+    func pauseSelect(_ i: Int, sound: Bool = true) {
         guard let p = pauseL else { return }
         pauseSelection = max(0, min(Self.pauseParts.count - 1, i))
+        if sound { UISound.shared.button("Cmn_PauseMenu_00", Self.pauseParts[pauseSelection], .select) }
         for (k, part) in Self.pauseParts.enumerated() {
             if k == pauseSelection { p.play("\(part)/Select", at: tick) } else { p.hold("\(part)/Select", 0) }
         }
@@ -527,6 +645,7 @@ final class CourseScreens: UIScene {
     @discardableResult
     func pauseDecide() -> Int {
         guard let p = pauseL else { return 0 }
+        UISound.shared.button("Cmn_PauseMenu_00", Self.pauseParts[pauseSelection], .decide)
         let part = "\(Self.pauseParts[pauseSelection])/Decide"
         p.play(part, at: tick)
         return Int(max(0, p.length(part)))
@@ -534,11 +653,77 @@ final class CourseScreens: UIScene {
 
     func hidePause() {
         guard mode == .pause, let p = pauseL else { return }
+        UISound.shared.key("Cmn_PauseMenu_00", "Out_Layout")
         p.stop("In")
         p.play("Out", at: tick)
         closing = (p, tick + Int(max(1, p.length("Out"))))
         hudIn()
         setMode(.play)
+    }
+
+    // MARK: settings (`Cmn_OptionWindow_00`, from the pause menu)
+
+    /// The window's items: the four characters, then OK.
+    static let optionParts = ["L_CharacterBtn_00", "L_CharacterBtn_01", "L_CharacterBtn_02", "L_CharacterBtn_03", "L_OKBtn_00"]
+    private(set) var optionSelection = 0
+    private(set) var character = 0
+
+    /// The settings window over the pause menu: `Type` 1, the offline variant (no network,
+    /// parental or comment rows) [obs layout]; its character row; the course-making controls row
+    /// (no editor here) and the player controls row (the app's Settings bind the buttons) are
+    /// hidden [departure].
+    func showOptions(character c: Int) {
+        guard let o = optionsL else { return }
+        character = max(0, min(3, c))
+        o.hold("Type", 1)
+        for n in ["N_EditMode_00", "N_PlayerSetting_00", "L_HelpBtn_00", "L_RuleBtn_00"] { o.visible(n, false) }
+        for label in ["L_Window_00-T_Index_00", "T_Character_00", "L_OKBtn_00-T_Btn_00", "L_CharacterBtn_00-T_Btn_00",
+                      "L_CharacterBtn_01-T_Btn_00", "L_CharacterBtn_02-T_Btn_00", "L_CharacterBtn_03-T_Btn_00"] {
+            if let s = o.message(label) { o.text(label.replacingOccurrences(of: "-", with: "/"), s) }
+        }
+        for (k, part) in Self.optionParts.prefix(4).enumerated() {
+            o.hold("\(part)/Toggle", k == character ? o.length("\(part)/Toggle") : 0)
+        }
+        o.stop("Out")
+        o.play("In", at: tick)
+        setMode(.options)
+        optionsSelect(character, sound: false)
+    }
+
+    func optionsSelect(_ i: Int, sound: Bool = true) {
+        guard let o = optionsL else { return }
+        let changed = optionSelection != max(0, min(Self.optionParts.count - 1, i))
+        optionSelection = max(0, min(Self.optionParts.count - 1, i))
+        if sound && changed { UISound.shared.button("Cmn_OptionWindow_00", Self.optionParts[optionSelection], .select) }
+        for (k, part) in Self.optionParts.enumerated() {
+            if k == optionSelection { o.play("\(part)/Select", at: tick) } else { o.hold("\(part)/Select", 0) }
+        }
+    }
+
+    /// Confirm on the selected item: a character becomes the chosen one (Toggle); returns the
+    /// Decide's length, and whether it was OK (the window closes).
+    func optionsDecide() -> (Int, Bool) {
+        guard let o = optionsL else { return (0, true) }
+        let part = Self.optionParts[optionSelection]
+        UISound.shared.button("Cmn_OptionWindow_00", part, .decide)
+        o.play("\(part)/Decide", at: tick)
+        if optionSelection < 4 && optionSelection != character {
+            o.stop("\(Self.optionParts[character])/Toggle")
+            o.play("\(Self.optionParts[character])/Toggle", at: tick, from: o.length("\(part)/Toggle"), to: 0, speed: -1)
+            character = optionSelection
+            o.play("\(part)/Toggle", at: tick)
+        }
+        return (Int(max(1, o.length("\(part)/Decide"))), optionSelection == 4)
+    }
+
+    /// Back to the pause menu.
+    func hideOptions() {
+        guard mode == .options, let o = optionsL else { return }
+        o.stop("In")
+        o.play("Out", at: tick)
+        closing = (o, tick + Int(max(1, o.length("Out"))))
+        setMode(.pause)
+        pauseSelect(Self.pauseParts.count - 1)
     }
 
     // MARK: course clear (`Play_CourseClear_00`)
@@ -547,7 +732,8 @@ final class CourseScreens: UIScene {
     static let clearParts = ["L_Btn_01", "L_Btn_00"]
     private(set) var clearSelection = 1
 
-    func showClear(ticks: Int?) {
+    /// `run`: a 100 Mario run's clear, Quit (save and quit) / Next instead of Start Over / Quit.
+    func showClear(ticks: Int?, run: Bool = false) {
         guard let c = clearL else { return }
         hudOut()
         // Type 2 with the network parts hidden. The banner (N_Cap_00: orange band, COURSE CLEAR)
@@ -568,13 +754,13 @@ final class CourseScreens: UIScene {
         c.materialWhite("P_ClearMax_00", [255, 255, 255, 255])
         // without the Comment / Tag buttons on its left the pair is centred [departure]
         if let b = c.pane("N_Btn_00") { c.setPane("N_Btn_00", translate: SIMD2(-201, b.translate.1)) }
-        if let s = c.message("0000") { c.text("L_Btn_01/T_Btn_00", s) }
-        if let s = c.message("0001") { c.text("L_Btn_00/T_Btn_00", s) }
+        if let s = c.message(run ? "0001" : "0000") { c.text("L_Btn_01/T_Btn_00", s) }
+        if let s = c.message(run ? "0004" : "0001") { c.text("L_Btn_00/T_Btn_00", s) }
         fillClearInfo(c, ticks: ticks)
         c.stop("OutContents")
         c.play("InNet", at: tick)
         setMode(.clear)
-        clearSelect(1)
+        clearSelect(1, sound: false)
     }
 
     private func fillClearInfo(_ l: UILayout, ticks: Int?) {
@@ -603,8 +789,11 @@ final class CourseScreens: UIScene {
     /// Buttons take input once InNet has brought them on screen.
     var clearReady: Bool { mode == .clear && sinceMode >= Int(clearL?.length("InNet") ?? 0) }
 
-    func clearSelect(_ i: Int) {
+    func clearSelect(_ i: Int, sound: Bool = true) {
         guard let c = clearL else { return }
+        if sound && clearSelection != max(0, min(1, i)) {
+            UISound.shared.button("Play_CourseClear_00", Self.clearParts[max(0, min(1, i))], .select)
+        }
         clearSelection = max(0, min(1, i))
         for (k, part) in Self.clearParts.enumerated() {
             if k == clearSelection { c.play("\(part)/Select", at: tick) } else { c.hold("\(part)/Select", 0) }
@@ -614,6 +803,7 @@ final class CourseScreens: UIScene {
     @discardableResult
     func clearDecide() -> Int {
         guard let c = clearL else { return 0 }
+        UISound.shared.button("Play_CourseClear_00", Self.clearParts[clearSelection], .decide)
         let part = "\(Self.clearParts[clearSelection])/Decide"
         c.play(part, at: tick)
         return Int(max(0, c.length(part)))
@@ -642,13 +832,16 @@ final class CourseScreens: UIScene {
         r.stop("OutContents")
         r.play("InNet", at: tick)
         setMode(.retire)
-        retireSelect(1)
+        retireSelect(1, sound: false)
     }
 
     var retireReady: Bool { mode == .retire && sinceMode >= Int(retireL?.length("InNet") ?? 0) / 2 }
 
-    func retireSelect(_ i: Int) {
+    func retireSelect(_ i: Int, sound: Bool = true) {
         guard let r = retireL else { return }
+        if sound && retireSelection != max(0, min(1, i)) {
+            UISound.shared.button("Play_CourseRetire_00", Self.retireParts[max(0, min(1, i))], .select)
+        }
         retireSelection = max(0, min(1, i))
         for (k, part) in Self.retireParts.enumerated() {
             if k == retireSelection { r.play("\(part)/Select", at: tick) } else { r.hold("\(part)/Select", 0) }
@@ -658,6 +851,7 @@ final class CourseScreens: UIScene {
     @discardableResult
     func retireDecide() -> Int {
         guard let r = retireL else { return 0 }
+        UISound.shared.button("Play_CourseRetire_00", Self.retireParts[retireSelection], .decide)
         let part = "\(Self.retireParts[retireSelection])/Decide"
         r.play(part, at: tick)
         return Int(max(0, r.length(part)))

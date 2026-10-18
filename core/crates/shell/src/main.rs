@@ -48,6 +48,20 @@ mod native {
         /// Headless: render a whole course area (no HUD, actors as placed) to a PNG and exit.
         #[arg(long, value_name = "PNG")]
         map: Option<String>,
+        /// Headless: render this imported layout (SMM1 or SMM2 UI) at 1280×720 to --screenshot,
+        /// like the Swift app's MMK_UI_LAYOUT preview.
+        #[arg(long)]
+        layout: Option<String>,
+        /// With --layout: the UI import (default $MMK_UI_CACHE, else ~/smm-work/cache/smm1-v208).
+        #[arg(long)]
+        ui_cache: Option<PathBuf>,
+        /// With --layout: animations, comma-separated: Name (from 0, holding the last frame),
+        /// Name~ (looping), Name@frame (fixed); --ticks frames in.
+        #[arg(long, default_value = "")]
+        ui_anim: String,
+        /// With --layout: text replacements, pane=text;pane=text.
+        #[arg(long, default_value = "")]
+        ui_text: String,
         /// With --map: 0 main area, 1 sub-area.
         #[arg(long, default_value_t = 0)]
         map_area: usize,
@@ -86,6 +100,20 @@ mod native {
         /// Maker name for uploads.
         #[arg(long, default_value = "anonymous")]
         maker: String,
+        /// With --code: race the course record's run as a ghost (or a replay file's, --ghost-file).
+        #[arg(long)]
+        ghost: bool,
+        /// Save your run as a replay file (`.mmkr`): on each clear, or with --screenshot, the
+        /// scripted run when it's taken.
+        #[arg(long)]
+        record_replay: Option<PathBuf>,
+        /// Race this replay file (`.mmkr`) as a ghost.
+        #[arg(long)]
+        ghost_file: Option<PathBuf>,
+        /// Account token for the course server (default $MMK_TOKEN): with --code, each clear is
+        /// sent as a replay the server verifies (world records).
+        #[arg(long)]
+        token: Option<String>,
         /// Online play (rollback over UDP) with known addresses: ours, e.g. 0.0.0.0:7000.
         #[arg(long)]
         net_bind: Option<String>,
@@ -182,6 +210,33 @@ mod native {
 
     pub fn run() -> Result<(), String> {
         let args = Args::parse();
+        if let Some(name) = &args.layout {
+            let dir = args
+                .ui_cache
+                .clone()
+                .or_else(|| std::env::var_os("MMK_UI_CACHE").map(PathBuf::from))
+                .or_else(|| {
+                    let d =
+                        PathBuf::from(std::env::var_os("HOME")?).join("smm-work/cache/smm1-v208");
+                    d.is_dir().then_some(d)
+                })
+                .ok_or("--layout needs --ui-cache (an SMM1 or SMM2 UI import)")?;
+            let out = args
+                .screenshot
+                .as_deref()
+                .ok_or("--layout needs --screenshot <png>")?;
+            let msg = mmk_shell::headless::layout(
+                &dir,
+                name,
+                &args.ui_anim,
+                &args.ui_text,
+                args.ticks,
+                out,
+                !args.cpu_textures,
+            )?;
+            println!("{msg}");
+            return Ok(());
+        }
         let assets_dir = match args.assets.as_deref() {
             Some("placeholder") => None,
             Some(p) => Some(PathBuf::from(p)),
@@ -224,6 +279,64 @@ mod native {
                 }
                 Err(e) => log(&format!("costumes: {e}")),
             }
+        }
+        let ghost = match (&args.ghost_file, args.ghost, &args.code, &args.server) {
+            (Some(p), _, _, _) => {
+                Some(std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?)
+            }
+            (None, true, Some(code), Some(server)) => Some(
+                mmk_online::Client::new(server.clone())
+                    .record_replay(code)
+                    .map_err(|e| format!("ghost for {code}: {e}"))?,
+            ),
+            (None, true, _, _) => return Err("--ghost needs --code and --server".into()),
+            _ => None,
+        };
+        if let Some(bytes) = ghost {
+            let r = mmk_modes::replay::Replay::decode(&bytes).ok_or("the ghost isn't a replay")?;
+            if r.sim_version != mmk_modes::replay::SIM_VERSION {
+                log("ghost: recorded with another engine version; it may not follow the course");
+            }
+            log(&format!("ghost: {} frames", r.inputs.len()));
+            game.session.set_ghost(r);
+        }
+        // a server course: each clear goes to the server as a replay it verifies (records)
+        if let (Some(code), Some(server)) = (&args.code, &args.server) {
+            let token = args
+                .token
+                .clone()
+                .or_else(|| std::env::var("MMK_TOKEN").ok().filter(|t| !t.is_empty()));
+            if let Some(token) = token {
+                game.session.record_replays();
+                let (code, server) = (code.clone(), server.clone());
+                game.on_clear = Some(Box::new(move |r: mmk_modes::replay::Replay| {
+                    let client =
+                        mmk_online::Client::new(server.clone()).with_token(Some(token.clone()));
+                    let code = code.clone();
+                    std::thread::spawn(move || match client.submit_replay(&code, &r.encode()) {
+                        Ok(l) => log(&format!(
+                            "clear sent: record {} ms by {}{}",
+                            l.record_ms,
+                            l.record_holder,
+                            if l.record_verified { " (verified)" } else { "" }
+                        )),
+                        Err(e) => log(&format!("clear not sent: {e}")),
+                    });
+                }));
+            }
+        }
+        if let Some(p) = args.record_replay.clone() {
+            game.session.record_replays();
+            let mut next = game.on_clear.take();
+            game.on_clear = Some(Box::new(move |r: mmk_modes::replay::Replay| {
+                match std::fs::write(&p, r.encode()) {
+                    Ok(()) => log(&format!("replay saved: {}", p.display())),
+                    Err(e) => log(&format!("{}: {e}", p.display())),
+                }
+                if let Some(f) = &mut next {
+                    f(r);
+                }
+            }));
         }
         if args.edit {
             let editor = match &course {
@@ -328,6 +441,9 @@ mod native {
             return Ok(());
         }
         if let Some(path) = &args.screenshot {
+            if args.record_replay.is_some() {
+                game.session.record_replays();
+            }
             let msg = mmk_shell::headless::screenshot(
                 &mut game,
                 path,
@@ -336,6 +452,10 @@ mod native {
                 !args.idle,
                 !args.cpu_textures,
             )?;
+            if let Some(p) = &args.record_replay {
+                std::fs::write(p, game.session.replay().encode())
+                    .map_err(|e| format!("{}: {e}", p.display()))?;
+            }
             println!("{msg}");
             return Ok(());
         }

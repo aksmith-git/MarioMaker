@@ -51,19 +51,27 @@ The app is called SMCraft; the name, bundle id and version live only in
   **Add courses…** (⌘O) copies `.course.zlib`, `.bcd` or raw course files, or whole folders of
   them, into it. Search, filter (playable / cleared), sort; double-click or **Play**. Courses in
   styles the engine doesn't support yet are marked **Not yet supported**.
-- **In game:** Esc / P / controller + pauses: Continue, Restart course, Exit to library. Clearing
-  a course or losing all lives returns to the library. With the owner's SMM2 UI import
-  (`mmk import-smm2-ui`) the screens are SMM2's own layouts: the HUD per game style, the course
-  card (start, after each death), the pause menu (✕ Continue, Start Over / Retry, Exit Course →
-  "You gave up..." with Exit / Keep playing), course clear (Start Over / Quit), "TIME'S UP!"
-  and game over; ↑/↓ or ←/→ choose, Return / A confirms, Esc / B goes back.
-  `MMK_UI_SMM2=off` keeps the drawn HUD and the plain menus.
-- **100 Mario Challenge:** with the owner's SMM1 UI import (`mmk import-smm1`, found in
-  `MMK_UI_CACHE`, `…/SMCraft/assets/smm1-*` or `~/smm-work/cache/smm1-*`) the screens are SMM1's own
-  layouts: difficulty tabs over the world map (←/→ difficulty, ↑/↓ Continue / New Game), Mario's
-  walk, the intro card, pause, course clear, game over, ending and credits. Hold **−** or **Tab**
-  (controller −; Settings "Skip course") through the 3-step countdown to skip a course; letting go
-  cancels. Without the import, simple stand-in screens are used (`MMK_UI_SMM1=off` forces them).
+- **SMM2 front end** (with the owner's SMM2 UI import, `mmk import-smm2-ui`): the game's opening
+  at launch (Settings > Game turns it off), the title (any button → Make / Play → Story Mode,
+  Course World, Coursebot, 100 Mario Challenge), fades between screens, and the game's menu
+  sounds. **Course World**: the hub (Courses, Endless Challenge; the network-only buttons say
+  so) and the course list (Hot / Popular / New; confirm opens a course, Play starts it) over the
+  library and, when set in Settings > Game, an open-source course server.
+- **In game:** Esc / P / controller + pauses: Continue, Restart course, Exit to library. Library
+  and Course World courses have **no lives** (like SMM2's Course World): deaths restart the course.
+  With the SMM2 UI import the screens are SMM2's own layouts: the HUD per game style, the course
+  card, the pause menu (✕ Continue, Start Over / Retry, Exit Course → "You gave up..." with Exit
+  / Keep playing, Settings: the character), course clear (Start Over / Quit), "TIME'S UP!";
+  ↑/↓ or ←/→ choose, Return / A confirms, Esc / B goes back. `MMK_UI_SMM2=off` keeps the drawn
+  HUD and the plain menus.
+- **100 Mario Challenge:** by default in SMM2's Endless Challenge screens (difficulty tabs over
+  the map, New Game / Continue, Mario's walk between dots, his Play balloon, the course card with
+  lives); Settings > Game switches to SMM1's own layouts (with the owner's SMM1 UI import,
+  `mmk import-smm1`, found in `MMK_UI_CACHE`, `…/SMCraft/assets/smm1-*` or `~/smm-work/cache/smm1-*`:
+  tabs over the world map, Mario's walk, the intro card, pause, clear, game over, ending and
+  credits). Hold **−** or **Tab** (controller −; Settings "Skip course") through the 3-step
+  countdown to skip a course; letting go cancels. Without either import, simple stand-in screens
+  are used (`MMK_UI_SMM1=off` forces them for the SMM1 presentation).
 - **Save data:** best time, clears and attempts per course in
   `~/Library/Application Support/SMCraft/saves.json`, keyed by a hash of the course data.
 
@@ -78,6 +86,10 @@ The app is called SMCraft; the name, bundle id and version live only in
 | `input.pad` | JSON `{action: [button]}` | A/B jump, X/Y run, Menu pause, Options (−) skip | input |
 | `assets.placeholder` | Bool | false | user chose to run without a dump |
 | `input.touch` | Bool | true | iOS: on-screen controls (hidden while a controller is connected) |
+| `boot.opening` | Bool | true | SMM2's opening at launch |
+| `hundred.presentation` | String | `smm2` | 100 Mario screens: `smm2` (Endless Challenge style) or `smm1` |
+| `online.server` | String | empty | open-source course server Course World also lists (e.g. `http://localhost:8640`) |
+| `player.character` | Int 0–3 | 0 | Mario / Luigi / Toad / Toadette (also the SMM2 pause menu's Settings) |
 
 Read them with `UserDefaults.standard.double(forKey: "volume.music")` etc.; defaults are
 registered at launch (`SettingsKey.registerDefaults`).
@@ -93,6 +105,11 @@ registered at launch (`SettingsKey.registerDefaults`).
 | `MMK_SUPPORT_DIR=<dir>` | data folder instead of `~/Library/Application Support/SMCraft` |
 | `MMK_UI_SCREENSHOT=<png>` [`MMK_UI_SCREENSHOT_DELAY=<s>`] [`MMK_UI_SCREEN=import\|settings`] | capture the window (UI included) and quit; with `MMK_COURSE`, `MMK_UI_PAUSE_TICKS=<n>` pauses after n ticks and `MMK_UI_SCRIPTED=1` uses the scripted run. More screens: `challenge`, `challenge-intro`/`-map`, `-walk`, `-pause`, `-clear`, `-skip`, `-card`, `-gameover`, `-ending` (`DebugCapture.swift`); `MMK_UI_TICKS=<n>` holds SMM1 layout screens at tick n; `MMK_UI_DIFFICULTY=<0-3>`, `MMK_UI_CLEARED=<n>`. SMM2 in-course screens over `MMK_COURSE`: `course-clear`, `course-gameover`, `course-timeup`, `course-retire`, `course-death` shown `MMK_UI_COURSE_AT=<s>` seconds in; `MMK_UI_INTRO=0` skips the course card |
 | `MMK_UI2_CACHE=<dir>` | SMM2 UI import to use; `MMK_UI_SMM2=off` = no SMM2 title / in-course layouts |
+| `MMK_BOOT=on\|off`, `MMK_BOOT_OPENING=<InDefault…InKoopaling>` | force / skip the opening; pick one |
+| `MMK_UI_SCREEN=boot\|courseworld\|courseworld-list\|course-settings` | more captures (`DebugCapture.swift`); `MMK_UI_SCRIPT=<tick>:<button>,…` presses menu buttons at global menu ticks |
+| `MMK_HUNDRED=smm1\|smm2` | 100 Mario presentation for captures (over Settings) |
+| `MMK_LIVES=on` | with `MMK_COURSE`: play with lives (else no lives, like Course World) |
+| `MMK_DEBUG_SOUND=1` | log every SMM2 UI sound played |
 | `MMK_UI_CACHE=<dir>` | SMM1 UI import to use; `MMK_UI_SMM1=off` = stand-in 100 Mario screens |
 | `MMK_DEBUG_MISSING_ART=1` | draw boxes for sprites whose art isn't in the cache |
 | `MMK_CPU_TEXTURES=1` | decode BC textures on the CPU, as on GPUs without BC support |
@@ -186,10 +203,22 @@ Our own self-hostable server; it never talks to Nintendo's network.
 
 ```sh
 cargo run --release -p mmk-cli -- server --dir ./server-data --addr 0.0.0.0:8640
-cargo run --release -p mmk-cli -- upload my-course.bin --server http://localhost:8640 --maker me
+cargo run --release -p mmk-cli -- register Ada --server http://localhost:8640   # prints a token
+export MMK_TOKEN=…                                                              # the token
+cargo run --release -p mmk-cli -- upload my-course.bin --server http://localhost:8640
 cargo run --release -p mmk-cli -- search "castle" --server http://localhost:8640 --sort popular
 cargo run --release -p mmk-cli -- download ABC-DEF-GHJ --server http://localhost:8640
+cargo run --release -p mmk-cli -- like ABC-DEF-GHJ --server http://localhost:8640
+cargo run --release -p mmk-cli -- rankings records --server http://localhost:8640
 ```
 
-The API is described at the top of `core/crates/server/src/lib.rs`. Clients use
-`core/crates/online`, which also feeds 100 Mario runs from a server.
+The same server relays online play (up to 4 players per room, desktop and browser together):
+
+```sh
+cargo run --release -p mmk-shell -- level.bcd --net-relay localhost:8640 --net-room FRIDAY --net-player 0
+```
+
+[docs/self-hosting.md](docs/self-hosting.md) covers ports, HTTPS, accounts, moderation and online
+play. The API is described at the top of `core/crates/server/src/lib.rs`. Clients use
+`core/crates/online`, which also feeds 100 Mario runs from a server. The app's Course World
+lists the server's courses next to the library's when Settings > Game names the server.
