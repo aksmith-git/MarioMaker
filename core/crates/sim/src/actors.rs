@@ -274,7 +274,8 @@ pub enum Kind {
     /// 2 run, 3 turn — the world drives it while the player rides; `hops` = damage taken
     /// (Damage state 0x71006cec20 counts it to 3; the third hit breaks it) [obs].
     KoopaCar,
-    /// Super Hammer (116, 3D World): walks like a mushroom [inf]; makes Builder Mario.
+    /// Super Hammer (116, 3D World): makes Builder Mario. An ItemDefault item that, like the Fire
+    /// Flower, waits where it lands (landing choice vfunc +0x4d8 = 0x7100837860 → Wait) [obs].
     SuperHammer,
     /// Superball Flower (SMB1; 34-fire-flower.md) and the ball Superball Mario throws: 3 px/f
     /// on both axes, reflecting off surfaces, 270 frames (34-fire-flower.md) [ext: the bounce].
@@ -1548,6 +1549,11 @@ impl Actor {
         }
         match self.mode {
             Mode::Dead => {}
+            Mode::Emerge { .. }
+                if self.kind == Kind::StyleItem && !matches!(level.style.as_str(), "M1" | "3W") =>
+            {
+                self.leaf_pop(self.vy < 0.0);
+            }
             Mode::Emerge { until } => {
                 self.y += self.vy;
                 if (self.vy > 0.0 && self.y >= until) || (self.vy < 0.0 && self.y <= until) {
@@ -1555,9 +1561,7 @@ impl Actor {
                     self.mode = Mode::Normal;
                     self.vy = 0.0;
                     self.vx = match self.kind {
-                        Kind::Mushroom | Kind::OneUp | Kind::Star | Kind::SuperHammer => {
-                            ITEM_SPEED * self.dir as f32
-                        }
+                        Kind::Mushroom | Kind::OneUp | Kind::Star => ITEM_SPEED * self.dir as f32,
                         _ => 0.0,
                     };
                     if self.kind == Kind::Star {
@@ -1580,9 +1584,7 @@ impl Actor {
                 if self.x == tx && self.y == ty {
                     self.mode = Mode::Normal;
                     self.vx = match self.kind {
-                        Kind::Mushroom | Kind::OneUp | Kind::Star | Kind::SuperHammer => {
-                            ITEM_SPEED * self.dir as f32
-                        }
+                        Kind::Mushroom | Kind::OneUp | Kind::Star => ITEM_SPEED * self.dir as f32,
                         _ => 0.0,
                     };
                     self.vy = if matches!(self.pipe, Some((PipeDir::Down, _, _))) {
@@ -1985,7 +1987,7 @@ impl Actor {
                     self.turn();
                 }
             }
-            Kind::Mushroom | Kind::OneUp | Kind::SuperHammer => {
+            Kind::Mushroom | Kind::OneUp => {
                 self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
                 if self.on_ground {
                     self.vx = ITEM_SPEED * self.dir as f32;
@@ -1996,7 +1998,7 @@ impl Actor {
                     self.vx = ITEM_SPEED * self.dir as f32;
                 }
             }
-            Kind::FireFlower | Kind::SuperballFlower => {
+            Kind::FireFlower | Kind::SuperballFlower | Kind::SuperHammer => {
                 self.vx = 0.0;
                 self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
                 self.collide(level);
@@ -3107,13 +3109,23 @@ impl Actor {
         }
     }
 
-    /// Super Leaf / Cape Feather [inf: SMB3 / SMW behaviour, not traced]: out of a block it
-    /// flies up (vy 2.5, slowing 0.1/frame), then sways down at 0.5 px/f swinging ±20 px; a
-    /// placed one hovers where it is. Phases: 0 new, 1 rising, 2 swaying, 3 hovering.
+    /// The style power-up. SMB1's Big Mushroom and 3D World's Super Bell are ItemDefault items
+    /// (20-super-mushroom.md): the Big Mushroom walks like the Super Mushroom, the Bell waits
+    /// where it lands like the Fire Flower (landing choice vfunc +0x4d8: 0x71008357f0 → Move
+    /// for BigKinoko, 0x7100837860 → Wait for SuperBell) [obs]. The Super Leaf (SMB3) and Cape
+    /// Feather (SMW) share the ItemLeaf preset (vtable 0x71021967b8): out of an upward block
+    /// they shoot up through the terrain at 4.0 (gravity −0.25) until they stop rising (down:
+    /// −0.24, gravity −0.0625, for 9 frames) (Block Out 0x710082ecb0 / 0x710082ec80), then sway
+    /// down (Move 0x710082dd70): the sideways speed swings between ±2 at 0.125/frame (the push
+    /// flips once |vx| ≥ 2, 0x710082e720), falling 1.225 px/f while gathering speed to the
+    /// right, 1.1 to the left, and rising 0.025 while braking (0x710082e110, table
+    /// 0x7101d03c18) — ±16 px swings, a 64-frame period, about 0.57 px/f down. A placed one
+    /// sways down from where it is. Phases: 0 new, 1 shooting up, 2 swaying, 3 landed (it stops
+    /// [inf]); push direction in `hops` bit 0; frames left of a downward pop in `timer`.
+    /// NSMBU's Propeller Mushroom uses its own ItemPropeller Move (0x7100832250 /
+    /// 0x7100831bf0), not modelled: it sways here like the leaf [inf].
     fn step_style_item(&mut self, level: &Level) {
-        if level.style == "3W" || level.style == "M1" {
-            // Super Bell: the ItemDefault preset, i.e. it walks like a mushroom
-            // (44-style-powerup.md) [?: bounce height]
+        if level.style == "M1" {
             self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
             if self.on_ground {
                 self.vx = ITEM_SPEED * self.dir as f32;
@@ -3125,35 +3137,79 @@ impl Actor {
             }
             return;
         }
+        if level.style == "3W" {
+            self.vx = 0.0;
+            self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
+            self.collide(level);
+            return;
+        }
         match self.phase {
             0 => {
-                if self.spawn.is_some() {
-                    self.phase = 3;
-                } else {
-                    self.phase = 1;
-                    self.vy = 2.5;
-                }
+                // placed: sway from here
+                self.phase = 2;
+                self.vx = 0.0;
+                self.hops = 0;
+                self.leaf_sway(level);
             }
             1 => {
-                self.vy -= 0.1;
+                // shooting out of the block, through the terrain
+                if self.timer > 0 {
+                    self.vy = (self.vy - 0.0625).max(MAX_FALL);
+                    self.timer -= 1;
+                } else {
+                    self.vy -= 0.25;
+                }
                 self.y += self.vy;
-                if self.vy <= 0.0 {
+                let done = if self.timer > 0 {
+                    false
+                } else {
+                    self.vy <= 0.0
+                };
+                if done {
                     self.phase = 2;
-                    self.home_x = self.x;
-                    self.heading = 0.0;
+                    self.vx = 0.0;
+                    self.hops = 0;
                 }
             }
-            2 => {
-                self.heading += 3.0;
-                self.x = self.home_x + 20.0 * self.heading.to_radians().dsin();
+            2 => self.leaf_sway(level),
+            _ => {
                 self.vx = 0.0;
-                self.vy = -0.5;
+                self.vy = (self.vy + ENEMY_GRAVITY).max(MAX_FALL);
                 self.collide(level);
-                if self.on_ground {
-                    self.phase = 3;
-                }
             }
-            _ => {}
+        }
+    }
+
+    /// One frame of the ItemLeaf sway (Move 0x710082dd70 with the ItemLeaf slots).
+    fn leaf_sway(&mut self, level: &Level) {
+        let right = self.hops & 1 == 0;
+        self.vx += if right { 0.125 } else { -0.125 };
+        self.vy = match (u8::from(self.vx < 0.0)) + (self.hops & 1) {
+            0 => -1.225,
+            1 => 0.025,
+            _ => -1.1,
+        };
+        if self.vx.abs() >= 2.0 {
+            self.hops ^= 1;
+        }
+        self.collide(level);
+        if self.on_ground {
+            self.phase = 3;
+        }
+    }
+
+    /// The Super Leaf / Cape Feather comes out of a block (instead of the Super Mushroom's slow
+    /// rise): up at 4.0, or down at −0.24 for 9 frames.
+    fn leaf_pop(&mut self, down: bool) {
+        self.mode = Mode::Normal;
+        self.phase = 1;
+        self.vx = 0.0;
+        if down {
+            self.vy = -0.24;
+            self.timer = 9;
+        } else {
+            self.vy = 4.0;
+            self.timer = 0;
         }
     }
 
@@ -4261,6 +4317,48 @@ mod tests {
         }
         l.children = 9;
         assert!((0..300).any(|_| l.step_spawning(&level).is_some()));
+    }
+
+    #[test]
+    fn super_leaf_shoots_out_then_sways_down() {
+        let mut level = Level::flat(60);
+        level.style = "M3".into();
+        // out of a block at tile (20, 6) (left out: the leaf would land back on it)
+        let mut a = Actor::new(Kind::StyleItem, 20.0 * TILE + 8.0, 96.0);
+        a.vy = 0.5;
+        a.mode = Mode::Emerge { until: 112.0 };
+        let mut top: f32 = 0.0;
+        let (mut xmin, mut xmax) = (f32::MAX, f32::MIN);
+        let mut frames = 0;
+        while a.phase != 3 && frames < 2000 {
+            a.step(&level, 0.0);
+            top = top.max(a.y);
+            if a.phase == 2 {
+                xmin = xmin.min(a.x);
+                xmax = xmax.max(a.x);
+                assert!(a.vx.abs() <= 2.0 + 1e-4);
+            }
+            frames += 1;
+        }
+        // 4.0 under −0.25: 30 px up (16 frames), then ±16 px swings down to the floor
+        assert!((top - 126.0).abs() < 0.01, "peak {top}");
+        assert!((xmax - xmin - 32.0).abs() < 1.0, "swing {}", xmax - xmin);
+        assert_eq!(a.y, 32.0);
+        // (126 − 32) px at ~0.57 px/f
+        assert!((150..=190).contains(&frames), "{frames} frames");
+    }
+
+    #[test]
+    fn super_bell_and_hammer_wait_where_they_land() {
+        let mut level = Level::flat(60);
+        level.style = "3W".into();
+        for kind in [Kind::StyleItem, Kind::SuperHammer] {
+            let mut a = Actor::new(kind, 200.0, 64.0);
+            for _ in 0..120 {
+                a.step(&level, 0.0);
+            }
+            assert_eq!((a.x, a.y), (200.0, 32.0), "{kind:?}");
+        }
     }
 
     fn bro_on_platform_level() -> Level {

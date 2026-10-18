@@ -7946,7 +7946,10 @@ mod tests {
             .unwrap();
         let x0 = w.actors[bell].x;
         run(&mut w, 0, 10);
-        assert!(w.actors[bell].x != x0, "the bell walks like a mushroom");
+        assert!(
+            w.actors[bell].x == x0,
+            "the bell waits where it lands (0x7100837860)"
+        );
         run(&mut w, input::RIGHT | input::RUN, 90);
         run(&mut w, 0, 60);
         assert_eq!(w.player.form, Form::Cat, "picked up the bell");
