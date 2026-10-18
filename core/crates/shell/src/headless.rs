@@ -391,3 +391,48 @@ pub fn layout(
         size[1]
     ))
 }
+
+/// Render the front end after it has run: `ticks` front ticks, or for a course screen
+/// (`play`), until that screen has been up `ticks` ticks (as the Swift app's frozen captures:
+/// `MMK_UI_TICKS`). Saves a `size` PNG.
+pub fn front(
+    app: &mut crate::front_app::FrontApp,
+    game: &mut Game,
+    ticks: u64,
+    course_screen: bool,
+    size: (u32, u32),
+    path: &str,
+    allow_bc: bool,
+) -> Result<String, String> {
+    let input = mmk_front::FrontInput::default();
+    if course_screen {
+        // (a screen that comes up later, e.g. the pause after some play, is waited for)
+        for _ in 0..ticks + 3600 {
+            let done = match &app.front.screen {
+                mmk_front::Screen::Course(p) => p.menu_up() && p.since_mode() as u64 >= ticks,
+                _ => true,
+            };
+            if done {
+                break;
+            }
+            app.tick(&input, 0, game);
+        }
+    } else {
+        for _ in 0..ticks {
+            app.tick(&input, 0, game);
+        }
+    }
+    let gpu = pollster::block_on(Gpu::new(&instance(), None, allow_bc))?;
+    let mut renderer = Renderer::new(&gpu, FORMAT, &game.cache);
+    renderer.draw_missing = game.placeholder;
+    let (w, h) = size;
+    let tex = target(&gpu, w, h);
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut enc = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    app.encode(&gpu, &mut enc, &view, FORMAT, size, &mut renderer, game);
+    let rgba = read_back(&gpu, enc, &tex);
+    write_png(path, w, h, &rgba)?;
+    Ok(format!("{path}: {w}x{h}, front tick {}", app.front.tick))
+}

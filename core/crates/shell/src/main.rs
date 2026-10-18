@@ -143,6 +143,62 @@ mod native {
         /// Course Maker style for a new course (M1, M3, MW, WU, 3W).
         #[arg(long, default_value = "M1")]
         style: String,
+        /// SMM2 front end (the default without a course when the SMM2 UI import is found):
+        /// course folder(s) for Course World and 100 Mario (default $MMK_LIBRARY, else
+        /// ~/smm-work/courses).
+        #[arg(long)]
+        library: Vec<PathBuf>,
+        /// Play the demo strip instead of the menus.
+        #[arg(long)]
+        no_menus: bool,
+        /// Front end without the opening.
+        #[arg(long)]
+        no_opening: bool,
+        /// Front end: play this opening (InDefault, InCharacter, InKuribo, InKoopa, InCoopMode,
+        /// InLink, InKoopaling).
+        #[arg(long)]
+        opening: Option<String>,
+        /// Front end: start with this title demo course (0-based).
+        #[arg(long)]
+        title_course: Option<usize>,
+        /// Front end: 100 Mario with SMM2's Endless screens (smm2) or SMM1's (smm1, needs
+        /// --smm1-ui).
+        #[arg(long, default_value = "smm2")]
+        hundred: String,
+        /// Front end: the SMM1 UI import (default $MMK_UI_SMM1, else ~/smm-work/cache/smm1-v208).
+        #[arg(long)]
+        smm1_ui: Option<PathBuf>,
+        /// Front end: where save data and settings go (default $MMK_DATA, else ~/.mmk-play).
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        /// Headless front end capture (with --screenshot, --ticks): boot, title, title-main,
+        /// title-play, courseworld, courseworld-list, storymode, challenge, challenge-map,
+        /// challenge-walk, challenge-gameover, challenge-ending, challenge-pause,
+        /// challenge-clear, challenge-skip, challenge-card; with --front-course: course-intro,
+        /// course-pause, course-clear, course-gameover, course-timeup, course-retire,
+        /// course-settings, course-death.
+        #[arg(long, value_name = "NAME")]
+        front_screen: Option<String>,
+        /// Capture size.
+        #[arg(long, default_value = "1280x720")]
+        front_size: String,
+        /// The course for course-* captures.
+        #[arg(long)]
+        front_course: Option<PathBuf>,
+        /// Captures: difficulty (0–3) and courses cleared (challenge-walk).
+        #[arg(long, default_value_t = 0)]
+        front_difficulty: usize,
+        #[arg(long, default_value_t = 3)]
+        front_cleared: usize,
+        /// Captures: Play-menu button selected on title-play.
+        #[arg(long)]
+        front_select: Option<usize>,
+        /// Captures: menu presses at global UI ticks, tick:button,… (the Swift app's
+        /// MMK_UI_SCRIPT); title presses at title ticks (MMK_UI_INPUT).
+        #[arg(long, default_value = "")]
+        front_script: String,
+        #[arg(long, default_value = "")]
+        front_input: String,
         /// Debug: start the player at this x (px), and y (default 32).
         #[arg(long)]
         start_x: Option<f32>,
@@ -157,6 +213,210 @@ mod native {
         let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
         let p = PathBuf::from(home).join("smm-work/cache/smm2-3.0.3");
         p.join("manifest.json").is_file().then_some(p)
+    }
+
+    fn home() -> Option<PathBuf> {
+        std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from)
+    }
+
+    fn ui_game(dir: &std::path::Path) -> Option<String> {
+        let m: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("manifest.json")).ok()?).ok()?;
+        m.get("game")?.as_str().map(str::to_string)
+    }
+
+    /// The SMM2 UI import for the front end: --ui-cache, $MMK_UI_CACHE / $MMK_UI2_CACHE when
+    /// they are SMM2 imports, else ~/smm-work/cache/smm2-ui-3.0.3.
+    fn front_ui_dir(args: &Args) -> Option<PathBuf> {
+        let env = |k: &str| std::env::var_os(k).map(PathBuf::from);
+        [
+            args.ui_cache.clone(),
+            env("MMK_UI_CACHE"),
+            env("MMK_UI2_CACHE"),
+            home().map(|h| h.join("smm-work/cache/smm2-ui-3.0.3")),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|d| ui_game(d).as_deref() == Some("SMM2"))
+    }
+
+    fn run_front(args: &Args, ui_dir: PathBuf, assets_dir: Option<PathBuf>) -> Result<(), String> {
+        use mmk_front::{Front, Options, Ui, UiKind};
+        use mmk_shell::front_app::FrontApp;
+        use mmk_shell::front_host::{HostData, ShellHost};
+        let capture = args.front_screen.clone();
+        let smm2 = Ui::open(UiKind::Smm2, &ui_dir)?;
+        let smm1_dir = args
+            .smm1_ui
+            .clone()
+            .or_else(|| std::env::var_os("MMK_UI_SMM1").map(PathBuf::from))
+            .or_else(|| home().map(|h| h.join("smm-work/cache/smm1-v208")))
+            .filter(|d| ui_game(d).as_deref() == Some("SMM1"));
+        let smm1 = smm1_dir.and_then(|d| Ui::open(UiKind::Smm1, &d).ok());
+        let source = assets_dir.as_ref().map(|d| DirSource::new(d.clone()));
+        let mut game = Game::load(source.as_ref().map(|s| s as &dyn AssetSource), None)?;
+        game.no_hud = true;
+        let mut data = HostData::new(assets_dir.as_ref().map(|d| DirSource::new(d.clone())));
+        data.ui_dir = Some(ui_dir.clone());
+        data.server = args
+            .server
+            .clone()
+            .or_else(|| std::env::var("MMK_SERVER").ok().filter(|s| !s.is_empty()));
+        data.library_dirs = if !args.library.is_empty() {
+            args.library.clone()
+        } else if let Some(l) = std::env::var_os("MMK_LIBRARY") {
+            std::env::split_paths(&l).collect()
+        } else {
+            home()
+                .map(|h| h.join("smm-work/courses"))
+                .filter(|d| d.is_dir())
+                .into_iter()
+                .collect()
+        };
+        // the library is read on a thread while the opening plays
+        data.start_scan();
+        // captures keep their settings in memory (nothing read or written)
+        data.data_dir = if capture.is_some() && args.data_dir.is_none() {
+            None
+        } else {
+            args.data_dir
+                .clone()
+                .or_else(|| std::env::var_os("MMK_DATA").map(PathBuf::from))
+                .or_else(|| {
+                    std::env::var_os("APPDATA")
+                        .map(|a| PathBuf::from(a).join("mmk-play"))
+                        .or_else(|| home().map(|h| h.join(".mmk-play")))
+                })
+        };
+        let opts = Options {
+            boot: !args.no_opening && capture.is_none(),
+            opening: args.opening.clone(),
+            title_select: args.front_select,
+            title_course: args.title_course,
+            hundred: if args.hundred == "smm1" {
+                mmk_front::challenge::Presentation::Smm1
+            } else {
+                mmk_front::challenge::Presentation::Smm2
+            },
+            instant_fades: capture.is_some(),
+            script: args.front_script.clone(),
+            title_input: args.front_input.clone(),
+            ..Default::default()
+        };
+        let front = {
+            let mut host = ShellHost {
+                game: &mut game,
+                data: &mut data,
+            };
+            Front::new(smm2, smm1, opts, &mut host)
+        };
+        let mut app = FrontApp::new(front, data);
+        log(&format!(
+            "front end: {} (library {:?}, server {})",
+            ui_dir.display(),
+            app.data.library_dirs,
+            app.data.server.as_deref().unwrap_or("none")
+        ));
+        if let Some(screen) = capture {
+            let out = args
+                .screenshot
+                .as_deref()
+                .ok_or("--front-screen needs --screenshot <png>")?;
+            let (w, h) = args
+                .front_size
+                .split_once('x')
+                .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+                .ok_or("--front-size: WxH")?;
+            let course_screen = screen.starts_with("course-");
+            if course_screen {
+                let path = args
+                    .front_course
+                    .clone()
+                    .ok_or("course-* captures need --front-course <course file>")?;
+                let mut host = ShellHost {
+                    game: &mut game,
+                    data: &mut app.data,
+                };
+                let loaded = mmk_front::Host::load_course(
+                    &mut host,
+                    &mmk_front::Source::Library(path.to_string_lossy().into_owned()),
+                )?;
+                let name = if loaded.name.is_empty() {
+                    path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned()
+                } else {
+                    loaded.name.clone()
+                };
+                // course-pause: straight into play, paused after one tick (the Swift app's
+                // MMK_UI_INTRO=0 MMK_UI_PAUSE_TICKS=1); the others over the course card
+                let pause = screen == "course-pause";
+                app.front
+                    .play_course(&mut host, &name, loaded.key.clone(), !pause);
+                let what = screen.clone();
+                app.front.with_cx(&mut host, |cx, s| {
+                    if let mmk_front::Screen::Course(p) = s {
+                        if pause {
+                            p.auto_pause_tick = Some(1);
+                        } else {
+                            p.debug(&what, cx, None);
+                        }
+                    }
+                });
+            } else {
+                let mut host = ShellHost {
+                    game: &mut game,
+                    data: &mut app.data,
+                };
+                if !app.front.capture(
+                    &mut host,
+                    &screen,
+                    args.front_difficulty,
+                    args.front_cleared,
+                ) {
+                    return Err(format!("unknown front screen {screen}"));
+                }
+            }
+            let msg = mmk_shell::headless::front(
+                &mut app,
+                &mut game,
+                args.ticks,
+                course_screen,
+                (w, h),
+                out,
+                !args.cpu_textures,
+            )?;
+            println!("{msg}");
+            return Ok(());
+        }
+        let mute = args.mute || std::env::var("MMK_MUTE").as_deref() == Ok("1");
+        if !mute {
+            let bank = source.as_ref().and_then(|s| source::open_bank(s).ok());
+            let music = source.as_ref().and_then(|s| source::music_reader(s));
+            match mmk_shell::ui_sound::start(bank, music, Some(ui_dir.join("ui/sound"))) {
+                Ok(a) => {
+                    app.data.audio = a.game.clone();
+                    app.ui_audio = Some(a.ui.clone());
+                    app.audio_stream = Some(a);
+                }
+                Err(e) => log(&format!("sound off: {e}")),
+            }
+        }
+        // the title course loaded before the sound started: give it the sound now
+        game.session.set_audio(app.data.audio.clone());
+        let event_loop = EventLoop::<UserEvent>::with_user_event()
+            .build()
+            .map_err(|e| format!("event loop: {e}"))?;
+        let mut shell = App::new(game, "SMCraft".to_string(), !args.cpu_textures);
+        shell.quit_after = args.quit_after;
+        shell.front = Some(Box::new(app));
+        shell.set_proxy(event_loop.create_proxy());
+        event_loop
+            .run_app(&mut shell)
+            .map_err(|e| format!("event loop: {e}"))
     }
 
     pub fn run() -> Result<(), String> {
@@ -193,6 +453,24 @@ mod native {
             Some(p) => Some(PathBuf::from(p)),
             None => default_assets(),
         };
+        let menus = args.course.is_none()
+            && !args.edit
+            && args.code.is_none()
+            && args.net_bind.is_none()
+            && args.net_relay.is_none()
+            && args.map.is_none()
+            && !args.check_textures
+            && !args.no_menus
+            && args.screenshot.is_none();
+        if menus || args.front_screen.is_some() {
+            match front_ui_dir(&args) {
+                Some(ui) => return run_front(&args, ui, assets_dir),
+                None if args.front_screen.is_some() => {
+                    return Err("--front-screen needs the SMM2 UI import (--ui-cache)".into());
+                }
+                None => {}
+            }
+        }
         let source = assets_dir.as_ref().map(|d| DirSource::new(d.clone()));
         let source_ref = source.as_ref().map(|s| s as &dyn AssetSource);
         let downloaded = match (&args.code, &args.server) {

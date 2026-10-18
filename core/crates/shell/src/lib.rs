@@ -23,7 +23,13 @@ pub mod texture;
 pub mod ui_layer;
 
 #[cfg(not(target_arch = "wasm32"))]
+pub mod front_app;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod front_host;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod headless;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ui_sound;
 #[cfg(target_arch = "wasm32")]
 pub mod web;
 #[cfg(target_arch = "wasm32")]

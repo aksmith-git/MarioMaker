@@ -106,6 +106,25 @@ impl Gfx {
     /// Draw and present one frame; false if the surface had no image to draw into (window
     /// hidden or occluded, surface being reconfigured).
     fn draw(&mut self, game: &mut Game) -> bool {
+        self.draw_with(|gpu, renderer, enc, view, _, size| {
+            let scene = game.scene();
+            renderer.encode(gpu, enc, view, size, &scene);
+        })
+    }
+
+    /// Draw and present one frame recorded by `encode` (gpu, renderer, encoder, target view, its
+    /// format, its size); false as `draw`.
+    fn draw_with(
+        &mut self,
+        encode: impl FnOnce(
+            &Gpu,
+            &mut Renderer,
+            &mut wgpu::CommandEncoder,
+            &wgpu::TextureView,
+            wgpu::TextureFormat,
+            (u32, u32),
+        ),
+    ) -> bool {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
             | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
@@ -131,13 +150,13 @@ impl Gfx {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("frame"),
             });
-        let scene = game.scene();
-        self.renderer.encode(
+        encode(
             &self.gpu,
+            &mut self.renderer,
             &mut enc,
             &view,
+            self.view_format,
             (self.config.width, self.config.height),
-            &scene,
         );
         self.gpu.queue.submit([enc.finish()]);
         self.window.pre_present_notify();
@@ -189,6 +208,9 @@ pub struct App {
     pub audio: Option<crate::audio_out::AudioStream>,
     /// Sound output handed to games that arrive later (`UserEvent::Game`).
     sound: Option<Arc<AudioOut>>,
+    /// The SMM2 front end (menus, Course World, 100 Mario, in-course screens), when it runs.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub front: Option<Box<crate::front_app::FrontApp>>,
 }
 
 pub fn log(msg: &str) {
@@ -219,6 +241,8 @@ impl App {
             #[cfg(not(target_arch = "wasm32"))]
             audio: None,
             sound: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            front: None,
         }
     }
 
@@ -288,7 +312,9 @@ impl App {
         let loading = crate::web::pump_textures(&self.game.cache);
         #[cfg(not(target_arch = "wasm32"))]
         let loading = false;
-        if self.game.editing {
+        if self.front_advance(dt, pads) {
+            // the front end ran its ticks (and the course's)
+        } else if self.game.editing {
             // arrows / WASD scroll the maker view
             if let Some(m) = self.game.maker.as_mut() {
                 let b = input.buttons;
@@ -310,7 +336,19 @@ impl App {
             }
         }
         if let Some(gfx) = &mut self.gfx {
-            if gfx.draw(&mut self.game) {
+            #[cfg(not(target_arch = "wasm32"))]
+            let drawn = match &mut self.front {
+                Some(f) => {
+                    let game = &mut self.game;
+                    gfx.draw_with(|gpu, r, enc, view, format, size| {
+                        f.encode(gpu, enc, view, format, size, r, game)
+                    })
+                }
+                None => gfx.draw(&mut self.game),
+            };
+            #[cfg(target_arch = "wasm32")]
+            let drawn = gfx.draw(&mut self.game);
+            if drawn {
                 // presenting waits for the display, which paces the loop
                 self.frames += 1;
                 gfx.window.request_redraw();
@@ -321,6 +359,23 @@ impl App {
                 event_loop.set_control_flow(ControlFlow::wait_duration(Duration::from_millis(16)));
             }
         }
+    }
+
+    /// Advance the front end when it runs (true: it did).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn front_advance(&mut self, dt: f64, pads: u32) -> bool {
+        match &mut self.front {
+            Some(f) => {
+                f.advance(dt, &self.keys, pads, &mut self.game);
+                true
+            }
+            None => false,
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn front_advance(&mut self, _dt: f64, _pads: u32) -> bool {
+        false
     }
 
     /// Maker keys (editing: palette, undo/redo, save, play; playing: E edits again). True when
@@ -512,6 +567,10 @@ impl ApplicationHandler<UserEvent> for App {
                 button,
                 ..
             } => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let (Some(f), Some(g)) = (&mut self.front, &self.gfx) {
+                    f.click(self.mouse, (g.config.width, g.config.height));
+                }
                 if self.game.editing
                     && let Some(m) = self.game.maker.as_mut()
                 {

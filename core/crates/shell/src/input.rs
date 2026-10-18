@@ -41,6 +41,11 @@ impl Keyboard {
         }
     }
 
+    /// Key `k` is held.
+    pub fn held(&self, k: KeyCode) -> bool {
+        self.down.contains(&k)
+    }
+
     /// Forget everything held (the window lost focus: the key-up events will never arrive).
     pub fn clear(&mut self) {
         self.down.clear();
