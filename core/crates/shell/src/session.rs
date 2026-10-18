@@ -72,7 +72,10 @@ pub struct Session {
     pub extra_inputs: Vec<Input>,
     /// Online play: a rollback session (player index = ours) and its UDP link.
     #[cfg(not(target_arch = "wasm32"))]
-    pub net: Option<(mmk_netplay::Session<mmk_sim::World>, mmk_netplay::UdpLink)>,
+    pub net: Option<(
+        mmk_netplay::Session<mmk_sim::World>,
+        Box<dyn mmk_netplay::Link>,
+    )>,
 }
 
 impl Session {

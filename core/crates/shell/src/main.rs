@@ -86,13 +86,23 @@ mod native {
         /// Maker name for uploads.
         #[arg(long, default_value = "anonymous")]
         maker: String,
-        /// Online play (2 players, rollback over UDP): our address, e.g. 0.0.0.0:7000.
+        /// Online play (rollback over UDP) with known addresses: ours, e.g. 0.0.0.0:7000.
         #[arg(long)]
         net_bind: Option<String>,
-        /// Online play: the other peer's address, e.g. 192.168.1.20:7000.
+        /// Online play: another peer's address, e.g. 192.168.1.20:7000 (repeat for 3–4 players).
         #[arg(long)]
-        net_peer: Option<String>,
-        /// Online play: which player we are (0 = player 1, 1 = player 2).
+        net_peer: Vec<String>,
+        /// Online play through a course server's relay (works behind NAT): its UDP address,
+        /// e.g. example.org:8640, with --net-room.
+        #[arg(long)]
+        net_relay: Option<String>,
+        /// Online play: the relay room name every player uses (1–16 characters).
+        #[arg(long, default_value = "SMCRAFT")]
+        net_room: String,
+        /// Online play: how many players (2–4; with --net-peer, one more than the peers).
+        #[arg(long)]
+        net_players: Option<usize>,
+        /// Online play: which player we are (0 = player 1 … 3 = player 4).
         #[arg(long, default_value_t = 0)]
         net_player: usize,
         /// Local multiplayer: 1–4 players (keyboard + first pad, then one pad each).
@@ -178,19 +188,44 @@ mod native {
         if args.players > 1 {
             game.session.world.set_players(args.players);
         }
-        if let (Some(bind), Some(peer)) = (&args.net_bind, &args.net_peer) {
-            let peer: std::net::SocketAddr =
-                peer.parse().map_err(|e| format!("--net-peer: {e}"))?;
-            let link = mmk_netplay::UdpLink::bind(bind, vec![peer])
-                .map_err(|e| format!("--net-bind: {e}"))?;
-            game.session.world.set_players(2);
-            let net =
-                mmk_netplay::Session::new(game.session.world.clone(), 2, args.net_player.min(1));
+        let link: Option<(Box<dyn mmk_netplay::Link>, usize, String)> =
+            if let Some(relay) = &args.net_relay {
+                use std::net::ToSocketAddrs;
+                let at = relay
+                    .to_socket_addrs()
+                    .map_err(|e| format!("--net-relay: {e}"))?
+                    .next()
+                    .ok_or("--net-relay: no address")?;
+                let l = mmk_netplay::relay::RelayLink::connect(
+                    at,
+                    &args.net_room,
+                    args.net_player.min(3) as u8,
+                )
+                .map_err(|e| format!("--net-relay: {e}"))?;
+                let n = args.net_players.unwrap_or(2);
+                Some((Box::new(l), n, format!("room {} on {at}", args.net_room)))
+            } else if let Some(bind) = &args.net_bind
+                && !args.net_peer.is_empty()
+            {
+                let peers = args
+                    .net_peer
+                    .iter()
+                    .map(|p| p.parse().map_err(|e| format!("--net-peer {p}: {e}")))
+                    .collect::<Result<Vec<std::net::SocketAddr>, String>>()?;
+                let n = args.net_players.unwrap_or(peers.len() + 1);
+                let l = mmk_netplay::UdpLink::bind(bind, peers.clone())
+                    .map_err(|e| format!("--net-bind: {e}"))?;
+                Some((Box::new(l), n, format!("peers {peers:?}")))
+            } else {
+                None
+            };
+        if let Some((link, n, how)) = link {
+            let n = n.clamp(2, mmk_netplay::relay::MAX_ROOM);
+            let me = args.net_player.min(n - 1);
+            game.session.world.set_players(n);
+            let net = mmk_netplay::Session::new(game.session.world.clone(), n, me);
             game.session.net = Some((net, link));
-            log(&format!(
-                "online: player {} of 2, peer {peer}",
-                args.net_player.min(1) + 1
-            ));
+            log(&format!("online: player {} of {n}, {how}", me + 1));
         }
         if let Some(x) = args.start_x {
             let w = &mut game.session.world;

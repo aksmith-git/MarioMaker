@@ -1244,6 +1244,7 @@ dependencies = [
  "mmk-formats",
  "mmk-host",
  "mmk-import",
+ "mmk-netplay",
  "mmk-online",
  "mmk-server",
  "mmk-sim",

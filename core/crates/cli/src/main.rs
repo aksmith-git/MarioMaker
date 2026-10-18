@@ -137,7 +137,8 @@ enum Cmd {
         #[arg(long, default_value_t = 3600)]
         frames: u32,
     },
-    /// Run the open-source course server (courses + index in DIR).
+    /// Run the open-source course server (courses + index in DIR) and the online-play relay
+    /// (UDP, same port).
     Server {
         #[arg(long, default_value = "mmk-server-data")]
         dir: PathBuf,
@@ -957,6 +958,14 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            // the online-play relay shares the port number, over UDP
+            match std::net::UdpSocket::bind(&addr) {
+                Ok(sock) => {
+                    std::thread::spawn(move || mmk_netplay::relay::Relay::default().run(sock));
+                    eprintln!("mmk-server: online-play relay on udp://{addr}");
+                }
+                Err(e) => eprintln!("mmk-server: no relay (udp {addr}: {e})"),
+            }
             eprintln!("mmk-server: {} on http://{addr}", dir.display());
             match mmk_server::serve(store, &addr) {
                 Ok(()) => ExitCode::SUCCESS,

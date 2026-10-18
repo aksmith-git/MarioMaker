@@ -404,8 +404,10 @@ Not Nintendo's network: the engine talks to an open-source server the owner can 
 - 🔄 Server: our own open-source course server `mmk-server` ✅ (directory store, REST API: upload
   with validation, search/sort, download, play/clear/like stats → difficulty, 100 Mario pools by
   fail-rate band; `mmk server`) and client crate `mmk-online` ✅ (`mmk upload/search/download`,
-  `RemoteSource` for 100 Mario) · accounts, makers, rankings, SMMDB import ⬜ · ⏳ owner: keep this or
-  connect to another open-source server
+  `RemoteSource` for 100 Mario) · accounts ✅ (name + secret token, SHA-256 stored; maker IDs;
+  like/boo, clears with world records and first clears, comments, maker profiles, delete own
+  course; client + `mmk register/like/comment/maker`, `mmk upload --token`) · rankings, SMMDB import
+  ⬜ · ⏳ owner: keep this or connect to another open-source server
 - ⬜ Course World client: browse, play, like/boo, comment, upload from the editor
 - ✅ Local multiplayer (co-op, up to 4: Mario, Luigi, Toad, Toadette as the models' _2/_3/_4
   variants): extra players run the same rules, rejoin beside player 1 [inf: bubble], any player
@@ -413,9 +415,12 @@ Not Nintendo's network: the engine talks to an open-source server the owner can 
   `World` is `Clone` and replays deterministically (rollback groundwork) · versus, bubbles ⬜
 - 🔄 Real-time online play: rollback netcode crate `mmk-netplay` ✅ (predict, restore snapshot,
   re-simulate; redundant input packets over UDP; test: two peers with 4-frame delay and 1/3 loss end
-  identical to a full replay) and `mmk-play --net-bind/--net-peer/--net-player` (2 players) ·
-  4 players, NAT traversal / relay via the server, WebRTC for the web, versus ⬜
-- ⬜ Accounts without Nintendo services; moderation tools for self-hosters
+  identical to a full replay) and `mmk-play --net-bind/--net-peer/--net-player` · up to 4 players
+  ✅ · relay rooms on the course server (UDP, same port) with hole punching ✅ (direct once a peer
+  answers a probe, relayed until then; `mmk-play --net-relay host:port --net-room NAME`; test: 4
+  peers through a live relay end identical to a full replay) · WebRTC for the web, versus ⬜
+- ✅ Accounts without Nintendo services; moderation for self-hosters (`--admin-token`: ban/unban,
+  delete any course)
 
 ### Phase 11 — SMM1 extras, each behind a setting ⬜ (owner request 2026-10-18)
 From the owner's SMM1 (Wii U) dump, as options layered on SMM2 play:

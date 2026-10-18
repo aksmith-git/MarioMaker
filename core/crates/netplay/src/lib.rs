@@ -7,7 +7,11 @@
 //! deterministic and [`World`] is `Clone`, so all peers end in the same state.
 //!
 //! Transport: [`Packet`]s carrying a peer's last inputs (redundant, so one lost datagram does not
-//! matter) over UDP ([`UdpLink`]); browsers need a WebRTC data channel instead [⬜].
+//! matter) over a [`Link`]: plain UDP to known addresses ([`UdpLink`]) or a room on the course
+//! server's relay, which also punches through NAT ([`relay::RelayLink`]). Browsers need a WebRTC
+//! data channel instead [⬜].
+
+pub mod relay;
 
 use std::collections::VecDeque;
 use std::net::{SocketAddr, UdpSocket};
@@ -207,6 +211,13 @@ impl Packet {
     }
 }
 
+/// Moves [`Packet`]s between the peers (non-blocking).
+pub trait Link {
+    fn send(&mut self, p: &Packet);
+    /// Every packet waiting.
+    fn poll(&mut self) -> Vec<Packet>;
+}
+
 /// A UDP link to the other peers (non-blocking).
 pub struct UdpLink {
     socket: UdpSocket,
@@ -219,16 +230,17 @@ impl UdpLink {
         socket.set_nonblocking(true)?;
         Ok(Self { socket, peers })
     }
+}
 
-    pub fn send(&self, p: &Packet) {
+impl Link for UdpLink {
+    fn send(&mut self, p: &Packet) {
         let b = p.to_bytes();
         for peer in &self.peers {
             let _ = self.socket.send_to(&b, peer);
         }
     }
 
-    /// Every packet waiting.
-    pub fn poll(&self) -> Vec<Packet> {
+    fn poll(&mut self) -> Vec<Packet> {
         let mut out = Vec::new();
         let mut buf = [0u8; 512];
         while let Ok((n, _)) = self.socket.recv_from(&mut buf) {
@@ -331,12 +343,12 @@ mod tests {
     fn udp_links_exchange_packets() {
         let pa = 40000 + (std::process::id() % 10000) as u16;
         let pb = pa + 1;
-        let a = UdpLink::bind(
+        let mut a = UdpLink::bind(
             &format!("127.0.0.1:{pa}"),
             vec![format!("127.0.0.1:{pb}").parse().unwrap()],
         )
         .unwrap();
-        let b = UdpLink::bind(
+        let mut b = UdpLink::bind(
             &format!("127.0.0.1:{pb}"),
             vec![format!("127.0.0.1:{pa}").parse().unwrap()],
         )
