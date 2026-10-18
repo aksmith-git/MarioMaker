@@ -2,7 +2,12 @@
 //! below bounces it (a 7-frame ramp up, then down, 16 px reference height) and starts a
 //! 600-frame timer; when the timer runs out the chain is restored to its starting layout.
 //!
-//! What the chain does between the hit and the restore was not decoded [?]. The editor files put
+//! What the chain does between the hit and the restore is only partly decoded [?]: each bounce
+//! of the whole chain (BoundUpAll 0x7100870770 → 0x710086f7a0) moves every idle segment one
+//! path point on (the first keeps its point, each next one takes the previous one's + 1), at
+//! distance / max(4, segments moving + 2) px a frame, capped at 8; the last 240 frames of the
+//! restore timer blink (0x710086ee80). How the starting layout maps to segments wasn't traced,
+//! so the chain below is still a stand-in. The editor files put
 //! the block with the snake blocks and the model has a "!" and an empty variant, so here the hit
 //! block empties and the path fills with 2×2 blocks, one every `GROW_FRAMES` frames, one path
 //! step (2 tiles) apart [inf]. Path node codes are the snake-block codes (`snake::node_step`).
