@@ -23,7 +23,16 @@
 //! | DELETE | `/api/courses/<code>` | remove (the uploader, or the admin) |
 //! | POST | `/api/admin/ban/<account id>`, `/api/admin/unban/<id>` | moderation (admin token) |
 //! | POST | `/api/endless/<easy\|normal\|expert\|super_expert>` (body `{"cleared"}`) | Endless Challenge run; keeps the best |
+//! | GET | `/api/endless` | Endless: the four runs (`RunStatus`), best clears, lifetime skips, last difficulty |
+//! | POST | `/api/endless/<d>/start` | New Game on `<d>` (5 lives; wipes that run) → `{difficulty, run}` |
+//! | GET | `/api/endless/<d>/next?count=` | the run's next courses (≤ 10, by clear-rate band) → `{courses, widened, run}` |
+//! | POST | `/api/endless/<d>/result` (body `Report`: `{code, result, pending, coins, score, frames_left, during_miss}`) | a course result → `{lives, clears, passed, game_over, best}` |
+//! | POST | `/api/endless/<d>/suspend`, `/finish` | quit (run kept) → `{run}`; game over → `{clears, best, new_high_score}` |
+//! | GET | `/api/endless/<d>/history` | the run's last 48 courses |
 //! | GET | `/api/rankings/<maker_points\|clears\|first_clears\|records\|endless_<difficulty>>?limit=` | leaderboards |
+//!
+//! The Endless Challenge routes (`endless` module) need a signed-in account; the server holds
+//! the run as SMM2's does.
 //!
 //! Accounts (`accounts` module) are a name and a secret token sent as `Authorization: Bearer
 //! <token>`; uploads, votes and comments from an account carry its name and maker ID. Anonymous
@@ -46,6 +55,7 @@ use mmk_formats::smm2::Course;
 use serde_json::{Value, json};
 
 pub mod accounts;
+pub mod endless;
 
 use accounts::Accounts;
 
@@ -152,6 +162,8 @@ struct Inner {
     cleared: HashMap<String, Vec<String>>,
     /// Endless Challenge: difficulty → maker ID → best run (courses cleared).
     endless: HashMap<String, HashMap<String, u64>>,
+    /// Endless Challenge runs: maker ID → the four run records (`endless.json`).
+    endless_runs: HashMap<String, mmk_modes::endless::EndlessSave>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -289,6 +301,7 @@ impl Store {
                     .collect()
             })
             .unwrap_or_default();
+        let endless_runs = endless::load(&dir);
         Ok(Self {
             dir,
             inner: Mutex::new(Inner {
@@ -301,6 +314,7 @@ impl Store {
                 comments,
                 cleared,
                 endless,
+                endless_runs,
             }),
             admin: None,
             verified_records: false,
@@ -852,6 +866,10 @@ pub fn handle(
     };
     // signed-in actions need an account that isn't banned
     let signed_in = || account.as_ref().filter(|a| !a.banned);
+    let who = signed_in().map(|a| a.maker_id.as_str());
+    if let Some(r) = endless::route(store, method, &parts, &q, who, body) {
+        return r;
+    }
     match (method, parts.as_slice()) {
         ("POST", ["api", "accounts"]) => {
             let name = body_json()["name"].as_str().unwrap_or("").to_string();
