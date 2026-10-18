@@ -11,6 +11,9 @@ use mmk_formats::smm2::{Area, Course};
 use crate::actors::Kind;
 use crate::blocks::{BlockKind, Contents};
 
+mod v3;
+pub use v3::V3Tiles;
+
 pub const TILE: f32 = 16.0;
 const ATLAS_COLS: u32 = 16;
 const GROUND_ATLAS_BASE: u32 = 184;
@@ -360,6 +363,8 @@ pub struct Level {
     pub spike_blocks: Vec<(i32, i32, u8)>,
     /// Vines (64): climb areas (centre x, bottom, top) in px.
     pub vines: Vec<(f32, f32, f32)>,
+    /// Tile parts of the 2.0 / 3.0 updates (level/v3.rs).
+    pub v3: V3Tiles,
     pub liquid: Option<LiquidSpec>,
     /// One-way walls (drawing): centre x, bottom y, orientation.
     pub oneway: Vec<(f32, f32, u8)>,
@@ -428,6 +433,8 @@ pub const SUPPORTED_PARTS: &[i16] = &[
     52, 53, 54, 55, 56, 57, 58, 60, 61, 62, 63, 64, 65, 66, 67, 68, 70, 71, 72, 73, 75, 76, 77, 82,
     83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 94, 95, 96, 97, 98, 99, 100, 102, 103, 104, 105, 106,
     107, 108, 109, 110, 112, 113, 114, 115, 116, 117, 119,
+    // 2.0 / 3.0 parts (level/v3.rs)
+    74, 78, 79, 80, 111, 120, 121, 122, 123, 124, 125, 126, 132,
 ];
 
 /// Parts whose alternate form (flag 0x4) the engine implements (or where the flag only picks a
@@ -436,6 +443,9 @@ pub const SUPPORTED_PARTS: &[i16] = &[
 const ALT_FORMS: &[i16] = &[
     0, 1, 2, 3, 10, 11, 12, 13, 15, 19, 23, 25, 28, 32, 34, 36, 40, 41, 42, 45, 46, 47, 48, 51, 52,
     54, 56, 61, 77, 84, 85, 96, 97, 100, 103, 104, 107, 108, 113,
+    // 2.0 / 3.0: the spike ball, the P Block that appears, the blue ON/OFF Trampoline; on a
+    // Mechakoopa the bit does nothing [obs]
+    74, 79, 111, 132,
 ];
 
 /// Game styles the engine plays.
@@ -445,7 +455,7 @@ pub const PLAYABLE_STYLES: &[&str] = &["M1", "M3", "MW", "WU", "3W"];
 const RIDES_TRACKS: &[i16] = &[
     0, 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 13, 15, 24, 47, 54, 18, 19, 20, 22, 23, 25, 28, 30, 31, 32,
     33, 34, 35, 36, 39, 40, 41, 42, 44, 45, 46, 48, 50, 51, 52, 56, 57, 58, 60, 61, 62, 63, 65, 68,
-    70, 76, 77, 82, 83, 91, 95, 96, 98, 102, 103, 105, 114, 117,
+    70, 76, 77, 82, 83, 91, 95, 96, 98, 102, 103, 105, 114, 117, 74, 111,
 ];
 
 /// Why a course is not fully playable yet: one entry per missing feature (empty = playable).
@@ -472,6 +482,8 @@ pub fn unsupported_features(course: &Course) -> Vec<String> {
                 out.insert(format!("part {} on a track", o.id));
             } else if o.flags & 0x4 != 0 && !ALT_FORMS.contains(&o.id) {
                 out.insert(format!("alternate form of part {}", o.id));
+            } else if let Some(why) = v3::unsupported(o) {
+                out.insert(why);
             } else if o.flags & 0x2 != 0 && o.id == 13 {
                 // winged Bill Blasters fly as actors: not yet
                 out.insert(format!("wings on part {}", o.id));
@@ -554,6 +566,7 @@ impl Level {
             scroll_nodes: Vec::new(),
             pink_coins: Vec::new(),
             vines: Vec::new(),
+            v3: V3Tiles::default(),
             tracks: Default::default(),
             creepers: Vec::new(),
             liquid: None,
@@ -833,7 +846,7 @@ impl Level {
                     path: o.extended_data.wrapping_sub(1).min(255) as u8,
                     sleeps: o.flags & 0x4 != 0,
                 }),
-                _ => None,
+                _ => v3::actor_kind(o, &lvl),
             };
             if o.id == 61 && o.flags & 0x4 == 0 && o.flags & 0x400 == 0 {
                 // the Chain Chomp's stake is solid (WanwanPile has a collision body)
@@ -904,6 +917,9 @@ impl Level {
                     clown: o.flags & 0x200 != 0,
                     alt: o.flags & 0x4 != 0,
                 });
+                continue;
+            }
+            if v3::place_tile(&mut lvl, o, tx, ty) {
                 continue;
             }
             let on_track = o.flags & 0x400 != 0;
@@ -1637,6 +1653,7 @@ impl Level {
             scroll_nodes: Vec::new(),
             pink_coins: Vec::new(),
             vines: Vec::new(),
+            v3: V3Tiles::default(),
             tracks: Default::default(),
             creepers: Vec::new(),
             liquid: None,

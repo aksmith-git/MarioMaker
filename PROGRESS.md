@@ -430,8 +430,40 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   per air time); "goal as Cat" condition; drawn with the cat suit's meshes and Climb animations
 - ✅ 3D World two-stage run: 2.25 until the dash stage (75 f, 60 as Cat), then 3.0 (star 3.6),
   ×1.05 jump while dashing
-- ⬜ Every part (0–132, incl. 2.0/3.0 items from the update dump), Yoshi, shoes, clown cars,
-  power-ups per style, Koopalings, Master Sword, etc.
+- 🔄 Every part (0–132, incl. 2.0/3.0 items from the update dump): the 2.0/3.0 enemies, blocks
+  and gizmos ✅ (below; from the v3.0.3 binary, editor-built test courses in
+  `crates/editor/tests/v3_parts.rs`, `MMK_WRITE_COURSES=<dir>` writes them) · second style
+  power-ups, Master Sword, wearable boxes/masks (81, 127–131), Koopalings in Clown Cars ⬜
+  - ✅ Spike (74): SMB1/SMB3 Gabon3rd walks 0.5 and throws in bursts of 2 when the player is
+    32–288 px ahead (ball flies level at 1.5); SMW/NSMBU/3D World GabonWU stands, faces the player
+    (3D World 50-frame Turn), waits 0–59 then 120 (SMW 160) + 0–29 frames, lifts and throws on the
+    style's animation frames; balls roll 1.2 (slopes speed them up, walls break them, landings
+    bounce ×0.6); snow theme: snowballs that are kicked (1.7–5.2) or carried; the 0x4 form is the
+    ball itself
+  - ✅ Pokey (78): 1–8 segments (default 4), 0.25 px/f, turns at walls and ledges, ±1.5 px sway;
+    stomps only on the head (whole stack), fire/shells/tails/slides knock out one segment and the
+    ones above hop down; Snow Pokey (ground pound defeats it, Run picks up a snowball); winged hops
+  - ✅ Mechakoopa (111; kind = (flags >> 18) & 3): walks 0.5, re-aims every 60–80 frames; stomps
+    and ground pounds knock it down for 480 frames (slide/bounce rules, shake below 61, 18-frame
+    revival), kicked or carried and thrown while down; fire-proof; Blasta's missile (three-phase
+    homing, explodes at frame 300 breaking blocks like a Bob-omb) and Zappa's laser (69-frame
+    telegraph, grows 10 px/f to 320 for 40 frames); winged patrol; night-Ground hops
+  - ✅ P Block (79, 3D World): solid / outline swapped while a P Switch runs (both kinds); P Switch
+    time 540 frames from the binary
+  - ✅ Dash Block (80, 3D World): standing on it sets a 120-frame dash at 4.0 px/f along the
+    player's facing (jumps keep it; a wall or a turn ends it)
+  - ✅ ON/OFF Trampoline (132, 3D World): bounces like the Mushroom Trampoline only while its
+    colour's ON/OFF state is on, else a plain platform
+  - ✅ Koopalings (120–126): shared action (3 HP, 5 fireballs per HP (big 10), hop between
+    volleys of wand magic (1/2/3 shots at 3/2/1 HP, aimed ±10° within 60°), shell after a hit:
+    65-frame wait then 1–3 shell hops (NSMBU: 60-frame flinch, 300-frame shell slide), Key drop);
+    Larry (higher 1-HP jumps), Wendy (bouncing rings, 1/2/3 alive), Iggy (walks, fast magic),
+    Lemmy (rides his ball, 1/3/5 bouncing balls), Morton (ground pound: 80-frame stun, two
+    crawling flames), Roy (dives into the ground and comes up elsewhere), Ludwig (hovering shell,
+    fans of 3/5 slow shots) · Clown Car rides, Roy's ceiling exits, Morton's winged feints, wing
+    flight ⬜
+- ⬜ Yoshi variants, shoes, clown cars, power-ups per style, Master Sword, etc. (rest of the
+  "every part" list)
 - 🔄 Course Maker (editor): core crate `editor` — each step tested by saving the course, re-opening
   it byte-identically and playing it in the sim (`unsupported_features` empty):
   - ✅ parts: place / erase / resize (semisolid, mushroom platform, bridge, pipe, belt, lift, slopes,

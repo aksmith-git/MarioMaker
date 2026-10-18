@@ -226,6 +226,14 @@ pub fn forms(part: i16) -> u8 {
 
 /// Size in tiles a freshly placed part gets (the editor table's base footprint).
 pub fn default_size(part: i16) -> (u8, u8) {
+    // 2.0 / 3.0 parts aren't in the v1.0.0 table [v3.0.3 Edit* params]
+    match part {
+        78 => return (1, 4),        // Pokey: head + 3 (EditSambo BaseUnitSizeY 4)
+        80 => return (3, 1),        // Dash Block
+        120..=126 => return (2, 2), // Koopalings
+        132 => return (4, 1),       // ON/OFF Trampoline
+        _ => {}
+    }
     row(part).map_or((1, 1), |r| (r.w, r.h))
 }
 
