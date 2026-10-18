@@ -25,12 +25,27 @@ enum AppPaths {
             return URL(fileURLWithPath: dir, isDirectory: true)
         }
         #if os(macOS)
+        _ = migrated
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return base.appendingPathComponent(AppIdentity.name, isDirectory: true)
         #else
         return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         #endif
     }
+
+    #if os(macOS)
+    /// Once per launch: a data folder from before the rename (`Application Support/MMK`) moves
+    /// to the new name if that doesn't exist yet.
+    private static let migrated: Void = {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let old = base.appendingPathComponent("MMK", isDirectory: true)
+        let new = base.appendingPathComponent(AppIdentity.name, isDirectory: true)
+        let fm = FileManager.default
+        if fm.fileExists(atPath: old.path) && !fm.fileExists(atPath: new.path) {
+            try? fm.moveItem(at: old, to: new)
+        }
+    }()
+    #endif
 
     /// Home folder holding the development caches (`~/smm-work/cache`): the user's on macOS, the
     /// Mac's inside the iOS Simulator (so a simulator build finds the same caches), none on a

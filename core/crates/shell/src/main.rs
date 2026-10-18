@@ -219,10 +219,10 @@ mod native {
 
         let title = match &args.course {
             Some(p) => format!(
-                "mmk-play — {}",
+                "SMCraft — {}",
                 p.file_name().unwrap_or_default().to_string_lossy()
             ),
-            None => "mmk-play — demo".to_string(),
+            None => "SMCraft — demo".to_string(),
         };
         let mute = args.mute || std::env::var("MMK_MUTE").as_deref() == Ok("1");
         let audio = match (&source, mute) {

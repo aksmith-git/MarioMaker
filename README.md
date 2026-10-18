@@ -1,4 +1,4 @@
-# MarioMaker (working title)
+# SMCraft
 
 An open-source, native macOS (Apple Silicon) engine that plays Super Mario Maker 2 courses and
 adds Super Mario Maker 1's 100 Mario Challenge.
@@ -35,19 +35,19 @@ Tooling for working with your own dumps is described in [docs/TOOLCHAIN.md](docs
 Requires macOS 14+, Apple Silicon, Xcode 27 (Swift 6.4) and Rust 1.99.0 (`core/rust-toolchain.toml`).
 
 ```sh
-scripts/make-app.sh        # Rust core + Swift release build → build/MMK.app (ad-hoc signed, own icon)
-open build/MMK.app
+scripts/make-app.sh        # Rust core + Swift release build → build/SMCraft.app (ad-hoc signed, own icon)
+open build/SMCraft.app
 scripts/run-app.sh         # or: build and run without bundling
 ```
 
-"MMK" is a working name; the name, bundle id and version live only in
+The app is called SMCraft; the name, bundle id and version live only in
 `app/Sources/MMKApp/Identity.swift` (the bundle script reads them from there).
 
 - **First launch:** if no asset cache is found the app asks for the **RomFS** and **ExeFS** folders
   extracted from your own dump (plus, optionally, the update's RomFS/ExeFS) and imports them into
-  `~/Library/Application Support/MMK/assets/<build>/`. Or choose **Use placeholder art** to play
+  `~/Library/Application Support/SMCraft/assets/<build>/`. Or choose **Use placeholder art** to play
   without a dump (coloured boxes; encrypted `.bcd` courses need imported data for their key).
-- **Library** (home screen): every course file in `~/Library/Application Support/MMK/courses/`.
+- **Library** (home screen): every course file in `~/Library/Application Support/SMCraft/courses/`.
   **Add courses…** (⌘O) copies `.course.zlib`, `.bcd` or raw course files, or whole folders of
   them, into it. Search, filter (playable / cleared), sort; double-click or **Play**. Courses in
   styles the engine doesn't support yet are marked **Not yet supported**.
@@ -59,13 +59,13 @@ scripts/run-app.sh         # or: build and run without bundling
   and game over; ↑/↓ or ←/→ choose, Return / A confirms, Esc / B goes back.
   `MMK_UI_SMM2=off` keeps the drawn HUD and the plain menus.
 - **100 Mario Challenge:** with the owner's SMM1 UI import (`mmk import-smm1`, found in
-  `MMK_UI_CACHE`, `…/MMK/assets/smm1-*` or `~/smm-work/cache/smm1-*`) the screens are SMM1's own
+  `MMK_UI_CACHE`, `…/SMCraft/assets/smm1-*` or `~/smm-work/cache/smm1-*`) the screens are SMM1's own
   layouts: difficulty tabs over the world map (←/→ difficulty, ↑/↓ Continue / New Game), Mario's
   walk, the intro card, pause, course clear, game over, ending and credits. Hold **−** or **Tab**
   (controller −; Settings "Skip course") through the 3-step countdown to skip a course; letting go
   cancels. Without the import, simple stand-in screens are used (`MMK_UI_SMM1=off` forces them).
 - **Save data:** best time, clears and attempts per course in
-  `~/Library/Application Support/MMK/saves.json`, keyed by a hash of the course data.
+  `~/Library/Application Support/SMCraft/saves.json`, keyed by a hash of the course data.
 
 ### Settings (UserDefaults)
 
@@ -90,7 +90,7 @@ registered at launch (`SettingsKey.registerDefaults`).
 | `MMK_SCREENSHOT=<png>` [`MMK_SCREENSHOT_TICKS=<n>`] | scripted run, save the frame after n ticks (default 150), quit; skips the menus |
 | `MMK_START_X/Y=<px>` | start the player somewhere else (with the two above) |
 | `MMK_ASSETS=<dir>` | asset cache to use; `placeholder` = none |
-| `MMK_SUPPORT_DIR=<dir>` | data folder instead of `~/Library/Application Support/MMK` |
+| `MMK_SUPPORT_DIR=<dir>` | data folder instead of `~/Library/Application Support/SMCraft` |
 | `MMK_UI_SCREENSHOT=<png>` [`MMK_UI_SCREENSHOT_DELAY=<s>`] [`MMK_UI_SCREEN=import\|settings`] | capture the window (UI included) and quit; with `MMK_COURSE`, `MMK_UI_PAUSE_TICKS=<n>` pauses after n ticks and `MMK_UI_SCRIPTED=1` uses the scripted run. More screens: `challenge`, `challenge-intro`/`-map`, `-walk`, `-pause`, `-clear`, `-skip`, `-card`, `-gameover`, `-ending` (`DebugCapture.swift`); `MMK_UI_TICKS=<n>` holds SMM1 layout screens at tick n; `MMK_UI_DIFFICULTY=<0-3>`, `MMK_UI_CLEARED=<n>`. SMM2 in-course screens over `MMK_COURSE`: `course-clear`, `course-gameover`, `course-timeup`, `course-retire`, `course-death` shown `MMK_UI_COURSE_AT=<s>` seconds in; `MMK_UI_INTRO=0` skips the course card |
 | `MMK_UI2_CACHE=<dir>` | SMM2 UI import to use; `MMK_UI_SMM2=off` = no SMM2 title / in-course layouts |
 | `MMK_UI_CACHE=<dir>` | SMM1 UI import to use; `MMK_UI_SMM1=off` = stand-in 100 Mario screens |
@@ -106,27 +106,27 @@ the Rust targets `aarch64-apple-ios` and `aarch64-apple-ios-sim` (the script add
 rustup).
 
 ```sh
-scripts/make-ios-app.sh                 # Simulator build → build/ios-sim/MMK.app (ad-hoc signed)
-xcrun simctl boot "iPad Pro 11-inch (M5)" && xcrun simctl install booted build/ios-sim/MMK.app
-xcrun simctl launch booted dev.mmk.engine
-SIMCTL_CHILD_MMK_COURSE=/path/course.zlib xcrun simctl launch booted dev.mmk.engine   # env vars: SIMCTL_CHILD_ prefix
+scripts/make-ios-app.sh                 # Simulator build → build/ios-sim/SMCraft.app (ad-hoc signed)
+xcrun simctl boot "iPad Pro 11-inch (M5)" && xcrun simctl install booted build/ios-sim/SMCraft.app
+xcrun simctl launch booted dev.smcraft.app
+SIMCTL_CHILD_MMK_COURSE=/path/course.zlib xcrun simctl launch booted dev.smcraft.app   # env vars: SIMCTL_CHILD_ prefix
 xcrun simctl io booted screenshot shot.png
 
-MMK_IOS_SIGN_IDENTITY="Apple Development: …" MMK_IOS_PROFILE=MMK.mobileprovision \
-  scripts/make-ios-app.sh --device      # device build → build/ios-device/MMK.app
+MMK_IOS_SIGN_IDENTITY="Apple Development: …" MMK_IOS_PROFILE=SMCraft.mobileprovision \
+  scripts/make-ios-app.sh --device      # device build → build/ios-device/SMCraft.app
 ```
 
 - **Game data:** the importer runs on the Mac. Copy the cache folder it made (`smm2-3.0.3`, and
-  `smm1-…` / `smm2-ui-…` for the menus) with the Files app into **On My iPad › MMK › assets**, or
+  `smm1-…` / `smm2-ui-…` for the menus) with the Files app into **On My iPad › SMCraft › assets**, or
   choose it on the set-up screen from anywhere Files reaches and the app copies it in. Without
   one, **Use placeholder art**. The Simulator also finds the Mac's `~/smm-work/cache`.
 - **Courses:** **+** in the library (Files picker: course files or a folder), or copy them into
-  **On My iPad › MMK › courses**.
+  **On My iPad › SMCraft › courses**.
 - **Controls:** on-screen d-pad, Jump / Run / Spin, **+** pause (back in menus), **−** held to
   skip a 100 Mario course; any GameController pad (they hide the touch controls); hardware
   keyboards with the default (or Mac-made) key bindings. Settings: **More › Settings…**.
 - **Installing on the owner's iPad/iPhone over Tailscale**, once signed:
-  `ios-install-tailscale build/ios-device/MMK.app --device ipad` (the owner's tool; it installs,
+  `ios-install-tailscale build/ios-device/SMCraft.app --device ipad` (the owner's tool; it installs,
   it doesn't sign).
 
 ## Portable shell (`mmk-play`: Windows, Linux, web, macOS)

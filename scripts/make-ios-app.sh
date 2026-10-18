@@ -1,7 +1,7 @@
 #!/bin/sh
 # Build the Rust core + Swift app for iOS / iPadOS and assemble an .app bundle.
-#   scripts/make-ios-app.sh            → build/ios-sim/MMK.app     (iOS Simulator, arm64, ad-hoc signed)
-#   scripts/make-ios-app.sh --device   → build/ios-device/MMK.app  (iPhone / iPad, arm64)
+#   scripts/make-ios-app.sh            → build/ios-sim/SMCraft.app     (iOS Simulator, arm64, ad-hoc signed)
+#   scripts/make-ios-app.sh --device   → build/ios-device/SMCraft.app  (iPhone / iPad, arm64)
 #
 # Same Swift package as macOS (app/Package.swift), cross-compiled with `swift build --triple`;
 # the core is linked from core/target/<rust target>/release (DECISIONS.md, "iOS packaging").
@@ -11,7 +11,7 @@
 # (a .mobileprovision for the bundle id that lists the device). MMK_IOS_BUNDLE_ID overrides the
 # bundle id (a free team needs its own). Without them the bundle is left unsigned.
 #
-# Simulator: xcrun simctl install booted build/ios-sim/MMK.app && xcrun simctl launch booted <id>
+# Simulator: xcrun simctl install booted build/ios-sim/SMCraft.app && xcrun simctl launch booted <id>
 # (environment for the app: SIMCTL_CHILD_MMK_COURSE=… etc., see README).
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)

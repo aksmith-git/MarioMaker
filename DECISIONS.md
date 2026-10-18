@@ -2,6 +2,14 @@
 
 Newest first. Each entry: what was decided, why, and what would change it.
 
+## 2026-10-18 — Name: SMCraft
+**Decision:** the project, app and window titles are **SMCraft** (owner's choice). App bundle id
+`dev.smcraft.app`; the macOS data folder becomes `Application Support/SMCraft` (an existing `MMK`
+folder is moved over once). The old working name survives only internally: crate names (`mmk-*`),
+the `mmk` CLI, `mmk-play`, the `MMK_*` environment variables and the C API prefix `mmk_`.
+**Why:** a rename of every crate and symbol would churn the whole tree while parallel work is in
+flight; the internal prefix is invisible to players. A full internal rename can follow later.
+
 ## 2026-10-18 — iOS packaging: one Swift package, cross-compiled, bundled by a script
 The iOS / iPadOS app is the macOS Swift package built for iOS, not a second project.
 - **Build:** `swift build -c release --triple arm64-apple-ios17.0[-simulator] --sdk <sdk>`. The
