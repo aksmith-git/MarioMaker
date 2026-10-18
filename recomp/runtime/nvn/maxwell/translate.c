@@ -126,8 +126,9 @@ static const char *cbuf_ref(Ctx *c, int idx, int64_t off, const char *dyn, char 
     if (off + 16 > (int64_t)c->info->cbuf_size[idx]) c->info->cbuf_size[idx] = (uint32_t)((off + 16 + 255) & ~255);
     if (dyn) c->info->cbuf_dynamic |= 1u << idx;
     if (!dyn && idx < 18 && off >= 0 && (uint32_t)(off >> 4) + 1 > c->cbuf_need[idx]) c->cbuf_need[idx] = (uint32_t)(off >> 4) + 1;
-    if (dyn) sprintf(buf, "cbr(cb%d, (%s) + %uu)", idx, dyn, (uint32_t)off);  // (a negative offset wraps, as on the GPU)
-    else sprintf(buf, "cb%d[%lld][%lld]", idx, (long long)(off >> 4), (long long)((off >> 2) & 3));
+    const char *pre = c->stage == STAGE_GEOMETRY ? "gcb" : "cb";
+    if (dyn) sprintf(buf, "cbr(%s%d, (%s) + %uu)", pre, idx, dyn, (uint32_t)off);  // (a negative offset wraps, as on the GPU)
+    else sprintf(buf, "%s%d[%lld][%lld]", pre, idx, (long long)(off >> 4), (long long)((off >> 2) & 3));
     return buf;
 }
 
@@ -223,6 +224,16 @@ static void icmp_expr(char *out, int op, const char *a, const char *b, bool is_s
 // 0x2FC vertex id, 0x3FC front facing, 0x6C point size.
 static void attr_load(Ctx *c, int dst, uint32_t addr, const char *idx) {
     char e[256];
+    if (c->stage == STAGE_GEOMETRY) {  // (the vertex index is always 0: point input)
+        if (addr >= 0x70 && addr < 0x80) sprintf(e, "as_type<uint>(vso.pos[%d])", (addr >> 2) & 3);
+        else if (addr >= 0x80 && addr < 0x280) {
+            int a = (addr - 0x80) >> 4;
+            c->in_attr_mask |= 1u << a;
+            sprintf(e, "as_type<uint>(vso.v%d[%d])", a, (addr >> 2) & 3);
+        } else sprintf(e, "0u /* attr %#x */", addr);
+        set_reg(c, dst, e);
+        return;
+    }
     if (idx) { fail(c, "indexed attribute load"); return; }
     if (c->stage == STAGE_VERTEX) {
         if (addr >= 0x80 && addr < 0x280) {
@@ -283,12 +294,15 @@ static void attr_store(Ctx *c, int src, uint32_t addr) {
         sp(&c->body, "    /* store attr %#x */\n", addr);
         return;
     }
+    const char *o = c->stage == STAGE_GEOMETRY ? "gout" : "out";
     if (addr >= 0x70 && addr < 0x80) {
-        sp(&c->body, "    out.pos[%d] = as_type<float>(%s);\n", (addr >> 2) & 3, v);
+        sp(&c->body, "    %s.pos[%d] = as_type<float>(%s);\n", o, (addr >> 2) & 3, v);
     } else if (addr >= 0x80 && addr < 0x280) {
         int a = (addr - 0x80) >> 4;
         c->out_attr_mask |= 1u << a;
-        sp(&c->body, "    out.v%d[%d] = as_type<float>(%s);\n", a, (addr >> 2) & 3, v);
+        sp(&c->body, "    %s.v%d[%d] = as_type<float>(%s);\n", o, a, (addr >> 2) & 3, v);
+    } else if (addr == 0x6C && c->stage == STAGE_GEOMETRY) {
+        // (point size from a geometry stage: no point output here)
     } else if (addr == 0x6C) {
         c->info->writes_point_size = true;
         sp(&c->body, "    out.psize = as_type<float>(%s);\n", v);
@@ -1006,6 +1020,21 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         emit_texs(c, w, false);
     } else if (OPM(0xd200000000000000ull, 0xf600000000000000ull)) {  // TLDS
         emit_texs(c, w, true);
+    } else if (c->stage == STAGE_GEOMETRY && (OPM(0xfbe0000000000000ull, 0xfff8000000000000ull) ||
+                                              OPM(0xf6e0000000000000ull, 0xfef8000000000000ull))) {  // OUT
+        if (bits(w, 39, 1)) {  // emit (cut: one strip per invocation, nothing to do)
+            sp(&c->body, "    if (emitc == want) out = gout;\n    emitc++;\n");
+            c->info->gs_emits++;
+        }
+        if (d != RZ) set_reg(c, d, "0u");
+    } else if (c->stage == STAGE_GEOMETRY && OPM(0xefd0000000000000ull, 0xfff8000000000000ull)) {  // ISBERD
+        set_reg(c, d, R(a));  // (the input vertex offset; attribute loads ignore it)
+    } else if (c->stage == STAGE_GEOMETRY && OPM(0x5f00000000000000ull, 0xff00000000000000ull)) {  // VMAD
+        set_reg(c, d, "0u");  // (vertex index arithmetic: one input vertex)
+    } else if (c->stage == STAGE_GEOMETRY && OPM(0x50f0000000000000ull, 0xfff8000000000000ull)) {  // VSETP
+        int pd = (int)bits(w, 3, 3), pdn = (int)bits(w, 0, 3);
+        if (pd != PT) { c->pred_used[pd] = 1; sp(&c->body, "    p%d = false;\n", pd); }
+        if (pdn != PT) { c->pred_used[pdn] = 1; sp(&c->body, "    p%d = true;\n", pdn); }
     } else if (OPM(0xdf58000000000000ull, 0xfff8000000000000ull)) {  // TMML
         emit_tmml(c, w);
     } else if (OPM(0xc800000000000000ull, 0xfc00000000000000ull)) {  // TLD4
@@ -2097,6 +2126,40 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     free(label);
     if (c->fail) { free(c->body.buf); free(c); return info; }
     if (c->glsl) return glsl_finish(c, any_branch, dbg);
+    if (stage == STAGE_GEOMETRY) {  // (see shader.h: a fragment run after `VOut vso = vs_main(...)`)
+        Str g = {0}, prm = {0};
+        if (info->ntex || info->uses_gmem || c->uses_local) fail(c, "geometry stage with textures / global / local memory");
+        for (int i = 0; i < 18 && !c->fail; i++) {
+            if (!(info->cbuf_mask & (1u << i))) continue;
+            if (i > 4) { fail(c, "geometry stage reads cbuf %d", i); break; }
+            sp(&prm, ", constant uint4 *gcb%d [[buffer(%d)]]", i, GS_CBUF_BASE + i);
+        }
+        if (!info->gs_emits) fail(c, "geometry stage emits nothing");
+        if (c->fail) { free(g.buf); free(prm.buf); free(c->body.buf); free(c); return info; }
+        sp(&g, "  {\n  VOut gout = vso;\n  uint emitc = 0;\n");
+        for (int i = 0; i < 256; i++)
+            if (c->reg_used[i]) sp(&g, "  uint r%d = 0;\n", i);
+        for (int i = 0; i < 7; i++)
+            if (c->pred_used[i]) sp(&g, "  bool p%d = false;\n", i);
+        if (c->uses_cc) sp(&g, "  uint cc = 0; bool ccz = false, ccs = false;\n");
+        if (any_branch) {
+            sp(&g, "  uint pc = 8u; uint ssy[16]; uint ssy_n = 0; uint pbk[16]; uint pbk_n = 0; uint pcnt[16]; uint pcnt_n = 0;\n");
+            sp(&g, "  bool exit_now = false;\n");
+            sp(&g, "  for (uint guard = 0; guard < 100000u; guard++) {\n  switch (pc) {\n");
+            sp(&g, "%s", c->body.buf ? c->body.buf : "");
+            sp(&g, "    exit_now = true; break;\n  default: exit_now = true; break;\n  }\n  if (exit_now) break;\n  }\n");
+        } else {
+            sp(&g, "  do {\n%s  } while (false);\n", c->body.buf ? c->body.buf : "");
+        }
+        sp(&g, "  }\n");
+        info->msl = g.buf;
+        info->gs_params = prm.buf ? prm.buf : strdup("");
+        info->attr_mask = c->in_attr_mask;
+        info->out_mask = c->out_attr_mask;
+        free(c->body.buf);
+        free(c);
+        return info;
+    }
 
     // ---------------------------------------------------------- MSL source
     Str s = {0};
@@ -2124,8 +2187,9 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
         }
         sp(&s, "};\n");
         sp(&s, "struct VOut {\n  float4 pos [[position, invariant]];\n");  // depth pre-pass + EQUAL test needs identical positions
+        uint32_t vout_mask = c->out_attr_mask | (key && key->vs_fn ? key->gs_out_mask : 0);
         for (int i = 0; i < 32; i++)
-            if (c->out_attr_mask & (1u << i)) sp(&s, "  float4 v%d [[user(locn%d)]];\n", i, i);
+            if (vout_mask & (1u << i)) sp(&s, "  float4 v%d [[user(locn%d)]];\n", i, i);
         if (info->writes_point_size) sp(&s, "  float psize [[point_size]];\n");
         sp(&s, "};\n");
     } else if (stage == STAGE_FRAGMENT) {
@@ -2147,9 +2211,13 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     }
 
     // entry point
-    Str args = {0};
+    Str args = {0}, fnp = {0}, fna = {0};  // (fnp / fna: vs_main's parameters / the call's arguments, key->vs_fn)
     for (int i = 0; i < 18; i++)
-        if (info->cbuf_mask & (1u << i)) sp(&args, ", constant uint4 *cb%d [[buffer(%d)]]", i, i);
+        if (info->cbuf_mask & (1u << i)) {
+            sp(&args, ", constant uint4 *cb%d [[buffer(%d)]]", i, i);
+            sp(&fnp, ", constant uint4 *cb%d", i);
+            sp(&fna, ", cb%d", i);
+        }
     if (info->uses_gmem) {
         if (info->cbuf_mask & (1u << GMEM_BUFFER_INDEX)) {
             free(args.buf);
@@ -2157,6 +2225,8 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
             fail(c, "cbuf %d clashes with gmem", GMEM_BUFFER_INDEX);
         }
         sp(&args, ", device uchar *gmem [[buffer(%d)]]", GMEM_BUFFER_INDEX);
+        sp(&fnp, ", device uchar *gmem");
+        sp(&fna, ", gmem");
     }
     if (c->uses_rscale && stage != STAGE_VERTEX) {
         sp(&args, ", constant float4 *rscale [[buffer(18)]]");
@@ -2174,8 +2244,18 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
         const char *tn = tex_type_name(t->type);
         if (t->shadow) sp(&args, ", depth%s<float> t%d [[texture(%d)]], sampler s%d [[sampler(%d)]]", tn, i, i, i, i);
         else sp(&args, ", texture%s<float> t%d [[texture(%d)]], sampler s%d [[sampler(%d)]]", tn, i, i, i, i);
+        sp(&fnp, t->shadow ? ", depth%s<float> t%d, sampler s%d" : ", texture%s<float> t%d, sampler s%d", tn, i, i);
+        sp(&fna, ", t%d, s%d", i, i);
     }
-    if (stage == STAGE_VERTEX) {
+    bool vs_fn = stage == STAGE_VERTEX && key && key->vs_fn;
+    if (vs_fn) {
+        sp(&s, "static VOut vs_main(VIn in, uint vid, uint iid%s) {\n", fnp.buf ? fnp.buf : "");
+        sp(&s, "  VOut out = {};\n  out.pos = float4(0, 0, 0, 1);\n");
+        for (int i = 0; i < 32; i++)
+            if ((c->out_attr_mask | key->gs_out_mask) & (1u << i)) sp(&s, "  out.v%d = float4(0, 0, 0, 1);\n", i);
+        info->vs_entry_params = args.buf ? strdup(args.buf) : strdup("");
+        info->vs_call_args = fna.buf ? strdup(fna.buf) : strdup("");
+    } else if (stage == STAGE_VERTEX) {
         sp(&s, "vertex VOut main0(VIn in [[stage_in]], uint vid [[vertex_id]], uint iid [[instance_id]]%s%s) {\n",
            (maxwell_dbg_vs && blob == maxwell_dbg_vs) ? ", device float4 *dbgout [[buffer(29)]]" : "",
            args.buf ? args.buf : "");
@@ -2190,6 +2270,8 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
            args.buf ? args.buf : "");
     }
     free(args.buf);
+    free(fnp.buf);
+    free(fna.buf);
     for (int i = 0; i < 256; i++)
         if (c->reg_used[i]) sp(&s, "  uint r%d = 0;\n", i);
     for (int i = 0; i < 7; i++)
@@ -2206,7 +2288,9 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     } else {
         sp(&s, "  do {\n%s  } while (false);\n", c->body.buf ? c->body.buf : "");
     }
-    if (stage == STAGE_VERTEX) {
+    if (vs_fn) {
+        sp(&s, "  return out;\n}\n");  // (the geometry entry point applies the clip-space epilogue)
+    } else if (stage == STAGE_VERTEX) {
         if (key && key->flip_y) sp(&s, "  out.pos.y = -out.pos.y;\n");
         if (key && key->flip_x) sp(&s, "  out.pos.x = -out.pos.x;\n");
         if (key && key->depth_minus_one) sp(&s, "  out.pos.z = (out.pos.z + out.pos.w) * 0.5f;\n");

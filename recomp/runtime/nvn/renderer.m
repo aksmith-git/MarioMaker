@@ -655,6 +655,7 @@ static int cbuf_base = 3, tex_base = 8;
 @public
     id<MTLFunction> vs, fs;
     ShaderInfo *vi, *fi;
+    ShaderInfo *gi;  // geometry stage (vi->msl is then the combined vertex function: maxwell/shader.h)
     bool failed;
     _Atomic bool ready;  // functions compiled (async compile: draws are skipped until then)
 }
@@ -927,7 +928,7 @@ static Prog *get_program(NvnProgram *p, ShaderKey *vkey, ShaderKey *fkey) {
     if (!(p->stage_mask & 1) || !(p->stage_mask & 2)) return nil;
     // fast path: hash of the code addresses and keys
     uint64_t h = 0xcbf29ce484222325ull;
-    for (int i = 0; i < 2; i++) { uint64_t a = p->stages[i].code_addr; for (int k = 0; k < 8; k++) { h ^= (a >> (k * 8)) & 0xFF; h *= 0x100000001B3ull; } }
+    for (int i = 0; i < 3; i++) { uint64_t a = p->stages[i].code_addr; for (int k = 0; k < 8; k++) { h ^= (a >> (k * 8)) & 0xFF; h *= 0x100000001B3ull; } }
     const uint8_t *vb = (const uint8_t *)vkey;
     for (size_t i = 0; i < sizeof *vkey; i++) { h ^= vb[i]; h *= 0x100000001B3ull; }
     for (int i = 0; i < 8; i++) { h ^= fkey->rt_kind[i]; h *= 0x100000001B3ull; }
@@ -969,7 +970,43 @@ static Prog *get_program(NvnProgram *p, ShaderKey *vkey, ShaderKey *fkey) {
     // the compiler constants follow the code, so they bound the instruction scan
     size_t vmax = p->stages[0].const_offset ? p->stages[0].const_offset : 0x10000;
     size_t fmax = p->stages[1].const_offset ? p->stages[1].const_offset : 0x10000;
+    ShaderKey gvkey;
+    if (p->stage_mask & 4) {  // geometry stage: translated first (the vertex function carries its varyings)
+        size_t gmax = p->stages[2].const_offset ? p->stages[2].const_offset : 0x10000;
+        pr->gi = maxwell_translate((const uint8_t *)(uintptr_t)p->stages[2].code_addr, gmax, STAGE_GEOMETRY, vkey);
+        if (!pr->gi->msl) {
+            LOG("[shader] GS translate failed: %s (code %llx)\n", pr->gi->error, p->stages[2].code_addr);
+            pr->failed = true;
+            return nil;
+        }
+        gvkey = *vkey;
+        gvkey.vs_fn = 1;
+        gvkey.gs_out_mask = pr->gi->out_mask;
+        vkey = &gvkey;
+    }
     pr->vi = maxwell_translate((const uint8_t *)(uintptr_t)p->stages[0].code_addr, vmax, STAGE_VERTEX, vkey);
+    if (pr->vi->msl && pr->gi) {  // the combined vertex function: vertex shader for the point, then the geometry stage
+        if ((pr->vi->cbuf_mask >> GS_CBUF_BASE) & pr->gi->cbuf_mask) {
+            LOG("[shader] GS cbufs clash with the vertex shader's (code %llx)\n", p->stages[2].code_addr);
+            pr->failed = true;
+            return nil;
+        }
+        NSMutableString *m = [NSMutableString stringWithUTF8String:pr->vi->msl];
+        [m appendFormat:@"vertex VOut main0(VIn in [[stage_in]], uint vid [[vertex_id]], uint iid [[instance_id]]%s%s) {\n",
+               pr->vi->vs_entry_params, pr->gi->gs_params];
+        [m appendFormat:@"  VOut vso = vs_main(in, iid, iid%s);\n", pr->vi->vs_call_args];
+        [m appendString:@"  uint tri = vid / 3u, corner = vid % 3u;  // triangle tri of the emitted strip\n"
+                   @"  uint want = (tri & 1u) ? (corner == 0u ? tri + 1u : corner == 1u ? tri : tri + 2u) : tri + corner;\n"
+                   @"  VOut out = vso;\n"];
+        [m appendString:@(pr->gi->msl)];
+        if (vkey->flip_y) [m appendString:@"  out.pos.y = -out.pos.y;\n"];
+        if (vkey->flip_x) [m appendString:@"  out.pos.x = -out.pos.x;\n"];
+        if (vkey->depth_minus_one) [m appendString:@"  out.pos.z = (out.pos.z + out.pos.w) * 0.5f;\n"];
+        [m appendString:@"  return out;\n}\n"];
+        free(pr->vi->msl);
+        pr->vi->msl = strdup(m.UTF8String);
+        pr->vi->out_mask = pr->gi->out_mask;  // (what the fragment stage gets)
+    }
     if (!pr->vi->msl) {
         LOG("[shader] VS translate failed: %s (code %llx)\n", pr->vi->error, p->stages[0].code_addr);
         char path[128];
@@ -1831,7 +1868,7 @@ static void draw(CmdRec *r, bool indexed) {
         if (stride == 0) { vd.layouts[18 + s].stepFunction = MTLVertexStepFunctionConstant; vd.layouts[18 + s].stepRate = 0; vd.layouts[18 + s].stride = 16; }
         else {
             vd.layouts[18 + s].stride = (stride + 3) & ~3u;
-            if (div) { vd.layouts[18 + s].stepFunction = MTLVertexStepFunctionPerInstance; vd.layouts[18 + s].stepRate = div; }
+            if (div || pr->gi) { vd.layouts[18 + s].stepFunction = MTLVertexStepFunctionPerInstance; vd.layouts[18 + s].stepRate = div ? div : 1; }
         }
     }
     pd.vertexDescriptor = vd;
@@ -2116,6 +2153,62 @@ static void draw(CmdRec *r, bool indexed) {
         }
         if (draw_heart) { extern void texpatch_heart_tint(int kind, float tint[8]); texpatch_heart_tint(draw_heart, tint); }
         [enc setFragmentBytes:tint length:sizeof tint atIndex:19];
+    }
+    if (pr->gi) {  // geometry stage: each input point is an instance drawing the emitted strip (maxwell/shader.h)
+        uint32_t mode = (uint32_t)r->x[0], n = (uint32_t)r->x[2];
+        uint32_t ninst = indexed ? (uint32_t)r->x[6] : (uint32_t)r->x[4];
+        if (mode != 0 || ninst > 1 || pr->gi->gs_emits < 3 || !n) { stat_skipped++; return; }
+        // the points' vertices, in draw order, into the ring (index lists resolved here)
+        uint32_t *idx = malloc(n * sizeof *idx);
+        if (indexed) {
+            uint32_t itype = (uint32_t)r->x[1];
+            int32_t bv = (int32_t)r->x[4];
+            const uint8_t *ip = (const uint8_t *)(uintptr_t)r->x[3];
+            for (uint32_t i = 0; i < n; i++)
+                idx[i] = (uint32_t)((int32_t)(itype == 0 ? ip[i] : itype == 1 ? ((const uint16_t *)ip)[i] : ((const uint32_t *)ip)[i]) + bv);
+        } else {
+            for (uint32_t i = 0; i < n; i++) idx[i] = (uint32_t)r->x[1] + i;
+        }
+        for (int s = 0; s < 12; s++) {
+            if (!(used_streams & (1u << s))) continue;
+            Range v = st.vbuf[s];
+            uint32_t stride = s < st.nstream ? st.stream[s][0] : 0;
+            if (!v.addr) { static const float zero[4]; [enc setVertexBytes:zero length:16 atIndex:18 + s]; continue; }
+            if (!stride) { bind_guest(enc, true, v.addr, v.size ? v.size : 16, 18 + s); continue; }
+            uint32_t ps = (stride + 3) & ~3u;
+            uint8_t *tmp = calloc(n, ps);
+            const uint8_t *src = (const uint8_t *)(uintptr_t)v.addr;
+            for (uint32_t i = 0; i < n; i++)
+                if (!v.size || (uint64_t)idx[i] * stride + stride <= v.size) memcpy(tmp + (size_t)i * ps, src + (size_t)idx[i] * stride, stride);
+            uint64_t off = ring_alloc(tmp, (uint64_t)n * ps);
+            free(tmp);
+            [enc setVertexBuffer:ring offset:off atIndex:18 + s];
+        }
+        free(idx);
+        if (used_streams & (1u << 31)) { static const float zero[4] = {0, 0, 0, 1}; [enc setVertexBytes:zero length:16 atIndex:30]; }
+        for (int k = 0; k < 5; k++) {  // the geometry stage's cbufs
+            if (!(pr->gi->cbuf_mask & (1u << k))) continue;
+            uint64_t size = pr->gi->cbuf_size[k] ? pr->gi->cbuf_size[k] : 256, off;
+            if (k == 1) {
+                NvnShaderStage *ss = &st.program->stages[2];
+                off = ring_alloc((void *)(uintptr_t)(ss->code_addr + ss->const_offset), size);
+            } else {
+                Range u = k >= cbuf_base ? st.ubuf[2][k - cbuf_base] : (Range){0, 0};
+                static const uint8_t zeros[0x10000];
+                if ((pr->gi->cbuf_dynamic & (1u << k)) && u.size) size = u.size > 0x10000 ? 0x10000 : u.size;
+                if (u.addr && u.size && size > u.size) size = u.size;
+                off = ring_alloc(u.addr ? (void *)(uintptr_t)u.addr : (void *)zeros, size);
+            }
+            [enc setVertexBuffer:ring offset:off atIndex:GS_CBUF_BASE + k];
+        }
+        [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3 * (pr->gi->gs_emits - 2) instanceCount:n baseInstance:0];
+        stat_draws++;
+        if (g_debug_frame && ENV("LARECOMP_DEBUG_EACH_DRAW")) {
+            LOG("[draw] ^ saved as pass_%03d\n", debug_pass_no);
+            end_pass();
+            st.rt_dirty = true;
+        }
+        return;
     }
     for (int s = 0; s < 12; s++) {
         if (!(used_streams & (1u << s))) continue;

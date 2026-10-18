@@ -577,14 +577,30 @@ static void upload_texture(NvnTexture *t, TexBackend *b, id<MTLBlitCommandEncode
     if (own_cb) { [blit endEncoding]; [own_cb commit]; }
 }
 
+// A texture rendered to before it was ever sampled starts from what its memory holds, as on the GPU: SMM2 loads
+// each 2D style's tile sheet from a file and then draws the animated tiles into the same texture every frame;
+// without the upload only the animated cells existed and the ground and blocks were missing.
+static void first_render_use(NvnTexture *t, TexBackend *b, id<MTLBlitCommandEncoder> blit) {
+    if (b->gpu_owned || b->uploaded || b->scalable || !t->addr || t->target == 10 || renderer_format_is_depth(t->format)) return;
+    const uint64_t *m = (const uint64_t *)(uintptr_t)t->addr;
+    uint64_t n = tegra_total_size(&t->layout) / 8;
+    bool data = false;
+    for (uint64_t i = 0; i < n && !data; i++) data = m[i] != 0;
+    if (data) upload_texture(t, b, blit);
+}
+
 id<MTLTexture> renderer_texture(NvnTexture *t, id<MTLBlitCommandEncoder> blit, bool for_render) {
     TexBackend *b = tex_backend(t);
-    if (for_render) b->gpu_owned = true;
+    if (for_render) { first_render_use(t, b, blit); b->gpu_owned = true; }
     else if (!b->gpu_owned) upload_texture(t, b, blit);
     return b->tex;
 }
 
-void renderer_mark_gpu_owned(NvnTexture *t) { tex_backend(t)->gpu_owned = true; }
+void renderer_mark_gpu_owned(NvnTexture *t) {
+    TexBackend *b = tex_backend(t);
+    first_render_use(t, b, nil);
+    b->gpu_owned = true;
+}
 bool renderer_is_gpu_owned(NvnTexture *t) { return tex_backend(t)->gpu_owned; }
 
 void backend_pool_written(uint64_t addr, uint64_t size) { (void)addr; (void)size; }

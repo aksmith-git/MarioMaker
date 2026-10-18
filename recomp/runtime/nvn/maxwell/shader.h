@@ -45,7 +45,18 @@ typedef struct {
                             // after flip_y: keys without it hash as before - shader caches stay valid.)
     uint32_t vs_out_mask;   // fragment: varyings the vertex shader provides
     uint8_t glsl;           // emit Vulkan GLSL (see the contract above) instead of MSL
+    uint8_t vs_fn;          // vertex (MSL): emit `static VOut vs_main(...)` for a geometry stage to call (see below)
+    uint32_t gs_out_mask;   // vertex with vs_fn: varyings the geometry stage writes (VOut gets them too)
 } ShaderKey;
+
+// Geometry shaders (MSL only; Metal has none). A program with a geometry stage is drawn as one vertex function:
+// the vertex shader is translated with key->vs_fn into `static VOut vs_main(VIn in, uint vid, uint iid, ...)` (no
+// clip-space epilogue), and the geometry shader into a code fragment (ShaderInfo.msl) that runs in the entry point
+// after `VOut vso = vs_main(...)`: attribute loads read vso, stores write `gout`, and the n-th EmitVertex copies
+// gout to `out` when n == `want`. The renderer draws each input point as an instance of 3 * (gs_emits - 2)
+// vertices (the emitted triangle strip as triangles; `want` from the vertex id). Geometry cbuf k is bound at
+// Metal vertex buffer GS_CBUF_BASE + k (k <= 4). Only point input with one strip per invocation is handled.
+#define GS_CBUF_BASE 12
 
 typedef struct {
     uint32_t handle_offset;  // byte offset of the texture handle in the bound texture cbuf
@@ -74,6 +85,11 @@ typedef struct {
     bool uses_tint;        // fragment: reads the per-draw tint (buffer 19, float4[2]) applied to color target 0
     bool uses_rscale;       // reads the resolution-scale table (fragment/compute buffer 18): float4 [0] = render
                             // target scale, [1 + i] = allocation scale of texture i
+    // geometry (see above): emitted vertices, the cbufs it reads, entry-point parameters for them
+    int gs_emits;
+    char *gs_params;
+    // vertex with vs_fn: the entry point's parameters for what vs_main needs, and the arguments that pass them
+    char *vs_entry_params, *vs_call_args;
     uint32_t local_mem;     // bytes of local memory
     uint32_t num_insts;
     char error[256];        // set when translation fails

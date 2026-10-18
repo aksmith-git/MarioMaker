@@ -1,11 +1,12 @@
-"""A one-course title screen (test mod): the game picks its title-screen course at random from ten; this makes all
-ten the same one, so the title screen is the same on every boot (frame comparisons against a reference runtime).
+"""A one-course title screen for Ryujinx reference captures: the game picks its title-screen course from ten
+(Course/title_course_data_00..09.szs); this makes all ten the same one, so Ryujinx shows course N on every boot.
 
-    titlemod.py --romfs <game romfs> --course N --out <mod folder>/romfs [--out <another runtime's mod romfs> ...]
+    titlemod.py --romfs <game romfs> --course N --out <mod folder>/romfs --copy
 
-Writes Course/title_course_data_00..09.szs as links to the game's own title_course_data_<N>.szs (--copy: copies).
-Use the folder with RECOMP_MOD_DIR=<mod folder> (runtime/mods.c) and, for Ryujinx, as a LayeredFS mod
-(<root>/mods/contents/01009b90006dc000/<name>/romfs).
+Use the folder as a Ryujinx LayeredFS mod (<root>/mods/contents/01009b90006dc000/<name>/romfs; copies, not links).
+The recomp picks its course with SMM2_SEED instead (games/smm2/seed.c: 4 -> 00, 2 -> 01, 1 -> 02, 6 -> 05,
+3 -> 06, 10 -> 07; 08 and 09 only come up once the save unlocks them): with this mod (RECOMP_MOD_DIR) a course
+other than the slot's own crashes the recomp while loading the title scene (docs/smm2-bringup.md, open issues).
 """
 import argparse
 import os
