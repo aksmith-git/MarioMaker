@@ -64,8 +64,9 @@ impl World {
         false
     }
 
-    /// A boss that was just defeated drops the Key it held (child object 95) where it was
-    /// [inf: the drop's motion is not decoded; the Key appears at the boss's centre].
+    /// A boss that was just defeated drops the Key it held (child object 95) 8 px below its
+    /// centre, where the boss helper records the defeat (0x71006116d0) [inf: that the Key
+    /// appears at that record, and without motion of its own, is not traced].
     pub(super) fn boss_keys(&mut self) {
         let mut keys = Vec::new();
         for a in &mut self.actors {
@@ -79,15 +80,16 @@ impl World {
         }
     }
 
-    /// Koopa Clown Cars under the bosses riding them [inf placement: the rider's feet sit in the
-    /// bowl, 16 px (×2) above the car's bottom].
+    /// Koopa Clown Cars under the bosses riding them, animated as the car's wait_ftp (4 textures,
+    /// 2 frames each) [inf placement: the rider's feet sit in the bowl, 16 px (×2) above the
+    /// car's bottom; the engine merges car and rider, the game links two actors].
     pub(super) fn clown_sprites(&self, out: &mut Vec<Sprite>) {
         for a in &self.actors {
             if !a.kind.is_boss() || !a.kind.boss_clown() || a.mode != Mode::Normal {
                 continue;
             }
             let s = if a.big { 2.0 } else { 1.0 };
-            let tex = ["wait.0", "wait.1", "wait.2", "wait.3"][(self.tick as usize / 8) % 4];
+            let tex = ["wait.0", "wait.1", "wait.2", "wait.3"][(self.tick as usize / 2) % 4];
             out.push(Self::model_sprite(
                 "M1_Enemy_koopaclown",
                 tex,
@@ -102,8 +104,8 @@ impl World {
     }
 }
 
-/// A sliding shell meeting a boss: the boss takes a Shell hit and the shell is spent [inf: it
-/// is knocked away]. Returns None when neither is a boss hit by a sliding shell; otherwise the
+/// A sliding shell meeting a boss: the boss takes a Shell hit (attack 6) and the shell is spent
+/// [inf: it is knocked away; the shell's own side of the collision is not traced]. Returns None when neither is a boss hit by a sliding shell; otherwise the
 /// score to award, if the boss was defeated.
 pub(super) fn boss_shell_hit(a: &mut Actor, b: &mut Actor) -> Option<Option<(u32, f32, f32)>> {
     let (shell, boss) = if a.mode == Mode::ShellSlide && b.kind.is_boss() {
@@ -384,7 +386,9 @@ mod tests {
         let mut top: f32 = 0.0;
         for _ in 0..200 {
             run(&mut w, 0, 1);
-            top = top.max(boss(&w).vx.abs());
+            if boss(&w).on_ground {
+                top = top.max(boss(&w).vx.abs());
+            }
         }
         assert!((top - 1.5).abs() < 1e-4, "top speed {top}");
     }

@@ -169,51 +169,33 @@ Every boss hit goes through `Actor::boss_hit(attack)`, which applies the spec's 
 fire 1, shell 3, 20 HP (big 40), and stomps are Invalid. Boom Boom and Bowser Jr.: 3 HP; a
 fireball drains a 5-point counter (big 10) and costs 1 HP when it empties. Star, POW quake and lava
 use the generic kill paths. The code is in `actors/bosses.rs` and `world/bosses.rs`, so the shared
-files only gain variants, match arms and one-line hooks. Choices the specs leave open, all [inf]:
-- **Shared rules:**
-  - A stomp on Bowser hurts the player, as on Spike Top (the other "Invalid" stamp). Chain Chomp's
-    bounce is the exception there.
-  - A Bob-omb blast is a Shell-strength hit (Bowser 3, others 1). A shell that hits a boss is spent
-    (DieFall).
-  - Boom Boom and Bowser Jr. are immune in DamageDown/Defend and in DamageDown/Shell. Stomps then
-    bounce, and contact from above never hurts.
-  - A held Key (child 95) appears at the boss's centre on defeat.
-  - Clown Car riders (flag 0x200; the Clown context isn't decoded) hover at their spawn height,
-    ease toward the player and only flash when hit. In the car, Bowser keeps his fire timer and
-    Bowser Jr. fires, throws hammers and drops shells every 120 frames. Boom Boom doesn't attack.
-- **Bowser:**
-  - He walks along a patrol direction while turning to face the player, so he can walk backwards.
-  - The middle jump always happens (the target-height search isn't decoded). Turn and LandOn
-    last 8 frames, the breath 30, and the flame leaves at its end (SMB1).
-  - Flames fly at the 1.5 speed field and settle at 0.5 px/f onto one of four lanes, 0–24 px above
-    his feet, picked from 3 random bits.
-  - The Fly hover uses gravity −0.05 while breathing. The breath pauses during a big jump.
-  - The SMB3 big jump aims to reach the player's x by the apex. Other styles' big jump is
-    0–1 px/f toward the player. HitBlock lasts 16 frames.
-  - Not modelled: the hip-drop quake and block breaking, the ×1.5 timers in water, and the
-    helper's "mode" 1–3.
-- **Boom Boom:**
-  - Jump 5.0 and WallJump 3.75, read from the spec's state section; the table's "big 3.75" stays
-    open.
-  - Charge 60 frames. Defend ends after 3 hops and at least 30 frames, at a top speed of 2.0. Then
-    60 frames of slow walk.
-  - Winged: cruise speed 1.0, holding the spawn height. The swoop accelerates 0.1 down for the
-    first 30 frames, then up.
-- **Pom Pom** only in 3D World (the loader rule). Wait 60, then alternately a jump (4.0 / 1.5) or 3
-  aimed shuriken (2 px/f). After a hit she vanishes for 60 frames and reappears 64 px from the
-  player. No decoys. M1 placeholder art.
-- **Bowser Jr.:**
-  - The Wait choice table: near (≤ 80 px) shift-jump 6/16, hop 4/16, walk; far fire 5/16, hammer
-    2/16, shift-jump 2/16, walk.
-  - Angry walk (1.25) at 1 HP. Hop 2.5, shift jump 5.0 with 1 px/f toward the player. The hover
-    drifts over the player (≤ 1.5).
-  - After a hip drop he paces around the landing point.
-  - His fire is a Bowser flame aimed at the player's height (±32 px); the hammer is the Hammer
-    Bro's.
-  - Shell: slides at 2.0 for 150 frames, then 20 frames to come out.
+files only gain variants, match arms and one-line hooks.
 
-What would change this: Ryujinx measurements, or decoding Bowser's target-height search, the Bowser
-Jr. Wait table, the Clown contexts and the Pom Pom constants.
+Update (same day, boss burn-down): the behaviour is now read from the decompiled game code (and the
+animation lengths from the sprite data), state by state; the specs 62/77/98 cite each address.
+Highlights: Bowser chases once the player gets past him (0.7 SMB1 / 0.9 px/f), waits in place while
+off screen, stands still while breathing (35-frame SMB1 breath, flame at its end), fires into one
+of three lanes 17 px apart, hops on a block bump; Boom Boom starts curled up, floats while stunned,
+dashes and brakes into Defend, wall-jumps 3.75 / 3.75 / 5.0, jumps 5.5, and winged keeps its wings,
+hovering near the view and diving at the player; Bowser Jr. hops by a jump solver, walks 1.25,
+shift-jumps straight up, shoots 3 aimed fireballs (winged: 4 hammers), and attacks from the Clown
+Car every 150 frames. What is still a guess, and why:
+- A stomp on Bowser hurts the player, as on Spike Top (the other "Invalid" stamp).
+- A Bob-omb blast is a Shell-strength hit [?]: the explosion's attack type was not found (Bowser's
+  damage table has no explosion entry). A shell that hits a boss is spent [inf].
+- The held Key appears 8 px below the boss's centre, where the defeat is recorded [inf].
+- Clown Car steering for riders [?] (the car's 3.8 KB Chase routine is not decoded) and riders
+  only flash when hit [?]. Thrown Clown Car shells use the engine's shell launch [?].
+- Bowser: the obstacle / gap jumps of the chase decision [?]; flames add his current forward speed
+  (the game averages a short history) [inf]; the hip-drop quake's player stun and big Bowser's
+  block bounce are not modelled (no engine hook); water timings (×1.5) not modelled.
+- Bowser Jr.: the Shell context's slide length (8 KB state not decoded) [?], ReturnFromShell [?],
+  the drop-down shift jump [?], non-SMB1 wind-up animations [?]; the hop arc check is sampled [inf].
+- Pom Pom (3D World only): throw timing, the shuriken's flight and where she reappears [?];
+  placeholder art.
+
+What would change this: decoding the Clown Car Chase state, the boss Shell context, BulletPunpun /
+Punpun's Throw and Lapse states, or Ryujinx measurements.
 
 ## 2026-10-18 — SMM1 UI: JSON + `.mtex` cache, layout player in its own crate
 - **Cache form:** `mmk import-smm1` writes each layout as JSON (parsed BFLYT + its BFLAN
