@@ -163,6 +163,8 @@ Earlier (R1, first round):
 
 ### Method
 
+- Test courses: SMCraft's physics test courses (`mmk trace-courses`, in the full CLI on the `smcraft-archive`
+  branch), `<style>_<kind>` for the five styles and flat / wall / slope / water / items / form.
 - Same start in both runtimes: the test course is installed as all ten title courses (recomp `RECOMP_MOD_DIR`,
   Ryujinx LayeredFS), and the script starts at the first update of the title-course player (Ryujinx: the `run`
   command is armed before the player exists). One script per course plays every test of that course kind with a
