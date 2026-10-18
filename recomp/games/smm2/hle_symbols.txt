@@ -1,0 +1,2 @@
+# Guest functions of Super Mario Maker 2 replaced by host code before recompiling: one mangled symbol per line.
+# (None yet: the SDK runs recompiled, on the runtime's kernel and services.)
