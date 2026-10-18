@@ -20,6 +20,8 @@ const SNAKE_OWNER: u32 = 0x8000_0000;
 const EXCL_OWNER: u32 = 0x9000_0000;
 /// Solid owner ids of tree canopies: base + tree.
 const TREE_OWNER: u32 = 0x9800_0000;
+/// Solid ids of Piranha Creeper stalk boxes (actor index × 128 + box).
+const CREEPER_OWNER: u32 = 0x9C00_0000;
 use crate::fmath::DetMath;
 use crate::player::{Control, Form, Player, Pose, STAR_FRAMES};
 use crate::render::{Sprite, SpriteImage};
@@ -2217,7 +2219,17 @@ impl World {
         let mut kills = 0;
         let mut scores = Vec::new();
         for a in &mut self.actors {
-            let (ax0, _, ax1, _) = a.bbox();
+            let (ax0, ay0, ax1, _) = a.bbox();
+            // a Piranha Creeper's head over the block is trampled (2 pieces back) like a stomp
+            // [obs 3W pass 2: blkhit on the head → Damage]
+            if matches!(a.kind, Kind::PiranhaCreeper { .. })
+                && (ay0 - top).abs() < 2.0
+                && ax1 > x0
+                && ax0 < x1
+            {
+                a.creeper_trample(false);
+                continue;
+            }
             let on_top = (a.y - top).abs() < 2.0 && ax1 > x0 && ax0 < x1;
             if !on_top || !a.solid_contact() {
                 continue;
@@ -4311,6 +4323,31 @@ impl World {
             }
         }
         self.snakes.retain(|s| !s.gone());
+        // Piranha Creeper stalks can be stood on (3D World)
+        for (ai, a) in self.actors.iter().enumerate() {
+            let Kind::PiranhaCreeper { path, .. } = a.kind else {
+                continue;
+            };
+            if !a.alive() {
+                continue;
+            }
+            let Some((_, codes)) = self.level.creepers.iter().find(|(p, _)| *p == path) else {
+                continue;
+            };
+            for (k, (x0, y0, x1, y1)) in a.creeper_solids(codes).into_iter().enumerate() {
+                self.level.solids.push(crate::level::Solid {
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    dx: 0.0,
+                    dy: 0.0,
+                    top_only: false,
+                    owner: CREEPER_OWNER + ai as u32 * 128 + k as u32,
+                    slope: 0.0,
+                });
+            }
+        }
         if let Some(id) = ride {
             if let Some(s) = self.level.solids.iter().find(|s| s.owner == id) {
                 self.player.x += s.dx;
