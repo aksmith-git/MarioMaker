@@ -17,6 +17,14 @@ Mario mod, the Windows / Linux builds, iOS and costumes are in progress. Approac
 it builds on (a fork of [LAS Recomp](https://github.com/peiikai/LASRecomp), MIT): the recomp entry
 in [DECISIONS.md](DECISIONS.md).
 
+## Screenshots
+
+Captured from the macOS build, running from the owner's own dump.
+
+| Title screen | Playing the title course | Make / Play |
+|---|---|---|
+| ![Title screen](docs/screenshots/title.jpg) | ![Mario running the title course](docs/screenshots/title-course.jpg) | ![Make and Play menu](docs/screenshots/menu.jpg) |
+
 ## Layout
 
 | Path | What |

@@ -20,6 +20,21 @@ class CheckFileTests(unittest.TestCase):
         p.write_bytes(data)
         return p
 
+    def test_images_only_in_screenshots(self):
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+        self.assertTrue(check_file(self.write("title.png", png)))
+        shots = self.dir / "docs" / "screenshots"
+        shots.mkdir(parents=True)
+        p = shots / "title.png"
+        p.write_bytes(png)
+        self.assertEqual(check_file(p), [])
+        big = shots / "big.jpg"
+        big.write_bytes(b"\xff\xd8\xff" + b"\x00" * (1024 * 1024 + 1))
+        self.assertTrue(check_file(big))
+        tex = shots / "tex.dds"
+        tex.write_bytes(b"\x00" * 16)
+        self.assertTrue(check_file(tex))
+
     def test_clean_source_file_passes(self):
         self.assertEqual(check_file(self.write("main.rs", b"fn main() {}\n")), [])
 
