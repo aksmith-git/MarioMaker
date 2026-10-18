@@ -19,7 +19,8 @@
 //! | GET, POST | `/api/courses/<code>/comments` (POST body `{"text"}`) | comments |
 //! | DELETE | `/api/courses/<code>` | remove (the uploader, or the admin) |
 //! | POST | `/api/admin/ban/<account id>`, `/api/admin/unban/<id>` | moderation (admin token) |
-//! | GET | `/api/rankings/<maker_points\|clears\|first_clears\|records>?limit=` | leaderboards |
+//! | POST | `/api/endless/<easy\|normal\|expert\|super_expert>` (body `{"cleared"}`) | Endless Challenge run; keeps the best |
+//! | GET | `/api/rankings/<maker_points\|clears\|first_clears\|records\|endless_<difficulty>>?limit=` | leaderboards |
 //!
 //! Accounts (`accounts` module) are a name and a secret token sent as `Authorization: Bearer
 //! <token>`; uploads, votes and comments from an account carry its name and maker ID. Anonymous
@@ -139,6 +140,8 @@ struct Inner {
     comments: HashMap<String, Vec<Comment>>,
     /// maker ID → codes of the courses they cleared.
     cleared: HashMap<String, Vec<String>>,
+    /// Endless Challenge: difficulty → maker ID → best run (courses cleared).
+    endless: HashMap<String, HashMap<String, u64>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -258,6 +261,24 @@ impl Store {
                     .collect()
             })
             .unwrap_or_default();
+        let endless = social["endless"]
+            .as_object()
+            .map(|o| {
+                o.iter()
+                    .map(|(d, v)| {
+                        let best = v
+                            .as_object()
+                            .map(|m| {
+                                m.iter()
+                                    .filter_map(|(who, n)| Some((who.clone(), n.as_u64()?)))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        (d.clone(), best)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         Ok(Self {
             dir,
             inner: Mutex::new(Inner {
@@ -269,6 +290,7 @@ impl Store {
                 votes,
                 comments,
                 cleared,
+                endless,
             }),
             admin: None,
         })
@@ -309,7 +331,8 @@ impl Store {
             .collect();
         self.write_json(
             "social.json",
-            &json!({ "votes": votes, "comments": comments, "cleared": g.cleared }),
+            &json!({ "votes": votes, "comments": comments, "cleared": g.cleared,
+                     "endless": g.endless }),
         )
     }
 
@@ -544,6 +567,25 @@ impl Store {
             .map_err(|e| StoreError::Io(e.to_string()))
     }
 
+    /// An Endless Challenge run on `difficulty` that cleared `cleared` courses; the account's best
+    /// on that difficulty is kept. Returns the best.
+    pub fn endless(&self, difficulty: &str, who: &str, cleared: u64) -> Result<u64, StoreError> {
+        if !ENDLESS.contains(&difficulty) {
+            return Err(StoreError::NotFound);
+        }
+        let mut g = self.inner.lock().unwrap();
+        let best = g
+            .endless
+            .entry(difficulty.to_string())
+            .or_default()
+            .entry(who.to_string())
+            .or_insert(0);
+        *best = (*best).max(cleared);
+        let out = *best;
+        self.save_social(&g)?;
+        Ok(out)
+    }
+
     /// Leaderboard `kind`: maker_points (likes − boos on their courses [inf: SMM2 adds points
     /// for likes and takes them for boos; the exact weights weren't decoded]), clears (courses
     /// cleared), first_clears, records (world records held). Banned accounts are left out.
@@ -563,6 +605,15 @@ impl Store {
                 "clears" => g.cleared.get(&a.maker_id).map_or(0, |c| c.len() as i64),
                 "first_clears" => count(&|m| m.first_clear == a.maker_id),
                 "records" => count(&|m| m.record_holder == a.maker_id),
+                k if k
+                    .strip_prefix("endless_")
+                    .is_some_and(|d| ENDLESS.contains(&d)) =>
+                {
+                    g.endless
+                        .get(&k["endless_".len()..])
+                        .and_then(|m| m.get(&a.maker_id))
+                        .map_or(0, |&n| n as i64)
+                }
                 _ => -1,
             }
         };
@@ -784,6 +835,17 @@ pub fn handle(
                 Err(e) => store_err(e),
             }
         }
+        ("POST", ["api", "endless", difficulty]) => match signed_in() {
+            Some(a) => {
+                let v: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+                let n = v["cleared"].as_u64().unwrap_or(0);
+                match store.endless(difficulty, &a.maker_id, n) {
+                    Ok(best) => json(200, json!({ "difficulty": difficulty, "best": best })),
+                    Err(e) => store_err(e),
+                }
+            }
+            None => err(401, "sign in"),
+        },
         ("GET", ["api", "rankings", kind]) => {
             let limit = q
                 .get("limit")
@@ -872,6 +934,9 @@ pub fn start_relay(
     std::thread::spawn(move || ws::serve(h, tcp));
     Ok(hub)
 }
+
+/// Endless Challenge difficulties.
+pub const ENDLESS: &[&str] = &["easy", "normal", "expert", "super_expert"];
 
 pub fn serve(store: Store, addr: &str) -> Result<(), String> {
     let server = tiny_http::Server::http(addr).map_err(|e| e.to_string())?;
@@ -1079,6 +1144,25 @@ mod tests {
             );
             assert_eq!(r["rankings"][0]["score"], 1, "{kind}");
         }
+        assert_eq!(
+            call("POST", "/api/endless/expert", None, br#"{"cleared":3}"#).0,
+            401
+        );
+        for n in [7, 4] {
+            let (st, e) = call(
+                "POST",
+                "/api/endless/expert",
+                Some(&token),
+                format!(r#"{{"cleared":{n}}}"#).as_bytes(),
+            );
+            assert_eq!((st, e["best"].as_u64()), (200, Some(7)));
+        }
+        let (_, r) = call("GET", "/api/rankings/endless_expert", None, b"");
+        assert_eq!(r["rankings"][0]["score"], 7);
+        assert_eq!(
+            call("POST", "/api/endless/silly", Some(&token), b"{}").0,
+            404
+        );
         let (_, r) = call("GET", "/api/rankings/maker_points", None, b"");
         assert_eq!(r["rankings"].as_array().map(Vec::len), Some(0));
         assert_eq!(call("GET", "/api/rankings/nope", None, b"").0, 404);

@@ -190,8 +190,18 @@ impl Client {
         Ok((a, Self::list(&v)))
     }
 
-    /// Leaderboard `kind` (maker_points, clears, first_clears, records): (rank, score, maker ID,
-    /// name), best first.
+    /// Report an Endless Challenge run (`easy`, `normal`, `expert`, `super_expert`) that cleared
+    /// `cleared` courses; the account's best on that difficulty.
+    pub fn endless(&self, difficulty: &str, cleared: u64) -> Result<u64> {
+        let v = self.post_json(
+            &format!("/api/endless/{difficulty}"),
+            &serde_json::json!({ "cleared": cleared }),
+        )?;
+        v["best"].as_u64().ok_or_else(|| format!("refused: {v}"))
+    }
+
+    /// Leaderboard `kind` (maker_points, clears, first_clears, records, endless_<difficulty>):
+    /// (rank, score, maker ID, name), best first.
     pub fn rankings(&self, kind: &str, limit: usize) -> Result<Vec<(u32, i64, String, String)>> {
         let v = self.get_json(&format!("/api/rankings/{kind}?limit={limit}"))?;
         Ok(v["rankings"]
@@ -389,6 +399,9 @@ mod tests {
         assert_eq!(c.comments(&mine.code).unwrap()[0].text, "hi");
         assert_eq!(c.maker(&acc.maker_id).unwrap().1.len(), 1);
         assert_eq!(c.rankings("records", 10).unwrap()[0].2, acc.maker_id);
+        assert_eq!(me.endless("normal", 12).unwrap(), 12);
+        assert_eq!(me.endless("normal", 3).unwrap(), 12);
+        assert_eq!(c.rankings("endless_normal", 5).unwrap()[0].1, 12);
         me.delete(&mine.code).unwrap();
         assert!(c.info(&mine.code).is_err());
         let _ = std::fs::remove_dir_all(&dir);
