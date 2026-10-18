@@ -267,20 +267,30 @@ open or not modelled:
   ceil(frames / rate), with the frame counts from the model files and the rates from
   `EnemyModelParams` (which of its two rate fields is the normal size is read off the 2D files).
   Model yaw turns take DirDeg·2 / 8 frames.
-- **Ant Trooper:** the winged flyer (shared with other winged walkers) uses the generic flight;
-  the horn's top is taken to hurt a stomping player (its "Needle" collider was not traced).
-- **Skipsqueak:** the player flag it watches is set on a jump launch and each swim stroke; that it
-  lasts one frame is [inf] (read as "left the ground rising" or a stroke's kick).
+- **Ant Trooper:** the winged one flies as the binary's wing flyer (level at 0.5, 8-px bob, wall
+  turn) and keeps its wings when stomped; the horned one's top hurts only while it walks on the
+  floor (spin jumps bounce off, except off the big one's live Needle). The hover helper's
+  "pressed" re-centring is not modelled (its trigger bit is unclear).
+- **Skipsqueak:** the player flag it watches lasts one frame (cleared by the player's pre-update),
+  read as "left the ground rising" or a stroke's kick; spring high jumps (two frames) are not
+  told apart.
 - **Porcupuffer:** the surface-jump window's vertical centre stays as before [?].
-- **Bully:** the winged chase is the older approximation (FlyChase / FlyLand / FlyReturn only
-  partly read). The player's Pushed state is approximated by setting its speed (3.0, every 4th
-  push 4.0 up); its control lock lives in the player code. The shell's own bounce is [inf].
+- **Bully:** the winged one lives on the ground and flies only as the binary does (up walls and
+  ledges after the player, back onto a ledge it was knocked off); ObjJump is not modelled. The
+  player's Pushed state is approximated by setting its speed (3.0, every 4th push 4.0 up); its
+  control lock lives in the player code. The shell's own bounce is [inf].
 - **Charvaargh:** the side leap is exact (heading curves from the model, body boxes along the
-  head's path, which the posed skeleton follows to within a few px). Not modelled: the vertical
-  leap out of the background, the chained leap, spacing between several Charvaarghs. One hook in
-  `actors.rs`: it is exempt from the fell-into-a-pit kill, as it dives far below the lava.
-- **Piranha Creeper:** which hits trample the head (stomps, by the animation names) and that the
-  trampled head and the stalk are harmless are [inf]; PreStop (blocked growth) is not modelled.
+  head's path). The vertical leap rides the model's root bone (sampled every 10 frames), its body
+  along the head's path (within ≈ 25 px of the posed bones) and touching only at the course's
+  depth; the chained leap reads the actor's camera view (one view: the game checks every
+  player's). Several Charvaarghs share the area's list (turn, spacing) through
+  `World::w3_charvaarghs`, which needs a one-line call in `World::step` ahead of the actor loop;
+  without it each one leaps on its own. One hook in `actors.rs`: it is exempt from the
+  fell-into-a-pit kill, as it dives far below the lava.
+- **Piranha Creeper:** PreStop, the trample rules (stomps, spins, slides, fireballs, shells; ground
+  pound 4 pieces; 16-frame cooldown) and the head hurting while trampled follow the binary. Not
+  modelled: the stalk as solid terrain (it is; whether its NeedleCube surface hurts is open) and
+  tramples by blocks bumped from below — both need the world's terrain / block code.
 
 ## 2026-10-18 — Bosses (Bowser, Boom Boom / Pom Pom, Bowser Jr.): HP through one hit path
 Every boss hit goes through `Actor::boss_hit(attack)`, which applies the spec's HP rules. Bowser:

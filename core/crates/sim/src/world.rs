@@ -1661,6 +1661,8 @@ impl World {
         let mut born = Vec::new();
         self.carry_held();
         self.step_crates();
+        // Charvaarghs take turns and space their leaps (3D World)
+        self.w3_charvaarghs();
         // the escort Toad's target: 32 px back along the player's path
         if self
             .player_trail

@@ -393,7 +393,11 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   Porcupuffer (4 HP, homing, surface patrol), Bully (push-back, ledge teeter), Charvaargh (lava leap with
   8 segments), Piranha Creeper (path creep, sleeping form) — guesses burnt down against the
   binary (2026-10-18): animation-timed states, Charvaargh's real arc, creeper pieces and node table,
-  Bully push table / sight box / ledge teeter; what is left is listed in DECISIONS.md
+  Bully push table / sight box / ledge teeter; second pass: Charvaargh's vertical and chained
+  leaps, turns and spacing, creeper PreStop and trample rules, winged Bully and Ant Trooper
+  flight, the horned Ant Trooper's top; what is left is listed in DECISIONS.md
+  - ⬜ Hook `World::w3_charvaarghs` into `World::step` (several Charvaarghs' turns and spacing);
+    Piranha Creeper stalk as solid terrain, block bumps trampling the head
 - ✅ Fire Bars, Burners, airship Cannons and Bill Blasters on tracks: a carrier actor rides the
   track as the moving solid and the fixed object follows it — sample 550/550 by the coverage check
 - ⚠️ The 550-course sample dates from June 2019 (game versions 1–3, before the 2.0/3.0 updates),
