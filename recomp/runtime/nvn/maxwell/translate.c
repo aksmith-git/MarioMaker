@@ -867,6 +867,44 @@ static void emit_tld4(Ctx *c, uint64_t w) {
     write_tex_result(c, slot, call, mask, d, RZ, false, false);
 }
 
+// TMML: the level of detail the coordinates would sample at, as 8.8 fixed point (x: unclamped, y: clamped; z, w 0),
+// as Ryujinx's translator returns it. Metal computes it in fragment functions only; elsewhere it is 0.
+static void emit_tmml(Ctx *c, uint64_t w) {
+    int d = (int)bits(w, 0, 8), a = (int)bits(w, 8, 8);
+    uint32_t index = (uint32_t)bits(w, 36, 13);
+    int dim = (int)bits(w, 28, 3);  // 0 1d, 1 1d array, 2 2d, 3 2d array, 4 3d, 5 3d array, 6 cube, 7 cube array
+    uint32_t mask = (uint32_t)bits(w, 31, 4);
+    if (d == RZ) return;
+    if (c->glsl) { fail(c, "tmml (glsl)"); return; }
+    bool array = dim & 1;
+    int type, ncoord;
+    switch (dim >> 1) {
+    case 0: type = array ? TEXTYPE_1D_ARRAY : TEXTYPE_1D; ncoord = 1; break;
+    case 1: type = array ? TEXTYPE_2D_ARRAY : TEXTYPE_2D; ncoord = 2; break;
+    case 2: if (array) { fail(c, "tmml on a 3d array"); return; } type = TEXTYPE_3D; ncoord = 3; break;
+    default: type = array ? TEXTYPE_CUBE_ARRAY : TEXTYPE_CUBE; ncoord = 3; break;
+    }
+    int ar = a + (array ? 1 : 0);  // (an array layer comes first; the level does not depend on it)
+    char coords[160] = "", tmp[48];
+    for (int i = 0; i < ncoord; i++) {
+        sprintf(tmp, "%sas_type<float>(r%d)", i ? ", " : "", ar + i);
+        c->reg_used[ar + i] = 1;
+        strcat(coords, tmp);
+    }
+    const char *vec = ncoord == 1 ? "float" : ncoord == 2 ? "float2" : "float3";
+    bool frag = c->stage == STAGE_FRAGMENT && type != TEXTYPE_1D && type != TEXTYPE_1D_ARRAY;
+    int slot = frag ? tex_slot(c, index, type, false, array) : -1;
+    int r = d;
+    for (int k = 0; k < 4 && r < RZ; k++) {
+        if (!(mask & (1u << k))) continue;
+        c->reg_used[r] = 1;
+        if (k >= 2 || !frag) sp(&c->body, "    r%d = 0u;\n", r);
+        else sp(&c->body, "    r%d = uint(int(t%d.calculate_%sclamped_lod(s%d, %s(%s)) * 256.0f));\n", r, slot, k == 0 ? "un" : "",
+                slot, vec, coords);
+        r++;
+    }
+}
+
 // ------------------------------------------------------------------ instruction translation
 static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
     char t[2048], u[2048];
@@ -964,6 +1002,8 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         emit_texs(c, w, false);
     } else if (OPM(0xd200000000000000ull, 0xf600000000000000ull)) {  // TLDS
         emit_texs(c, w, true);
+    } else if (OPM(0xdf58000000000000ull, 0xfff8000000000000ull)) {  // TMML
+        emit_tmml(c, w);
     } else if (OPM(0xc800000000000000ull, 0xfc00000000000000ull)) {  // TLD4
         emit_tld4(c, w);
     } else if (OPM(0xc038000000000000ull, 0xfc38000000000000ull)) {  // TEX
