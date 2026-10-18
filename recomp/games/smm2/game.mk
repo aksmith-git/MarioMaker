@@ -3,6 +3,7 @@ GAME_ID        := smm2
 GAME_TITLE     := SMM2 Recomp
 GAME_BUNDLE_ID := org.smcraft.smm2recomp
 GAME_TITLE_ID  := 0x01009B90006DC000
+GAME_DISPLAY_VERSION := 3.0.3
 
 # The game's glue, built into the executable with the shared runtime
 GAME_SRC       := $(wildcard games/smm2/*.c)

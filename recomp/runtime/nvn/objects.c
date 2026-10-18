@@ -116,6 +116,8 @@ NVN(nvnQueueResetMemoryUsageCounts) { (void)c; }
 NVN(nvnQueueSubmitCommands) {
     int n = (int)A(1);
     const uint64_t *handles = AP(2);
+    if (getenv("LARECOMP_TRACE_CALLS"))
+        for (int i = 0; i < n; i++) LOG("[trace] Submit %d/%d handle %llx\n", i, n, (unsigned long long)handles[i]);
     for (int i = 0; i < n; i++) backend_execute(handles[i]);
 }
 NVN(nvnQueueFlush) { (void)c; }
@@ -188,6 +190,7 @@ NVN(nvnMemoryPoolInitialize) {
     p->storage = G(uint64_t, A(1), 0x10);
     p->size = G(uint64_t, A(1), 0x18);
     p->flags = G(uint32_t, A(1), 8);
+    if (ENV("LARECOMP_LOG_VMAP")) LOG("[pool] %p storage %llx size %llx flags %#x\n", (void *)p, (unsigned long long)p->storage, (unsigned long long)p->size, p->flags);
     SET_HOST(A(0), p);
     RET(1);
 }
@@ -206,7 +209,33 @@ NVN(nvnMemoryPoolFlushMappedRange) {
     backend_pool_written(p->storage + A(1), A(2));
 }
 NVN(nvnMemoryPoolInvalidateMappedRange) { (void)c; }
-NVN(nvnMemoryPoolMapVirtual) { RET(1); }
+// nvnMemoryPoolMapVirtual(virtual pool, count, NVNmappingRequest[count]): request (0x28 bytes) = {physical pool,
+// physical offset, virtual offset, size, storage class} (layout as SuperMarioWonderRecomp found it, MIT).
+NVN(nvnMemoryPoolMapVirtual) {
+    NvnPool *v = HOST(NvnPool, A(0));
+    int n = (int)A(1);
+    for (int k = 0; k < n; k++) {
+        uint64_t r = A(2) + 0x28ull * (uint64_t)k;
+        uint64_t phys = G(uint64_t, r, 0), poff = G(uint64_t, r, 8), voff = G(uint64_t, r, 16), size = G(uint64_t, r, 24);
+        NvnPool *pp = phys ? HOST(NvnPool, phys) : NULL;
+        if (ENV("LARECOMP_LOG_VMAP"))
+            LOG("[vmap] pool %p (flags %#x size %llx) +%llx..%llx -> phys pool %p (storage %llx) +%llx\n", (void *)v, v ? v->flags : 0,
+                v ? (unsigned long long)v->size : 0ull, (unsigned long long)voff, (unsigned long long)(voff + size), (void *)pp,
+                pp ? (unsigned long long)pp->storage : 0ull, (unsigned long long)poff);
+        if (!v) continue;
+        // GPU addresses are CPU addresses here, so a virtual pool's offsets resolve to the physical memory behind them.
+        // A whole-pool mapping (SMM2 maps its render-target pool once, all of it) makes the pool's own address that
+        // memory; textures and buffers made over it then use it as they would any pool.
+        if (pp && voff == 0 && size >= v->size) {
+            v->storage = pp->storage + poff;
+        } else if (pp) {
+            static int warned;
+            if (warned++ < 5) LOG("[nvn] partial virtual mapping (+%llx size %llx): not supported\n", (unsigned long long)voff,
+                                  (unsigned long long)size);
+        }
+    }
+    RET(1);
+}
 
 // ================================================================== buffers
 // Builder: device@0 pool@8 offset@0x10 size@0x18. Buffer: address@0 pool@8 offset@0x10 size@0x18 id@0x20

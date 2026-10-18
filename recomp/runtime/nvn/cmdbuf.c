@@ -138,7 +138,19 @@ static CmdRec *rec(Cpu *c, NvnCmdBuf *cb, uint32_t op, uint32_t extra) {
     return r;
 }
 
+// Debug: LARECOMP_TRACE_CALLS=<n> logs the first n recording / call / submit / render target / clear calls with their
+// guest return address (which code records what, and in which command buffer).
+static void trace_call(Cpu *c, const char *what) {
+    static long left = -2;
+    if (left == -2) left = getenv("LARECOMP_TRACE_CALLS") ? atol(getenv("LARECOMP_TRACE_CALLS")) : 0;
+    if (left <= 0) return;
+    left--;
+    LOG("[trace] %s cb %llx x1 %llx x2 %llx x3 %llx lr %llx\n", what, (unsigned long long)c->x[0], (unsigned long long)c->x[1],
+        (unsigned long long)c->x[2], (unsigned long long)c->x[3], (unsigned long long)c->x[30]);
+}
+
 NVN(nvnCommandBufferBeginRecording) {
+    trace_call(c, "BeginRecording");
     NvnCmdBuf *cb = cb_of(A(0));
     cb->recording = true;
     cb->buf_used = 0;
@@ -170,6 +182,7 @@ NVN(nvnCommandBufferEndRecording) {
         LOG("[cmdmem] end cb %llx list %p: guest %llx..%llx, %llu bytes\n", (unsigned long long)A(0), (void *)list,
             (unsigned long long)start, (unsigned long long)end, (unsigned long long)cb->buf_used);
     RET((uint64_t)(uintptr_t)list);
+    trace_call(c, "EndRecording(ret x0)");
 }
 NVN(nvnCommandBufferIsRecording) { RET(cb_of(A(0))->recording); }
 
@@ -284,6 +297,7 @@ typedef struct {
     uint8_t has_dview;
 } RtRec;
 NVN(nvnCommandBufferSetRenderTargets) {
+    trace_call(c, "SetRenderTargets");
     Snap s = snap(c);
     int n = (int)s.x[1];
     if (n > 8) n = 8;
@@ -335,8 +349,20 @@ PLAIN(nvnCommandBufferSetPolygonOffsetClamp, CMD_SET_POLYGON_OFFSET)
 PLAIN(nvnCommandBufferSetLineWidth, CMD_SET_LINE_WIDTH)
 PLAIN(nvnCommandBufferSetPointSize, CMD_SET_POINT_SIZE)
 PLAIN(nvnCommandBufferSetSampleMask, CMD_SET_SAMPLE_MASK)
-PLAIN(nvnCommandBufferSetRenderEnable, CMD_SET_RENDER_ENABLE)
-NVN(nvnCommandBufferSetRenderEnableConditional) { (void)c; }
+// Render enable: SetRenderEnable(enable) / SetRenderEnableConditional(mode, counters). The condition compares the
+// two 64-bit counter values at counters and counters + 16 (mode 0: render if equal, 1: if not equal) when executed,
+// so reports written earlier in the same submission count (runtime/nvn/renderer.m). SMM2 clears a render target
+// on its first bind each frame this way: every bind records a clear guarded by a report that the clear resets.
+NVN(nvnCommandBufferSetRenderEnable) {
+    Snap s = snap(c);
+    CmdRec *r = record(c, CMD_SET_RENDER_ENABLE, 0, &s);
+    r->x[0] = (uint32_t)s.x[1] != 0; r->x[1] = 0; r->x[2] = 0;
+}
+NVN(nvnCommandBufferSetRenderEnableConditional) {
+    Snap s = snap(c);
+    CmdRec *r = record(c, CMD_SET_RENDER_ENABLE, 0, &s);
+    r->x[0] = (uint32_t)s.x[1]; r->x[1] = s.x[2]; r->x[2] = 1;
+}
 NVN(nvnCommandBufferSetDepthClamp) { (void)c; }
 NVN(nvnCommandBufferSetRasterizerDiscard) { (void)c; }
 NVN(nvnCommandBufferSetConservativeRasterEnable) { (void)c; }
@@ -374,7 +400,7 @@ NVN(nvnCommandBufferGetCopyRowStride) { RET(copy_row_stride); }
 NVN(nvnCommandBufferGetCopyImageStride) { RET(copy_image_stride); }
 
 // ---- clears
-NVN(nvnCommandBufferClearColor) { CmdRec *r = record_copy(c, CMD_CLEAR_COLOR, 2, 16); r->x[5] = 0; }  // (kind: x6 is not an argument)
+NVN(nvnCommandBufferClearColor) { trace_call(c, "ClearColor"); CmdRec *r = record_copy(c, CMD_CLEAR_COLOR, 2, 16); r->x[5] = 0; }  // (kind: x6 is not an argument)
 NVN(nvnCommandBufferClearColori) { CmdRec *r = record_copy(c, CMD_CLEAR_COLOR, 2, 16); r->x[5] = 1; }
 NVN(nvnCommandBufferClearColorui) { CmdRec *r = record_copy(c, CMD_CLEAR_COLOR, 2, 16); r->x[5] = 2; }
 PLAIN(nvnCommandBufferClearDepthStencil, CMD_CLEAR_DEPTH_STENCIL)
@@ -399,6 +425,7 @@ PLAIN(nvnCommandBufferClearBuffer, CMD_CLEAR_BUFFER)
 // target reads back cleared; areas the game then leaves undrawn (e.g. a pit after a floor tile falls away) stay
 // black there. Treated as a clear to (0,0,0,0) (LARECOMP_KEEP_DISCARD=1: old no-op behaviour).
 NVN(nvnCommandBufferDiscardColor) {
+    trace_call(c, "DiscardColor");
     static int keep = -1, logged;
     if (keep < 0) keep = getenv("LARECOMP_KEEP_DISCARD") != NULL;
     if (logged < 5) { logged++; LOG("[nvn] DiscardColor index %llu%s\n", (unsigned long long)c->x[1], keep ? " (kept)" : " -> clear"); }
@@ -433,6 +460,7 @@ static void trace_draw(Cpu *c, uint64_t count) {
 }
 
 NVN(nvnCommandBufferDrawElements) {
+    trace_call(c, "DrawElements");
     trace_draw(c, c->x[3]);
     Snap s = snap(c);
     CmdRec *r = record(c, CMD_DRAW_ELEMENTS, 0, &s);
@@ -521,12 +549,15 @@ PLAIN(nvnCommandBufferBarrier, CMD_BARRIER)
 PLAIN(nvnCommandBufferSignalEvent, CMD_SIGNAL_EVENT)
 PLAIN(nvnCommandBufferWaitEvent, CMD_WAIT_EVENT)
 PLAIN(nvnCommandBufferReportCounter, CMD_REPORT_COUNTER)
-NVN(nvnCommandBufferReportValue) { (void)c; }
+// ReportValue(value, address): a 16-byte report {value, timestamp}, written when executed (in order with the
+// conditional render checks that read it).
+PLAIN(nvnCommandBufferReportValue, CMD_REPORT_VALUE)
 NVN(nvnCommandBufferResetCounter) { (void)c; }
-NVN(nvnCommandBufferCallCommands) { record_copy(c, CMD_CALL, 2, (uint32_t)A(1) * 8); }
+NVN(nvnCommandBufferCallCommands) { trace_call(c, "CallCommands"); record_copy(c, CMD_CALL, 2, (uint32_t)A(1) * 8); }
 // CopyCommands copies the lists' commands into this one now: the game may reuse their memory right after (LAS
 // recorded a call, which then ran whatever had been written there since)
 NVN(nvnCommandBufferCopyCommands) {
+    trace_call(c, "CopyCommands");
     Snap s = snap(c);
     NvnCmdBuf *cb = cb_of(s.x[0]);
     uint64_t n = s.x[1];

@@ -158,7 +158,11 @@ static void application_functions(Service *s, IpcReq *req, IpcResp *resp) {
         resp_size(resp, 8);
         break;
     }
-    case 23: memcpy(resp->data, "1.0.0", 6); resp_size(resp, 0x10); break;
+    case 23:  // GetDisplayVersion (the title screen shows it)
+        memset(resp->data, 0, 0x10);
+        snprintf((char *)resp->data, 0x10, "%s", GAME_DISPLAY_VERSION);
+        resp_size(resp, 0x10);
+        break;
     case 40: OUT(uint8_t, 0) = 0; resp_size(resp, 1); break;  // NotifyRunning
     case 130: case 140: resp->copy_handles[resp->ncopy++] = new_event(); break;
     default: UNHANDLED("IApplicationFunctions");

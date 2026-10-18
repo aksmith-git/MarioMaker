@@ -166,6 +166,7 @@ typedef struct {
     int reg;             // slot in g_reg (live textures, for the "largest textures" dump) + 1
     int tp;              // runtime/nvn/texpatch.c: 0 not checked yet, -1 none, else known UI texture + 1
     uint32_t tp_gen;     // texpatch_generation() it was last uploaded with
+    int refs;            // texture objects sharing it (aliases of the same storage, see tex_backend)
 } TexBackend;
 
 // Live textures (diagnostics: the overworld slowdown at 32:9 - the same textures used 870 MB and 4x the GPU time
@@ -315,6 +316,30 @@ int g_tex_live;              // (stats: Metal textures alive and their size)
 uint64_t g_tex_live_bytes;
 void renderer_texture_gone(void *nvn_tex, void *mtl_tex);  // renderer.m
 
+// ---- aliases. Engines create texture objects over the same memory again and again (SMM2's agl allocates its
+// render targets per frame from a pool: a target drawn through one NVNtexture is sampled through another made over
+// the same storage). On the console they are the same texels; here each object had its own Metal texture, and the
+// one sampled was never drawn into (black frames). Textures over the same storage with the same shape now share one
+// backend (reference counted). RECOMP_NO_TEX_ALIAS=1: off.
+#define ALIAS_BUCKETS 4096
+typedef struct Alias { uint64_t addr; uint32_t fmt, w, h, d, lv, tgt, samples; TexBackend *b; struct Alias *next; } Alias;
+static Alias *g_alias[ALIAS_BUCKETS];
+static unsigned alias_bucket(uint64_t addr) { return (unsigned)((addr >> 9) * 0x9E3779B1u) & (ALIAS_BUCKETS - 1); }
+static bool alias_on(const NvnTexture *t) {
+    static int off = -1;
+    if (off < 0) off = getenv("RECOMP_NO_TEX_ALIAS") != NULL;
+    return !off && t->addr >= GUEST_LO && t->addr < GUEST_HI;
+}
+static bool alias_match(const Alias *a, const NvnTexture *t) {
+    return a->addr == t->addr && a->fmt == t->format && a->w == t->width && a->h == t->height && a->d == t->depth &&
+           a->lv == t->levels && a->tgt == t->target && a->samples == t->samples;
+}
+static void alias_remove(TexBackend *b) {
+    for (unsigned k = 0; k < ALIAS_BUCKETS; k++)
+        for (Alias **pp = &g_alias[k]; *pp; pp = &(*pp)->next)
+            if ((*pp)->b == b) { Alias *a = *pp; *pp = a->next; free(a); return; }
+}
+
 static TexBackend *tex_backend(NvnTexture *t) {
     if (t->backend) {
         TexBackend *b = (TexBackend *)t->backend;
@@ -324,7 +349,26 @@ static TexBackend *tex_backend(NvnTexture *t) {
         }
         return b;
     }
+    if (alias_on(t)) {
+        for (Alias *a = g_alias[alias_bucket(t->addr)]; a; a = a->next)
+            if (alias_match(a, t)) {
+                static int logged;
+                if (logged++ < 5) LOG("[metal] texture %p (%ux%u f%#x %s) aliases storage %llx\n", (void *)t, t->width, t->height,
+                                      t->format, t->label, (unsigned long long)t->addr);
+                a->b->refs++;
+                t->backend = a->b;
+                return tex_backend(t);  // (the rescale check)
+            }
+    }
     TexBackend *b = calloc(1, sizeof *b);
+    b->refs = 1;
+    if (alias_on(t)) {
+        Alias *a = calloc(1, sizeof *a);
+        *a = (Alias){t->addr, t->format, t->width, t->height, t->depth, t->levels, t->target, t->samples, b, NULL};
+        unsigned k = alias_bucket(t->addr);
+        a->next = g_alias[k];
+        g_alias[k] = a;
+    }
     b->scalable = tex_scalable(t);
     if (t->width == 1920 && t->height == 1080 && getenv("LARECOMP_LOG_SCALABLE"))
         LOG("[scale] 1920x1080 tex %p f%#x flags %#x target %u samples %u levels %u -> scalable %d (%s)\n", (void *)t, t->format,
@@ -401,8 +445,14 @@ static void release_backend_texture(NvnTexture *t, TexBackend *b) {  // (also dr
 void backend_texture_destroyed(NvnTexture *t) {
     TexBackend *b = t->backend;
     renderer_texture_gone(t, NULL);  // its snapshot copy
-    if (b) { reg_remove(b); release_backend_texture(t, b); free(b); }
     t->backend = NULL;
+    if (!b) return;
+    if (b->reg && g_reg[b->reg - 1] == t) reg_remove(b);  // (the registry names one owner: drop it with that owner)
+    if (--b->refs > 0) return;  // (other textures over the same storage still use it: aliases, above)
+    alias_remove(b);
+    reg_remove(b);
+    release_backend_texture(t, b);
+    free(b);
 }
 
 static uint64_t g_frame_counter;  // presents so far (texture change detection runs once per frame)
@@ -1110,6 +1160,25 @@ void backend_present(NvnTexture *t) {
         snprintf(path, sizeof path, shot_from ? "build/frames/frame_%05llu.png" : "build/frame_%05llu.png", total_frames);
         save_png(b->tex, path);
         if (getenv("LARECOMP_EXIT_AFTER_SHOT")) { fflush(stderr); _exit(0); }
+    }
+    {   // RECOMP_DUMP_TEX=<frame>: every live 2D texture of at least 64x64 that the GPU drew into, as it is after that
+        // frame's present, to build/tex_<frame>_<n>.png (with its label in the log): the state of each render target
+        static long dump_at = -2;
+        if (dump_at == -2) dump_at = getenv("RECOMP_DUMP_TEX") ? atol(getenv("RECOMP_DUMP_TEX")) : -1;
+        if (dump_at >= 0 && (long)total_frames == dump_at) {
+            renderer_flush();
+            int n = 0;
+            for (int i = 0; i < g_reg_n; i++) {
+                NvnTexture *t = g_reg[i];
+                TexBackend *tb = t ? (TexBackend *)t->backend : NULL;
+                if (!tb || !tb->tex || !tb->gpu_owned || t->target != 1 || t->width < 64 || t->height < 64) continue;
+                if (renderer_format_is_depth(t->format)) continue;
+                char path[256];
+                snprintf(path, sizeof path, "build/tex_%05ld_%03d.png", dump_at, n++);
+                LOG("[texdump] %s: %ux%u f%#x %s\n", path, t->width, t->height, t->format, t->label);
+                save_png(tb->tex, path);
+            }
+        }
     }
     double now = SDL_GetTicks() / 1000.0;
     static double fps_iv = -1, prev_present, max_gap;  // LARECOMP_FPS_INTERVAL=<s>: fps line period (default 2)

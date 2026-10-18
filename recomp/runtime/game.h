@@ -15,5 +15,9 @@
 #define GAME_BUNDLE_ID "org.smcraft.recomp." GAME_ID  // macOS data folder (~/Library/Application Support/<this>)
 #endif
 
+#ifndef GAME_DISPLAY_VERSION
+#define GAME_DISPLAY_VERSION "1.0.0"  // the version the game shows (control data; am GetDisplayVersion)
+#endif
+
 #define GAME_EXE GAME_ID "recomp"       // the executable's name (logs and crash reports)
 #define GAME_SETTINGS GAME_ID ".ini"    // settings file in the data root

@@ -51,6 +51,7 @@ typedef void (*HostFn)(Cpu *c);
 void dispatch_init(void);
 GuestFn dispatch_lookup(uint64_t addr);
 uint64_t hle_register(const char *name, HostFn fn);  // returns fake guest address
+const char *hle_name_of(uint64_t addr);             // the stub's name, or NULL (debugging)
 HostFn hle_lookup_impl(const char *name);
 void hle_override(uint64_t guest_addr, HostFn fn, const char *name);
 void rt_fatal_trace(void) __attribute__((noreturn));

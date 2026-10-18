@@ -820,6 +820,53 @@ static void emit_tex(Ctx *c, uint64_t w, bool bindless) {
     write_tex_result(c, slot, call, mask, d, RZ, false, false);
 }
 
+// TLD4 (texture gather): four texels' component `comp` around the coordinate. Operands as TEX: Ra = [layer], coords;
+// Rb = [offsets: one packed register for AOFFI, two for PTP], [depth reference]. Gather offsets are 6-bit signed,
+// one byte apart (the decoding follows Ryujinx's, MIT). PTP (a separate offset per texel) is not supported.
+static void emit_tld4(Ctx *c, uint64_t w) {
+    int d = (int)bits(w, 0, 8), a = (int)bits(w, 8, 8), b = (int)bits(w, 20, 8);
+    uint32_t index = (uint32_t)bits(w, 36, 13);
+    int target = (int)bits(w, 29, 2);
+    bool array = bits(w, 28, 1), dc = bits(w, 50, 1);
+    int toff = (int)bits(w, 54, 2), comp = (int)bits(w, 56, 2);
+    uint32_t mask = (uint32_t)bits(w, 31, 4);
+    if (d == RZ) return;
+    if (target == 0 || target == 2) { fail(c, "tld4 on a 1d / 3d texture"); return; }
+    if (toff == 2) { fail(c, "tld4 ptp offsets"); return; }
+    if (c->glsl) { fail(c, "tld4 (glsl)"); return; }
+    int type = target == 1 ? (array ? TEXTYPE_2D_ARRAY : TEXTYPE_2D) : (array ? TEXTYPE_CUBE_ARRAY : TEXTYPE_CUBE);
+    int ncoord = target == 1 ? 2 : 3;
+    int slot = tex_slot(c, index, type, dc, array);
+    char coords[256] = "", layer[64] = "", tmp[64], off[128] = "", dref[64] = "";
+    int ar = a;
+    if (array) { sprintf(layer, "min(uint(r%d), t%d.get_array_size() - 1u)", a, slot); c->reg_used[a] = 1; ar = a + 1; }
+    for (int i = 0; i < ncoord; i++) {
+        sprintf(tmp, "%sas_type<float>(r%d)", i ? ", " : "", ar + i);
+        c->reg_used[ar + i] = 1;
+        strcat(coords, tmp);
+    }
+    int pr = b;
+    if (toff == 1) {
+        if (target != 1) { fail(c, "tld4 offset on a cube"); return; }
+        c->reg_used[pr] = 1;
+        sprintf(off, ", int2(int(r%d << 26) >> 26, int(r%d << 18) >> 26)", pr, pr);
+        pr++;
+    }
+    if (dc) { c->reg_used[pr] = 1; sprintf(dref, "as_type<float>(r%d)", pr); pr++; }
+    const char *vec = ncoord == 2 ? "float2" : "float3";
+    static const char *const comps[4] = {"x", "y", "z", "w"};
+    char call[1024];
+    if (dc) {
+        sprintf(call, "t%d.gather_compare(s%d, %s(%s)%s%s, %s%s)", slot, slot, vec, coords, array ? ", " : "", layer, dref, off);
+    } else if (target == 1) {
+        sprintf(call, "t%d.gather(s%d, %s(%s)%s%s%s%s, component::%s)", slot, slot, vec, coords, array ? ", " : "", layer,
+                off[0] ? "" : ", int2(0)", off, comps[comp]);
+    } else {
+        sprintf(call, "t%d.gather(s%d, %s(%s)%s%s, component::%s)", slot, slot, vec, coords, array ? ", " : "", layer, comps[comp]);
+    }
+    write_tex_result(c, slot, call, mask, d, RZ, false, false);
+}
+
 // ------------------------------------------------------------------ instruction translation
 static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
     char t[2048], u[2048];
@@ -913,6 +960,8 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         emit_texs(c, w, false);
     } else if (OPM(0xd200000000000000ull, 0xf600000000000000ull)) {  // TLDS
         emit_texs(c, w, true);
+    } else if (OPM(0xc800000000000000ull, 0xfc00000000000000ull)) {  // TLD4
+        emit_tld4(c, w);
     } else if (OPM(0xc038000000000000ull, 0xfc38000000000000ull)) {  // TEX
         emit_tex(c, w, false);
     } else if (OPM(0xdeb8000000000000ull, 0xfff8000000000000ull)) {  // TEX.B (bindless)

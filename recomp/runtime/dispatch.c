@@ -57,6 +57,12 @@ uint64_t hle_register(const char *name, HostFn fn) {
     return HLE_BASE + 16ull * hle_count++;
 }
 
+// Name of the HLE stub at a fake guest address (NULL if it isn't one): debugging.
+const char *hle_name_of(uint64_t addr) {
+    if (addr < HLE_BASE || (addr - HLE_BASE) % 16 || (addr - HLE_BASE) / 16 >= (uint64_t)hle_count) return NULL;
+    return hle_slots[(addr - HLE_BASE) / 16].name;
+}
+
 void hle_override(uint64_t addr, HostFn fn, const char *name) {
     if (override_count == MAX_OVERRIDE) FATAL("too many overrides\n");
     overrides[override_count].addr = addr;

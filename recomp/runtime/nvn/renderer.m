@@ -71,6 +71,7 @@ static struct {
     float blend_color[4];
     uint32_t stencil_ref[2], stencil_mask[2], stencil_vmask[2];
     bool prim_restart;
+    bool render_off;  // SetRenderEnable(false) / a failed SetRenderEnableConditional: draws and clears are skipped
     uint32_t restart_index;
     uint64_t copy_row_stride, copy_image_stride;
 } st;
@@ -139,6 +140,7 @@ void renderer_texture_scale(NvnTexture *t, float *sx, float *sy);
 void renderer_get_scale(float *sx, float *sy);
 static float pass_sx = 1, pass_sy = 1;  // allocation scale of the current pass's attachments
 bool renderer_texture_presented(NvnTexture *t);
+uint64_t renderer_present_count(void);
 // Widescreen UI: 2D draws into the swapchain image use a centred 16:9 region (uniform scale) instead of
 // the stretched wide mapping. vp_* is the mapping for the current draw: physical = guest * s + off.
 static float vp_sx = 1, vp_sy = 1, vp_ox = 0, vp_oy = 0;
@@ -411,6 +413,12 @@ static void begin_pass(void) {
         renderer_mark_gpu_owned(t);
         id<MTLTexture> tex = view_texture(t, &st.rt.cview[i], st.rt.has_cview[i], true, nil);
         rp.colorAttachments[i].texture = tex;
+        // 3D target: the view's layer is a depth slice (SMM2 fills its colour-correction LUT one slice per target)
+        if (tex.textureType == MTLTextureType3D && st.rt.has_cview[i] && (st.rt.cview[i].setmask & 2)) {
+            NSUInteger d = tex.depth ? tex.depth : 1, plane = st.rt.cview[i].min_layer;
+            rp.colorAttachments[i].depthPlane = plane < d ? plane : d - 1;
+        }
+        if (g_debug_frame) LOG("[rt] pass color %d: nvn %p mtl %p (%lux%lu fmt %lu)\n", i, (void *)t, (__bridge void *)tex, (unsigned long)tex.width, (unsigned long)tex.height, (unsigned long)tex.pixelFormat);
         rp.colorAttachments[i].loadAction = MTLLoadActionLoad;
         // reshaped output: areas outside the game's 16:9 drawing (interiors, fades) start black each frame
         extern bool renderer_texture_first_write(NvnTexture *t);
@@ -534,8 +542,10 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
     if (g_debug_frame) {
         int pw, ph;
         pass_size(&pw, &ph);
-        LOG("[clear] pass %d idx %d depth %d (%g) stencil %d | pass %dx%d scissor %d,%d %dx%d\n", debug_pass_no, index, depth,
-            dval, stencil, pw, ph, st.scissor[0][0], st.scissor[0][1], st.scissor[0][2], st.scissor[0][3]);
+        const float *cf = color;
+        LOG("[clear] pass %d idx %d depth %d (%g) stencil %d | pass %dx%d scissor %d,%d %dx%d | kind %d mask %#x colour %g %g %g %g\n",
+            debug_pass_no, index, depth, dval, stencil, pw, ph, st.scissor[0][0], st.scissor[0][1], st.scissor[0][2],
+            st.scissor[0][3], kind, mask, cf ? cf[0] : 0, cf ? cf[1] : 0, cf ? cf[2] : 0, cf ? cf[3] : 0);
     }
     MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
     id<MTLLibrary> lib = clear_lib(index < 0 ? 0 : index);
@@ -853,9 +863,13 @@ void shader_cache_warm(void) {
     });
 }
 
-static bool sync_shaders(void) {  // LARECOMP_SYNC_SHADERS: compile on first use, blocking (deterministic tests)
+// Programs compile on first use, blocking. SMM2 renders some things exactly once (its colour-correction LUT, light
+// probes), so a draw skipped while its program compiles in the background is never redrawn: the scene stayed black.
+// The warm-up cache above keeps the blocking compiles short after the first run. LARECOMP_ASYNC_SHADERS=1: compile in
+// the background and skip the draws meanwhile (LAS's behaviour).
+static bool sync_shaders(void) {
     static int v = -1;
-    if (v < 0) v = getenv("LARECOMP_SYNC_SHADERS") != NULL;
+    if (v < 0) v = getenv("LARECOMP_ASYNC_SHADERS") == NULL;
     return v;
 }
 
@@ -1188,9 +1202,13 @@ static void bind_textures(int stage, ShaderInfo *si) {
         uint32_t tic = h & 0xFFFFF, tsc = (uint32_t)(h >> 20) & 0xFFF;
         tex_sc[stage][i][0] = tex_sc[stage][i][1] = 1;
         if (i < 64) tex_wh[stage][i][0] = tex_wh[stage][i][1] = 0;
+        if (g_debug_frame)
+            LOG("[tx] stage %d tex %d: handle offset %#x slot %d h %llx tic %u pool %p count %d\n", stage, i, st_->handle_offset, slot,
+                (unsigned long long)h, tic, (void *)st.tpool, st.tpool ? st.tpool->count : -1);
         if (h && st.tpool && tic < (uint32_t)st.tpool->count) {
             NvnTexEntry *e = &((NvnTexEntry *)st.tpool->entries)[tic];
             if (e->tex) tex = sampled_texture(e->tex, &e->view, e->has_view, st_->type);
+            if (g_debug_frame && e->tex) LOG("[tx] stage %d tex %d slot %d: nvn %p mtl %p (%lux%lu fmt %lu type %lu) view %d\n", stage, i, slot, (void *)e->tex, (__bridge void *)tex, (unsigned long)tex.width, (unsigned long)tex.height, (unsigned long)tex.pixelFormat, (unsigned long)tex.textureType, e->has_view);
             if (e->tex && stage == 1) {
                 extern int renderer_texpatch_of(NvnTexture *t);
                 extern int texpatch_bottle_kind(int id);
@@ -1320,6 +1338,12 @@ static void bind_cbufs(int stage, ShaderInfo *si) {
         uint64_t off = ring_alloc((void *)(uintptr_t)r.addr, size);  // snapshot, as later CPU writes must not leak in
         if (stage == 0) [enc setVertexBuffer:ring offset:off atIndex:k];
         else [enc setFragmentBuffer:ring offset:off atIndex:k];
+        if (g_debug_frame) {
+            const float *f = (const float *)((uint8_t *)ring.contents + off);
+            LOG("[cbuf] stage %d c%d <- ubo %d %llx size %llu (ring %p +%llu): %g %g %g %g\n", stage, k, idx,
+                (unsigned long long)r.addr, (unsigned long long)size, (__bridge void *)ring, (unsigned long long)off, f[0], f[1],
+                f[2], f[3]);
+        }
     }
 }
 
@@ -1459,6 +1483,13 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     [ce endEncoding];
     CST("done");
     stat_dispatches++;
+    // What the dispatch writes (storage buffers in guest memory) is read by later draws as uniform buffers, which are
+    // snapshotted from guest memory when they are encoded - before the GPU has run the dispatch. Finishing the GPU
+    // work here puts the results in guest memory first (SMM2 computes its scene lighting this way: without it the
+    // lights were zero and every frame black). RECOMP_NO_COMPUTE_FLUSH=1: off.
+    static int no_flush = -1;
+    if (no_flush < 0) no_flush = getenv("RECOMP_NO_COMPUTE_FLUSH") != NULL;
+    if (!no_flush && si->uses_gmem) renderer_flush();
 }
 
 static MTLPrimitiveType prim_type(uint32_t mode, bool *ok) {
@@ -1549,6 +1580,13 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
         NvnTexture *t = st.tpool && tic < (uint32_t)st.tpool->count ? ((NvnTexEntry *)st.tpool->entries)[tic].tex : NULL;
         if (t) LOG(" %d=[%ux%ux%u t%u f%#x fl%#x %s]", i, t->width, t->height, t->depth, t->target, t->format, t->flags, t->label);
         else LOG(" %d=%llx", i, st.tex[1][i]);
+        uint32_t tsc = (uint32_t)(st.tex[1][i] >> 20) & 0xFFF;
+        if (i == 0 && st.spool && tsc < (uint32_t)st.spool->count) {  // (slot 0's sampler)
+            const NvnSamplerDesc *sd = &((NvnSamplerDesc *)st.spool->entries)[tsc];
+            LOG("{smp %u: min %u mag %u wrap %u,%u,%u cmp %u/%u red %u lod %g..%g bias %g}", tsc, sd->min_filter, sd->mag_filter,
+                sd->wrap[0], sd->wrap[1], sd->wrap[2], sd->compare_mode, sd->compare_func, sd->reduction, sd->lod_min, sd->lod_max,
+                sd->lod_bias);
+        }
     }
     LOG(" | rt %d", st.rt.ncolor);
     for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) LOG(" %ux%u/f%#x", st.rt.color[i]->width, st.rt.color[i]->height, st.rt.color[i]->format);
@@ -1556,6 +1594,11 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
     LOG(" | vp %.0f %.0f %.0f %.0f | attrs %#x streams:", st.viewport[0][0], st.viewport[0][1], st.viewport[0][2], st.viewport[0][3], pr->vi->attr_mask);
     for (int i = 0; i < st.nattrib; i++) LOG(" a%d(f%#x s%u o%u)", i, st.attrib[i] & 0xFF, (st.attrib[i] >> 8) & 0x1F, st.attrib[i] >> 13);
     for (int i = 0; i < 12; i++) if (st.vbuf[i].addr) LOG(" vb%d(%llx,%llu,stride %u div %u)", i, st.vbuf[i].addr, st.vbuf[i].size, st.stream[i][0], st.stream[i][1]);
+    if (st.vbuf[0].addr >= GUEST_LO && st.vbuf[0].addr < GUEST_HI) {  // (the first vertices, as floats)
+        const float *v = (const float *)(uintptr_t)st.vbuf[0].addr;
+        LOG(" vb0[0..15]:");
+        for (int i = 0; i < 16 && (uint64_t)i * 4 < st.vbuf[0].size; i++) LOG(" %g", v[i]);
+    }
     if (st.ubuf[0][0].addr && st.ubuf[0][0].size == 560) {
         const float *f = (const float *)(uintptr_t)st.ubuf[0][0].addr;
         LOG("\n  vs ubo0:");
@@ -1902,8 +1945,10 @@ static void draw(CmdRec *r, bool indexed) {
         [enc setVertexBuffer:dbgvs offset:0 atIndex:DBG_VS_BUFFER_INDEX];
     }
     if (pr->fi->uses_gmem) [enc setFragmentBuffer:g_guest_buffer offset:0 atIndex:GMEM_BUFFER_INDEX];
+    void *enc_before_tex = (__bridge void *)enc;
     bind_textures(0, pr->vi);
     bind_textures(1, pr->fi);
+    if (g_debug_frame && enc_before_tex != (__bridge void *)enc) LOG("[draw] encoder changed while binding textures\n");
     extern bool pets_hide_item_cursor(void);  // (the cursor is on the companion card: runtime/hle/pets.c)
     if (draw_item_cursor && pets_hide_item_cursor()) { stat_skipped++; return; }
     vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
@@ -2507,6 +2552,35 @@ static void exec_list(uint64_t handle, int depth) {
             st.rt.dview = rt->dview;
             st.rt.has_dview = rt->has_dview;
             st.rt_dirty = true;
+            if (ENV("LARECOMP_DEBUG_3D") && st.rt.ncolor && st.rt.color[0] && st.rt.color[0]->target == 2) {
+                static int once;  // (debug) the first frame that renders into a 3D texture becomes the debug frame
+                if (!once++) { g_debug_frame = true; LOG("===== debug frame (3D target) =====\n"); }
+            }
+            if (ENV("LARECOMP_LOG_RTS")) {  // (debug) every render target the first time it is bound
+                static uint64_t seen[512];
+                static int nseen;
+                for (int i = 0; i < st.rt.ncolor; i++) {
+                    NvnTexture *t = st.rt.color[i];
+                    if (!t) continue;
+                    uint64_t key = t->addr ^ ((uint64_t)st.rt.cview[i].min_layer << 56) ^ ((uint64_t)t->target << 48);
+                    bool known = false;
+                    for (int k = 0; k < nseen; k++) known |= seen[k] == key;
+                    if (known || nseen == 512) continue;
+                    seen[nseen++] = key;
+                    LOG("[rtlog] f%llu target %d: %p %ux%ux%u tgt %u fmt %#x addr %llx %s | view %d mask %#x layer %u+%u tgt %u\n",
+                        (unsigned long long)renderer_present_count(), i, (void *)t, t->width, t->height, t->depth, t->target,
+                        t->format, (unsigned long long)t->addr, t->label, st.rt.has_cview[i], st.rt.cview[i].setmask,
+                        st.rt.cview[i].min_layer, st.rt.cview[i].num_layers, st.rt.cview[i].target);
+                }
+            }
+            if (g_debug_frame) {
+                NvnTexture *t0 = st.rt.color[0];
+                const NvnTextureView *v = &st.rt.cview[0];
+                LOG("[setrt] %d colour target(s): %p (%ux%ux%u tgt %u lv %u addr %llx %s) view %d mask %#x lv %u+%u layer %u+%u fmt %#x tgt %u | depth %p\n",
+                    st.rt.ncolor, (void *)t0, t0 ? t0->width : 0, t0 ? t0->height : 0, t0 ? t0->depth : 0, t0 ? t0->target : 0,
+                    t0 ? t0->levels : 0, t0 ? (unsigned long long)t0->addr : 0ull, t0 ? t0->label : "", st.rt.has_cview[0], v->setmask,
+                    v->base_level, v->num_levels, v->min_layer, v->num_layers, v->format, v->target, (void *)st.rt.depth);
+            }
             break;
         }
         case CMD_SET_VIEWPORTS:
@@ -2532,7 +2606,27 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_SET_POLYGON_OFFSET: memcpy(st.poly_offset, r->f, sizeof st.poly_offset); break;
         case CMD_SET_PRIMITIVE_RESTART: st.prim_restart = r->x[0] != 0; st.restart_index = (uint32_t)r->x[1]; break;
         case CMD_SET_COPY_STRIDES: st.copy_row_stride = r->x[0]; st.copy_image_stride = r->x[1]; break;
+        case CMD_SET_RENDER_ENABLE:
+            if (r->x[2]) {  // conditional: the counters at x1 and x1 + 16 (mode 0: render if equal, 1: if different)
+                const uint64_t *q = (const uint64_t *)(uintptr_t)r->x[1];
+                bool eq = q ? q[0] == q[2] : true;
+                st.render_off = r->x[0] == 0 ? !eq : eq;
+            } else {
+                st.render_off = !r->x[0];
+            }
+            break;
+        case CMD_REPORT_VALUE: {
+            uint64_t *out = (uint64_t *)(uintptr_t)r->x[1];
+            if (out) { out[0] = (uint32_t)r->x[0]; out[1] = (uint64_t)((unsigned __int128)plat_now_ns() * 384 / 625); }
+            break;
+        }
+        case CMD_CLEAR_BUFFER: {  // ClearBuffer(address, size, value): 32-bit fill
+            uint32_t *out = (uint32_t *)(uintptr_t)r->x[0];
+            if (out) for (uint64_t i = 0; i < r->x[1] / 4; i++) out[i] = (uint32_t)r->x[2];
+            break;
+        }
         case CMD_CLEAR_COLOR: {
+            if (st.render_off) break;
             snap_reason = "clear-color"; snapshots_invalidate(NULL);
             int index = (int)r->x[0];
             static int log_clears = -1;  // LARECOMP_LOG_CLEARS: every colour clear (frame, target size, mask, scissor)
@@ -2578,6 +2672,7 @@ static void exec_list(uint64_t handle, int depth) {
             break;
         }
         case CMD_CLEAR_DEPTH_STENCIL:
+            if (st.render_off) break;
             snap_reason = "clear-depth"; snapshots_invalidate(NULL);
             if (st.rt.depth) {
                 // (depth s0, depthMask x1, stencil x2, stencilMask x3)
@@ -2626,8 +2721,8 @@ static void exec_list(uint64_t handle, int depth) {
                 LOG("\n");
             }
             break;
-        case CMD_DRAW_ARRAYS: draw(r, false); break;
-        case CMD_DRAW_ELEMENTS: draw(r, true); break;
+        case CMD_DRAW_ARRAYS: if (!st.render_off) draw(r, false); break;
+        case CMD_DRAW_ELEMENTS: if (!st.render_off) draw(r, true); break;
         case CMD_UPDATE_UNIFORM_BUFFER:
             // (buffer, size, offset, dataSize, data): apply the update in command order
             memcpy((void *)(uintptr_t)(r->x[0] + r->x[2]), x, r->x[3]);
@@ -2666,7 +2761,10 @@ static void exec_list(uint64_t handle, int depth) {
             renderer_flush();
             memmove((void *)(uintptr_t)r->x[1], (void *)(uintptr_t)r->x[0], r->x[2]);
             break;
-        default: break;
+        case CMD_BARRIER: case CMD_SET_LINE_WIDTH: case CMD_SET_POINT_SIZE: case CMD_SET_DEPTH_BOUNDS: break;
+        default:
+            if (g_debug_frame) LOG("[cmd] unhandled op %d x0 %llx x1 %llx\n", (int)r->op, (unsigned long long)r->x[0], (unsigned long long)r->x[1]);
+            break;
         }
         p += r->size;
     }
