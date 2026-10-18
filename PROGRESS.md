@@ -761,8 +761,15 @@ framework ideas; Ryujinx as the reference). Nothing counts as done without the e
 - ✅ Approach chosen and recorded; proprietary-content guard extended for recomp output
 - ⬜ Toolchain: fork LAS Recomp into `recomp/` (MIT notices, upstream commit), retarget to SMM2
   v3.0.3 (`main` + `sdk` modules), first-launch local recompilation from the player's dump
-- ⬜ Mods: 100 Mario Challenge on SMM2's Endless Challenge (100 lives, SMM1 run rules, courses from
+- 🔄 Mods: 100 Mario Challenge on SMM2's Endless Challenge (100 lives, SMM1 run rules, courses from
   our server or the local library); Mystery Mushroom costumes (model, sounds, physics swaps)
+  - ✅ Server side: Endless runs take a ruleset at `/start` (`smm2`, or `hundred`: 100 lives capped
+    at 100, done after 8 / 16 / 16 / 6 clears with `run_complete`, SMM1's fail-rate bands, skips
+    free after a death); completed runs on `hundred_<d>` leaderboards apart from SMM2's Endless
+    boards; rankings carry the caller's own row (`me`). SMCraft's 100 Mario reports completions
+    there too (tests: modes, server, front)
+  - ⬜ Recomp hooks (the game's Endless NEX calls answered by our server, lives text and cap,
+    skip rule) — after the recomp boots; ⬜ costumes
 
 | Platform | Builds | Boots to title | Plays courses | Frames match Ryujinx | Input replays in sync |
 |---|---|---|---|---|---|
