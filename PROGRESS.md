@@ -366,6 +366,9 @@ a portable Rust shell runs the game everywhere, the Swift app stays as the Apple
   Bully push table / sight box / ledge teeter; what is left is listed in DECISIONS.md
 - ✅ Fire Bars, Burners, airship Cannons and Bill Blasters on tracks: a carrier actor rides the
   track as the moving solid and the fixed object follows it — sample 550/550 by the coverage check
+- ⚠️ The 550-course sample dates from June 2019 (game versions 1–3, before the 2.0/3.0 updates),
+  so "550/550" says nothing about the update parts: 74, 78–81, 111, 120–132 and the Master Sword
+  are absent from it and not yet played (🔄 enemies/blocks in progress; power-ups after Phase 11)
 - ✅ Story Mode parts: the stone (75, heavy carry: thrown ≤ 0.8 px/f, never breaks), the escort
   Toad (73, follows 32 px back along the player's path; losing him fails the run [inf]), Toadette
   at the goal (115, scenery); conditions: shake N trees, goal holding the stone, goal on a Lakitu's
