@@ -76,34 +76,17 @@ void mod_settings_load(void) {
             g_mod.token[0] ? "signed in" : "NO TOKEN (set RECOMP_MOD_TOKEN)");
 }
 
-// ---- courses=tgrcode: the course server built into the app (core/crates/embed, runtime/net/embed_server.h: weak
-// here until it is linked), on a loopback port with a local account, fed from TGRCode's course archive. It needs
-// the course key table to read TGRCode's course files: the mod writes it once from the player's own game (main's
-// table, 64 words) into mods-generated/course_table.bin in the data folder (private; never logged or committed).
-// If the server can't start, the mod falls back to server= / token=.
-// (a weak stand-in: the real one, core/crates/embed through runtime/net/embed_server.c, replaces it where linked)
-__attribute__((weak)) bool embed_server_start(const char *data_dir, const char *key_table_path, const char *upstream,
-                                              char *url_out, size_t url_len, char *token_out, size_t token_len) {
-    (void)data_dir, (void)key_table_path, (void)upstream, (void)url_out, (void)url_len, (void)token_out, (void)token_len;
-    LOG("[mod] courses=tgrcode: this build has no built-in server\n");
-    return false;
-}
-#define COURSE_KEY_TABLE MAIN_ADDR(0x23d68c0)  // v3.0.3: the course encryption's key table (64 u32)
+// ---- courses=tgrcode: the course server built into the app (core/crates/embed, runtime/net/embed_server.h; it
+// returns false when the build doesn't link it), on a loopback port with a local account, fed from TGRCode's course
+// archive (it finds the course key table in the loaded game itself). The same server the runtime starts at boot
+// on iOS (embed_server_boot: one server per process, a second start returns the first's address). If it can't
+// start, the mod falls back to server= / token=.
+#include "../../../runtime/net/embed_server.h"
 
 static void start_builtin_server(void) {
-    const char *table = "mods-generated/course_table.bin";
-    struct stat sb;
-    if (stat(table, &sb) || sb.st_size != 256) {
-        mkdir("mods-generated", 0755);
-        FILE *f = fopen(table, "wb");
-        if (f) {
-            fwrite((const void *)(uintptr_t)COURSE_KEY_TABLE, 4, 64, f);
-            fclose(f);
-        }
-    }
-    mkdir("mods-server", 0755);
     char url[256], token[160];
-    if (embed_server_start("mods-server", table, "tgrcode", url, sizeof url, token, sizeof token)) {
+    const char *name = getenv("RECOMP_USER_NAME") ? getenv("RECOMP_USER_NAME") : "Player";
+    if (embed_server_start("server", "tgrcode", name, url, sizeof url, token, sizeof token)) {
         snprintf(g_mod.server, sizeof g_mod.server, "%s", url);
         snprintf(g_mod.token, sizeof g_mod.token, "%s", token);
         LOG("[mod] built-in course server on %s (courses from TGRCode)\n", url);
@@ -119,7 +102,20 @@ void mod_server_ready(void) {
 }
 
 bool mod_hundred(void) { mod_settings_load(); return g_mod.hundred; }
-bool mod_hundred_rules(void) { return mod_hundred() && !strcmp(g_mod.ruleset, "hundred"); }
+// Both challenges in one build: with 100 Mario offered (ruleset=hundred) Course World's Endless Challenge button opens
+// SMM1's 100 Mario Challenge; B on its difficulty select leads to SMM2's own Endless Challenge (its menu is underneath)
+// until the player leaves that menu. SMM1's rules apply only in the 100 Mario part.
+static volatile bool smm2_session;
+bool mod_hundred_offered(void) { return mod_hundred() && !strcmp(g_mod.ruleset, "hundred"); }
+bool mod_hundred_rules(void) { return mod_hundred_offered() && !smm2_session; }
+bool mod_smm2_session(void) { return smm2_session; }
+void mod_set_smm2_session(bool on) {
+    if (on == smm2_session) return;
+    smm2_session = on;
+    extern void endless_set_start_lives(uint8_t lives);
+    endless_set_start_lives(on || !mod_hundred_offered() ? 5 : 100);
+    LOG("[mod] %s\n", on ? "SMM2's own Endless Challenge (SMM2's rules)" : "back to the 100 Mario Challenge");
+}
 
 // The system services report a connection while a mod answers the online calls (runtime/net/online.h).
 bool net_pretend_online(void) { return mod_hundred() || (getenv("RECOMP_PRETEND_ONLINE") && atoi(getenv("RECOMP_PRETEND_ONLINE"))); }
@@ -156,7 +152,8 @@ int game_mod_toggles(const GameModToggle **out) {
     static const GameModToggle toggles[] = {
         {"100 Mario Challenge (SMM1)",
          "Course World's Endless Challenge opens SMM1's 100 Mario Challenge: 100 lives, 8 / 16 / 16 / 6 courses, "
-         "SMM1's rules and screens. Off: SMM2's own Endless Challenge. Courses come from your course server.",
+         "SMM1's rules and screens; B there leads on to SMM2's own Endless Challenge. Off: the button opens SMM2's "
+         "own Endless Challenge only. Both play courses from your course server.",
          &t_hundred, true},
         {"Courses: TGRCode (off: my server)",
          "On: courses come from TGRCode's archive of SMM2 courses, through a course server built into the game "

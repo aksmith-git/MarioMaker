@@ -194,7 +194,12 @@ static void driver_start(void) {
 #define MENU_TAB0 MAIN_ADDR(0x1a22260)  // the four tab handlers, 0xc0 apart (Easy .. Super Expert)
 
 static void menu_disp(Cpu *c) {
-    if (!mod_hundred_rules() && test_difficulty() < 0) { guest_call_orig(c, MENU_DISP_EXEC); return; }
+    // (SMM2's own Endless Challenge: 100 Mario not offered, or the player chose SMM2's from the 100 Mario select)
+    if ((!mod_hundred_offered() || mod_smm2_session()) && test_difficulty() < 0) {
+        menu_seen = renderer_present_count();
+        guest_call_orig(c, MENU_DISP_EXEC);
+        return;
+    }
     uint64_t page = c->x[0], now = renderer_present_count();
     bool back = now - menu_seen > 30;  // (first Disp frame after a while: the menu is (back) on screen)
     menu_page = page, menu_seen = now;
@@ -478,7 +483,20 @@ void hundred_run_finish(void) {
     if (drv != DRV_RESULT_QUIT) set_drv(DRV_IDLE);  // (after a win the way back to the menu goes on)
 }
 
-void hundred_flow_exit(void) { set_drv(DRV_BACK); }
+// B on SMM1's difficulty select: SMM2's own Endless Challenge, whose menu is underneath (both challenges in one
+// build). Leaving that menu (B there) ends it: the next visit opens 100 Mario again.
+void hundred_flow_exit(void) {
+    set_drv(DRV_IDLE);
+    mod_set_smm2_session(true);
+}
+
+// The Endless menu's Disappear state (index 5 of its machine; exec main+0x1a24d30): the menu closes towards Course
+// World (a course start goes through CourseIn / InFade instead).
+#define MENU_DISAPPEAR_EXEC MAIN_ADDR(0x1a24d30)
+static void menu_disappear(Cpu *c) {
+    if (mod_smm2_session() && g32(c->x[0] + 0x244) == 0) mod_set_smm2_session(false);
+    guest_call_orig(c, MENU_DISAPPEAR_EXEC);
+}
 
 // ---- RECOMP_MOD_FLOW_TEST=<difficulty>: an unattended run in place of the flow (evidence, regression checks). The
 // flow's screens are left out (hundred_flow_open is not called); the run starts on menu entry (Continue with
@@ -575,6 +593,7 @@ void bridge_register(void) {
     hle_override(MENU_DISP_EXEC, menu_disp, "mod: Endless menu Disp (bridge)");
     hle_override(PAUSE_EXEC, pause_exec, "mod: Endless pause (bridge)");
     hle_override(PLAY_EXEC, play_exec, "mod: Endless play state (bridge)");
+    hle_override(MENU_DISAPPEAR_EXEC, menu_disappear, "mod: Endless menu Disappear (bridge)");
     if (getenv("RECOMP_MOD_TABPROBE")) {
         hle_override(MENU_TAB0, tab_probe, "probe");
         hle_override(MENU_TAB0 + 0xc0, tab_probe, "probe");

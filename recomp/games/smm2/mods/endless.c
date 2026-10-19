@@ -293,11 +293,21 @@ WRAPPER(get_status, 0x14ec2d0) {
 // ---- the next course, known before the game asks for it (the flow's start card shows it, as SMM1's does): the
 // server's queue only moves on a result, so asking for its head now gives what the game's own search gets later.
 
+// The run's next courses: the server may first gather them (TGRCode upstream: about a minute for a difficulty's first
+// batch), so the request may take long; meanwhile hundred_run_status().loading says so (the flow shows it).
+static volatile int loading;
+static Json *next_courses(const char *path) {
+    __sync_fetch_and_add(&loading, 1);
+    Json *j = srv_call_slow("GET", path, NULL, NULL, 180000);
+    __sync_fetch_and_sub(&loading, 1);
+    return j;
+}
+
 static void *prefetch_thread(void *arg) {
     int d = (int)(intptr_t)arg;
     char path[96];
     snprintf(path, sizeof path, "/api/endless/%s/next?count=1", DIFF[d]);
-    Json *j = srv_call("GET", path, NULL, NULL);
+    Json *j = next_courses(path);
     Json *m = json_at(json_get(j, "courses"), 0);
     uint32_t id;
     if (m && code_to_data_id(json_str(json_get(m, "code"), ""), &id)) {
@@ -340,7 +350,7 @@ WRAPPER(init_run, 0x14ece20) {
     uint32_t d = req_diff(no, NO_DIFF);
     char path[64], body[64];
     snprintf(path, sizeof path, "/api/endless/%s/start", DIFF[d]);
-    snprintf(body, sizeof body, "{\"ruleset\":\"%s\"}", g_mod.ruleset);
+    snprintf(body, sizeof body, "{\"ruleset\":\"%s\"}", hundred_rules() ? "hundred" : "smm2");
     int st;
     Json *j = srv_call("POST", path, body, &st);
     bool ok = j != NULL;
@@ -352,7 +362,7 @@ WRAPPER(init_run, 0x14ece20) {
         runs[d].goal = (uint32_t)json_num(json_get(r, "goal"), 0);
         pthread_mutex_unlock(&state_lock);
         bridge_event("new", d);
-        LOG("[mod] New Game: %s, %s rules, %u lives\n", DIFF[d], g_mod.ruleset,
+        LOG("[mod] New Game: %s, %s rules, %u lives\n", DIFF[d], hundred_rules() ? "hundred" : "smm2",
             (uint32_t)json_num(json_get(json_get(j, "run"), "lives"), 0));
         endless_prefetch(d);
     }
@@ -495,7 +505,7 @@ WRAPPER(search_courses, 0x14d8550) {
     uint32_t d = req_diff(no, NO_SEARCH_DIFF);
     char path[96];
     snprintf(path, sizeof path, "/api/endless/%s/next?count=10", DIFF[d]);
-    Json *j = srv_call("GET", path, NULL, NULL);
+    Json *j = next_courses(path);
     if (!j) { finish(c, no, false, 2); return; }
     Json *list = json_get(j, "courses");
     netobj_lock(c);
@@ -822,6 +832,7 @@ void endless_fill_status(struct hundred_status *out, int active_d) {
     memset(out, 0, sizeof *out);
     pthread_mutex_lock(&state_lock);
     out->difficulty = active_d;
+    out->loading = loading > 0;
     for (int d = 0; d < 4; d++) {
         out->unlocked[d] = difficulty_open(d);
         out->can_continue[d] = runs[d].active && runs[d].lives > 0 && !runs[d].complete;
@@ -852,6 +863,17 @@ void endless_forget_run(int d) {
     pthread_mutex_lock(&state_lock);
     memset(&runs[d], 0, sizeof runs[d]);
     pthread_mutex_unlock(&state_lock);
+}
+
+// The start lives New Game reads (run record +0x11) in the network object and the UI cache (Cache +0x15e598, the
+// records' copy [obs 0x7101520fd0]): 5 for SMM2's own Endless, 100 for 100 Mario, when the player switches.
+#define UI_CACHE MAIN_ADDR(0x2c115e0)
+void endless_set_start_lives(uint8_t lives) {
+    uint64_t no = netobj(), cache = g64(UI_CACHE);
+    for (uint32_t d = 0; d < 4; d++) {
+        if (no && g64(no + NO_RECORDS) && d < g32(no + NO_RECORDS_COUNT)) s8(record(no, d) + 0x11, lives);
+        if (cache && g64(cache + 0x15e598) && d < g32(cache + 0x15e590)) s8(g64(cache + 0x15e598) + 0x38ull * d + 0x11, lives);
+    }
 }
 
 bool endless_has_course(uint64_t id) {  // world.c: is this course the one an Endless run is on

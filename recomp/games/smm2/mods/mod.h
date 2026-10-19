@@ -29,12 +29,16 @@ extern ModSettings g_mod;
 void mod_settings_load(void);   // once (idempotent)
 void mod_server_ready(void);    // before the first request: with courses=tgrcode, start the built-in server (once)
 bool mod_hundred(void);         // the 100 Mario mod is on
-bool mod_hundred_rules(void);   // ... and its runs use SMM1's rules (ruleset "hundred")
+bool mod_hundred_offered(void); // ... and 100 Mario is offered (ruleset "hundred": the Endless button opens it)
+bool mod_hundred_rules(void);   // ... and the player is in the 100 Mario part now: SMM1's rules
+bool mod_smm2_session(void);    // the player went on to SMM2's own Endless Challenge (B on the 100 Mario select)
+void mod_set_smm2_session(bool on);
 #define MLOG(...) do { if (g_mod.log) LOG("[mod] " __VA_ARGS__); } while (0)
 
 // ---- server calls (server.c): JSON over HTTP; NULL on any failure (logged)
 typedef struct Json Json;
 Json *srv_call(const char *method, const char *path, const char *body, int *status);
+Json *srv_call_slow(const char *method, const char *path, const char *body, int *status, int timeout_ms);
 void *srv_get_bytes(const char *path, size_t *len);  // raw body (course data); malloc'd
 Json *srv_post_bytes(const char *path, const void *data, size_t len, int *status);  // raw body up (a course)
 
