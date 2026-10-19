@@ -20,6 +20,7 @@
 #include <time.h>
 
 #include "ending.h"
+#include "smm1_audio.h"
 #include "smm1_data.h"
 
 #define WEAK __attribute__((weak))
@@ -107,6 +108,8 @@ static struct {
 } F;
 
 static void status(void) { hundred_run_status(&F.st); }
+static int auto_d(void);
+static void shots_at(int n, const int *ticks, const char *const *what);
 
 static CardInfo card_info(void) {
     CardInfo c;
@@ -124,13 +127,20 @@ static void close_scenes(void) {
     gameover_free(F.go), F.go = NULL;
     ending_free(F.end), F.end = NULL;
 }
+// the map music for a difficulty [inf: pending research/specs/smm1-100mario-screens.md]
+static void map_music(int d) { smm1_bgm(d >= 2 ? "BGM_100MarioMapExpert" : "BGM_100MarioMap", true); }
+
 static void to_select(void) {
     status();
+    map_music(F.d);
     Select *s = select_new(F.d, &F.st);
     close_scenes();
     ov_hide(&F.ov);
     F.sel = s;
     F.state = s ? S_SELECT : S_CLOSED;
+    static const int t[] = {60};
+    static const char *w[] = {"select"};
+    shots_at(1, t, w);
 }
 static void to_intro(int entry) {
     status();
@@ -140,6 +150,15 @@ static void to_intro(int entry) {
     ov_hide(&F.ov);
     F.intro = in;
     F.state = in ? S_INTRO : S_CLOSED;
+    if (entry == ENTRY_NEW) {
+        static const int t[] = {120, 300, 520, 700, 900};
+        static const char *w[] = {"map_mapin", "map_telop", "map_walk", "map_out", "card"};
+        shots_at(5, t, w);
+    } else {
+        static const int t[] = {60, 110, 400};
+        static const char *w[] = {"map_clear", "map_walk", "card"};
+        shots_at(entry == ENTRY_DIRECT ? 0 : 3, t, w);
+    }
 }
 static void to_ending(int d, int lives, int n, const struct hundred_credit *cr) {
     (void)lives;
@@ -148,6 +167,9 @@ static void to_ending(int d, int lives, int n, const struct hundred_credit *cr) 
     ov_hide(&F.ov);
     F.end = e;
     F.state = S_ENDING;
+    static const int t[] = {200, 450, 950, 1500, 2300};
+    static const char *w[] = {"ending_walk", "ending_text", "credits", "credits_scroll", "credits_end"};
+    shots_at(5, t, w);
 }
 static void play_next(void) {
     F.state = S_WAIT;
@@ -168,6 +190,11 @@ static void on_result(int outcome) {
         ov_show_clear(&F.ov, F.st.credits[F.st.ncredits > 0 ? F.st.ncredits - 1 : 0].name,
                       F.st.credits[F.st.ncredits > 0 ? F.st.ncredits - 1 : 0].maker, F.st.cleared >= F.st.total);
         F.clear_act_at = -1;
+        {
+            static const int t[] = {150};
+            static const char *w[] = {"clear"};
+            shots_at(1, t, w);
+        }
         break;
     case HUNDRED_MISS:
         if (F.st.lives > 0) {
@@ -217,6 +244,7 @@ static void handle_queue(void) {
             if (F.state == S_WAIT) {
                 intro_free(F.intro), F.intro = NULL;
                 F.state = S_PLAYING;
+                smm1_bgm(NULL, false);  // the course's own music
             } else if (F.state == S_INTRO)
                 F.started_early = true;
             break;
@@ -225,6 +253,7 @@ static void handle_queue(void) {
             break;
         case Q_ENDING:
             if (open_data()) {
+                status();
                 F.ending_only = true, F.ending_done = false;
                 to_ending(g_end_d, 100, g_end_n, g_end_credits);
             } else
@@ -280,6 +309,7 @@ static void step_playing(const UiIn *in) {
             return;
         }
         if (!ov_clear_ready(o)) return;
+        if (auto_d() >= 0 && o->tick - o->mode_start == 200) { ov_press_clear(o); F.clear_act_at = o->tick + 20; return; }
         if (in->pressed & BT_LEFT) ov_clear_select(o, 0);
         if (in->pressed & BT_RIGHT) ov_clear_select(o, 1);
         if (in->pressed & BT_A) { ov_press_clear(o); F.clear_act_at = o->tick + 20; }
@@ -305,6 +335,40 @@ static void step_playing(const UiIn *in) {
 
 static void flow_test_open(const char *spec);
 
+// Unattended runs (evidence): RECOMP_HUNDRED_AUTO=<difficulty> picks that difficulty on the select screen and
+// presses New Game, and Next on every clear; RECOMP_HUNDRED_SHOTS=<dir> saves a window shot at each screen's key
+// moments (<dir>/<n>_<what>.png).
+static int auto_d(void) {
+    static int d = -2;
+    if (d == -2) d = getenv("RECOMP_HUNDRED_AUTO") ? atoi(getenv("RECOMP_HUNDRED_AUTO")) : -1;
+    return d;
+}
+static void shot(const char *what) {
+#ifndef SMM1UI_STANDALONE
+    static int n;
+    const char *dir = getenv("RECOMP_HUNDRED_SHOTS");
+    if (!dir) return;
+    extern char g_window_shot_request[256];
+    if (g_window_shot_request[0]) return;  // (one at a time)
+    snprintf(g_window_shot_request, sizeof g_window_shot_request, "%s/%03d_%s.png", dir, ++n, what);
+    LOGF("shot %s\n", g_window_shot_request);
+#else
+    (void)what;
+#endif
+}
+static int g_shot_at[8], g_nshot;
+static const char *g_shot_what[8];
+static int g_scene_tick;
+static void shots_at(int n, const int *ticks, const char *const *what) {  // shots for the screen just opened
+    g_nshot = n, g_scene_tick = 0;
+    for (int i = 0; i < n; i++) g_shot_at[i] = ticks[i], g_shot_what[i] = what[i];
+}
+static void shots_tick(void) {
+    g_scene_tick++;
+    for (int i = 0; i < g_nshot; i++)
+        if (g_scene_tick == g_shot_at[i]) shot(g_shot_what[i]);
+}
+
 // one tick: input, the queue, the current screen
 static void tick(unsigned buttons) {
     handle_queue();
@@ -312,9 +376,17 @@ static void tick(unsigned buttons) {
     UiIn in = {buttons & ~F.prev, buttons};
     F.prev = buttons;
     F.ov.tick++;
+    shots_tick();
     bool resume = false;
     switch (F.state) {
     case S_SELECT: {
+        if (auto_d() >= 0 && F.sel) {  // (unattended: the difficulty, then New Game)
+            int t = F.sel->tick;
+            if (t == 90 && auto_d() > F.sel->d) in.pressed |= BT_RIGHT;
+            if (t == 120 && auto_d() > F.sel->d) in.pressed |= BT_RIGHT;
+            if (t == 150 && auto_d() > F.sel->d) in.pressed |= BT_RIGHT;
+            if (t == 240) in.pressed |= BT_A;
+        }
         int ev = select_step(F.sel, &in, &F.st, &resume);
         if (ev == EV_EXIT) { close_scenes(); F.state = S_CLOSED; hundred_flow_exit(); }
         else if (ev == EV_START) {
@@ -334,6 +406,21 @@ static void tick(unsigned buttons) {
     case S_WAIT:
         if (F.intro) intro_step(F.intro, &in);  // (the card holds its last frame)
         break;
+    default: break;
+    }
+    if ((F.state == S_INTRO || F.state == S_WAIT) && F.intro && F.ov.tick % 30 == 0) {
+        // the run side learns the course (name, maker, code) and the lives as SMM2 fetches them: keep the card current
+        char was[66];
+        int lives = F.st.lives;
+        snprintf(was, sizeof was, "%s", F.st.current.name);
+        status();
+        if (strcmp(was, F.st.current.name) || lives != F.st.lives) {
+            CardInfo c = card_info();
+            card_configure(F.intro->card, &c);
+            if (F.intro->map) wm_set_counters(F.intro->map, F.st.lives, F.st.cleared);
+        }
+    }
+    switch (F.state) {
     case S_PLAYING: step_playing(&in); break;
     case S_GAMEOVER:
         if (gameover_step(F.go, &in) == EV_BACK) to_select();
@@ -350,6 +437,7 @@ static void tick(unsigned buttons) {
     // them)
     F.full = F.state == S_SELECT || F.state == S_INTRO || F.state == S_WAIT || F.state == S_GAMEOVER || F.state == S_ENDING ||
              (F.state == S_PLAYING && (F.ov.mode == OV_CLEAR || F.ov.mode == OV_CARD));
+    smm1_game_sound(!F.full);  // SMM1's screens have their own sound
     F.captured = F.full || (F.state == S_PLAYING && (F.ov.mode == OV_PAUSE || F.ov.mode == OV_CLEAR || F.ov.mode == OV_CARD));
 }
 

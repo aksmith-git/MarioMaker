@@ -12,6 +12,7 @@
 //   msg/<Layout>.msbt   the English layout texts (Message/LayoutMsg_<US|EU>en.szs), common/<Group>/<Name>.msbt
 //   model/<Name>.bfres  the ending scene's models from Pack/StaticSkin.pack: <Style>_Object_peach (Peach / Toad and
 //                       the ground), <Style>_Player_{Mario,SpMario}Mdl (Mario), Yaz0 and SARC removed
+//   sound/<Name>.bfstm  the screens' music (Sound/Resource/Stream), sound/<Name>.bars their sound effects
 // Nothing of it is in the repository; the folder is the player's own, like the rest of the data folder.
 #include "smm1_data.h"
 
@@ -25,7 +26,7 @@
 
 #include "lyt.h"
 
-#define CACHE "mods-generated/smm1-ui-v2"
+#define CACHE "mods-generated/smm1-ui-v3"
 #define LOGP "[smm1ui] "
 
 #ifdef _WIN32
@@ -298,6 +299,39 @@ static bool generate(void) {
         }
         free(pack);
     }
+    // the screens' music and sound effects
+    {
+        static const char *streams[] = {"BGM_100MarioMap", "BGM_100MarioMapExpert", "BGM_100mario_staffroll_easy",
+                                        "BGM_100mario_staffroll_normal", "BGM_NetworkMainScene", "BGM_CourseListScene",
+                                        "M1_BGM_Ending", "M3_BGM_EndingDemo1", "M3_BGM_EndingDemo2", "MW_BGM_Ending2",
+                                        "WU_STRM_BGM_LAST_BOSS2_HARP", "WU_STRM_BGM_LAST_BOSS_HARP_Dummy", "M1_GameOver",
+                                        NULL};
+        for (int i = 0; streams[i]; i++) {
+            char rel[160], out[160];
+            snprintf(rel, sizeof rel, "Sound/Resource/Stream/%s.bfstm", streams[i]);
+            snprintf(out, sizeof out, "sound/%s.bfstm", streams[i]);
+            size_t n;
+            uint8_t *b = dump_file(rel, &n);
+            if (b) put(out, b, n), free(b);
+        }
+        size_t n;
+        uint8_t *pack = dump_file("Pack/Sound.pack", &n);
+        LSarc ps;
+        if (pack && lyt_sarc_open(&ps, pack, n)) {
+            for (int i = 0; i < ps.count; i++) {
+                const char *nm = ps.e[i].name;
+                if (strncmp(nm, "Sound/Resource/", 15) || !strstr(nm, ".bars")) continue;
+                const char *base = nm + 15;  // the screens' and scenes' archives only (not the course objects')
+                if (strncmp(base, "UI_Nwk", 6) && strncmp(base, "UI_Play", 7) && strncmp(base, "UI_Cmn", 6) && !strstr(base, "Scene"))
+                    continue;
+                char out[200];
+                snprintf(out, sizeof out, "sound/%s", nm + 15);
+                put(out, ps.data + ps.e[i].start, ps.e[i].end - ps.e[i].start);
+            }
+            lyt_sarc_close(&ps);
+        }
+        free(pack);
+    }
     static const char *fonts[] = {"Font/BmpFont_US.szs", "Font/BmpFont_EU.szs", "Font/BmpFont_JP.szs", NULL};
     static const char *lmsg[] = {"Message/LayoutMsg_USen.szs", "Message/LayoutMsg_EUen.szs", NULL};
     static const char *cmsg[] = {"Message/CommonMsg_USen.szs", "Message/CommonMsg_EUen.szs", NULL};
@@ -375,6 +409,17 @@ uint8_t *smm1_model(const char *name, size_t *n) {
     char p[300];
     snprintf(p, sizeof p, CACHE "/model/%s.bfres", name);
     return smm1_read_file(p, n);
+}
+
+uint8_t *smm1_sound_file(const char *name, size_t *n) {
+    char p[300];
+    snprintf(p, sizeof p, CACHE "/sound/%s.bfstm", name);
+    uint8_t *b = smm1_read_file(p, n);
+    if (!b) {
+        snprintf(p, sizeof p, CACHE "/sound/%s.bars", name);
+        b = smm1_read_file(p, n);
+    }
+    return b;
 }
 
 uint8_t *smm1_common_msbt(const char *group_and_name, size_t *n) {

@@ -1343,3 +1343,47 @@ before.
   emulator footage of the owner's SMM1 dump as the reference.
 - **SMM2's own Endless Challenge** stays as SMM2 made it, against our server under the `smm2`
   ruleset; 100 Mario is a separate mode.
+
+## 2026-10-19 — SMM1's 100 Mario screens in the recomp: SMCraft's layout player ported to C, drawn on the CPU
+
+**What:** the host-drawn SMM1 screens (`recomp/games/smm2/mods/smm1/`): difficulty select, world map
+and walk, start card, pause / clear / skip / miss overlays, game over, and the ending (rescue scene,
+Thank-you line, staff credits), from the player's SMM1 dump (base v16 + update v208), generated at
+first use into `<data>/mods-generated/smm1-ui-v3/` (layouts, fonts, texts, the ending's models,
+the screens' music and sound banks). Nothing of SMM1 is in the repository.
+
+**Port, not link (coordinator approved):** "reused rather than rewritten" above meant SMCraft's Rust
+crates (`mmk-ui` player/text/font, `mmk-formats` lyt/bflim/bffnt/gx2/msbt, `front/src/smm1.rs`).
+They are reused as a C port with the same rules and the same [inf] notes, not linked as a Rust
+static library, because:
+- the recomp builds with clang / zig only; a Rust static library would add cargo to every target's
+  build (macOS, iOS, Linux arm64 / x86-64 cross-built with zig, Windows), and the Linux cross targets
+  aren't installed for cargo here;
+- the player crates pull the importer and asset crates, which stayed on the archive branch;
+- the port is small (formats ~900 lines, player ~800, rasterizer ~250).
+
+**CPU rasterizer, one image:** the layout player's quads are drawn into one 1280 × 720 RGBA image
+(SMM1's native resolution) on a worker thread, and the renderers draw that image over (or instead
+of) the game's frame through the overlay menu's ImGui on Metal and on Vulkan. One small hook per
+renderer (`game_overlay_image`, `vk_imgui_texture_stream`), no shaders of our own on either backend,
+and the result is the same on both (and testable without the game: `tools/test_smm1ui`). Composed
+in gamma space with the authored 8-bit colours [inf]. Cost: 6-20 ms of CPU per frame on the busiest
+screens (the map's MapIn zoom, the card's 100 Marios), off the present path.
+
+**Runtime hooks (additive):** `game_overlay_image` / `game_overlay_captured` / `game_input_mask` /
+`game_audio_mix` (weak in `runtime/game_hooks.c`); `input_player_buttons()` (keyboard and pads only).
+While a screen has the controls the game gets no player input, but still test input: the 100 Mario
+mod presses SMM2's hidden Endless buttons that way.
+
+**From the binary over SMCraft's guesses** (research/specs/smm1-ending.md, private): the rescue
+scene is a dedicated scene (`NetEndingDemoScene`), not the map: Mario walks in from x −32 at 1.5 a
+frame to 384 next to Peach (Toad on Easy) at 416 on the cleared course's style's ground model, the
+balloon line comes 30 frames after he stops (row by difficulty, variant by the costume he wore), and
+the credits follow on black (`_01` Easy, `_00` Normal / Expert, `_03` Super Expert). **Nothing
+skips**: neither ending scene reads the controller [obs], so A does not skip the ending (the brief
+said it did). The staff-roll music is `easy` for Easy and Super Expert, `normal` for Normal and Expert.
+SMM2's SM3DW style has no SMM1 scene; its courses end in SMB1's [inf].
+
+**Open:** NSMBU's ending Mario (a skinned 3D model) is not posed; the screens' choreography
+between courses is SMCraft's [inf] until research/specs/smm1-100mario-screens.md resolves it; the
+Mystery Mushroom reward after the credits is a hook (`hundred_costume_reward`) for the costumes mod.

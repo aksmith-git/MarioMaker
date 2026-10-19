@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "rescue.h"
+#include "smm1_audio.h"
 
 __attribute__((weak)) void hundred_costume_reward(int difficulty) { (void)difficulty; }
 __attribute__((weak)) int hundred_ending_costume(void) { return -1; }  // costume id at the goal (-1 none)
@@ -23,7 +24,7 @@ __attribute__((weak)) int hundred_ending_costume(void) { return -1; }  // costum
 #define FADE 25  // the default fader: a 100-frame animation at speed 4 [inf]
 
 struct Ending {
-    int d, tick, rescue_len, credits_start, credits_len, end, text_in, text_out;
+    int d, tick, rescue_len, credits_start, credits_len, end, text_in, text_out, style;
     bool done;
     Rescue *rescue;
     Lay *text, *credits;
@@ -45,7 +46,8 @@ Ending *ending_new(int d, int lives, int n, const struct hundred_credit *c) {
 Ending *ending_new_style(int d, int n, const struct hundred_credit *c, int style, int form) {
     Ending *e = calloc(1, sizeof *e);
     e->d = d < 0 ? 0 : d > 3 ? 3 : d;
-    e->rescue = rescue_new(style > 3 ? 0 : style, e->d != 0, form);  // (SM3DW has no SMM1 scene: SMB1's [inf])
+    e->style = style > 3 ? 0 : style;
+    e->rescue = rescue_new(e->style, e->d != 0, form);  // (SM3DW has no SMM1 scene: SMB1's [inf])
     e->rescue_len = rescue_length(e->rescue);
     e->text = lay_open("Play_EndingText_00");
     if (e->text) {
@@ -90,6 +92,15 @@ int ending_step(Ending *e, const UiIn *in) {
         if (e->tick == e->text_in + (int)lay_length(e->text, "In")) lay_stop(e->text, "In"), lay_play_loop(e->text, "Wait", e->tick);
         if (e->tick == e->text_out) lay_stop(e->text, "Wait"), lay_play(e->text, "Out", e->tick);
     }
+    if (e->tick == 1) {  // EndingPeachBGM / EndingKinopioBGM by style [obs data: SLink2DB]
+        static const char *peach[4] = {"M1_BGM_Ending", "M3_BGM_EndingDemo2", "MW_BGM_Ending2", "WU_STRM_BGM_LAST_BOSS2_HARP"};
+        static const char *toad[4] = {"M1_BGM_Ending", "M3_BGM_EndingDemo1", NULL, "WU_STRM_BGM_LAST_BOSS_HARP_Dummy"};
+        const char *s = e->d ? peach[e->style] : toad[e->style];  // (SMW's Toad tune is a sound-bank wave: not yet)
+        smm1_bgm(s, false);
+    }
+    if (e->tick == e->rescue_len) smm1_bgm_fade(FADE);
+    if (e->tick == e->rescue_len + FADE)  // the staff roll: Easy and Super Expert "easy", Normal and Expert "normal"
+        smm1_bgm(e->d == 0 || e->d == 3 ? "BGM_100mario_staffroll_easy" : "BGM_100mario_staffroll_normal", false);
     if (e->tick == e->credits_start && e->credits) lay_play(e->credits, "InOut", e->tick);
     if (e->tick >= e->end) {
         e->done = true;
