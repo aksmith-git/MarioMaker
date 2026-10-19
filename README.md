@@ -27,12 +27,17 @@ Captured from the macOS build, running from the owner's own dump.
 
 **100 Mario Challenge mod** (in progress): SMM1's own screens, drawn from the player's SMM1 dump
 over the recomp, with courses from our open-source server playing in SMM2's own course play.
-Runs end after Easy 8 / Normal 16 / Expert 16 / Super Expert 6 clears with SMM1's ending (being
-finished).
+Runs end after Easy 8 / Normal 16 / Expert 16 / Super Expert 6 clears with SMM1's ending; a full
+Super Expert run plays from the select screen to THE END. (Course names in the credits come from a
+test server.)
 
 | Difficulty select | Super Expert map, 2 of 6 cleared | Start card, ×100 |
 |---|---|---|
 | ![100 Mario Challenge difficulty select](docs/screenshots/100mario-select.jpg) | ![Super Expert world map with Bowser's castle](docs/screenshots/100mario-map.jpg) | ![Start card with 100 little Marios](docs/screenshots/100mario-card.jpg) |
+
+| The win: Peach's Super Expert thank-you | Credits: each cleared course and its maker |
+|---|---|
+| ![SMM1 ending: Peach thanks Mario](docs/screenshots/100mario-ending.jpg) | ![SMM1 ending credits](docs/screenshots/100mario-credits.jpg) |
 
 ## Layout
 

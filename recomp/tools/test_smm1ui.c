@@ -13,6 +13,8 @@
 #include "../games/smm2/mods/smm1/lyt.h"
 #include "../games/smm2/mods/smm1/smm1_data.h"
 #include "../games/smm2/mods/smm1/bfres.h"
+#include "../games/smm2/mods/smm1/smm1_audio.h"
+#include <math.h>
 
 // ---- a minimal PNG writer (stored deflate blocks)
 static uint32_t crc_table[256];
@@ -94,6 +96,32 @@ int main(int argc, char **argv) {
     }
     if (!smm1_data_open()) return 1;
     if (!strcmp(argv[1], "--flow")) return flow_test_main(argc - 1, argv + 1);
+    if (!strcmp(argv[1], "--sound") && argc > 3) {  // --sound <stream name> <out.wav>: decode one stream
+        size_t n;
+        uint8_t *d = smm1_sound_file(argv[2], &n);
+        SPcm *p = d ? smm1_bfstm_decode(d, n) : NULL;
+        if (!p) { fprintf(stderr, "no stream %s\n", argv[2]); return 1; }
+        int peak = 0;
+        double sum = 0;
+        for (size_t i = 0; i < (size_t)p->frames * (size_t)p->channels; i++) {
+            int v = abs(p->pcm[i]);
+            if (v > peak) peak = v;
+            sum += (double)v * v;
+        }
+        fprintf(stderr, "%s: %d Hz, %d ch, %d frames (%.2f s), loop %d from %d, peak %d, rms %.0f\n", argv[2], p->rate,
+                p->channels, p->frames, (double)p->frames / p->rate, p->loop, p->loop_start, peak,
+                sqrt(sum / ((double)p->frames * p->channels)));
+        FILE *f = fopen(argv[3], "wb");
+        uint32_t bytes = (uint32_t)p->frames * (uint32_t)p->channels * 2;
+        uint32_t h[11] = {0x46464952, 36 + bytes, 0x45564157, 0x20746d66, 16, 0x00010001u | ((uint32_t)p->channels << 16) - 0x10000 + 0,
+                          (uint32_t)p->rate, (uint32_t)p->rate * (uint32_t)p->channels * 2, 0, 0x61746164, bytes};
+        h[5] = 1u | ((uint32_t)p->channels << 16);
+        h[8] = (uint32_t)(p->channels * 2) | (16u << 16);
+        fwrite(h, 4, 11, f);
+        fwrite(p->pcm, 2, (size_t)p->frames * (size_t)p->channels, f);
+        fclose(f);
+        return 0;
+    }
     LRes *r = lyt_load(argv[2]);
     if (!r) return 1;
     LInst *in = lyt_inst(r);

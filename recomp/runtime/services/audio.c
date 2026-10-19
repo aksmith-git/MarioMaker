@@ -661,6 +661,8 @@ static void *renderer_tick(void *arg) {
             memset(out, 0, frame_bytes);
         }
         pthread_mutex_unlock(&r->lock);
+        extern void game_audio_mix(float *stereo, int n, int rate);  // a game's own sounds mixed in (game_hooks.c)
+        game_audio_mix(out, (int)N, (int)r->sample_rate);
         if (r->stream) { apply_gain(r->stream); SDL_PutAudioStreamData(r->stream, out, frame_bytes); }
         if (r->wav && r->state == 0) {
             fwrite(out, 1, frame_bytes, r->wav);

@@ -49,7 +49,9 @@ WEAK const uint8_t *game_overlay_image(int *w, int *h, int *full, uint64_t *seq)
     return 0;
 }
 WEAK bool game_overlay_captured(void) { return false; }
-WEAK uint64_t game_input_mask(void) { return ~0ull; }  // (the player's buttons a host screen keeps from the game)
+WEAK uint64_t game_input_mask(void) { return ~0ull; }
+// the game's mixed audio (interleaved stereo float) just before it is played: a host screen's sounds go in here
+WEAK void game_audio_mix(float *stereo, int n, int rate) { (void)stereo, (void)n, (void)rate; }  // (the player's buttons a host screen keeps from the game)
 
 // ---- the virtual LAN's relay and room (runtime/net/vlan.c), when a game supplies them: none
 WEAK bool game_lan_config(char *relay, size_t relay_len, char *room, size_t room_len, int *slot) {

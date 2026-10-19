@@ -20,6 +20,7 @@
 #include <time.h>
 
 #include "ending.h"
+#include "smm1_audio.h"
 #include "smm1_data.h"
 
 #define WEAK __attribute__((weak))
@@ -100,13 +101,17 @@ static struct {
     Overlay ov;
     struct hundred_status st;
     unsigned prev;
-    int skip_hold, skip_until, clear_act_at;
-    bool auto_next, started_early;  // after a skip SMM2 starts the next course by itself
+    int skip_hold, skip_until, clear_act_at, intro_ticks, peek, last_hb, koopa_next;
     char test[64];
     long test_at;
 } F;
 
 static void status(void) { hundred_run_status(&F.st); }
+// the lives to show: a run being started has none on record yet, and SMM1's start is 100 (a run with none left is
+// over and shows no card)
+static int shown_lives(void) { return F.st.lives > 0 ? F.st.lives : 100; }
+static int auto_d(void);
+static void shots_at(int n, const int *ticks, const char *const *what);
 
 static CardInfo card_info(void) {
     CardInfo c;
@@ -114,7 +119,7 @@ static CardInfo card_info(void) {
     snprintf(c.name, sizeof c.name, "%s", F.st.current.name);
     snprintf(c.maker, sizeof c.maker, "%s", F.st.current.maker);
     snprintf(c.code, sizeof c.code, "%s", F.st.current_code);
-    c.lives = F.st.lives, c.number = F.st.cleared + 1, c.total = F.st.total ? F.st.total : RUN_LENGTHS[F.d];
+    c.lives = shown_lives(), c.number = F.st.cleared + 1, c.total = F.st.total ? F.st.total : RUN_LENGTHS[F.d];
     return c;
 }
 
@@ -124,22 +129,59 @@ static void close_scenes(void) {
     gameover_free(F.go), F.go = NULL;
     ending_free(F.end), F.end = NULL;
 }
+// the music: Course World's stream on the select screen and through the New Game / Continue demos, one track by
+// difficulty (values 2 / 3 / 6 -> tracks 1 / 2 / 5); between courses the map stream by difficulty, not looped
+static int track_for(int d) { return d <= 1 ? 1 : d == 2 ? 2 : 5; }
+static void course_world_music(int d) {
+    if (strcmp(smm1_bgm_name(), "BGM_NetworkMainScene")) smm1_bgm("BGM_NetworkMainScene", true), F.last_hb = -1, F.koopa_next = 0;
+    smm1_bgm_track(track_for(d));
+}
+static void map_music(int d) {
+    smm1_bgm(d == 3 ? "BGM_100MarioMapSuperExpert" : d == 2 ? "BGM_100MarioMapExpert" : "BGM_100MarioMap", false);
+}
+static void sound_banks(void) {
+    static const char *banks[] = {"UI_Nwk_Root", "UI_Nwk_WorldMapEsy_00", "UI_Nwk_WorldMapEsy_00_L_WorldMapKuribo_00",
+                                  "UI_Nwk_WorldMapNml_00_L_WorldMapKuribo_00", "UI_Nwk_WorldMapNml_00_L_WorldMapMario_00",
+                                  "UI_Nwk_Daikettei", "UI_Nwk_WorldMapExp_00_L_StartBtn_00", "UI_Nwk_ListTitle_00",
+                                  "UI_Nwk_ListSelectBtnSub", "UI_Play_CourseIn100Mario_00", "UI_Play_SlidePassIconKey_00",
+                                  "UI_Play_SlidePass_00", "UI_Play_CourseClear_00", "UI_Play_CourseClearLWM_00",
+                                  "UI_Cmn_PauseMenu_00", "UI_Cmn_Root", "UI_Cmn_Chuketei", NULL};
+    for (int i = 0; banks[i]; i++) smm1_se_bank(banks[i]);
+}
+
 static void to_select(void) {
     status();
+    course_world_music(F.d);
     Select *s = select_new(F.d, &F.st);
     close_scenes();
     ov_hide(&F.ov);
     F.sel = s;
     F.state = s ? S_SELECT : S_CLOSED;
+    static const int t[] = {60};
+    static const char *w[] = {"select"};
+    shots_at(1, t, w);
 }
 static void to_intro(int entry) {
     status();
     CardInfo c = card_info();
-    Intro *in = intro_new(entry, F.d, &c, F.st.cleared, F.sel);
+    c.intro = entry == ENTRY_NEW ? CARD_NEW_RUN : entry == ENTRY_RESUME ? CARD_RETRY : CARD_STATIC;
+    bool had_continue = F.sel && F.sel->cont;
+    Intro *in = intro_new(entry, F.d, &c, F.st.cleared, had_continue, F.sel);
     close_scenes();
     ov_hide(&F.ov);
     F.intro = in;
+    F.intro_ticks = 0;
     F.state = in ? S_INTRO : S_CLOSED;
+    if (entry == ENTRY_AFTER_CLEAR) map_music(F.d);
+    if (entry == ENTRY_NEW) {
+        static const int t[] = {150, 420, 700, 950, 1130, 1320};
+        static const char *w[] = {"map_mapin", "map_telop", "map_kuribo", "map_peach", "map_walk", "card"};
+        shots_at(6, t, w);
+    } else {
+        static const int t[] = {10, 50, 90, 260};
+        static const char *w[] = {"map_jump", "map_dot", "map_walk", "card"};
+        shots_at(entry == ENTRY_DIRECT ? 0 : 4, t, w);
+    }
 }
 static void to_ending(int d, int lives, int n, const struct hundred_credit *cr) {
     (void)lives;
@@ -148,16 +190,49 @@ static void to_ending(int d, int lives, int n, const struct hundred_credit *cr) 
     ov_hide(&F.ov);
     F.end = e;
     F.state = S_ENDING;
-}
-static void play_next(void) {
-    F.state = S_WAIT;
-    if (F.intro) F.intro->hold_card = true;
-    if (!hundred_play_next()) to_select();
+    int len = ending_length(e);  // (credits_end: the last line of the roll, before the costume window)
+    const int t[] = {200, 450, 950, 1500, len > 260 ? len - 260 : 1};
+    static const char *w[] = {"ending_walk", "ending_text", "credits", "credits_scroll", "credits_end"};
+    shots_at(5, t, w);
 }
 
 static bool open_data(void) {
-    if (!F.ready) F.ready = smm1_data_open();
+    if (!F.ready && (F.ready = smm1_data_open())) sound_banks();
     return F.ready;
+}
+
+// the beat bounce (Beat_<x>_<y>) on Course World's music: its markers say 56 beats end at sample 1054117
+// (18823.5 samples a beat, 102 BPM at 32 kHz) [obs data]; on each half beat the Beat_<beat mod 4>_<half> animation
+// of the map (and of its castles) starts 31 + BeatOffset frames later (map balloon -8, map scenery -16, castles -10),
+// and the castles' Bowser (Anm_Koopa_00, -20) on the music's Koopa markers (376470, 828234) [obs]
+static Lay *beat_layout(void) {
+    if (F.state == S_SELECT && F.sel && F.sel->maps[F.sel->d]) return F.sel->maps[F.sel->d]->l;
+    if (F.state == S_INTRO && F.intro) return intro_map_layout(F.intro);
+    return NULL;
+}
+static void beats(void) {
+    Lay *l = beat_layout();
+    if (!l || strcmp(smm1_bgm_name(), "BGM_NetworkMainScene")) return;
+    double pos = smm1_bgm_pos();
+    if (pos < 0) return;
+    const double spb = 1054117.0 / 56;
+    int hb = (int)(pos / (spb / 2));
+    if (hb == F.last_hb) return;
+    if (F.last_hb >= 0 && hb < F.last_hb) F.koopa_next = 0;  // (the music looped)
+    F.last_hb = hb;
+    int x = (hb / 2) % 4, y = hb % 2, t = F.state == S_SELECT ? F.sel->tick : intro_tick(F.intro);
+    char a[48];
+    if (y == 0 && x == 0) lay_play(l, "Beat_00_00", t + 31 - 8);
+    if (y == 1) snprintf(a, sizeof a, "Beat_%02d_01", x), lay_play(l, a, t + 31 - 16);
+    if (y == 0) {
+        snprintf(a, sizeof a, "L_Castle_00/Beat_%02d_00", x), lay_play(l, a, t + 31 - 10);
+        snprintf(a, sizeof a, "L_Castle_01/Beat_%02d_00", x), lay_play(l, a, t + 31 - 10);
+    }
+    static const double koopa[2] = {376470, 828234};
+    if (F.koopa_next < 2 && pos >= koopa[F.koopa_next]) {
+        lay_play(l, "L_Castle_01/Anm_Koopa_00", t + 31 - 20);
+        F.koopa_next++;
+    }
 }
 
 static void on_result(int outcome) {
@@ -168,6 +243,11 @@ static void on_result(int outcome) {
         ov_show_clear(&F.ov, F.st.credits[F.st.ncredits > 0 ? F.st.ncredits - 1 : 0].name,
                       F.st.credits[F.st.ncredits > 0 ? F.st.ncredits - 1 : 0].maker, F.st.cleared >= F.st.total);
         F.clear_act_at = -1;
+        {
+            static const int t[] = {150};
+            static const char *w[] = {"clear"};
+            shots_at(1, t, w);
+        }
         break;
     case HUNDRED_MISS:
         if (F.st.lives > 0) {
@@ -184,7 +264,6 @@ static void on_result(int outcome) {
         break;
     case HUNDRED_SKIP:  // the next course's card; SMM2 starts that course by itself
         to_intro(ENTRY_DIRECT);
-        F.auto_next = true, F.started_early = false;
         break;
     case HUNDRED_GIVEUP_SAVE:
     case HUNDRED_ERROR:
@@ -206,25 +285,20 @@ static void handle_queue(void) {
         case Q_PAUSE:
             if (F.state == S_PLAYING && F.ov.mode == OV_NONE) {
                 status();
-                const LMsg *m = NULL;
-                char line[96];
-                snprintf(line, sizeof line, "100 Mario Challenge (%d/%d)", F.st.cleared + 1, F.st.total);
-                (void)m;
-                ov_show_pause(&F.ov, line, F.st.current.name, F.st.current.maker);
+                ov_show_pause(&F.ov, F.st.cleared, F.st.total, F.st.current.name, F.st.current.maker);
             }
             break;
         case Q_STARTED:
-            if (F.state == S_WAIT) {
-                intro_free(F.intro), F.intro = NULL;
-                F.state = S_PLAYING;
-            } else if (F.state == S_INTRO)
-                F.started_early = true;
+            if (F.state == S_INTRO && F.intro) intro_started(F.intro);  // (the card goes: Out over the course)
+            else if (F.state == S_PLAYING && F.ov.mode == OV_CARD) ov_card_started(&F.ov);  // (the retry: OutMiss)
             break;
         case Q_RESULT:
-            if (F.state == S_PLAYING || F.state == S_WAIT) on_result(q[i][1]);
+            if (F.state == S_PLAYING || F.state == S_INTRO) on_result(q[i][1]);
+            else if (F.state == S_SELECT && q[i][1] == HUNDRED_GIVEUP_SAVE) to_select();  // (the saved run's record now)
             break;
         case Q_ENDING:
             if (open_data()) {
+                status();
                 F.ending_only = true, F.ending_done = false;
                 to_ending(g_end_d, 100, g_end_n, g_end_credits);
             } else
@@ -261,7 +335,7 @@ static void step_playing(const UiIn *in) {
             ov_hide_pause(o);
             if (sel == 0) hundred_play_resume();
             else if (sel == 1) hundred_play_retry();
-            else hundred_run_save_quit();
+            else { hundred_run_save_quit(); to_select(); }  // (SMM1: back to the menu; the run side reports when SMM2 is there)
         }
         return;
     }
@@ -270,7 +344,7 @@ static void step_playing(const UiIn *in) {
             if (o->tick >= F.clear_act_at) {
                 bool next = o->clear_focus == 1;
                 ov_hide(o);
-                if (!next) hundred_run_save_quit();
+                if (!next) { hundred_run_save_quit(); to_select(); }
                 else if (F.st.cleared >= F.st.total) {
                     to_ending(F.d, F.st.lives, F.st.ncredits, F.st.credits);
                 } else {
@@ -280,23 +354,29 @@ static void step_playing(const UiIn *in) {
             return;
         }
         if (!ov_clear_ready(o)) return;
+        if (auto_d() >= 0 && o->tick - o->mode_start == 200) { ov_press_clear(o); F.clear_act_at = o->tick + 20; return; }
         if (in->pressed & BT_LEFT) ov_clear_select(o, 0);
         if (in->pressed & BT_RIGHT) ov_clear_select(o, 1);
         if (in->pressed & BT_A) { ov_press_clear(o); F.clear_act_at = o->tick + 20; }
         return;
     }
     if (o->mode == OV_CARD) {
-        if (ov_card_done(o) || (in->pressed & BT_A)) ov_hide(o);
+        if (ov_card_done(o)) ov_hide(o);
         return;
     }
-    // SMM1's skip: hold the skip button through the three countdown steps (3 x 32 frames), then Pass
+    // SMM1's skip: hold the skip button through In and the three countdown steps (16 + 3 x 32 frames); the skip
+    // fires then and Pass plays
     if (F.skip_until > 0) {
-        if (o->tick >= F.skip_until) { F.skip_until = 0; ov_hide(o); hundred_play_skip(); }
+        if (o->tick >= F.skip_until) F.skip_until = 0, ov_hide(o);
         return;
     }
     if (in->held & BT_MINUS) {
         if (F.skip_hold++ == 0) ov_skip_begin(o);
-        if (F.skip_hold == 96) F.skip_until = o->tick + ov_skip_pass(o);
+        if (ov_skip_counted(o)) {
+            F.skip_hold = 0;
+            F.skip_until = o->tick + ov_skip_pass(o);
+            hundred_play_skip();
+        }
     } else if (F.skip_hold) {
         F.skip_hold = 0;
         ov_skip_cancel(o);
@@ -305,6 +385,40 @@ static void step_playing(const UiIn *in) {
 
 static void flow_test_open(const char *spec);
 
+// Unattended runs (evidence): RECOMP_HUNDRED_AUTO=<difficulty> picks that difficulty on the select screen and
+// presses New Game, and Next on every clear; RECOMP_HUNDRED_SHOTS=<dir> saves a window shot at each screen's key
+// moments (<dir>/<n>_<what>.png).
+static int auto_d(void) {
+    static int d = -2;
+    if (d == -2) d = getenv("RECOMP_HUNDRED_AUTO") ? atoi(getenv("RECOMP_HUNDRED_AUTO")) : -1;
+    return d;
+}
+static void shot(const char *what) {
+#ifndef SMM1UI_STANDALONE
+    static int n;
+    const char *dir = getenv("RECOMP_HUNDRED_SHOTS");
+    if (!dir) return;
+    extern char g_window_shot_request[256];
+    if (g_window_shot_request[0]) return;  // (one at a time)
+    snprintf(g_window_shot_request, sizeof g_window_shot_request, "%s/%03d_%s.png", dir, ++n, what);
+    LOGF("shot %s\n", g_window_shot_request);
+#else
+    (void)what;
+#endif
+}
+static int g_shot_at[8], g_nshot;
+static const char *g_shot_what[8];
+static int g_scene_tick;
+static void shots_at(int n, const int *ticks, const char *const *what) {  // shots for the screen just opened
+    g_nshot = n, g_scene_tick = 0;
+    for (int i = 0; i < n; i++) g_shot_at[i] = ticks[i], g_shot_what[i] = what[i];
+}
+static void shots_tick(void) {
+    g_scene_tick++;
+    for (int i = 0; i < g_nshot; i++)
+        if (g_scene_tick == g_shot_at[i]) shot(g_shot_what[i]);
+}
+
 // one tick: input, the queue, the current screen
 static void tick(unsigned buttons) {
     handle_queue();
@@ -312,28 +426,60 @@ static void tick(unsigned buttons) {
     UiIn in = {buttons & ~F.prev, buttons};
     F.prev = buttons;
     F.ov.tick++;
+    shots_tick();
     bool resume = false;
     switch (F.state) {
     case S_SELECT: {
+        static bool auto_started;  // (one run: back on the select after it, nothing more is pressed)
+        if (auto_d() >= 0 && F.sel && !auto_started) {  // (unattended: the difficulty, then New Game)
+            int t = F.sel->tick;
+            if (t == 90 && auto_d() > F.sel->d) in.pressed |= BT_RIGHT;
+            if (t == 120 && auto_d() > F.sel->d) in.pressed |= BT_RIGHT;
+            if (t == 150 && auto_d() > F.sel->d) in.pressed |= BT_RIGHT;
+            if (t == 200) in.pressed |= BT_DOWN;  // (New Game, not Continue)
+            if (t == 240) in.pressed |= BT_A, auto_started = true;
+        }
         int ev = select_step(F.sel, &in, &F.st, &resume);
-        if (ev == EV_EXIT) { close_scenes(); F.state = S_CLOSED; hundred_flow_exit(); }
+        if (ev == EV_TAB) smm1_bgm_track(track_for(F.sel->d));
+        if (ev == EV_EXIT) { close_scenes(); F.state = S_CLOSED; smm1_bgm(NULL, false); hundred_flow_exit(); }
         else if (ev == EV_START) {
             F.d = F.sel->d;
             if (hundred_run_start(F.d, resume)) to_intro(resume ? ENTRY_RESUME : ENTRY_NEW);
         }
         break;
     }
-    case S_INTRO:
-        if (intro_step(F.intro, &in) == EV_PLAY) {
-            if (!F.auto_next) play_next();
-            else if (F.started_early) { intro_free(F.intro), F.intro = NULL; F.state = S_PLAYING; }
-            else F.state = S_WAIT;
-            F.auto_next = F.started_early = false;
+    case S_INTRO: {
+        int iev = intro_step(F.intro, &in);
+        // the card is up: the run side fetches the course and SMM2 starts it under the card (SMM2 starts it as soon
+        // as it can, so not earlier: SMM1's map plays while the course downloads, SMM2's would be playing hidden);
+        // after a skip SMM2 starts the next course by itself
+        if (iev == EV_FETCH && !hundred_play_next()) LOGF("the run side did not take the next course\n");
+        if (iev == EV_DONE) {
+            intro_free(F.intro), F.intro = NULL;
+            F.state = S_PLAYING;
+            smm1_bgm_fade(30);  // the course's own music
+        } else if (++F.intro_ticks % 1800 == 0) {  // a long wait for the course: say so, photograph what the game shows
+            LOGF("still waiting for the course to start (%d s)\n", F.intro_ticks / 60);
+            F.peek = 3;
         }
         break;
-    case S_WAIT:
-        if (F.intro) intro_step(F.intro, &in);  // (the card holds its last frame)
-        break;
+    }
+    default: break;
+    }
+    beats();
+    if (F.state == S_INTRO && F.intro && F.ov.tick % 30 == 0) {
+        // the run side learns the course (name, maker, code) and the lives as SMM2 fetches them: keep the card current
+        char was[66];
+        int lives = F.st.lives;
+        snprintf(was, sizeof was, "%s", F.st.current.name);
+        status();
+        if (strcmp(was, F.st.current.name) || lives != F.st.lives) {
+            CardInfo c = card_info();
+            c.last = c.number >= c.total;
+            intro_card(F.intro, &c);
+        }
+    }
+    switch (F.state) {
     case S_PLAYING: step_playing(&in); break;
     case S_GAMEOVER:
         if (gameover_step(F.go, &in) == EV_BACK) to_select();
@@ -348,20 +494,24 @@ static void tick(unsigned buttons) {
     }
     // (the clear screen and the card after a miss cover the game: SMM2's own result screen and retry card are under
     // them)
-    F.full = F.state == S_SELECT || F.state == S_INTRO || F.state == S_WAIT || F.state == S_GAMEOVER || F.state == S_ENDING ||
-             (F.state == S_PLAYING && (F.ov.mode == OV_CLEAR || F.ov.mode == OV_CARD));
-    F.captured = F.full || (F.state == S_PLAYING && (F.ov.mode == OV_PAUSE || F.ov.mode == OV_CLEAR || F.ov.mode == OV_CARD));
+    F.full = F.state == S_SELECT || (F.state == S_INTRO && F.intro && intro_full(F.intro)) || F.state == S_GAMEOVER ||
+             F.state == S_ENDING || (F.state == S_PLAYING && (F.ov.mode == OV_CLEAR || (F.ov.mode == OV_CARD && !ov_card_out(&F.ov))));
+    smm1_game_sound(!F.full);  // SMM1's screens have their own sound
+    F.captured = F.full || (F.state == S_PLAYING && (F.ov.mode == OV_PAUSE || F.ov.mode == OV_CLEAR));
 }
 
 // the quads of this frame and the colour under them; false: nothing to draw
 static bool build(LQuads *q, uint8_t bg[4]) {
     lyt_quads_reset(q);
+    if (F.peek > 0 && getenv("RECOMP_HUNDRED_SHOTS")) {  // (tests: two frames without the screens, then a shot)
+        if (--F.peek == 0) shot("peek_game");
+        return false;
+    }
     memset(bg, 0, 4);
     if (F.full) bg[3] = 255;
     switch (F.state) {
     case S_SELECT: select_draw(F.sel, q); break;
     case S_INTRO:
-    case S_WAIT:
         if (F.intro) intro_draw(F.intro, q);
         break;
     case S_GAMEOVER: gameover_draw(F.go, q); break;

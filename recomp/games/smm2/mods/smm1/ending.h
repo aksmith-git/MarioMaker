@@ -5,10 +5,11 @@
 
 typedef struct Ending Ending;
 Ending *ending_new(int difficulty, int lives, int n, const struct hundred_credit *credits);
-// style: the cleared course's game style (0 SMB1 .. 3 NSMBU; SM3DW shows SMB1's), form: Mario's power-up (0 small, 1 big)
+// style: the cleared course's game style (0 SMB1 .. 3 NSMBU, 4 SM3DW shows NSMBU's), form: Mario's power-up (0 small, 1 big)
 Ending *ending_new_style(int difficulty, int n, const struct hundred_credit *credits, int style, int form);
 void ending_free(Ending *e);
 int ending_step(Ending *e, const UiIn *in);  // EV_DONE when over
+int ending_length(const Ending *e);          // ticks until EV_DONE
 void ending_draw(Ending *e, LQuads *out);
 // what the ending wants behind its layouts this frame: a background colour (RGBA) the frame is cleared to
 void ending_background(Ending *e, uint8_t rgba[4]);

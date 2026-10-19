@@ -208,7 +208,7 @@ static void read_model(const B *b, size_t o, BModel *m) {
         uint32_t flags = u32(b, fskl + 4);
         m->quat = ((flags >> 12) & 7) == 0;  // rotation mode (bits 12-14): 0 quaternion, 1 euler XYZ [inf]
         m->skl_flags = flags;
-        int nb = u16(b, fskl + 8), nsm = u16(b, fskl + 0xA);
+        int nb = u16(b, fskl + 8), nsm = u16(b, fskl + 0xA) + u16(b, fskl + 0xC);  // smooth + rigid matrices
         size_t bones = rel(b, fskl + 0x14), smooth = rel(b, fskl + 0x18);
         m->nbones = nb;
         m->bones = zalloc(sizeof(BBone) * (size_t)(nb + 1));
@@ -331,6 +331,59 @@ const char *bfres_texpat_at(const BTexPat *p, const char *mat, float frame) {
     return NULL;
 }
 
+// ---------------------------------------------------------------- skeletal animations
+// FSKA (v3): +0x0C flags (bit 2 loop; bits 12-13 rotation mode, 1 = euler XYZ), +0x10 frame count, +0x14 bone
+// animation count, +0x20 bone animations (0x18 each: flags, name, u8 begin rotate / translate, curve count, begin
+// base translate, begin curve, curves, base data = scale[3] rotate[4] translate[3] as the flags say). A curve: flags
+// (frame type bits 0-1, key type 2-3, curve type 4-6), key count, target offset, start / end frame, scale, offset,
+// delta, frames, keys (per key 4 coefficients for cubic, 2 for linear).
+static void read_skelanim(const B *b, size_t o, BSkelAnim *a) {
+    str(b, rel(b, o + 4), a->name, sizeof a->name);
+    uint16_t flags = u16(b, o + 0x0E);
+    a->loop = flags & 4;
+    a->euler = ((flags >> 12) & 3) == 1;
+    a->frames = (int32_t)u32(b, o + 0x10);
+    a->nb = u16(b, o + 0x14);
+    size_t ba = rel(b, o + 0x20);
+    a->b = zalloc(sizeof(BBoneAnim) * (size_t)(a->nb + 1));
+    for (int i = 0; i < a->nb; i++) {
+        size_t p = ba + (size_t)i * 0x18;
+        BBoneAnim *bn = &a->b[i];
+        bn->flags = u32(b, p);
+        str(b, rel(b, p + 4), bn->name, sizeof bn->name);
+        bn->nc = u8(b, p + 0xA);
+        size_t cv = rel(b, p + 0x10), base = rel(b, p + 0x14);
+        size_t q = base;
+        if (bn->flags & 8) for (int k = 0; k < 3; k++, q += 4) bn->base_s[k] = f32(b, q);
+        if (bn->flags & 16) for (int k = 0; k < 4; k++, q += 4) bn->base_r[k] = f32(b, q);
+        if (bn->flags & 32) for (int k = 0; k < 3; k++, q += 4) bn->base_t[k] = f32(b, q);
+        bn->c = zalloc(sizeof(BFCurve) * (size_t)(bn->nc + 1));
+        for (int c = 0; c < bn->nc; c++) {
+            size_t cp = cv + (size_t)c * 0x24;
+            BFCurve *cu = &bn->c[c];
+            uint16_t cf = u16(b, cp);
+            int ftype = cf & 3, ktype = cf >> 2 & 3;
+            cu->type = cf >> 4 & 7;
+            cu->nk = u16(b, cp + 2);
+            cu->target = (int)u32(b, cp + 4);
+            cu->scale = f32(b, cp + 0x10), cu->offset = f32(b, cp + 0x14);
+            if (ktype != 0) cu->scale = cu->scale == 0 ? 1 : cu->scale;
+            size_t fr = rel(b, cp + 0x1C), ky = rel(b, cp + 0x20);
+            int nco = cu->type == 1 ? 2 : 4;
+            cu->frame = zalloc(sizeof(float) * (size_t)(cu->nk + 1));
+            cu->coef = zalloc(sizeof(float) * 4 * (size_t)(cu->nk + 1));
+            for (int k = 0; k < cu->nk; k++) {
+                cu->frame[k] = ftype == 0 ? f32(b, fr + 4 * (size_t)k) : ftype == 1 ? (int16_t)u16(b, fr + 2 * (size_t)k) / 32.0f
+                                                                                  : u8(b, fr + (size_t)k);
+                for (int e = 0; e < nco; e++) {
+                    size_t at = (size_t)(k * nco + e);
+                    cu->coef[k][e] = ktype == 0 ? f32(b, ky + 4 * at) : ktype == 1 ? (int16_t)u16(b, ky + 2 * at) : (int8_t)u8(b, ky + at);
+                }
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------- file
 Bfres *bfres_load(const uint8_t *d, size_t n) {
     if (n < 0x80 || memcmp(d, "FRES", 4)) return NULL;
@@ -353,7 +406,57 @@ Bfres *bfres_load(const uint8_t *d, size_t n) {
     int np = group(&b, rel(&b, 0x20 + 6 * 4), data, names, 256);
     r->pats = zalloc(sizeof(BTexPat) * (size_t)(np + 1));
     for (int i = 0; i < np; i++) read_texpat(&b, data[i], &r->pats[r->npat++]);
+    int ns = group(&b, rel(&b, 0x20 + 2 * 4), data, names, 256);
+    r->skels = zalloc(sizeof(BSkelAnim) * (size_t)(ns + 1));
+    for (int i = 0; i < ns; i++) read_skelanim(&b, data[i], &r->skels[r->nskel++]);
     return r;
+}
+const BSkelAnim *bfres_skelanim(const Bfres *b, const char *name) {
+    for (int i = 0; b && i < b->nskel; i++)
+        if (!strcmp(b->skels[i].name, name)) return &b->skels[i];
+    return NULL;
+}
+int bfres_skin_bone(const BModel *m, int index) {
+    return index >= 0 && index < m->nsmooth ? m->smooth[index] : 0;
+}
+static float curve_eval(const BFCurve *c, float f) {
+    if (!c->nk) return 0;
+    int k = 0;
+    while (k + 1 < c->nk && c->frame[k + 1] <= f) k++;
+    float span = k + 1 < c->nk ? c->frame[k + 1] - c->frame[k] : 1, t = span > 0 ? (f - c->frame[k]) / span : 0;
+    if (t < 0) t = 0;
+    if (t > 1) t = 1;
+    const float *q = c->coef[k];
+    float v = c->type == 1 ? q[0] + q[1] * t : q[0] + q[1] * t + q[2] * t * t + q[3] * t * t * t;
+    return v * c->scale + c->offset;
+}
+void bfres_pose(const BModel *m, const BSkelAnim *a, float frame, float (*world)[3][4]) {
+    for (int i = 0; i < m->nbones; i++) {
+        const BBone *bn = &m->bones[i];
+        float s[3], r[4], t[3];
+        memcpy(s, bn->s, sizeof s), memcpy(r, bn->r, sizeof r), memcpy(t, bn->t, sizeof t);
+        bool euler = !m->quat;
+        const BBoneAnim *ba = NULL;
+        for (int k = 0; a && k < a->nb; k++)
+            if (!strcmp(a->b[k].name, bn->name)) { ba = &a->b[k]; break; }
+        if (ba) {
+            if (ba->flags & 8) memcpy(s, ba->base_s, sizeof s);
+            if (ba->flags & 16) memcpy(r, ba->base_r, sizeof r), euler = a->euler;
+            if (ba->flags & 32) memcpy(t, ba->base_t, sizeof t);
+            for (int c = 0; c < ba->nc; c++) {
+                float v = curve_eval(&ba->c[c], frame);
+                int tg = ba->c[c].target;
+                if (tg >= 0x4 && tg <= 0xC) s[(tg - 4) / 4] = v;
+                else if (tg >= 0x10 && tg <= 0x18) t[(tg - 0x10) / 4] = v;
+                else if (tg >= 0x20 && tg <= 0x2C) r[(tg - 0x20) / 4] = v, euler = a->euler;
+            }
+        }
+        float local[3][4];
+        if (euler) euler_matrix(s, r, t, local);
+        else quat_matrix(s, r, t, local);
+        if (bn->parent >= 0 && bn->parent < i) mmul(world[bn->parent], local, world[i]);
+        else memcpy(world[i], local, sizeof local);
+    }
 }
 int bfres_texture(const Bfres *b, const char *name) {
     for (int i = 0; b && i < b->ntex; i++)
