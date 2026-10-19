@@ -245,7 +245,7 @@ static int elem_bits(int f) {
     default: return 0;
     }
 }
-static uint8_t *surface_rgba(const uint8_t *d, size_t n, uint32_t w, uint32_t h, int fmt, uint32_t mode, uint32_t swz) {
+static uint8_t *surface_rgba_x(const uint8_t *d, size_t n, uint32_t w, uint32_t h, int fmt, uint32_t mode, uint32_t swz, bool raw) {
     int bits = elem_bits(fmt);
     if (!bits) return NULL;
     bool block = bits >= 64 && fmt != 9 && fmt != 20;
@@ -258,7 +258,7 @@ static uint8_t *surface_rgba(const uint8_t *d, size_t n, uint32_t w, uint32_t h,
         int kind = (fmt == 12 || fmt == 21) ? BCSOFT_BC1 : (fmt == 13 || fmt == 22) ? BCSOFT_BC2
                  : (fmt == 14 || fmt == 23) ? BCSOFT_BC3 : (fmt == 15 || fmt == 16) ? BCSOFT_BC4 : BCSOFT_BC5;
         bcsoft_decode(kind, lin, w, h, 1, px);
-        for (size_t i = 0; i < np; i++) {
+        for (size_t i = 0; !raw && i < np; i++) {
             uint8_t *p = px + i * 4, r = p[0], g = p[1];
             if (fmt == 15) p[0] = p[1] = p[2] = r, p[3] = 255;
             else if (fmt == 16) p[0] = p[1] = p[2] = 255, p[3] = r;
@@ -288,6 +288,13 @@ static uint8_t *surface_rgba(const uint8_t *d, size_t n, uint32_t w, uint32_t h,
     }
     free(lin);
     return px;
+}
+
+static uint8_t *surface_rgba(const uint8_t *d, size_t n, uint32_t w, uint32_t h, int fmt, uint32_t mode, uint32_t swz) {
+    return surface_rgba_x(d, n, w, h, fmt, mode, swz, false);
+}
+uint8_t *lyt_surface_raw(const uint8_t *d, size_t n, uint32_t w, uint32_t h, int fmt, uint32_t mode, uint32_t swz) {
+    return surface_rgba_x(d, n, w, h, fmt, mode, swz, true);
 }
 
 uint8_t *lyt_flim_decode(const uint8_t *d, size_t n, int *w, int *h) {
