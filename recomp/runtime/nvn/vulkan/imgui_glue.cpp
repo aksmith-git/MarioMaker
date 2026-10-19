@@ -38,6 +38,7 @@ extern "C" void vk_imgui_backend_shutdown(void) {
     ImGui_ImplVulkan_Shutdown();
 }
 
+static VkImage g_last_image;  // (the image of the last vk_imgui_texture_rgba, for vk_imgui_texture_stream)
 // A static RGBA8 image for ImGui (start screen background). Returns the ImTextureID.
 extern "C" uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h) {
     VkImageCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -69,5 +70,29 @@ extern "C" uint64_t vk_imgui_texture_rgba(const void *rgba, int w, int h) {
     vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     VkImageView view;
     if (vkCreateImageView(g_vk.dev, &vi, NULL, &view) != VK_SUCCESS) return 0;
+    g_last_image = img;
     return (uint64_t)ImGui_ImplVulkan_AddTexture(vk_default_sampler(true), view, VK_IMAGE_LAYOUT_GENERAL);
+}
+
+// A streamed RGBA8 image for ImGui (a game's host-drawn screen, runtime/ui/menu.mm game_overlay_draw): made on the
+// first call, its pixels replaced on later ones (on the upload command buffer, which runs before the frame's work
+// after a full barrier). One such image. Returns the ImTextureID.
+extern "C" uint64_t vk_imgui_texture_stream(const void *rgba, int w, int h) {
+    static VkImage img;
+    static uint64_t id;
+    static int iw, ih;
+    if (!id || w != iw || h != ih) {  // (a size change would leak the old image: does not happen)
+        id = vk_imgui_texture_rgba(rgba, w, h);
+        img = id ? g_last_image : VK_NULL_HANDLE;
+        iw = w, ih = h;
+        return id;
+    }
+    VkCommandBuffer cb = vk_upload_cmd();
+    VkSpan s = vk_transient_copy(rgba, (uint64_t)w * h * 4, 16);
+    VkBufferImageCopy rg = {};
+    rg.bufferOffset = s.off;
+    rg.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    rg.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
+    vkCmdCopyBufferToImage(cb, s.buf, img, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+    return id;
 }

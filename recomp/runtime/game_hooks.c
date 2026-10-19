@@ -15,6 +15,13 @@
 // ---- frame / level (renderers): the current level's name, for logs and per-level render-target resets
 WEAK const char *game_level_name(void) { return ""; }
 WEAK void romfs_file_read_hook(const char *path) { (void)path; }
+// a folder of files a game's mods generate, laid over the RomFS when no RECOMP_MOD_DIR is set (runtime/services/fs.c)
+WEAK const char *game_romfs_overlay(void) { return NULL; }
+
+// ---- a game's mod settings (the overlay menu's Mods tab, runtime/ui/menu.mm): on/off toggles; none by default
+typedef struct { const char *label, *desc; bool *value; bool def; } GameModToggle;
+WEAK int game_mod_toggles(const GameModToggle **out) { *out = NULL; return 0; }
+WEAK void game_mod_toggles_changed(void) {}
 
 // ---- once per frame on the game's main thread (runtime/hle/input.c), and per presented frame (renderers)
 WEAK void warp_game_tick(Cpu *c) { (void)c; }
@@ -33,6 +40,15 @@ WEAK void input_note_rstick(int32_t ry) { (void)ry; }
 // test scripts' held stick / buttons (frame-limited; 0 = none)
 WEAK int32_t g_test_lx, g_test_ly, g_stick_lx, g_stick_ly;
 WEAK uint64_t g_test_stick_until, g_test_buttons, g_test_buttons_until, g_stick_freeze_until;
+
+// ---- a game's host-drawn screens over its frame (renderers via runtime/ui/menu.mm; input.c): none
+// game_overlay_image: once per presented frame; an RGBA8 image to draw over the game (NULL: none), *full = opaque and
+// covering the game's frame, *seq changes with the image. game_overlay_captured: the game gets no input meanwhile.
+WEAK const uint8_t *game_overlay_image(int *w, int *h, int *full, uint64_t *seq) {
+    (void)w, (void)h, (void)full, (void)seq;
+    return 0;
+}
+WEAK bool game_overlay_captured(void) { return false; }
 
 // ---- save data written by the game (runtime/services/fs.c)
 WEAK void flags_ext_save_written(const char *path, uint64_t addr, int64_t off, int64_t size) {

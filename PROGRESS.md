@@ -80,7 +80,7 @@ framework ideas; Ryujinx as the reference). Nothing counts as done without the e
   uploads, storage aliases, cube-array views, in-order uniform updates, compute result flush, blocking compiles, real
   geometry shaders, TLD4 / TMML); player packages recompile the dump on first launch. Evidence in the table;
   `recomp/private/smm2/evidence/linux/` (private). Left: Mario's model on Vulkan; Windows and x64 untested
-- 🔄 iOS / iPadOS (2026-10-19): `make -C recomp TARGET=ios-arm64 | iossim-arm64 GAME=smm2 app` (AOT: the game code is compiled on the Mac and linked into the app; no JIT, no game code library); Documents holds the game files and the log; touches are the console touch screen (macOS: the left mouse button), controllers through SDL; BC textures decoded on the CPU where the GPU lacks them. Evidence: the Simulator boots to the title (`recomp/private/smm2/evidence/ios/`, private). Left: install on a device (offline today; signing needs an App ID with extended virtual addressing + increased memory limit)
+- 🔄 iOS / iPadOS (2026-10-19): `make -C recomp TARGET=ios-arm64 | iossim-arm64 GAME=smm2 app` (AOT: the game code is compiled on the Mac and linked into the app; no JIT, no game code library); Documents holds the game files and the log; touches are the console touch screen (macOS: the left mouse button), controllers through SDL; BC textures decoded on the CPU where the GPU lacks them. Evidence: the Simulator boots to the title; an iPad Pro 13 M5 (iOS 27.0, installed over Tailscale, App ID with extended virtual addressing + increased memory limit: `recomp/tools/ios_profile.sh`) boots through the intro to the title screen and its menu at a steady 60 fps (MetalFX to 2752x2064, the 3.25 GB heap buffer taken whole), no faults (`recomp/private/smm2/evidence/ios/`, private: screenshots, boot log, the address-space log below). The guest window stays at 0x7000000000 on iOS: with the entitlement iOS 27 gives an app up to 0x8000000000 and keeps 0x2ee000000-0x7000000000 itself (measured; `GUEST_ORIGIN` moves it where that differs). On-screen controller for touch-only devices (stick, ABXY, L/R/ZL/ZR, +/-, menu, hide), other touches stay the touch screen. Left: play a course on the device; the on-screen controller is drawn but not yet tried by hand
 - ✅ R2 (macOS): plays courses by input injection, and input replays stay in sync with Ryujinx frame for frame
   (2026-10-19). The game now gets input (`nn::hid::GetNpadStates` answered by the runtime; before, it saw none,
   keyboard included); `RECOMP_PAD_SCRIPT` plays the Ryujinx trace tooling's scripts on the game's own clock (one frame
@@ -94,14 +94,40 @@ framework ideas; Ryujinx as the reference). Nothing counts as done without the e
     in both runtimes); Course Maker test play reached through the menus (L + R, Make, −) on the presented-frame clock
   Evidence: `recomp/private/smm2/evidence/r2/` (per-course tables `results/*.md`, traces of both runtimes, sessions,
   screenshots; private, not in git)
-- 🔄 Mods: 100 Mario Challenge on SMM2's Endless Challenge (100 lives, SMM1 run rules, courses from
-  our server or the local library); Mystery Mushroom costumes (model, sounds, physics swaps)
-  - ✅ Server side: Endless runs take a ruleset at `/start` (`smm2`, or `hundred`: 100 lives capped
-    at 100, done after 8 / 16 / 16 / 6 clears with `run_complete`, SMM1's fail-rate bands, skips
-    free after a death); completed runs on `hundred_<d>` leaderboards apart from SMM2's Endless
-    boards; rankings carry the caller's own row (`me`) (tests: modes, server)
-  - ⬜ Recomp hooks (the game's Endless NEX calls answered by our server, lives text and cap,
-    skip rule); ⬜ costumes
+- 🔄 Mods (owner's plan, 2026-10-19: a perfect SMM2 v3.0.3 recomp; SMM1's 100 Mario exactly as SMM1;
+  each SMM1 feature behind its own setting; never Nintendo's servers)
+  - 🔄 **100 Mario Challenge exactly as in SMM1** (not SMM2's Endless screens reskinned): SMM1's own
+    screens from the owner's SMM1 dump, drawn by the recomp host: difficulty tabs, the world map with
+    the Goombas carrying Peach and the castle at the end, the dot walk, the start card with 100 little
+    Marios, pause, clear, game over, credits (`Nwk_StaffCredit_00/01/03`) and `T_ThankYou_10/20/30`;
+    the rescue / ending scene recovered from the Wii U binary (code, not a layout), emulator footage
+    of the owner's SMM1 dump as the reference. Courses play in SMM2's own course play.
+    - ✅ Server: `hundred` ruleset (100 lives capped at 100, runs of Easy 8 / Normal 16 / Expert 16 /
+      Super Expert 6 then `run_complete`, SMM1 fail-rate bands, free skips), `hundred_<d>` boards
+    - ✅ Game side over our server (`recomp/docs/mods.md`): pretend-online (nifm, acc NSA, mii, enl
+      session, Course World's login answered locally), Course World opens against our server; the
+      Endless requests answered from `/api/endless`; courses download (the game's own encryption, its
+      CRC / validity checks pass) and play in SMM2's own play, ×100 on the course card and HUD; clear /
+      miss / skip / suspend / finish reported. Evidence [obs]: a full **Super Expert run won against a
+      local server** - 6 clears, 3 misses (100 -> 97), skips, the win -> ending -> run finished; the
+      server's `hundred_super_expert` board shows the completion (`recomp/private/smm2/evidence/mods/
+      se_run/`: run log, server JSON, screenshots; `course_in_card_100.png`, `course_hud_100.png`)
+    - ✅ The bridge to the SMM1 screens (`games/smm2/mods/hundred.h`, `bridge.c`): a host call starts a
+      server course in SMM2's play (the Endless menu stays hidden and is driven), the outcome comes back
+      as `hundred_course_result`; the win plays the ending and finishes the run (not a game over).
+      ⬜ Continue (a saved run), ⬜ SMM2's pause routed to the flow
+    - ✅ SMM1 client rules (`games/smm2/mods/hooks.c`, 22 hook points, only in a 100 Mario run): lives
+      cap 100 (HUD and in-course clamps), free skip during the miss demo, a miss rolls back the
+      attempt's coins and score, a multi-life award banks one 1-Up; unlocks Expert after a won Normal /
+      Super Expert after a won Expert (server boards). Seen in runs: free skips, 100 -> 99 per miss;
+      the rollback and the award cap not yet exercised in a recorded run
+    - 🔄 SMM1 screens and the ending, host-drawn (SMCraft's archived SMM1 layout player reused)
+  - 🔄 **Settings, one toggle per SMM1 feature** (overlay menu's Mods tab, kept in `smm2mods.ini`):
+    🔄 "100 Mario Challenge (SMM1)" (built, not yet checked on screen); ⬜ Mystery Mushroom costumes (model, sounds, physics
+    swaps), mid-air shell jumps, overlapping (overlay) pipes, and more from research/specs/smm1-extras*
+  - ⬜ **Our open-source server everywhere the game would reach Nintendo**: course search and
+    download (Course World, SMM2's own Endless Challenge under the `smm2` ruleset, 100 Mario), and
+    online multiplayer (versus / co-op through our server, not Nintendo's matchmaking)
 
 | Platform | Builds | Boots to title | Plays courses | Frames match Ryujinx | Input replays in sync |
 |---|---|---|---|---|---|
@@ -109,7 +135,7 @@ framework ideas; Ryujinx as the reference). Nothing counts as done without the e
 | Windows (x64, Vulkan) | ✅ cross-built with zig: exe 2.4 MB + game DLL 186 MB, needs SDL3.dll, libiconv-2.dll, libshaderc_shared.dll, vulkan-1.dll (driver); player zip 85 MB | ⬜ not run (no Windows machine) | ⬜ | ⬜ | ⬜ |
 | Linux arm64 (Vulkan) | ✅ cross-built with zig: exe 11.9 MB + game .so 688 MB, needs libSDL3.so.0, libvulkan.so.1, libshaderc.so.1, glibc 2.36; player zip 71 MB | ✅ title rendered (Debian 13 VM, Mesa lavapipe, ~7 fps); package first launch recompiled the game code from the dump (29 min) and booted | ⬜ | 🔄 seed 4 frame 2386 vs macOS same frame: 0.6 % px >24, 0.17 % >96 (Mario model missing on Vulkan); colour-managed vs Ryujinx 2.99 % >24, 0.24 % >96 (macOS 2.35 / 0.11) | ⬜ |
 | Linux x64 (Vulkan) | ✅ cross-built with zig: exe 11.3 MB + game .so 856 MB (generated/smm2-c, x86-64-v3), same libraries; player zip 74 MB | ⬜ not run | ⬜ | ⬜ | ⬜ |
-| iOS / iPadOS (arm64, Metal, AOT) | ✅ game code built on the Mac from the dump and linked into the app (exe 141 MB; SDL3 static); device app signed (wildcard profile: lacks the extended-virtual-addressing / increased-memory-limit entitlements the memory window needs) | ✅ Simulator (iPad Pro 13 M4): title screen at 60 fps; lighting wrong there (the Simulator's Metal limits: 32-byte colour targets, no cube arrays); ⬜ device: not installed (devices offline; needs an explicit App ID with both entitlements) | ⬜ | ⬜ | ⬜ |
+| iOS / iPadOS (arm64, Metal, AOT) | ✅ game code built on the Mac from the dump and linked into the app (exe 141 MB; SDL3 static); device app signed with an App ID carrying extended virtual addressing + increased memory limit (`tools/ios_profile.sh`) | ✅ device: iPad Pro 13 M5 (iOS 27.0) through the intro to the title screen and menu, steady 60 fps, no faults; Simulator (iPad Pro 13 M4): title at 60 fps, lighting wrong there (the Simulator's Metal limits: 32-byte colour targets, no cube arrays) | ⬜ on-screen controller drawn, not yet tried by hand | ⬜ | ⬜ |
 | Web (wasm + WebGPU) | ⬜ feasibility decided after the native ports | | | | |
 
 ---

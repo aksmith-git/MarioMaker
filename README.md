@@ -3,8 +3,8 @@
 A native port of **Super Mario Maker 2 v3.0.3**, built by **static recompilation** of your own
 dump: the game's AArch64 code is translated to C ahead of time on your machine and compiled for
 it, its system calls run on a native runtime, and its graphics run on Metal (macOS, iOS) or Vulkan
-(Windows, Linux). SMM1's **100 Mario Challenge** (on SMM2's Endless Challenge, against an
-open-source course server instead of Nintendo's) and **Mystery Mushroom costumes** come as mods.
+(Windows, Linux). SMM1's **100 Mario Challenge** (exactly as in SMM1, with SMM1's screens and ending, against
+our open-source course server instead of Nintendo's) and **Mystery Mushroom costumes** come as mods.
 
 **Nothing from the game is in this repository**: no code, assets, text, keys or recompiled output.
 You supply your own dump; everything made from it is generated on your machine into gitignored
@@ -24,6 +24,15 @@ Captured from the macOS build, running from the owner's own dump.
 | Title screen | Playing the title course | Make / Play |
 |---|---|---|
 | ![Title screen](docs/screenshots/title.jpg) | ![Mario running the title course](docs/screenshots/title-course.jpg) | ![Make and Play menu](docs/screenshots/menu.jpg) |
+
+**100 Mario Challenge mod** (in progress): SMM1's own screens, drawn from the player's SMM1 dump
+over the recomp, with courses from our open-source server playing in SMM2's own course play.
+Runs end after Easy 8 / Normal 16 / Expert 16 / Super Expert 6 clears with SMM1's ending (being
+finished).
+
+| Difficulty select | Super Expert map, 2 of 6 cleared | Start card, ×100 |
+|---|---|---|
+| ![100 Mario Challenge difficulty select](docs/screenshots/100mario-select.jpg) | ![Super Expert world map with Bowser's castle](docs/screenshots/100mario-map.jpg) | ![Start card with 100 little Marios](docs/screenshots/100mario-card.jpg) |
 
 ## Layout
 
