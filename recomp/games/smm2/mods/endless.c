@@ -756,7 +756,7 @@ WRAPPER(clear_course, 0x14ed120) {
         add_credit(d, id);
         if (complete) runs[d].complete = true;
         pthread_mutex_unlock(&state_lock);
-        bridge_event("clear", d);
+        bridge_event(complete ? "clear_last" : "clear", d);
         if (!complete) endless_prefetch((int)d);
         LOG("[mod] clear %s (%s): lives %u, clears %u, pending %u, Mario %s%s\n", code, DIFF[d], lives, clears,
             pending, form == 0 ? "small" : form == 1 ? "big" : "?",
@@ -806,6 +806,12 @@ static void post_simple(Cpu *c, uint64_t no, const char *what) {
 }
 
 WRAPPER(suspend_run, 0x14ed360) {
+    if (endless_run_complete(req_diff(no, NO_DIFF))) {  // (a won run left by its result screen's Quit: nothing to keep)
+        LOG("[mod] suspend of a won run (%s): answered locally\n", DIFF[req_diff(no, NO_DIFF)]);
+        finish(c, no, true, 0);
+        bridge_event("suspend", req_diff(no, NO_DIFF));
+        return;
+    }
     post_simple(c, no, "suspend");
     bridge_event("suspend", req_diff(no, NO_DIFF));
 }

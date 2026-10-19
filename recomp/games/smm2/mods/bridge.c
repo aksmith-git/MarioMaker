@@ -47,6 +47,8 @@ static volatile int tab_presses;
 static volatile uint64_t menu_page, menu_seen;  // the Endless menu page and the frame it was last in Disp
 static volatile bool play_queued;      // Play asked for while the result screen is up
 static volatile bool suspending;       // Save & Quit under way: the menu's return reports it
+static volatile bool suspend_posted;   // the game posted its suspend (the confirm window was answered)
+static volatile bool leaving_won;      // a won run's last result screen: Quit back to the menu, nothing to report
 static volatile bool over_save;        // New Game over a saved run (the menu shows Continue too)
 static pthread_once_t once = PTHREAD_ONCE_INIT;
 
@@ -66,6 +68,14 @@ static void *driver(void *arg) {
     for (;;) {
         usleep(20000);
         uint64_t now = renderer_present_count(), t = now - drv_since, b = 0;
+        if ((drv == DRV_NEW_GAME || drv == DRV_CONTINUE) && tab_target >= 0 && now - menu_seen > 10) {
+            // (not on SMM2's Endless menu yet, e.g. still leaving the last run: wait for it)
+            static uint64_t logged;
+            if (now - logged > 600) logged = now, LOG("[mod] bridge: waiting for SMM2's Endless menu\n");
+            drv_since = now;
+            g_test_buttons = 0, g_test_buttons_until = 0;
+            continue;
+        }
         if ((drv == DRV_NEW_GAME || drv == DRV_CONTINUE) && tab_target >= 0) {
             // the difficulty, the way a player picks it: L / R until the menu's difficulty (main+0x2c3f618) is the
             // one wanted (calling the tab's handler directly can leave the buttons without a focus when Continue
@@ -138,20 +148,25 @@ static void *driver(void *arg) {
             else if (t >= 600 && t < 608) b = BTN_A;
             else if (t > 700) { set_drv(play_queued ? DRV_PLAY : DRV_IDLE); play_queued = false; }
             break;
-        case DRV_RESULT_QUIT:  // the result screen's Quit (below Boo), then the confirm window's Yes
+        case DRV_RESULT_QUIT:  // the result screen's Quit (below Boo), then the confirm window's Yes (right of No
+                               // [inf: as the overwrite window]); Right + A again every 2 s until the suspend is posted
             if (t >= 480 && t < 488) b = BTN_DOWN;
             else if (t >= 540 && t < 548) b = BTN_A;
-            else if (t >= 720 && t < 728) b = BTN_A;
-            else if (t > 740) set_drv(DRV_IDLE);
+            else if (t >= 700 && t < 1300 && !suspend_posted) {
+                if ((t - 700) % 120 < 8) b = BTN_RIGHT;
+                else if ((t - 700) % 120 >= 40 && (t - 700) % 120 < 48) b = BTN_A;
+            } else if (t >= 1300 || suspend_posted) set_drv(DRV_IDLE);
             break;
         case DRV_BACK:  // B on the Endless menu: back to Course World
             if (t < 8) b = BTN_B;
             else set_drv(DRV_IDLE);
             break;
-        case DRV_SAVE_QUIT:  // the map's Quit (+), then the window's Yes
+        case DRV_SAVE_QUIT:  // the map's Quit (+), then the window's Yes (Right + A until the suspend is posted)
             if (t < 8) b = BTN_PLUS;
-            else if (t >= 60 && t < 68) b = BTN_A;
-            else if (t > 80) set_drv(DRV_IDLE);
+            else if (t >= 60 && t < 660 && !suspend_posted) {
+                if ((t - 60) % 120 < 8) b = BTN_RIGHT;
+                else if ((t - 60) % 120 >= 40 && (t - 60) % 120 < 48) b = BTN_A;
+            } else if (t >= 660 || suspend_posted) set_drv(DRV_IDLE);
             break;
         default: break;
         }
@@ -194,6 +209,12 @@ static void menu_disp(Cpu *c) {
         MLOG("bridge: difficulty %d selected\n", d);
     }
     guest_call_orig(c, MENU_DISP_EXEC);
+    if (back && leaving_won) {  // a won run: SMM2 is back on its menu, ready for the next one
+        leaving_won = suspending = false;
+        set_drv(DRV_IDLE);
+        LOG("[mod] bridge: back on SMM2's Endless menu after the win\n");
+        return;
+    }
     if (back && suspending) {  // Save & Quit done: the game is back on its Endless menu
         suspending = false;
         int d = run_d;
@@ -364,6 +385,10 @@ void bridge_event(const char *what, uint32_t d) {
     } else if (!strcmp(what, "clear")) {
         set_drv(DRV_AFTER_CLEAR);
         result(HUNDRED_CLEAR);
+    } else if (!strcmp(what, "clear_last")) {  // the run is won: Quit on the result screen, back to SMM2's menu
+        leaving_won = true, suspend_posted = false;
+        set_drv(DRV_RESULT_QUIT);
+        result(HUNDRED_CLEAR);
     } else if (!strcmp(what, "skip")) {
         set_drv(DRV_IDLE);  // (SMM2's Endless starts the next course at once)
         result(HUNDRED_SKIP);
@@ -375,7 +400,8 @@ void bridge_event(const char *what, uint32_t d) {
         set_drv(DRV_BROKEN);
         result(HUNDRED_SKIP);
     } else if (!strcmp(what, "suspend")) {
-        suspending = true;
+        suspend_posted = true;
+        if (!leaving_won) suspending = true;
     }
 }
 
@@ -440,7 +466,7 @@ static void post_later(const char *what) {
 void hundred_run_save_quit(void) {
     if (run_d < 0) return;
     if (paused) { pause_cmd = PAUSE_SAVE_QUIT; return; }
-    suspending = true;
+    suspending = true, suspend_posted = false;
     set_drv(drv == DRV_AFTER_CLEAR ? DRV_RESULT_QUIT : DRV_SAVE_QUIT);
 }
 
@@ -449,7 +475,7 @@ void hundred_run_finish(void) {
     post_later("finish");
     endless_forget_run(run_d);
     run_d = -1;
-    set_drv(DRV_IDLE);
+    if (drv != DRV_RESULT_QUIT) set_drv(DRV_IDLE);  // (after a win the way back to the menu goes on)
 }
 
 void hundred_flow_exit(void) { set_drv(DRV_BACK); }
