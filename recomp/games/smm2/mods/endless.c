@@ -14,6 +14,8 @@
 
 #include "mod.h"
 #include "../../../runtime/net/json.h"
+#include "ending.h"
+#include <unistd.h>
 
 void autoplay_event(const char *what);  // autoplay.c
 bool endless_run_complete(uint32_t d);
@@ -48,7 +50,34 @@ static struct {
     uint32_t coins, score;   // what the server holds for the run (the clear report sends deltas)
     uint64_t started;        // data id of the course the run is on (StartCourse seen, no result yet)
     bool complete;           // the server said the run reached its goal (100 Mario)
+    bool win_pending;        // ... and the ending hasn't played yet
+    int ncredits;            // the run's cleared courses (for the ending's credits)
+    struct hundred_credit credits[32];
 } runs[4];
+
+// Names and makers of the courses served (data id -> credit), for the ending's credits.
+static struct { uint64_t id; struct hundred_credit c; } course_names[64];
+static int ncourse_names;
+
+static void note_course(uint64_t id, const char *name, const char *maker) {
+    pthread_mutex_lock(&state_lock);
+    int i = 0;
+    while (i < ncourse_names && course_names[i].id != id) i++;
+    if (i == ncourse_names) i = ncourse_names < 64 ? ncourse_names++ : (int)(id % 64);
+    course_names[i].id = id;
+    snprintf(course_names[i].c.name, sizeof course_names[i].c.name, "%s", name);
+    snprintf(course_names[i].c.maker, sizeof course_names[i].c.maker, "%s", maker);
+    pthread_mutex_unlock(&state_lock);
+}
+
+static void add_credit(uint32_t d, uint64_t id) {  // (state_lock held)
+    if (runs[d].ncredits >= 32) return;
+    struct hundred_credit *c = &runs[d].credits[runs[d].ncredits++];
+    snprintf(c->name, sizeof c->name, "?");
+    c->maker[0] = 0;
+    for (int i = 0; i < ncourse_names; i++)
+        if (course_names[i].id == id) *c = course_names[i].c;
+}
 
 uint64_t mod_player_pid(void) {
     // A stable fake player id for the signed-in account (Course World compares makers with it: own courses).
@@ -90,6 +119,15 @@ static bool hundred_rules(void) { return mod_hundred_rules(); }
 // Name and best per difficulty for the player's own record (online.c GetUsers). Best = the best clears of SMM2's
 // rules, or with SMM1's rules the number of completed 100 Mario runs on that difficulty (the server's hundred_<d>
 // boards): the menu's "High Score" slot shows that.
+// SMM1's unlocks: Expert opens after a completed Normal run, Super Expert after a completed Expert run (from the
+// server's hundred_<d> boards). RECOMP_MOD_UNLOCK_ALL=1 opens everything (tests); SMM2's rules have no locks.
+static volatile bool unlocked[4] = {true, true, false, false};
+
+static bool difficulty_open(int d) {
+    if (!hundred_rules() || (getenv("RECOMP_MOD_UNLOCK_ALL") && atoi(getenv("RECOMP_MOD_UNLOCK_ALL")))) return true;
+    return d < 2 || unlocked[d];
+}
+
 void mod_account_info(char *name, size_t cap, uint32_t best[4]) {
     Json *me = srv_call("GET", "/api/me", NULL, NULL);
     if (me && json_str(json_get(me, "name"), NULL)) snprintf(name, cap, "%s", json_str(json_get(me, "name"), ""));
@@ -105,7 +143,17 @@ void mod_account_info(char *name, size_t cap, uint32_t best[4]) {
             best[d] = (uint32_t)json_num(json_get(json_get(r, "me"), "score"), 0);
             json_free(r);
         }
+    unlocked[2] = best[1] > 0, unlocked[3] = best[2] > 0;
 }
+
+// The menu's Expert / Super Expert tabs: a locked one doesn't open (the selection stays where it is).
+static void tab_handler(Cpu *c, int d, uint64_t addr) {
+    if (!mod_hundred() || difficulty_open(d)) { guest_call_orig(c, addr); return; }
+    static const char *const names[4] = {"Easy", "Normal", "Expert", "Super Expert"};
+    LOG("[mod] %s is locked: complete a %s run first\n", names[d], names[d - 1]);
+}
+static void tab_expert(Cpu *c) { tab_handler(c, 2, MAIN_ADDR(0x1a223e0)); }
+static void tab_super_expert(Cpu *c) { tab_handler(c, 3, MAIN_ADDR(0x1a224a0)); }
 
 // ---- helpers
 
@@ -149,7 +197,16 @@ static uint32_t clears_now(uint64_t no, uint32_t d) { return g32(record(no, d) +
 
 // ---- GetEndlessModeStatus: the four run records
 
+static void play_win(uint32_t d);
+
 WRAPPER(get_status, 0x14ec2d0) {
+    for (uint32_t d = 0; d < 4; d++) {
+        pthread_mutex_lock(&state_lock);
+        bool win = runs[d].win_pending;
+        runs[d].win_pending = false;
+        pthread_mutex_unlock(&state_lock);
+        if (win) play_win(d);
+    }
     Json *st = srv_call("GET", "/api/endless", NULL, NULL);
     if (!st) { finish(c, no, false, 2); return; }
     uint8_t start_lives = hundred_rules() ? 100 : 5;
@@ -297,6 +354,7 @@ static void fill_course(uint64_t e, Json *m, uint32_t data_id, uint32_t difficul
     s64(e + 0x000, data_id);
     put_utf16(g64(e + 0x010), g32(e + 0x018), bare);
     const char *maker = json_str(json_get(m, "maker"), "");
+    note_course(data_id, json_str(json_get(m, "name"), ""), maker);
     s64(e + 0x030, maker_pid(json_str(json_get(m, "maker_id"), ""), maker));
     put_utf16(g64(e + 0x040), g32(e + 0x048), json_str(json_get(m, "name"), ""));
     put_utf16(g64(e + 0x098), g32(e + 0x0a0), json_str(json_get(m, "description"), ""));
@@ -559,15 +617,6 @@ WRAPPER(start_course, 0x14ecf30) {
     pthread_mutex_unlock(&state_lock);
     char code[12];
     code_of(id, code);
-    if (!miss && endless_run_complete(d)) {
-        // 100 Mario: the run reached its goal. The next course doesn't start: with no lives left in the record the
-        // game ends the run (course-in -> finish -> back to the menu), and the server already counted it as complete.
-        set_play(c, no, d, 0, clears_now(no, d));
-        LOG("[mod] 100 Mario Challenge (%s) complete: ending the run\n", DIFF[d]);
-        autoplay_event("end");
-        finish(c, no, true, 0);
-        return;
-    }
     if (!miss) {  // a new course: the server's lives and clears as they are
         Json *st = srv_call("GET", "/api/endless", NULL, NULL);
         Json *run = json_get(json_get(st, "runs"), DIFF[d]);
@@ -615,7 +664,8 @@ WRAPPER(clear_course, 0x14ed120) {
         set_play(c, no, d, lives, clears);
         pthread_mutex_lock(&state_lock);
         runs[d].coins += dcoins, runs[d].score += dscore, runs[d].started = 0;
-        if (complete) runs[d].complete = true;
+        add_credit(d, id);
+        if (complete) runs[d].complete = runs[d].win_pending = true;
         pthread_mutex_unlock(&state_lock);
         autoplay_event("clear");
         LOG("[mod] clear %s (%s): lives %u, clears %u%s\n", code, DIFF[d], lives, clears,
@@ -666,6 +716,30 @@ static void post_simple(Cpu *c, uint64_t no, const char *what) {
 WRAPPER(suspend_run, 0x14ed360) { post_simple(c, no, "suspend"); }
 WRAPPER(finish_run, 0x14ed4a0) { post_simple(c, no, "finish"); }
 
+// The win (SMM1's rules): right after the goal's clear the course ends as usual; when the game then asks for the run
+// records (on its way back to the map), SMM1's ending plays first (ending.h), the run is finished on the server (the
+// completion is already on its hundred_<d> board) and the records come back without a run, so the menu offers New
+// Game. The game's own Game Over never shows for a won run.
+static void play_win(uint32_t d) {
+    pthread_mutex_lock(&state_lock);
+    int n = runs[d].ncredits;
+    struct hundred_credit credits[32];
+    memcpy(credits, runs[d].credits, sizeof credits);
+    pthread_mutex_unlock(&state_lock);
+    LOG("[mod] 100 Mario Challenge (%s) won: the ending plays\n", DIFF[d]);
+    autoplay_event("end");
+    hundred_ending_show((int)d, n, credits);
+    for (int waited = 0; !hundred_ending_done() && waited < 30 * 60 * 1000; waited += 20) usleep(20000);
+    char path[64];
+    snprintf(path, sizeof path, "/api/endless/%s/finish", DIFF[d]);
+    Json *f = srv_call("POST", path, "{}", NULL);
+    LOG("[mod] run finished on the server (%s)\n", f ? "ok" : "failed");
+    json_free(f);
+    pthread_mutex_lock(&state_lock);
+    memset(&runs[d], 0, sizeof runs[d]);
+    pthread_mutex_unlock(&state_lock);
+}
+
 bool endless_run_complete(uint32_t d) {
     pthread_mutex_lock(&state_lock);
     bool v = d < 4 && runs[d].complete;
@@ -675,6 +749,8 @@ bool endless_run_complete(uint32_t d) {
 
 void endless_register(void) {
     hle_override(MAIN_ADDR(0x14ec2d0), get_status, "mod: GetEndlessModeStatus");
+    hle_override(MAIN_ADDR(0x1a223e0), tab_expert, "mod: Endless tab Expert");
+    hle_override(MAIN_ADDR(0x1a224a0), tab_super_expert, "mod: Endless tab Super Expert");
     hle_override(MAIN_ADDR(0x14ece20), init_run, "mod: InitEndlessMode");
     hle_override(MAIN_ADDR(0x14ed750), get_play_info, "mod: GetEndlessModePlayInfo");
     hle_override(MAIN_ADDR(0x14eddc0), get_rank, "mod: GetEndlessModeRank");

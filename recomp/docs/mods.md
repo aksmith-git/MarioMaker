@@ -89,11 +89,11 @@ to the menu, where the run shows as finished (no Continue) and the completion co
 
 ### Layout and texts (made from your dump)
 
-At the first launch with the mod on, `games/smm2/mods/overlay.c` writes `mods-generated/100mario-v2/romfs/` in the
+At the first launch with the mod on, `games/smm2/mods/overlay.c` writes `mods-generated/100mario-v3/romfs/` in the
 data folder from your own RomFS and lays it over the game's files:
 
-- `Layout/Nwk_WorldMap_00`: the map's lives number is drawn narrower, so "100" no longer runs into the clears
-  counter (the HUD and the course card already fit three digits);
+- `Layout/Nwk_WorldMap_00`: the clears counter next to the lives number moves right, so "100" no longer runs
+  into it (the HUD and the course card already fit three digits);
 - `Message/LayoutMsg_*`, `CommonMsg_*` (English): "Endless Challenge" reads "100 Mario Challenge", and the menu's
   description line is ours.
 

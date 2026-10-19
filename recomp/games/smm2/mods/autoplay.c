@@ -18,7 +18,7 @@ enum { BTN_A = 1 << 0, BTN_Y = 1 << 3, BTN_MINUS = 1 << 11, BTN_RIGHT = 1 << 14,
 enum { AP_OFF, AP_MAP, AP_COURSE, AP_AFTER };
 
 static volatile int mode = AP_OFF;
-static volatile uint64_t mode_since, course_since;
+static volatile uint64_t mode_since, course_since, after_wait;
 static pthread_once_t once = PTHREAD_ONCE_INIT;
 
 static void *autopilot(void *arg) {
@@ -46,11 +46,12 @@ static void *autopilot(void *arg) {
             }
             break;
         case AP_AFTER: {  // the goal, then the result screen (Boo / I like it / Quit / Next): make sure of Next
-            uint64_t t = now - mode_since;
-            if (t >= 480 && t < 488) b = BTN_RIGHT;
-            else if (t >= 540 && t < 548) b = BTN_DOWN;
-            else if (t >= 600 && t < 608) b = BTN_A;
-            else if (t > 700) mode = AP_MAP, mode_since = now;
+            // (also after a skip that took long: the game offers to rate the skipped course on the same screen)
+            uint64_t t = now - mode_since, w = after_wait;
+            if (t >= w && t < w + 8) b = BTN_RIGHT;
+            else if (t >= w + 60 && t < w + 68) b = BTN_DOWN;
+            else if (t >= w + 120 && t < w + 128) b = BTN_A;
+            else if (t > w + 220) mode = AP_MAP, mode_since = now;
             break;
         }
         default: break;
@@ -80,9 +81,9 @@ void autoplay_event(const char *what) {
     } else if (!strcmp(what, "miss")) {
         mode = AP_COURSE, mode_since = now;  // (the course's clock goes on: a course it can't clear gets skipped)
     } else if (!strcmp(what, "clear")) {
-        mode = AP_AFTER, mode_since = now;
-    } else if (!strcmp(what, "skip")) {  // (the next course follows at once)
-        mode = AP_MAP, mode_since = now;
+        mode = AP_AFTER, mode_since = now, after_wait = 480;
+    } else if (!strcmp(what, "skip")) {  // (the next course follows at once, or the rating screen first)
+        mode = AP_AFTER, mode_since = now, after_wait = 150;
     } else if (!strcmp(what, "end")) {
         mode = AP_OFF;
     }

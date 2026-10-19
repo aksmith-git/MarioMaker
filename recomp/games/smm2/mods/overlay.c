@@ -1,10 +1,10 @@
 // The 100 Mario mod's RomFS overlay, made on the player's machine from their own dump at the first launch with the mod
-// on (nothing of it is in the repository): <data folder>/mods-generated/100mario-v2/romfs/, served over the game's
+// on (nothing of it is in the repository): <data folder>/mods-generated/100mario-v3/romfs/, served over the game's
 // files (runtime/services/fs.c, game_romfs_overlay()).
 //
 // - Layout/Nwk_WorldMap_00: the lives number on the Endless map (T_RestMarioNum_00) is made for two digits; with 100
-//   lives it runs into the clears counter next to it. The text box is scaled to 0.68 of its width, so three digits
-//   take the room of two (the font size alone is not enough: the game sets it again). (The HUD's and the course card's boxes already fit three.)
+//   lives it runs into the clears counter next to it. The clears counter moves 36 units right (the number's own box
+//   can't be narrowed: the menu's animation sets its size and scale). (The HUD's and the course card's boxes already fit three.)
 //
 // - Message/LayoutMsg_*, CommonMsg_* (English): "Endless Challenge" reads "100 Mario Challenge" (below).
 //
@@ -18,7 +18,7 @@
 
 #include "mod.h"
 
-#define OVERLAY "mods-generated/100mario-v2"
+#define OVERLAY "mods-generated/100mario-v3"
 
 static uint8_t *read_file(const char *path, size_t *len) {
     FILE *f = fopen(path, "rb");
@@ -69,11 +69,11 @@ static uint8_t *yaz0_encode_literal(const uint8_t *d, size_t n, size_t *out_len)
     return out;
 }
 
-// The text box ("txt1" section) of the pane `name`: its section offset, or 0.
-static size_t find_textbox(const uint8_t *d, size_t n, const char *name) {
+// The pane section (`magic`: "txt1", "prt1", ...) of the pane `name`: its offset, or 0.
+static size_t find_pane(const uint8_t *d, size_t n, const char *magic, const char *name) {
     size_t nl = strlen(name);
     for (size_t k = 0x0C; k + nl < n; k++)
-        if (!memcmp(d + k, name, nl) && d[k + nl] == 0 && !memcmp(d + k - 0x0C, "txt1", 4)) return k - 0x0C;
+        if (!memcmp(d + k, name, nl) && d[k + nl] == 0 && !memcmp(d + k - 0x0C, magic, 4)) return k - 0x0C;
     return 0;
 }
 
@@ -84,13 +84,15 @@ static bool make_world_map(const char *romfs, const char *out_path) {
     uint8_t *file = read_file(src, &n), *raw = file ? yaz0_decode(file, n, &raw_n) : NULL;
     free(file);
     if (!raw) { LOG("[mod] overlay: cannot read %s\n", src); return false; }
-    size_t t = find_textbox(raw, raw_n, "T_RestMarioNum_00");
-    if (!t || t + 0x80 > raw_n) { LOG("[mod] overlay: the map's lives text box is not where expected\n"); free(raw); return false; }
-    float sx;
-    memcpy(&sx, raw + t + 0x44, 4);  // the pane's scale x (little-endian float: the host is little-endian too)
-    if (!(sx > 0.1f && sx < 10)) { LOG("[mod] overlay: unexpected pane scale\n"); free(raw); return false; }
-    sx *= 0.68f;
-    memcpy(raw + t + 0x44, &sx, 4);
+    // the clears counter (part L_ClearCourseCount_00, right of the lives number) moves right to make room for a
+    // third digit (the number's own box can't change: the menu's animation sets it)
+    size_t t = find_pane(raw, raw_n, "prt1", "L_ClearCourseCount_00");
+    if (!t || t + 0x54 > raw_n) { LOG("[mod] overlay: the map's clears counter is not where expected\n"); free(raw); return false; }
+    float x;
+    memcpy(&x, raw + t + 0x2C, 4);  // translate x (little-endian float: the host is little-endian too)
+    if (!(x > 100 && x < 300)) { LOG("[mod] overlay: unexpected clears counter position\n"); free(raw); return false; }
+    x += 36;
+    memcpy(raw + t + 0x2C, &x, 4);
     uint8_t *enc = yaz0_encode_literal(raw, raw_n, &enc_n);
     free(raw);
     FILE *f = fopen(out_path, "wb");

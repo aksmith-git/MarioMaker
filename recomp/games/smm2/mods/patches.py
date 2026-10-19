@@ -40,6 +40,13 @@ HOOK_POINTS = {
     # 100 Mario: course set-up, Endless retry branch, after clears and lives were reloaded from the run record. SMM1
     # throws away the coins and score of a failed attempt: the host copies them back from the course-start snapshot.
     0x16dfb40: (0x29012509, 'retry: the last lives store'),
+    # 100 Mario: Endless banks extra lives as pending 1-Ups (max 3 per course), adding n for an award worth n (a 3-Up
+    # Moon, a big coin haul). SMM1 counts every award as one: the host notes the pending count when it is loaded and
+    # caps the stored one at that + 1. Two paths (the coin roll-over and the 1-Up items), load and store each.
+    0x16ce788: (0xB9403A04, 'pending 1-Ups: load (coins)'),
+    0x16ce7f4: (0xB9003A04, 'pending 1-Ups: store (coins)'),
+    0x16ce9e0: (0xB9403A04, 'pending 1-Ups: load (items)'),
+    0x16cea48: (0xB9003A04, 'pending 1-Ups: store (items)'),
 }
 
 
