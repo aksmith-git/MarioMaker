@@ -7,6 +7,8 @@
 #include "../../../runtime/net/http.h"
 #include "../../../runtime/net/json.h"
 
+static __thread int slow_ms;  // (srv_call_slow: this thread's request may take this long)
+
 static int request_typed(const char *method, const char *path, const char *body, size_t blen, const char *type,
                          HttpResponse *r) {
     char url[512], hdr[256];
@@ -18,7 +20,7 @@ static int request_typed(const char *method, const char *path, const char *body,
         size_t n = strlen(hdr);
         snprintf(hdr + n, sizeof hdr - n, "Content-Type: %s\r\n", type);
     }
-    int st = http_request(method, url, hdr, body, blen, g_mod.timeout_ms, r);
+    int st = http_request(method, url, hdr, body, blen, slow_ms ? slow_ms : g_mod.timeout_ms, r);
     bool text = body && !strcmp(type, "application/json");
     if (!st) LOG("[mod] %s %s: %s\n", method, path, r->error);
     else MLOG("%s %s -> %d (%zu bytes)%s%.300s\n", method, path, st, r->len, text ? " body " : "", text ? body : "");
@@ -52,6 +54,14 @@ Json *srv_call(const char *method, const char *path, const char *body, int *stat
     }
     if (j && g_mod.log) MLOG("  answer %.600s\n", r.body ? r.body : "");
     http_free(&r);
+    return j;
+}
+
+// A request the server may take long over (TGRCode: the first courses of a difficulty, about a minute).
+Json *srv_call_slow(const char *method, const char *path, const char *body, int *status, int timeout_ms) {
+    slow_ms = timeout_ms;
+    Json *j = srv_call(method, path, body, status);
+    slow_ms = 0;
     return j;
 }
 

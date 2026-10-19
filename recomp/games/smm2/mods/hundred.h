@@ -26,6 +26,7 @@ struct hundred_status {
     int ncredits;                   // the courses cleared so far in this run, in order
     struct hundred_credit credits[16];
     int form;   // Mario's power-up at the last goal: 0 small, 1 big (the ending's Mario)
+    bool loading;  // the server is still gathering this difficulty's courses (TGRCode: up to a minute): show it
 };
 
 enum {

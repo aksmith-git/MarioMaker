@@ -7,6 +7,7 @@
 #include "../hle.h"
 #include "../ipc.h"
 #include "../net/online.h"
+#include "../net/vlan.h"
 
 #define NIFM_NO_INTERNET MAKE_RESULT(110, 300)
 #define NIFM_UNKNOWN180 MAKE_RESULT(110, 180)
@@ -56,6 +57,25 @@ static void request(Service *s, IpcReq *req, IpcResp *resp) {
 
 static void general(Service *s, IpcReq *req, IpcResp *resp) {
     (void)s;
+    if (vlan_active()) switch (req->cmd) {  // the virtual LAN (runtime/net/vlan.h): our address on it
+    case 12: {  // GetCurrentIpAddress (network order in a u32)
+        uint32_t ip = vlan_ip();
+        OUT(uint32_t, 0) = (ip >> 24) | (ip >> 8 & 0xff00) | (ip << 8 & 0xff0000) | (ip << 24);
+        resp_size(resp, 4);
+        return;
+    }
+    case 15: {  // GetCurrentIpConfigInfo: {u8 auto, ip, mask, gateway} then DNS {u8 auto, dns1, dns2}
+        uint32_t ip = vlan_ip(), mask = VLAN_MASK, gw = VLAN_NET | 254;
+        uint8_t *o = resp->data;
+        memset(o, 0, 0x16);
+        o[0] = 1;
+        for (int i = 0; i < 4; i++) o[1 + i] = (uint8_t)(ip >> (24 - 8 * i)), o[5 + i] = (uint8_t)(mask >> (24 - 8 * i)),
+                                    o[9 + i] = (uint8_t)(gw >> (24 - 8 * i));
+        resp_size(resp, 0x16);
+        return;
+    }
+    default: break;
+    }
     if (net_pretend_online()) switch (req->cmd) {
     case 5: {  // GetCurrentNetworkProfile -> buffer (left empty: no real network)
         IpcBuf *b = out_buf(req, 0);

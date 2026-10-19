@@ -53,6 +53,12 @@ WEAK uint64_t game_input_mask(void) { return ~0ull; }
 // the game's mixed audio (interleaved stereo float) just before it is played: a host screen's sounds go in here
 WEAK void game_audio_mix(float *stereo, int n, int rate) { (void)stereo, (void)n, (void)rate; }  // (the player's buttons a host screen keeps from the game)
 
+// ---- the virtual LAN's relay and room (runtime/net/vlan.c), when a game supplies them: none
+WEAK bool game_lan_config(char *relay, size_t relay_len, char *room, size_t room_len, int *slot) {
+    (void)relay, (void)relay_len, (void)room, (void)room_len, (void)slot;
+    return false;
+}
+
 // ---- save data written by the game (runtime/services/fs.c)
 WEAK void flags_ext_save_written(const char *path, uint64_t addr, int64_t off, int64_t size) {
     (void)path, (void)addr, (void)off, (void)size;

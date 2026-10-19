@@ -28,7 +28,7 @@ Environment variables, or `smm2mods.ini` (`key=value` lines) in the data folder 
 | `RECOMP_MOD_100MARIO=1` | `hundred=1` | the mod is on (Course World online against our server) |
 | `RECOMP_MOD_SERVER=<url>` | `server=` | the course server, plain `http://` (default `http://127.0.0.1:8080`) |
 | `RECOMP_MOD_TOKEN=<token>` | `token=` | your account's token on that server (see below); keep it private |
-| `RECOMP_MOD_RULESET=hundred\|smm2` | `ruleset=` | `hundred`: Course World's Endless Challenge button opens SMM1's 100 Mario Challenge (default); `smm2`: it opens SMM2's own Endless Challenge |
+| `RECOMP_MOD_RULESET=hundred\|smm2` | `ruleset=` | `hundred` (default): 100 Mario is offered: Course World's Endless Challenge button opens SMM1's 100 Mario Challenge, and B on its difficulty select leads on to SMM2's own Endless Challenge (both in one build; SMM2's rules there until the player leaves that menu); `smm2`: the button opens SMM2's own Endless Challenge only |
 | `RECOMP_MOD_COURSES=server\|tgrcode` | `courses=` | `server` (default): the server above; `tgrcode` (iOS default, with the mod on): a course server built into the app on a loopback port, with a local account, fed from TGRCode's archive of SMM2 courses (needs the course key table: the mod writes it once from your game into `mods-generated/course_table.bin`, private); falls back to `server=` when the build has no built-in server. Also in the Mods tab ("Courses: TGRCode"), from the next start |
 | `RECOMP_MOD_TIMEOUT_MS=<n>` | `timeout_ms=` | per request (default 8000) |
 | `RECOMP_MOD_LOG=1` | `log=1` | log every request and answer |
@@ -142,6 +142,14 @@ the run. `RECOMP_MOD_AUTOPLAY=1` (or `=jump`) plays the courses (right + run [+ 
 `RECOMP_MOD_AUTOPLAY_SKIP` seconds, default 20). Both need `LARECOMP_INPUT` set (the test-input hook), which also
 scripts the way to the Endless menu. `RECOMP_MOD_UNLOCK_ALL=1` opens every difficulty; `RECOMP_MOD_TRACE=1` logs
 Course World's states and every request the mod doesn't answer.
+
+**Both challenges.** With 100 Mario offered, B on SMM1's difficulty select (`hundred_flow_exit()`) leaves the player
+on SMM2's own Endless menu, which was underneath: runs there use SMM2's rules (5 lives, the start lives are switched
+in the game's run records) until the menu closes towards Course World (its Disappear state, main+0x1a24d30); the
+next visit opens 100 Mario again. **After a win** the run side presses Quit on SMM2's last result screen and answers
+the suspend locally, so SMM2 is back on its Endless menu for the next run; `hundred_run_start()` waits until it is.
+**Loading:** a course list may take long (TGRCode upstream: about a minute for a difficulty's first batch); the
+request waits up to 3 minutes and `hundred_run_status().loading` is set meanwhile.
 
 **Pause.** During a run course SMM2's pause state (`cPausePlay`, state 3 of the Endless play scene's machine; its exec
 is the scene's virtual at vtable+0x390, main+0x1bba050) is held without opening its menu: the play stays frozen and

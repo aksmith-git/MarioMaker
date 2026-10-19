@@ -353,15 +353,16 @@ void input_frame(uint64_t frame) {
     watch_arm();
     host_test_frame(frame);
     if (padscript_active() && !padscript_game_clock()) padscript_tick();  // RECOMP_PAD_CLOCK=frame
+    // (without a script the game's own presses below, g_test_buttons from a mod, still apply: e.g. the 100 Mario
+    // mod driving SMM2's hidden Endless menu for a real player)
     const char *spec = getenv("LARECOMP_INPUT");
-    if (!spec) return;
     static const char *const names[] = {"A", "B", "X", "Y", "LSTICK", "RSTICK", "L", "R", "ZL", "ZR", "PLUS",
                                         "MINUS", "LEFT", "UP", "RIGHT", "DOWN"};
     uint64_t b = 0;
     int32_t lx = 0, ly = 0, rx = 0, ry = 0;
     static char buf[16384];  // (long scripted sessions: the perf walk is ~4 KB)
-    snprintf(buf, sizeof buf, "%s", spec);
-    for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
+    snprintf(buf, sizeof buf, "%s", spec ? spec : "");
+    for (char *tok = strtok(buf, ","); spec && tok; tok = strtok(NULL, ",")) {
         unsigned long start = 0, len = 10;
         char name[32] = "";
         if (sscanf(tok, "%lu:%31[A-Z_0-9]:%lu", &start, name, &len) < 2) continue;
