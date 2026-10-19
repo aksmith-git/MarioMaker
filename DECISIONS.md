@@ -1384,6 +1384,21 @@ skips**: neither ending scene reads the controller [obs], so A does not skip the
 said it did). The staff-roll music is `easy` for Easy and Super Expert, `normal` for Normal and Expert.
 SMM2's SM3DW style has no SMM1 scene; its courses end in SMB1's [inf].
 
-**Open:** NSMBU's ending Mario (a skinned 3D model) is not posed; the screens' choreography
-between courses is SMCraft's [inf] until research/specs/smm1-100mario-screens.md resolves it; the
-Mystery Mushroom reward after the credits is a hook (`hundred_costume_reward`) for the costumes mod.
+**Between courses, from the binary** (research/specs/smm1-100mario-screens.md, private): the map's demo
+states, the card's In by case (AnimA + AnimB on a new run, AnimB after Continue or a miss, none
+otherwise) and its hold until the course is there, the select screen's tab and button rules, the
+Course World music with one track per difficulty and the beat bounce timed from its markers.
+
+**Where the recomp differs, and why:**
+- **When the course is fetched.** SMM1 downloads the next course while its map plays and starts it
+  after the card. SMM2 starts a course as soon as it has it, so the flow asks the run side for it only
+  once the card is up; the card holds until SMM2 reports the start, then plays its Out over the course.
+- **The clear screen and the card after a miss cover the game** (SMM1 draws them over the course):
+  SMM2's own result screen and retry card are underneath.
+- **The fade to the card** is an iris on Mario as SMM1's fader type 7 does; its length is [inf].
+- **Sounds** are SMM1's own, placed by name on the events the binary fires (the SLink trigger table
+  that pins each to a frame is not decoded) [inf].
+
+**Open:** Continue and SMM2's pause routed to the flow (run side); the NSMBU ending's perspective
+camera (orthographic here); the Mystery Mushroom reward after the credits is a hook
+(`hundred_costume_reward`) for the costumes mod; no Cemu here for side-by-side captures.

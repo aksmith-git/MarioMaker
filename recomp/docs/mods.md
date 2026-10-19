@@ -16,7 +16,7 @@ One mod does two things:
   animation), a miss throws away the coins and score of the failed attempt, an award worth several lives banks one
   extra life (at most 3 per course, paid on the clear), Expert opens after a won Normal run and Super Expert after a
   won Expert run. SMM1's screens, map and ending are drawn host-side from the player's SMM1 dump (another part of the
-  mod: `games/smm2/mods/ending/`, the SMM1 screens); the courses play in SMM2's own course play. The run side is
+  mod: `games/smm2/mods/smm1/`, the SMM1 screens; needs the SMM1 dump: `RECOMP_SMM1_DUMP`); the courses play in SMM2's own course play. The run side is
   described below ("The bridge").
 
 ### Turning it on

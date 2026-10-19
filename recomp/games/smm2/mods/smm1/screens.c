@@ -241,7 +241,7 @@ void select_draw(Select *s, LQuads *out) {
 // ---------------------------------------------------------------- map demos + the card
 enum { P_MAPIN, P_COUNTIN, P_TELOP, P_KURIBO, P_CASTLE, P_ANIMB, P_JUMP, P_DOTIN, P_WALK, P_TWOJUMP, P_GO, P_FADE,
        P_CARD_IN, P_CARD_HOLD, P_CARD_OUT, P_DONE };
-#define FADE 25  // the fade to the card [inf: the game uses an iris wipe centred on Mario]
+#define FADE 30  // the iris wipe to the card [inf: its length]
 
 struct Intro {
     WorldMap *map;
@@ -253,6 +253,7 @@ struct Intro {
 static const int KURIBO_STAND[4] = {156, 268, 268, 174};  // MoveKuribo frame the Goombas stop walking
 
 static void phase(Intro *s, int p);
+static void iris(LQuads *out, float cx, float cy, float r);
 static void card_in(Intro *s) {
     int t = s->tick;
     if (s->card_intro == CARD_NEW_RUN) {
@@ -491,18 +492,51 @@ void intro_draw(Intro *s, LQuads *out) {
     }
     if (s->map) lay_draw(s->map->l, t, out);
     if (s->title) lay_draw(s->title, t, out);
-    if (s->phase == P_FADE) {  // black over the map
-        LQuad q;
-        memset(&q, 0, sizeof q);
-        float c[4][2] = {{-640, 360}, {640, 360}, {-640, -360}, {640, -360}};
-        memcpy(q.pos, c, sizeof c);
-        float a = 1 - (float)(s->end - t) / FADE;
-        for (int k = 0; k < 4; k++) q.col[k][0] = q.col[k][1] = q.col[k][2] = 255, q.col[k][3] = (uint8_t)(a < 0 ? 0 : a > 1 ? 255 : a * 255);
-        q.white[3] = 255, q.tex0 = q.tex1 = -1;
-        q.flags = LQ_BLEND_NORMAL | LQ_COMB_NONE << LQ_COMB_C | LQ_COMB_NONE << LQ_COMB_A;
-        if (out->n == out->cap) out->cap = out->cap ? out->cap * 2 : 256, out->q = realloc(out->q, sizeof(LQuad) * (size_t)out->cap);
-        out->q[out->n++] = q;
+    if (s->phase == P_FADE && s->map) {  // the iris closes on Mario (fader type 7, centred on him [obs]; its speed [inf])
+        float c[2] = {0, 0}, sz[2];
+        bool v;
+        lay_rect(s->map->l, MARIO_PART, c, sz, &v);
+        float k = (float)(s->end - t) / FADE, r = 800 * (k < 0 ? 0 : k);
+        iris(out, c[0], c[1], r);
     }
+}
+
+// black over everything but a circle of radius r around (cx, cy) (layout units): a generated mask texture (alpha 0
+// inside the circle, 1 outside) on the circle's square, black rectangles around it
+static int iris_texture(void) {
+    static int tex = -2;
+    if (tex != -2) return tex;
+    enum { N = 256 };
+    uint8_t *px = malloc(N * N * 4);
+    for (int y = 0; y < N; y++)
+        for (int x = 0; x < N; x++) {
+            float dx = (x + 0.5f) / N - 0.5f, dy = (y + 0.5f) / N - 0.5f, d = sqrtf(dx * dx + dy * dy) * 2;
+            float a = (d - 0.99f) / 0.01f;
+            uint8_t *p = px + ((size_t)y * N + x) * 4;
+            p[0] = p[1] = p[2] = 255, p[3] = (uint8_t)(a <= 0 ? 0 : a >= 1 ? 255 : a * 255);
+        }
+    return tex = lyt_tex_add(N, N, px);
+}
+static void black_quad(LQuads *out, float x0, float y0, float x1, float y1, int tex) {
+    if (x1 <= x0 || y0 <= y1) return;
+    LQuad q;
+    memset(&q, 0, sizeof q);
+    float p[4][2] = {{x0, y0}, {x1, y0}, {x0, y1}, {x1, y1}}, uv[4][2] = {{0, 0}, {1, 0}, {0, 1}, {1, 1}};
+    memcpy(q.pos, p, sizeof p), memcpy(q.uv0, uv, sizeof uv);
+    memset(q.col, 255, sizeof q.col);
+    q.black[3] = 0, q.white[3] = 255;  // (black, by the texture's alpha)
+    q.tex0 = tex, q.tex1 = -1;
+    q.flags = LQ_LINEAR | LQ_BLEND_NORMAL | LQ_COMB_NONE << LQ_COMB_C | LQ_COMB_NONE << LQ_COMB_A;
+    if (out->n == out->cap) out->cap = out->cap ? out->cap * 2 : 256, out->q = realloc(out->q, sizeof(LQuad) * (size_t)out->cap);
+    out->q[out->n++] = q;
+}
+static void iris(LQuads *out, float cx, float cy, float r) {
+    const float L = -640, R = 640, T = 360, B = -360;
+    black_quad(out, L, T, R, cy + r, -1);           // above
+    black_quad(out, L, cy - r, R, B, -1);           // below
+    black_quad(out, L, cy + r, cx - r, cy - r, -1);  // left
+    black_quad(out, cx + r, cy + r, R, cy - r, -1);  // right
+    if (r > 0) black_quad(out, cx - r, cy + r, cx + r, cy - r, iris_texture());
 }
 
 // ---------------------------------------------------------------- game over (Cmn_GameOver_00, OneTime 320)
