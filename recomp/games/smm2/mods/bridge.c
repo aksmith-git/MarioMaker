@@ -508,6 +508,14 @@ static void test_result(int outcome) {
     hundred_run_status(&st);
     LOG("[mod] flow test: result %s, lives %d, cleared %d / %d\n", names[outcome], st.lives, st.cleared, st.total);
     if (outcome != HUNDRED_CLEAR) return;
+    static int quits;  // RECOMP_MOD_FLOW_TEST_QUIT_AFTER_CLEAR=<n>: Save & Quit on the first n result screens
+    const char *qa = getenv("RECOMP_MOD_FLOW_TEST_QUIT_AFTER_CLEAR");
+    if (qa && quits < atoi(qa) && !(st.total && st.cleared >= st.total)) {
+        quits++;
+        LOG("[mod] flow test: Save & Quit on the result screen\n");
+        hundred_run_save_quit();
+        return;
+    }
     if (st.total && st.cleared >= st.total) {
         LOG("[mod] flow test: 100 Mario Challenge won\n");
         pthread_t th;

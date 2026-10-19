@@ -35,7 +35,9 @@ pub const MAX_ROOMS: usize = 4096;
 pub const EXPIRE: Duration = Duration::from_secs(30);
 /// Sends between keepalives / probes (one per frame: about every half second).
 pub const KEEPALIVE_SENDS: u32 = 30;
-pub const MAX_MESSAGE: usize = 512;
+/// Largest relayed message: one UDP datagram below a 1500-byte MTU (the recomp's virtual LAN carries a game's own
+/// packets, up to 1400 bytes plus its 19-byte header).
+pub const MAX_MESSAGE: usize = 1450;
 
 const JOIN: &[u8; 4] = b"MMKJ";
 const WELCOME: &[u8; 4] = b"MMKW";
