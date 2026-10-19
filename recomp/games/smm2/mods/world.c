@@ -279,7 +279,7 @@ static void search_users(Cpu *c) {
     for (uint32_t i = 0; i < cnt && m < cap; i++) {
         uint64_t e = g64(out) + (uint64_t)USER_ENTRY * m++;
         fill_user(e, pids[i], ids[i], json_str(json_get(json_at(rows, first + i), "name"), ""), NULL);
-        if (kind == 0 || kind == 4) s32(e + 0x128, scores[i]);       // maker points
+        if (kind == 0 || kind == 4) s32(e + 0x128, scores[i]), s32(e + 0x110, scores[i]);  // maker points [? +0x110: the period's]
         else if (endless_d >= 0) s32(e + 0x114 + 4 * endless_d, scores[i]);  // Endless best
         else if (kind == 1) s32(e + 0x100, scores[i]);              // courses cleared (play stats key 1)
     }

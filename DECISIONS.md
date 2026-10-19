@@ -1399,7 +1399,8 @@ Course World music with one track per difficulty and the beat bounce timed from 
 - **Sounds** are SMM1's own, placed by name on the events the binary fires (the SLink trigger table
   that pins each to a frame is not decoded) [inf].
 
-**Open:** Continue and SMM2's pause routed to the flow (run side); the NSMBU ending's perspective
+**Open:** a New Game straight after an ending (SMM2 is not back on its Endless menu after a win: run
+side); the NSMBU ending's perspective
 camera (orthographic here); the Mystery Mushroom reward after the credits is a hook
 (`hundred_costume_reward`) for the costumes mod; no Cemu here for side-by-side captures.
 

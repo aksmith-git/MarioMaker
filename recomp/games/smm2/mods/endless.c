@@ -61,6 +61,8 @@ static struct {
     struct hundred_credit credits[32];
 } runs[4];
 
+static volatile int last_search_d = -1;  // the difficulty of the last Endless course list
+
 // Names and makers of the courses served (data id -> credit), for the ending's credits.
 static struct { uint64_t id; struct hundred_credit c; int style; } course_names[64];
 static int ncourse_names;
@@ -509,6 +511,7 @@ WRAPPER(search_courses, 0x14d8550) {
     }
     s32(ring + 0x10, count);
     netobj_unlock(c);
+    last_search_d = (int)d;
     bridge_event("list", d);
     LOG("[mod] course list (%s): %u courses%s\n", DIFF[d], count, json_bool(json_get(j, "widened"), false) ? " (band widened)" : "");
     json_free(j);
@@ -586,10 +589,28 @@ WRAPPER(get_courses, 0x14dbae0) {
     finish(c, no, count > 0 || n == 0, 2);
 }
 
-// A post about a course (id +0x141480, a byte +0x141518, a text of up to 100 characters +0x141528 [inf: a comment or
-// a report]): accepted, not stored.
+// ReportFromBugDetection (142): data id +0x141480, a kind +0x141518, a text +0x141528. The game posts it when a
+// downloaded course fails its own validity check (main+0xfcab10 in the download job; then "The course data is
+// corrupt."). In an Endless run the course is reported to the server as broken (it leaves the run's queue) and the
+// bridge answers the window and goes on.
 WRAPPER(course_post, 0x14f2910) {
-    MLOG("course post for %llu (kind %u): accepted\n", (unsigned long long)g64(no + 0x141480), g8(no + 0x141518));
+    uint64_t id = g64(no + 0x141480);
+    LOG("[mod] course %llu reported broken by the game (kind %u)\n", (unsigned long long)id, g8(no + 0x141518));
+    int d = -1;
+    pthread_mutex_lock(&state_lock);
+    for (int i = 0; i < 4 && d < 0; i++)  // (the run whose next course this is: the head of its server queue)
+        if (runs[i].current == id || runs[i].started == id) d = i;
+    pthread_mutex_unlock(&state_lock);
+    if (d < 0 && last_search_d >= 0 && runs[last_search_d].active) d = last_search_d;
+    if (d >= 0) {
+        char code[12], path[64], body[96];
+        code_of(id, code);
+        snprintf(path, sizeof path, "/api/endless/%s/result", DIFF[d]);
+        snprintf(body, sizeof body, "{\"code\":\"%s\",\"result\":\"broken\"}", code);
+        Json *j = srv_call("POST", path, body, NULL);
+        json_free(j);
+        bridge_event("broken", (uint32_t)d);
+    }
     finish(c, no, true, 0);
 }
 

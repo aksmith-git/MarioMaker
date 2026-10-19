@@ -10,6 +10,7 @@
 static int request_typed(const char *method, const char *path, const char *body, size_t blen, const char *type,
                          HttpResponse *r) {
     char url[512], hdr[256];
+    mod_server_ready();  // (courses=tgrcode: the built-in server starts before the first request)
     snprintf(url, sizeof url, "%s%s", g_mod.server, path);
     hdr[0] = 0;
     if (g_mod.token[0]) snprintf(hdr, sizeof hdr, "Authorization: Bearer %s\r\n", g_mod.token);
