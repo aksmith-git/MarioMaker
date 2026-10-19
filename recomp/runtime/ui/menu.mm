@@ -764,6 +764,38 @@ void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, v
     g_font = f0, g_font_big = f1;
 }
 
+// ---- a game's host-drawn screen (game_overlay_image, runtime/game_hooks.c): one RGBA8 image, drawn first (under the
+// menu) into the 16:9 rectangle of the window; when it covers the game the rest of the window goes black.
+extern "C" const uint8_t *game_overlay_image(int *w, int *h, int *full, uint64_t *seq);
+#ifndef __APPLE__
+extern "C" uint64_t vk_imgui_texture_stream(const void *rgba, int w, int h);  // runtime/nvn/vulkan/imgui_glue.cpp
+#endif
+static void game_overlay_draw(const uint8_t *img, int w, int h, bool full, uint64_t seq, ImVec2 disp) {
+    static uint64_t shown = ~0ull;
+    ImTextureID tid = 0;
+#ifdef __APPLE__
+    static id<MTLTexture> tex;
+    if (!tex || (int)tex.width != w || (int)tex.height != h) {
+        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                                                     width:w height:h mipmapped:NO];
+        d.usage = MTLTextureUsageShaderRead;
+        tex = [MTLCreateSystemDefaultDevice() newTextureWithDescriptor:d];
+        shown = ~0ull;
+    }
+    if (seq != shown) [tex replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0 withBytes:img bytesPerRow:(NSUInteger)w * 4];
+    tid = (ImTextureID)(intptr_t)(__bridge void *)tex;
+#else
+    static uint64_t vk_id;
+    if (seq != shown || !vk_id) vk_id = vk_imgui_texture_stream(img, w, h);
+    tid = (ImTextureID)vk_id;
+#endif
+    shown = seq;
+    float s = fminf(disp.x / w, disp.y / h), dw = w * s, dh = h * s, x = (disp.x - dw) / 2, y = (disp.y - dh) / 2;
+    ImDrawList *dl = ImGui::GetBackgroundDrawList();
+    if (full) dl->AddRectFilled(ImVec2(0, 0), disp, IM_COL32(0, 0, 0, 255));
+    if (tid) dl->AddImage(tid, ImVec2(x, y), ImVec2(x + dw, y + dh));
+}
+
 #ifdef __APPLE__
 void menu_render(id<MTLDevice> dev, id<MTLCommandBuffer> cb, id<MTLTexture> target) {
     const double tw = target.width, th = target.height;
@@ -773,7 +805,10 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
 #endif
     bool open = g_open.load();
     bool kbd = g_kbd.load() == 1;
-    if (!open && !kbd && !g_settings.show_fps) {
+    int ov_w = 0, ov_h = 0, ov_full = 0;
+    uint64_t ov_seq = 0;
+    const uint8_t *ov_img = game_overlay_image(&ov_w, &ov_h, &ov_full, &ov_seq);
+    if (!open && !kbd && !g_settings.show_fps && !ov_img) {
         if (g_inited) { pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); }
         return;
     }
@@ -817,6 +852,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     ImGui_ImplVulkan_NewFrame();
 #endif
     ImGui::NewFrame();
+    if (ov_img) game_overlay_draw(ov_img, ov_w, ov_h, ov_full, ov_seq, io.DisplaySize);
 
     if (g_settings.show_fps) {
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 16 * scale, 16 * scale), 0, ImVec2(1, 0));

@@ -34,6 +34,15 @@ WEAK void input_note_rstick(int32_t ry) { (void)ry; }
 WEAK int32_t g_test_lx, g_test_ly, g_stick_lx, g_stick_ly;
 WEAK uint64_t g_test_stick_until, g_test_buttons, g_test_buttons_until, g_stick_freeze_until;
 
+// ---- a game's host-drawn screens over its frame (renderers via runtime/ui/menu.mm; input.c): none
+// game_overlay_image: once per presented frame; an RGBA8 image to draw over the game (NULL: none), *full = opaque and
+// covering the game's frame, *seq changes with the image. game_overlay_captured: the game gets no input meanwhile.
+WEAK const uint8_t *game_overlay_image(int *w, int *h, int *full, uint64_t *seq) {
+    (void)w, (void)h, (void)full, (void)seq;
+    return 0;
+}
+WEAK bool game_overlay_captured(void) { return false; }
+
 // ---- save data written by the game (runtime/services/fs.c)
 WEAK void flags_ext_save_written(const char *path, uint64_t addr, int64_t off, int64_t size) {
     (void)path, (void)addr, (void)off, (void)size;
