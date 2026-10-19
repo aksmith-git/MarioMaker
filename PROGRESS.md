@@ -104,13 +104,26 @@ framework ideas; Ryujinx as the reference). Nothing counts as done without the e
     of the owner's SMM1 dump as the reference. Courses play in SMM2's own course play.
     - ✅ Server: `hundred` ruleset (100 lives capped at 100, runs of Easy 8 / Normal 16 / Expert 16 /
       Super Expert 6 then `run_complete`, SMM1 fail-rate bands, free skips), `hundred_<d>` boards
-    - 🔄 Game side over our server (built first on SMM2's Endless plumbing): pretend-online, Course
-      World opens against our server, courses download and play, clear / miss / skip reported, ×100
-      on the course card and HUD [obs, mod branch]; ⬜ run end as a win (not a game over); ⬜ SMM1
-      client rules (death rolls back coins and score, a multi-life award counts 1, unlocks Expert after
-      Normal / Super Expert after Expert)
+    - ✅ Game side over our server (`recomp/docs/mods.md`): pretend-online (nifm, acc NSA, mii, enl
+      session, Course World's login answered locally), Course World opens against our server; the
+      Endless requests answered from `/api/endless`; courses download (the game's own encryption, its
+      CRC / validity checks pass) and play in SMM2's own play, ×100 on the course card and HUD; clear /
+      miss / skip / suspend / finish reported. Evidence [obs]: a full **Super Expert run won against a
+      local server** - 6 clears, 3 misses (100 -> 97), skips, the win -> ending -> run finished; the
+      server's `hundred_super_expert` board shows the completion (`recomp/private/smm2/evidence/mods/
+      se_run/`: run log, server JSON, screenshots; `course_in_card_100.png`, `course_hud_100.png`)
+    - ✅ The bridge to the SMM1 screens (`games/smm2/mods/hundred.h`, `bridge.c`): a host call starts a
+      server course in SMM2's play (the Endless menu stays hidden and is driven), the outcome comes back
+      as `hundred_course_result`; the win plays the ending and finishes the run (not a game over).
+      ⬜ Continue (a saved run), ⬜ SMM2's pause routed to the flow
+    - ✅ SMM1 client rules (`games/smm2/mods/hooks.c`, 22 hook points, only in a 100 Mario run): lives
+      cap 100 (HUD and in-course clamps), free skip during the miss demo, a miss rolls back the
+      attempt's coins and score, a multi-life award banks one 1-Up; unlocks Expert after a won Normal /
+      Super Expert after a won Expert (server boards). Seen in runs: free skips, 100 -> 99 per miss;
+      the rollback and the award cap not yet exercised in a recorded run
     - 🔄 SMM1 screens and the ending, host-drawn (SMCraft's archived SMM1 layout player reused)
-  - ⬜ **Settings, one toggle per SMM1 feature**: Mystery Mushroom costumes (model, sounds, physics
+  - 🔄 **Settings, one toggle per SMM1 feature** (overlay menu's Mods tab, kept in `smm2mods.ini`):
+    🔄 "100 Mario Challenge (SMM1)" (built, not yet checked on screen); ⬜ Mystery Mushroom costumes (model, sounds, physics
     swaps), mid-air shell jumps, overlapping (overlay) pipes, and more from research/specs/smm1-extras*
   - ⬜ **Our open-source server everywhere the game would reach Nintendo**: course search and
     download (Course World, SMM2's own Endless Challenge under the `smm2` ruleset, 100 Mario), and

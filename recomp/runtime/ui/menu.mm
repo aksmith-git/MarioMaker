@@ -508,6 +508,21 @@ static void tab_audio(void) {
     opt_end();
 }
 
+// Mods: the game's mod switches (runtime/game_hooks.c game_mod_toggles; the tab shows only when a game has some)
+typedef struct { const char *label, *desc; bool *value; bool def; } GameModToggle;
+extern "C" int game_mod_toggles(const GameModToggle **out);
+extern "C" void game_mod_toggles_changed(void);
+static void tab_mods(void) {
+    const GameModToggle *t;
+    int n = game_mod_toggles(&t);
+    opt_begin("##mods", ImGui::GetFontSize() / 34);
+    opt_section("Mods");
+    bool changed = false;
+    for (int i = 0; i < n; i++) changed |= opt_toggle(t[i].label, t[i].value, t[i].def, t[i].desc);
+    if (changed) game_mod_toggles_changed();
+    opt_end();
+}
+
 // Quit: back to the start screen (in game: the game reboots to it) or out to the desktop. Each asks first (progress
 // since the last save is lost); B / Esc or Cancel backs out.
 extern "C" void rt_request_reboot(int kind);  // runtime/main.c (RT_REBOOT_TITLE = 2: the start screen)
@@ -651,10 +666,12 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
     // (LAS Recomp's game tabs - Save Editor, Randomizer, Warp, Cheats, Gameplay, Cosmetics - are not part of the
     // shared runtime; their ids stay unused so the test hooks keep their numbers)
-    static const char *names[] = {"Video", "Audio", "", "", "", "", "", "", "Controls", "Quit"};
-    static const int order[] = {8, 0, 1, 9};  // Controls, Video, Audio, Quit
-    for (int i : order)  // (Quit: in game only)
-        if (i != 9 || !prelaunch) tabs[ntabs++] = {names[i], i, true};
+    static const char *names[] = {"Video", "Audio", "Mods", "", "", "", "", "", "Controls", "Quit"};
+    static const int order[] = {8, 0, 1, 2, 9};  // Controls, Video, Audio, Mods, Quit
+    const GameModToggle *mods;
+    bool have_mods = game_mod_toggles(&mods) > 0;
+    for (int i : order)  // (Quit: in game only; Mods: when the game has some)
+        if ((i != 9 || !prelaunch) && (i != 2 || have_mods)) tabs[ntabs++] = {names[i], i, true};
     int cur = 0;  // g_tab / g_tab_request hold ids
     for (int i = 0; i < ntabs; i++) if (tabs[i].id == g_tab) cur = i;
     if (!tabs[cur].on) cur = 0;
@@ -738,6 +755,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 case -1: prelaunch(scale); break;
                 case 0: tab_display(); break;
                 case 1: tab_audio(); break;
+                case 2: tab_mods(); break;
                 case 8: tab_about(); break;
                 case 9: tab_quit(scale, in_game); break;
                 }
@@ -764,6 +782,38 @@ void menu_tabs_draw(float scale, ImFont *font, ImFont *font_big, bool in_game, v
     g_font = f0, g_font_big = f1;
 }
 
+// ---- a game's host-drawn screen (game_overlay_image, runtime/game_hooks.c): one RGBA8 image, drawn first (under the
+// menu) into the 16:9 rectangle of the window; when it covers the game the rest of the window goes black.
+extern "C" const uint8_t *game_overlay_image(int *w, int *h, int *full, uint64_t *seq);
+#ifndef __APPLE__
+extern "C" uint64_t vk_imgui_texture_stream(const void *rgba, int w, int h);  // runtime/nvn/vulkan/imgui_glue.cpp
+#endif
+static void game_overlay_draw(const uint8_t *img, int w, int h, bool full, uint64_t seq, ImVec2 disp) {
+    static uint64_t shown = ~0ull;
+    ImTextureID tid = 0;
+#ifdef __APPLE__
+    static id<MTLTexture> tex;
+    if (!tex || (int)tex.width != w || (int)tex.height != h) {
+        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                                                     width:w height:h mipmapped:NO];
+        d.usage = MTLTextureUsageShaderRead;
+        tex = [MTLCreateSystemDefaultDevice() newTextureWithDescriptor:d];
+        shown = ~0ull;
+    }
+    if (seq != shown) [tex replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0 withBytes:img bytesPerRow:(NSUInteger)w * 4];
+    tid = (ImTextureID)(intptr_t)(__bridge void *)tex;
+#else
+    static uint64_t vk_id;
+    if (seq != shown || !vk_id) vk_id = vk_imgui_texture_stream(img, w, h);
+    tid = (ImTextureID)vk_id;
+#endif
+    shown = seq;
+    float s = fminf(disp.x / w, disp.y / h), dw = w * s, dh = h * s, x = (disp.x - dw) / 2, y = (disp.y - dh) / 2;
+    ImDrawList *dl = ImGui::GetBackgroundDrawList();
+    if (full) dl->AddRectFilled(ImVec2(0, 0), disp, IM_COL32(0, 0, 0, 255));
+    if (tid) dl->AddImage(tid, ImVec2(x, y), ImVec2(x + dw, y + dh));
+}
+
 #ifdef __APPLE__
 void menu_render(id<MTLDevice> dev, id<MTLCommandBuffer> cb, id<MTLTexture> target) {
     const double tw = target.width, th = target.height;
@@ -773,7 +823,10 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
 #endif
     bool open = g_open.load();
     bool kbd = g_kbd.load() == 1;
-    if (!open && !kbd && !g_settings.show_fps) {
+    int ov_w = 0, ov_h = 0, ov_full = 0;
+    uint64_t ov_seq = 0;
+    const uint8_t *ov_img = game_overlay_image(&ov_w, &ov_h, &ov_full, &ov_seq);
+    if (!open && !kbd && !g_settings.show_fps && !ov_img) {
         if (g_inited) { pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); }
         return;
     }
@@ -817,6 +870,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     ImGui_ImplVulkan_NewFrame();
 #endif
     ImGui::NewFrame();
+    if (ov_img) game_overlay_draw(ov_img, ov_w, ov_h, ov_full, ov_seq, io.DisplaySize);
 
     if (g_settings.show_fps) {
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 16 * scale, 16 * scale), 0, ImVec2(1, 0));
