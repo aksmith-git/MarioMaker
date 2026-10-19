@@ -100,7 +100,8 @@ static struct {
     Overlay ov;
     struct hundred_status st;
     unsigned prev;
-    int skip_hold, skip_until, clear_act_at, card_retry;
+    int skip_hold, skip_until, clear_act_at;
+    bool auto_next, started_early;  // after a skip SMM2 starts the next course by itself
     char test[64];
     long test_at;
 } F;
@@ -172,8 +173,7 @@ static void on_result(int outcome) {
         if (F.st.lives > 0) {
             CardInfo c = card_info();
             F.state = S_PLAYING;
-            ov_show_card(&F.ov, &c);
-            F.card_retry = 1;
+            ov_show_card(&F.ov, &c);  // (SMM2 retries the course by itself)
         } else {
             close_scenes();
             ov_hide(&F.ov);
@@ -182,7 +182,10 @@ static void on_result(int outcome) {
             hundred_run_finish();
         }
         break;
-    case HUNDRED_SKIP: to_intro(ENTRY_DIRECT); break;
+    case HUNDRED_SKIP:  // the next course's card; SMM2 starts that course by itself
+        to_intro(ENTRY_DIRECT);
+        F.auto_next = true, F.started_early = false;
+        break;
     case HUNDRED_GIVEUP_SAVE:
     case HUNDRED_ERROR:
     default: to_select(); break;
@@ -214,7 +217,8 @@ static void handle_queue(void) {
             if (F.state == S_WAIT) {
                 intro_free(F.intro), F.intro = NULL;
                 F.state = S_PLAYING;
-            }
+            } else if (F.state == S_INTRO)
+                F.started_early = true;
             break;
         case Q_RESULT:
             if (F.state == S_PLAYING || F.state == S_WAIT) on_result(q[i][1]);
@@ -239,10 +243,10 @@ static void fake_tick(void) {
     if (fake.playing == 1 && fake.play_tick == play_len) {
         fake.playing = 2;
         const char *o = getenv("RECOMP_HUNDRED_FAKE_OUTCOME");
-        if (o && !strcmp(o, "miss")) { fake.lives--; post(Q_RESULT, HUNDRED_MISS); }
+        if (o && !strcmp(o, "miss")) { fake.lives--; post(Q_RESULT, HUNDRED_MISS); fake.playing = 1, fake.play_tick = 0; }
         else { fake.cleared++; post(Q_RESULT, HUNDRED_CLEAR); }
     }
-    if (fake.playing == 3 && fake.play_tick == 2) { fake.cleared++; post(Q_RESULT, HUNDRED_SKIP); }
+    if (fake.playing == 3 && fake.play_tick == 2) { fake.cleared++; post(Q_RESULT, HUNDRED_SKIP); fake.playing = 1, fake.play_tick = 0; }
     if (fake.playing == 4 && fake.play_tick == 2) post(Q_RESULT, HUNDRED_GIVEUP_SAVE);
 }
 
@@ -282,10 +286,7 @@ static void step_playing(const UiIn *in) {
         return;
     }
     if (o->mode == OV_CARD) {
-        if (ov_card_done(o) || (in->pressed & BT_A)) {
-            ov_hide(o);
-            if (F.card_retry) F.card_retry = 0, hundred_play_retry();
-        }
+        if (ov_card_done(o) || (in->pressed & BT_A)) ov_hide(o);
         return;
     }
     // SMM1's skip: hold the skip button through the three countdown steps (3 x 32 frames), then Pass
@@ -323,7 +324,12 @@ static void tick(unsigned buttons) {
         break;
     }
     case S_INTRO:
-        if (intro_step(F.intro, &in) == EV_PLAY) play_next();
+        if (intro_step(F.intro, &in) == EV_PLAY) {
+            if (!F.auto_next) play_next();
+            else if (F.started_early) { intro_free(F.intro), F.intro = NULL; F.state = S_PLAYING; }
+            else F.state = S_WAIT;
+            F.auto_next = F.started_early = false;
+        }
         break;
     case S_WAIT:
         if (F.intro) intro_step(F.intro, &in);  // (the card holds its last frame)
@@ -340,7 +346,10 @@ static void tick(unsigned buttons) {
         break;
     default: break;
     }
-    F.full = F.state == S_SELECT || F.state == S_INTRO || F.state == S_WAIT || F.state == S_GAMEOVER || F.state == S_ENDING;
+    // (the clear screen and the card after a miss cover the game: SMM2's own result screen and retry card are under
+    // them)
+    F.full = F.state == S_SELECT || F.state == S_INTRO || F.state == S_WAIT || F.state == S_GAMEOVER || F.state == S_ENDING ||
+             (F.state == S_PLAYING && (F.ov.mode == OV_CLEAR || F.ov.mode == OV_CARD));
     F.captured = F.full || (F.state == S_PLAYING && (F.ov.mode == OV_PAUSE || F.ov.mode == OV_CLEAR || F.ov.mode == OV_CARD));
 }
 
@@ -466,10 +475,32 @@ static void *worker(void *arg) {
 }
 
 #ifndef SMM1UI_STANDALONE
-extern uint64_t input_buttons_now(void);  // runtime/hle/input.c: keyboard, controllers, test scripts
 extern uint64_t renderer_present_count(void);
 
 bool game_overlay_captured(void) { return F.captured; }
+// in a course, the skip button is SMM1's (held for the countdown), not the game's
+uint64_t game_input_mask(void) { return F.state == S_PLAYING ? ~(uint64_t)BT_MINUS : ~0ull; }
+extern uint64_t input_player_buttons(void);  // runtime/hle/input.c: keyboard and controllers only
+
+// RECOMP_HUNDRED_INPUT=<frame>:<BUTTON>[:<frames>],... the flow's own test presses (presented frames)
+static unsigned test_input(uint64_t frame) {
+    static const char *spec;
+    static bool read;
+    if (!read) read = true, spec = getenv("RECOMP_HUNDRED_INPUT");
+    if (!spec) return 0;
+    static const char *nm[16] = {"A", "B", "X", "Y", "LS", "RS", "L", "R", "ZL", "ZR", "PLUS", "MINUS", "LEFT", "UP", "RIGHT", "DOWN"};
+    unsigned b = 0;
+    char buf[2048];
+    snprintf(buf, sizeof buf, "%s", spec);
+    for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
+        unsigned long at = 0, len = 6;
+        char name[16] = "";
+        if (sscanf(tok, "%lu:%15[A-Z]:%lu", &at, name, &len) < 2 || frame < at || frame >= at + len) continue;
+        for (int i = 0; i < 16; i++)
+            if (!strcmp(name, nm[i])) b |= 1u << i;
+    }
+    return b;
+}
 static LQuads g_last;
 static bool g_worker_on;
 
@@ -499,8 +530,7 @@ const uint8_t *game_overlay_image(int *w, int *h, int *full, uint64_t *seq) {
         F.full = F.captured = false;
         return NULL;
     }
-    unsigned b = (unsigned)input_buttons_now();
-    // the left stick as the d-pad on these screens
+    unsigned b = (unsigned)input_player_buttons() | test_input(renderer_present_count());
     tick(b);
     LQuads *q = &g_last;
     uint8_t bg[4];
