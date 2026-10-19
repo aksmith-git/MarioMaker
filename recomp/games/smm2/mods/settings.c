@@ -116,6 +116,8 @@ void game_mod_toggles_changed(void) {
 // one checks the settings when it is called (they are read then, from the data folder) and runs the game's own
 // function when its mod is off.
 __attribute__((constructor)) static void mods_start(void) {
+    extern void world_register(void);
+    world_register();  // (first: the first override of an address wins, before the trace wrappers)
     online_register();
     endless_register();
     extern void bridge_register(void);

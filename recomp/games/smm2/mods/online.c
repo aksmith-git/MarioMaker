@@ -147,8 +147,14 @@ static void get_my_user(Cpu *c) {
     if (g32(no + USER_RING + 8) > 0) {
         uint64_t e = g64(no + USER_RING);
         user_entry_reset(e);
-        put_utf16(g64(e + 0x08), g32(e + 0x10), name);
-        s64(e + 0x58, mod_player_pid());
+        uint64_t pid = mod_player_pid();  // (asks /api/me once: the maker ID)
+        extern const char *mod_own_maker_id(void);
+        const char *mid = mod_own_maker_id();
+        char code[12] = "";
+        if (strlen(mid) == 11) snprintf(code, sizeof code, "%.3s%.3s%.3s", mid, mid + 4, mid + 8);
+        put_utf16(g64(e + 0x08), g32(e + 0x10), code);  // maker code (the converter: NEX code -> +0x08)
+        put_utf16(g64(e + 0x30), g32(e + 0x38), name);  // name
+        s64(e + 0x58, pid);
         // The Maker avatar: a valid Mii (the default one, named after the account). Without one Course World asks
         // for a new avatar, which needs the console's Mii editor.
         extern void mii_default_charinfo(uint8_t out[0x58], const char *nickname);

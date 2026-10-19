@@ -15,20 +15,26 @@ void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 // ---- address space layout (guest addresses == host addresses)
 // macOS reserves 0x2_0000_0000-0x70_0000_0000, and guest addresses must fit in 39 bits, so the
-// guest lives in a 12.5 GB window at 0x70_0000_0000 claimed at startup (see main.c).
-#define GUEST_LO     0x7000000000ull
-#define GUEST_HI     0x7320000000ull
-#define MAIN_BASE    0x7000000000ull
-#define SDK_BASE     0x7004000000ull
-#define HLE_BASE     0x7080000000ull   // fake addresses for host-implemented functions
+// guest lives in a 12.5 GB window at 0x70_0000_0000 claimed at startup (see main.c). iOS 27 with the
+// extended-virtual-addressing entitlement gives an app up to 0x80_0000_0000 and keeps 0x2_ee00_0000-0x70_0000_0000
+// for itself, so the same window works there (measured on an iPad Pro M5). The window can move (a system with less
+// address space): make GUEST_ORIGIN=<base> generates the game code for that base and builds the runtime with it.
+#ifndef GUEST_ORIGIN
+#define GUEST_ORIGIN 0x7000000000ull
+#endif
+#define GUEST_LO     GUEST_ORIGIN
+#define GUEST_HI     (GUEST_ORIGIN + 0x320000000ull)
+#define MAIN_BASE    GUEST_ORIGIN
+#define SDK_BASE     (GUEST_ORIGIN + 0x004000000ull)
+#define HLE_BASE     (GUEST_ORIGIN + 0x080000000ull)   // fake addresses for host-implemented functions
 #define HLE_SIZE     0x0000100000ull
-#define TLS_BASE     0x7090000000ull
+#define TLS_BASE     (GUEST_ORIGIN + 0x090000000ull)
 #define TLS_SIZE     0x0000100000ull
-#define HLE_HEAP     0x7092000000ull   // guest-visible memory owned by host code
+#define HLE_HEAP     (GUEST_ORIGIN + 0x092000000ull)   // guest-visible memory owned by host code
 #define HLE_HEAP_SIZE 0x000E000000ull
-#define ALIAS_BASE   0x7100000000ull   // alias region (svcMapMemory targets)
+#define ALIAS_BASE   (GUEST_ORIGIN + 0x100000000ull)   // alias region (svcMapMemory targets)
 #define ALIAS_SIZE   0x0100000000ull
-#define HEAP_BASE    0x7240000000ull
+#define HEAP_BASE    (GUEST_ORIGIN + 0x240000000ull)
 #define HEAP_MAX     0x00D0000000ull   // 3.25 GB
 
 // ---- loader.c

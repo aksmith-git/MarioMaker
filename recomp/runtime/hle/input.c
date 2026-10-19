@@ -118,7 +118,9 @@ bool input_user_blocked(const SDL_Event *e) {
 // Controller family for the button prompts (runtime/nvn/texpatch.c): 0 Nintendo / other / none, 1 Xbox, 2 PlayStation.
 // LARECOMP_PAD_TYPE=xbox|playstation|nintendo pretends one is attached (tests).
 static _Atomic int pad_family;
+static _Atomic bool pad_connected;  // a gamepad is open (the on-screen controller hides)
 static void note_family(void) {
+    pad_connected = pad != NULL;
     int f = 0;
     if (pad) switch (SDL_GetGamepadType(pad)) {
         case SDL_GAMEPAD_TYPE_XBOX360: case SDL_GAMEPAD_TYPE_XBOXONE: f = 1; break;
@@ -137,9 +139,12 @@ int input_pad_family(void) {
     return env >= 0 ? env : pad_family;
 }
 
+bool input_gamepad_connected(void) { return pad_connected; }
+
 void input_handle_event(const SDL_Event *e) {
+    extern bool touchpad_handle_event(const SDL_Event *e);  // runtime/ui/touchpad.mm (the on-screen controller)
     extern bool touch_handle_event(const SDL_Event *e);  // runtime/hle/touch.c (touches, the mouse as a finger)
-    if (touch_handle_event(e)) return;
+    if (touchpad_handle_event(e) || touch_handle_event(e)) return;
     static bool scanned;  // pads present at startup: their ADDED event may have gone to the start screen's loop
     if (!scanned) {
         scanned = true;
@@ -391,11 +396,27 @@ void input_frame(uint64_t frame) {
 
 extern bool menu_input_captured(void);  // runtime/ui/menu.mm: overlay menu or name entry up (it has the keys / pad)
 
-// The player's own buttons (keyboard, gamepad), for a game's host-drawn screens (not the menu's, not test scripts).
-uint64_t input_player_buttons(void) { return menu_input_captured() ? 0 : key_buttons | pad_buttons; }
+// Buttons held right now (keyboard, gamepad, on-screen controller, test script), independent of whether the game
+// polls (movies, a game's host-drawn screens). The on-screen controller has no d-pad: its stick is the d-pad here.
+extern void touchpad_state(uint64_t *buttons, int32_t *lx, int32_t *ly);  // runtime/ui/touchpad.mm
+static uint64_t touch_buttons_dpad(void) {
+    uint64_t tb;
+    int32_t tx, ty;
+    touchpad_state(&tb, &tx, &ty);
+    if (tx < -16000) tb |= 1ull << BTN_LEFT;
+    if (tx > 16000) tb |= 1ull << BTN_RIGHT;
+    if (ty > 16000) tb |= 1ull << BTN_UP;
+    if (ty < -16000) tb |= 1ull << BTN_DOWN;
+    return tb;
+}
 
-// Buttons held right now (keyboard, gamepad, test script), independent of whether the game polls (movies).
-uint64_t input_buttons_now(void) { return (menu_input_captured() ? 0 : key_buttons | pad_buttons) | script_buttons; }
+// The player's own buttons (keyboard, gamepad, on-screen controller), for a game's host-drawn screens (not the
+// menu's, not test scripts).
+uint64_t input_player_buttons(void) { return menu_input_captured() ? 0 : key_buttons | pad_buttons | touch_buttons_dpad(); }
+
+uint64_t input_buttons_now(void) {
+    return (menu_input_captured() ? 0 : key_buttons | pad_buttons | touch_buttons_dpad()) | script_buttons;
+}
 
 static int32_t clamp_axis(int32_t v) { return v > 32767 ? 32767 : v < -32767 ? -32767 : v; }
 
@@ -439,14 +460,18 @@ static void fill_state(Cpu *c, uint8_t *s, uint32_t id, bool single) {
     extern bool game_overlay_captured(void);
     extern uint64_t game_input_mask(void);
     bool menu = menu_input_captured() || game_overlay_captured();  // the overlay menu / name entry has the controls (typing there isn't for the game)
-    uint64_t b = menu ? script_buttons : ((key_buttons | pad_buttons) & game_input_mask()) | script_buttons;
+    uint64_t touch_b = 0;  // the on-screen controller (runtime/ui/touchpad.mm)
+    int32_t touch_lx = 0, touch_ly = 0;
+    if (!menu) touchpad_state(&touch_b, &touch_lx, &touch_ly);
+    uint64_t b = menu ? script_buttons : ((key_buttons | pad_buttons | touch_b) & game_input_mask()) | script_buttons;
     {   // injected Plus: held for ~10 presented frames (the game polls several times per frame)
         extern uint64_t renderer_present_count(void);
         static uint64_t until;
         if (g_inject_plus > 0) { until = renderer_present_count() + 10; g_inject_plus = 0; }
         if (renderer_present_count() < until) b |= 1ull << BTN_PLUS;
     }
-    int32_t lx = clamp_axis((menu ? 0 : key_lx + pad_lx) + script_lx), ly = clamp_axis((menu ? 0 : key_ly + pad_ly) + script_ly);
+    int32_t lx = clamp_axis((menu ? 0 : key_lx + pad_lx + touch_lx) + script_lx);
+    int32_t ly = clamp_axis((menu ? 0 : key_ly + pad_ly + touch_ly) + script_ly);
     int32_t rx = clamp_axis((menu ? 0 : key_rx + pad_rx) + script_rx), ry = clamp_axis((menu ? 0 : key_ry + pad_ry) + script_ry);
     extern bool mirror_input(void);  // mirror mode, the world on screen (runtime/hle/mirror.c): left and right swap
     bool mirrored = !menu && mirror_input();
