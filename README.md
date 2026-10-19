@@ -97,11 +97,12 @@ scripts/check.sh             # the gates CI runs: server fmt / clippy / tests, r
 Commits never contain game files; generated output stays in `recomp/private`, `recomp/generated`
 and `recomp/build` (which may be symlinks to another disk).
 
-## SMCraft (archived)
+## History and SMCraft (archived)
 
-Before the recomp this repo held **SMCraft**, a clean-room engine that played SMM2 courses with
-its own Rust core, a Swift app for macOS / iOS, a portable and web build, the SMM2 menus, a
-Course Maker and its own 100 Mario Challenge. It is kept, complete and building, on the
-[`smcraft-archive`](https://github.com/aksmith-git/MarioMaker/tree/smcraft-archive) branch of
-the project's earlier repository, aksmith-git/MarioMaker (tag
-`smcraft-final`).
+This repository started from a snapshot of
+[aksmith-git/MarioMaker](https://github.com/aksmith-git/MarioMaker), which has the earlier
+history. Before the recomp, that repository held **SMCraft**, a clean-room engine that played SMM2
+courses with its own Rust core, a Swift app for macOS / iOS, a portable and web build, the SMM2
+menus, a Course Maker and its own 100 Mario Challenge. It is kept, complete and building, on its
+[`smcraft-archive`](https://github.com/aksmith-git/MarioMaker/tree/smcraft-archive) branch (tag
+`smcraft-final`); mentions of that branch elsewhere in this repository mean that one.
