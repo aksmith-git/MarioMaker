@@ -46,6 +46,17 @@ and account counts, and the engine version its replays need.
 
 Files are rewritten atomically (written to a temporary file, then renamed).
 
+## Courses from TGRCode (optional)
+
+`--upstream tgrcode` lets the Endless Challenge and 100 Mario runs draw courses from TGRCode's API
+(`https://tgrcode.com/mm2`, a third-party service that reads Nintendo's Course World). When a run starts or its
+difficulty runs short, the server fetches a batch for that difficulty, decrypts the courses and keeps them (with
+their attempts and clears) next to your own. It needs the course key table from your own game: `--exe` with your
+SMM2 `main` (the table is found in it with the first download) or `--keys` with a table file. Requests are slow on
+purpose (it's someone else's free service) and back off when it's busy; when it's down, runs play what you hold.
+
+    mmk server --dir /srv/smcraft --upstream tgrcode --exe ~/smm-work/extracted/smm2-v303-exefs/main
+
 ## HTTPS and browsers
 
 The server speaks plain HTTP and WebSocket. A page served over HTTPS may only call `https://` and

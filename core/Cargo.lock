@@ -384,6 +384,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mmk-embed"
+version = "0.1.0"
+dependencies = [
+ "mmk-server",
+]
+
+[[package]]
 name = "mmk-formats"
 version = "0.1.0"
 dependencies = [
@@ -437,6 +444,7 @@ dependencies = [
  "ring",
  "serde_json",
  "tiny_http",
+ "ureq",
 ]
 
 [[package]]

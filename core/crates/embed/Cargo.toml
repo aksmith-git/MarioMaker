@@ -1,0 +1,13 @@
+[package]
+name = "mmk-embed"
+description = "The course server inside an app: a static library with a C interface (recomp/runtime/net/embed_server.h)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+mmk-server = { path = "../server" }

@@ -1428,3 +1428,33 @@ protocols); option 1 needs no reverse engineering of SMM2's netcode and gives tw
 **Would change it:** SMM2 exposing PIA's `lan` back end (shorter than 1), or PIA's `nex` session
 depending on NEX state too deeply to answer at the enl layer. Details, unknowns and the research list:
 `research/specs/recomp-online.md`.
+
+## 2026-10-19 — Endless / 100 Mario courses from TGRCode's API, opt-in; the server inside the app
+
+**Decision (owner, 2026-10-19):** the Endless Challenge and the 100 Mario Challenge may draw their courses from
+TGRCode's API (`https://tgrcode.com/mm2`), and a device needs no server of its own. This relaxes point 4 of the
+entry above for course *content*: TGRCode is a third-party service that reads Nintendo's Course World, so the
+courses come from Nintendo's network, but the game never talks to Nintendo or to TGRCode, only to our server.
+
+**How:**
+- **An upstream source in our server** (`core/crates/server/src/upstream.rs`), off unless asked for
+  (`mmk server --upstream tgrcode --exe <your main>` / `--keys <table>`). A run that starts, or a pick whose
+  clear-rate bands ran dry, tells it which difficulty is short; it searches TGRCode's Endless pool for that
+  difficulty (`search_endless_mode`), downloads the courses it doesn't hold (`level_data`), decrypts them and
+  imports them under their own codes with their attempts and clears, so `pick` / `pick_hundred` band them like
+  any course. Requests are paced (3 s apart, a difficulty searched at most once a minute) and back off when
+  TGRCode answers 429 (it rate-limits at ~1.5 s); when it fails, runs play the courses the server holds.
+- **The course key table** comes from the player's own game: found with the first download in the loaded
+  executable (`keyfind::find_in`, ~0.5 s), never written to disk or logged.
+- **The server inside the app** (`core/crates/embed`, a static library; C interface
+  `recomp/runtime/net/embed_server.h`), on 127.0.0.1 with one local account, so the mod's plumbing is unchanged.
+  On iOS / iPadOS it starts by default with the TGRCode source and turns the 100 Mario mod on through the mod's
+  own settings, unless a server is chosen (`RECOMP_MOD_SERVER` / `server=` in smm2mods.ini);
+  `RECOMP_EMBED_SERVER=tgrcode|local|off` elsewhere. An in-game setting for the course source belongs to the
+  mod (`games/smm2/mods/settings.c`), wired by its agent against this API.
+- **Rust stays optional in the recomp build:** the library is linked only when it's been built
+  (`make embed-server`) or `EMBED_SERVER=1`; Apple targets first, Linux / Windows / Android later. Every target
+  still builds with clang or zig alone.
+
+**Would change it:** TGRCode going away or asking us to stop (the server keeps what it imported; a self-hosted
+server never uses it unless started with `--upstream`), or the owner wanting a pre-fetched pool only.
