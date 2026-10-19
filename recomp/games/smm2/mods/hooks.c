@@ -52,6 +52,9 @@ void smm2_mod_after(Cpu *c, uint64_t addr) {
         pending_before = (uint32_t)c->x[4];
         break;
     case 0x16ce7f4: case 0x16cea48:  // ... and stored: an award counts as one
+        if ((uint32_t)c->x[4] != pending_before)
+            LOG("[mod] 1-Up banked (%s): pending %u -> %u\n", addr - MAIN_ADDR(0) == 0x16ce7f4 ? "coins" : "item",
+                pending_before, (uint32_t)c->x[4]);
         if ((uint32_t)c->x[4] > pending_before + 1) {
             LOG("[mod] award: pending 1-Ups %u -> %u, banked as %u (SMM1: one per award)\n", pending_before,
                 (uint32_t)c->x[4], pending_before + 1);

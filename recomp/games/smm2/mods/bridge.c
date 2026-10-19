@@ -32,7 +32,7 @@ void endless_fill_status(struct hundred_status *out, int active_d);  // endless.
 void endless_forget_run(int d);
 void endless_prepare_run(int d, bool resume);
 
-enum { BTN_A = 1 << 0, BTN_B = 1 << 1, BTN_Y = 1 << 3, BTN_PLUS = 1 << 10, BTN_MINUS = 1 << 11, BTN_LEFT = 1 << 12,
+enum { BTN_A = 1 << 0, BTN_B = 1 << 1, BTN_Y = 1 << 3, BTN_L = 1 << 6, BTN_R = 1 << 7, BTN_PLUS = 1 << 10, BTN_MINUS = 1 << 11, BTN_LEFT = 1 << 12,
        BTN_UP = 1 << 13, BTN_RIGHT = 1 << 14, BTN_DOWN = 1 << 15 };
 
 // ---- driver: one request at a time, pressed on its own thread
@@ -41,7 +41,9 @@ enum { DRV_IDLE, DRV_NEW_GAME, DRV_CONTINUE, DRV_PLAY, DRV_SKIP, DRV_AFTER_CLEAR
 static volatile int drv = DRV_IDLE;
 static volatile uint64_t drv_since, course_since;
 static volatile int run_d = -1;          // the flow's run (difficulty), -1 none
-static volatile int pending_tab = -1;    // a difficulty to select on the game thread
+static volatile int pending_tab = -1;    // a difficulty to select on the game thread (the tab's handler)
+static volatile int tab_target = -1;     // a difficulty to select with L / R
+static volatile int tab_presses;
 static volatile uint64_t menu_page, menu_seen;  // the Endless menu page and the frame it was last in Disp
 static volatile bool play_queued;      // Play asked for while the result screen is up
 static volatile bool suspending;       // Save & Quit under way: the menu's return reports it
@@ -64,20 +66,47 @@ static void *driver(void *arg) {
     for (;;) {
         usleep(20000);
         uint64_t now = renderer_present_count(), t = now - drv_since, b = 0;
+        if ((drv == DRV_NEW_GAME || drv == DRV_CONTINUE) && tab_target >= 0) {
+            // the difficulty, the way a player picks it: L / R until the menu's difficulty (main+0x2c3f618) is the
+            // one wanted (calling the tab's handler directly can leave the buttons without a focus when Continue
+            // goes away); after 12 presses, the handler (menu_disp)
+            int cur = (int)g32(MAIN_ADDR(0x2c3f618));
+            if (cur == tab_target) {
+                MLOG("bridge: difficulty %d on the menu\n", tab_target);
+                tab_target = -1, tab_presses = 0, drv_since = now;
+                mod_shot("tab", 60), mod_shot("tab", 95);
+            } else if (tab_presses >= 12) {
+                pending_tab = tab_target, tab_target = -1, tab_presses = 0;
+            } else if (t >= 30) {
+                b = cur < tab_target ? BTN_R : BTN_L;
+                if (t >= 38) tab_presses++, drv_since = now;
+            }
+            g_test_buttons = b;
+            g_test_buttons_until = b ? now + 4 : 0;
+            continue;
+        }
         switch (drv) {
         case DRV_NEW_GAME:  // (the tab is set first, on the game thread) New Game, then the confirm window's Yes.
                             // With a saved run the focus starts on Continue, right of New Game [obs]
             if (pending_tab >= 0) { drv_since = now; break; }
-            if (over_save && t >= 60 && t < 68) b = BTN_LEFT;
-            else if (t >= 90 && t < 98) b = BTN_A;
-            else if (over_save && t >= 330 && t < 338) b = BTN_LEFT;  // [?] the window's Yes (left of No)
-            else if (t >= 420 && t < 428) b = BTN_A;
-            else if (t > 440) set_drv(DRV_PLAY);
+            // "Previous save data will be overwritten. Continue?" opens on No, Yes is right of it [obs, flow agent]:
+            // Right then A, repeated in case the window comes late (on the map Right does nothing and A is Play)
+            // (after L / R the focus is on the tab bar [obs]: Down brings it to the buttons; twice, in case the
+            // first falls into the tab change)
+            if ((t >= 40 && t < 48) || (t >= 70 && t < 78)) b = BTN_DOWN;
+            else if (over_save && t >= 100 && t < 108) b = BTN_LEFT;
+            else if (t >= 130 && t < 138) b = BTN_A;
+            else if (over_save && t >= 300 && t < 780) {
+                if ((t - 300) % 120 < 8) b = BTN_RIGHT;
+                else if ((t - 300) % 120 >= 40 && (t - 300) % 120 < 48) b = BTN_A;
+            } else if (!over_save && t >= 420 && t < 428) b = BTN_A;
+            else if (t > (over_save ? 780u : 440u)) set_drv(DRV_PLAY);
             break;
         case DRV_CONTINUE:  // (the tab is set first) Continue: the focused button when a run is saved [obs]
             if (pending_tab >= 0) { drv_since = now; break; }
-            if (t >= 90 && t < 98) b = BTN_A;
-            else if (t > 120) set_drv(DRV_PLAY);
+            if ((t >= 40 && t < 48) || (t >= 70 && t < 78)) b = BTN_DOWN;
+            else if (t >= 130 && t < 138) b = BTN_A;
+            else if (t > 160) set_drv(DRV_PLAY);
             break;
         case DRV_PLAY:  // the map's Play, every 2 s until the course starts (presses during the map's walk / telop
                         // are ignored by the map)
@@ -325,7 +354,7 @@ void bridge_event(const char *what, uint32_t d) {
         drv = DRV_COURSE, drv_since = renderer_present_count();  // (SMM2 retries the course by itself)
         result(HUNDRED_MISS);
     } else if (!strcmp(what, "retry")) {  // (hooks.c: the course is set up again after a miss / Start Over)
-        drv = DRV_COURSE, drv_since = course_since = renderer_present_count();
+        drv = DRV_COURSE, drv_since = renderer_present_count();  // (the autoplay's skip time counts on)
         LOG("[mod] bridge: the course again (retry)\n");
         started_since = renderer_present_count(), started_pending = true;
     } else if (!strcmp(what, "clear")) {
@@ -357,9 +386,10 @@ bool hundred_run_start(int difficulty, bool resume_saved) {
     pthread_once(&once, driver_start);
     endless_prepare_run(difficulty, resume_saved);
     run_d = difficulty;
-    pending_tab = difficulty;
+    tab_target = difficulty, tab_presses = 0;
     suspending = paused = false;
     set_drv(resume_saved ? DRV_CONTINUE : DRV_NEW_GAME);
+    mod_shot("menu", 60), mod_shot("menu", 330);
     LOG("[mod] bridge: run %s, difficulty %d\n", resume_saved ? "continued" : "start", difficulty);
     return true;
 }

@@ -403,6 +403,18 @@ static id<MTLTexture> view_texture(NvnTexture *t, const NvnTextureView *v, bool 
     id<MTLTexture> base = renderer_texture(t, blit, render);
     if (!has_view || !v->setmask) return base;
     MTLPixelFormat pf = (v->setmask & 4) ? renderer_pixel_format(v->format) : base.pixelFormat;
+    // Metal can't view a block-compressed texture as an uncompressed format or the other way round (it asserts):
+    // such a view keeps the texture's own format. (Seen: the Course World top screen's Maker panel, an RGBA8 sRGB
+    // texture viewed as ASTC 4x4.)
+    bool pf_bc = pf >= MTLPixelFormatBC1_RGBA && pf <= 235, base_bc = base.pixelFormat >= MTLPixelFormatBC1_RGBA && base.pixelFormat <= 235;
+    // (between two compressed formats only an sRGB / linear twin works: BC n and n_sRGB, ASTC LDR and sRGB of one size)
+    #define BLOCK_FAMILY(f) ((f) >= 204 && (f) <= 217 ? 1000 + (int)(f) - 204 : (f) >= 186 && (f) <= 199 ? 1000 + (int)(f) - 186 \
+                             : (f) >= 130 && (f) <= 143 ? 2000 + ((int)(f) - 130) / 2 : (int)(f))
+    if (pf_bc != base_bc || (pf_bc && pf != base.pixelFormat && BLOCK_FAMILY(pf) != BLOCK_FAMILY(base.pixelFormat))) {
+        static int nmix;
+        if (nmix++ < 5) LOG("[view] compressed / uncompressed view %lu -> %lu kept as %lu\n", (unsigned long)base.pixelFormat, (unsigned long)pf, (unsigned long)base.pixelFormat);
+        pf = base.pixelFormat;
+    }
     NSUInteger lv0 = (v->setmask & 1) ? v->base_level : 0;
     NSUInteger nlv = (v->setmask & 1) && v->num_levels ? v->num_levels : base.mipmapLevelCount - lv0;
     NSUInteger ly0 = (v->setmask & 2) ? v->min_layer : 0;
