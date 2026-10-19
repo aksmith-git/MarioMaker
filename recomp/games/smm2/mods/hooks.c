@@ -10,7 +10,7 @@
 // Otherwise nothing changes.
 #include "mod.h"
 
-#define RUN_OBJECT 0x7002c56bb0ull  // the Endless run: +0x30 current counters, +0x40 counters at course start
+#define RUN_OBJECT MAIN_ADDR(0x2c56bb0) // the Endless run: +0x30 current counters, +0x40 counters at course start
 
 static __thread uint32_t pending_before;  // pending 1-Ups before an award (the game's main thread)
 

@@ -49,9 +49,9 @@ void *srv_get_bytes(const char *path, size_t *len) {
 
 // ---- game state
 
-#define NETOBJ_HOLDER 0x7002a37380ull  // + 0x3e0: the network-session object
-#define WRAPPER_TRUE 0x7002a17ad8ull   // the bytes the request functions return (success / failure)
-#define WRAPPER_FALSE 0x7002a17ad9ull
+#define NETOBJ_HOLDER MAIN_ADDR(0x2a37380) // + 0x3e0: the network-session object
+#define WRAPPER_TRUE MAIN_ADDR(0x2a17ad8) // the bytes the request functions return (success / failure)
+#define WRAPPER_FALSE MAIN_ADDR(0x2a17ad9)
 #define LOCK_FN MAIN_ADDR(0x292410)    // the lock / unlock the wrappers take on NetObj + 0x20
 #define UNLOCK_FN MAIN_ADDR(0x292430)
 

@@ -160,7 +160,7 @@ static void get_my_user(Cpu *c) {
     netobj_unlock(c);
     // The Maker avatar's name in the player's settings (an empty one sends Course World to "Create Maker Avatar",
     // which needs the console's Mii editor): the account's name when there is none yet.
-    uint64_t settings = g64(0x7002a57d60ull);
+    uint64_t settings = g64(MAIN_ADDR(0x2a57d60));
     if (settings && g64(settings + 0x2b0) && *(volatile uint16_t *)(uintptr_t)g64(settings + 0x2b0) == 0) {
         put_utf16(g64(settings + 0x2b0), 11, name);
         LOG("[mod] Maker avatar name set to \"%s\" (default Mii)\n", name);

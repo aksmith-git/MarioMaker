@@ -4,7 +4,7 @@
 // Course World network calls from our own server (core/crates/server: /api/endless, /api/courses) instead of
 // Nintendo's. The calls are replaced one level above the network library: the game's own request functions
 // ("wrappers", each reached through a function pointer) get host overrides (hle_override) that talk HTTP and write
-// the plain records the game's callbacks read. Addresses are v3.0.3; the recomp loads main at 0x7000000000.
+// the plain records the game's callbacks read. Addresses are v3.0.3; addresses are offsets in main (MAIN_ADDR).
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
@@ -12,7 +12,7 @@
 
 #include "../../../runtime/hle.h"
 
-#define MAIN_ADDR(off) (0x7000000000ull + (off))  // an offset in main -> its address in the recomp
+#define MAIN_ADDR(off) (MAIN_BASE + (off))  // an offset in main -> its address (runtime/rt.h: moves on iOS devices)
 
 // ---- settings (settings.c): environment variables, else smm2mods.ini in the data folder
 typedef struct {
