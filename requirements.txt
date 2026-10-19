@@ -1,2 +1,0 @@
-# Runtime dependencies of smmfmt (CI installs these)
-cryptography==50.0.1
