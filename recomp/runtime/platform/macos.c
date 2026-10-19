@@ -73,6 +73,50 @@ bool plat_reserve_guest(uint64_t lo, uint64_t hi) {
     return r == KERN_SUCCESS;
 }
 
+#if TARGET_OS_IPHONE
+// The guest window couldn't be reserved (runtime/main.c): what the address space looks like, into the log - the
+// kernel's limits, what is mapped around the window, and which reservations would work.
+void plat_guest_report(uint64_t lo, uint64_t hi) {
+    vm_address_t a = lo;
+    kern_return_t r = vm_allocate(mach_task_self(), &a, hi - lo, VM_FLAGS_FIXED);
+    fprintf(stderr, "[platform] fixed %#llx + %#llx: kern %d\n", (unsigned long long)lo, (unsigned long long)(hi - lo), r);
+    if (r == KERN_SUCCESS) { vm_deallocate(mach_task_self(), a, hi - lo); return; }
+    task_vm_info_data_t vi;
+    mach_msg_type_number_t n = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &n) == KERN_SUCCESS)
+        fprintf(stderr, "[platform] address space %#llx..%#llx, footprint %llu MB, limit %d MB\n",
+                (unsigned long long)vi.min_address, (unsigned long long)vi.max_address,
+                (unsigned long long)vi.phys_footprint >> 20, vi.limit_bytes_remaining ? (int)((vi.phys_footprint + vi.limit_bytes_remaining) >> 20) : -1);
+    vm_address_t at = 0x100000000ull;  // regions from the executable up
+    for (int i = 0; i < 400; i++) {
+        vm_size_t size = 0;
+        natural_t depth = 0;
+        struct vm_region_submap_info_64 info;
+        mach_msg_type_number_t cnt = VM_REGION_SUBMAP_INFO_COUNT_64;
+        if (vm_region_recurse_64(mach_task_self(), &at, &size, &depth, (vm_region_recurse_info_t)&info, &cnt) != KERN_SUCCESS) break;
+        if (size >= (64ull << 20) || (at < hi && at + size > lo))
+            fprintf(stderr, "[platform] region %#llx..%#llx (%llu MB) prot %d tag %u\n", (unsigned long long)at,
+                    (unsigned long long)(at + size), (unsigned long long)size >> 20, info.protection, info.user_tag);
+        at += size;
+    }
+    static const uint64_t sizes[] = {0x320000000ull, 0x200000000ull, 0x100000000ull, 0x40000000ull};
+    for (int i = 0; i < 4; i++) {  // anywhere: where would it go?
+        vm_address_t b = 0;
+        r = vm_allocate(mach_task_self(), &b, sizes[i], VM_FLAGS_ANYWHERE);
+        fprintf(stderr, "[platform] anywhere %#llx: kern %d at %#llx\n", (unsigned long long)sizes[i], r, (unsigned long long)b);
+        if (r == KERN_SUCCESS) vm_deallocate(mach_task_self(), b, sizes[i]);
+    }
+    static const uint64_t bases[] = {0x400000000ull, 0x600000000ull, 0xa00000000ull, 0xc00000000ull, 0x1000000000ull,
+                                     0x2000000000ull, 0x7000000000ull};
+    for (int i = 0; i < 7; i++) {  // the same window elsewhere
+        vm_address_t b = bases[i];
+        r = vm_allocate(mach_task_self(), &b, hi - lo, VM_FLAGS_FIXED);
+        fprintf(stderr, "[platform] fixed %#llx + %#llx: kern %d\n", (unsigned long long)bases[i], (unsigned long long)(hi - lo), r);
+        if (r == KERN_SUCCESS) vm_deallocate(mach_task_self(), b, hi - lo);
+    }
+}
+#endif
+
 // Fresh zero pages over the whole window (the old ones are released at once).
 bool plat_reset_guest(uint64_t lo, uint64_t hi) {
     mach_vm_address_t a = lo;

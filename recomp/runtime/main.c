@@ -206,8 +206,13 @@ static void boot(const char *root) {
 int main(int argc, char **argv) {
     plat_init();
     if (g_guest_unreserved) {  // iOS without the extended virtual addressing entitlement (tools/make_ios_app.sh)
-        const char *msg = "This copy of " GAME_TITLE " can't reserve the game's memory window (0x7000000000-0x7320000000): "
-                          "it must be signed with the Extended Virtual Addressing and Increased Memory Limit entitlements.";
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+        extern void plat_guest_report(uint64_t lo, uint64_t hi);  // runtime/platform/macos.c
+        plat_guest_report(GUEST_LO, GUEST_HI);
+#endif
+        char msg[400];
+        snprintf(msg, sizeof msg, "This copy of " GAME_TITLE " can't reserve the game's memory window (%#llx-%#llx): it "
+                 "must be signed with the Extended Virtual Addressing and Increased Memory Limit entitlements.", GUEST_LO, GUEST_HI);
         fprintf(stderr, "FATAL: %s\n", msg);
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, GAME_TITLE, msg, NULL);
         return 1;

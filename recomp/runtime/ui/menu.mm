@@ -6,6 +6,9 @@
 #import <Metal/Metal.h>
 #endif
 #include <SDL3/SDL.h>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #include "../game.h"
 #include <math.h>
 #include <pthread.h>
@@ -138,6 +141,10 @@ static std::atomic<bool> g_last_pad{false};
 static char g_kbd_text[96];
 static int g_kbd_max = 8;
 static bool capturing() { return g_open.load() || g_kbd.load() == 1; }
+// The on-screen controller's menu button (runtime/ui/touchpad.mm)
+extern "C" void menu_toggle(void) { set_open(!g_open.load()); }
+extern "C" bool touchpad_visible(void);
+extern "C" void touchpad_draw(float w, float h);
 // The game gets no input while this is true (runtime/hle/input.c): menu or name entry up.
 extern "C" bool menu_input_captured(void) { return capturing(); }
 
@@ -258,7 +265,9 @@ void menu_apply_window_requests(void *win) {
     static bool first = true;
     if (first || g_want_fullscreen_apply.exchange(false)) {
         first = false;
+#if !(defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE)  // (iOS: always the whole screen, runtime/nvn/metal.m)
         SDL_SetWindowFullscreen(w, g_settings.fullscreen);
+#endif
     }
 }
 
@@ -826,7 +835,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     int ov_w = 0, ov_h = 0, ov_full = 0;
     uint64_t ov_seq = 0;
     const uint8_t *ov_img = game_overlay_image(&ov_w, &ov_h, &ov_full, &ov_seq);
-    if (!open && !kbd && !g_settings.show_fps && !ov_img) {
+    if (!open && !kbd && !g_settings.show_fps && !ov_img && !touchpad_visible()) {
         if (g_inited) { pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); }
         return;
     }
@@ -880,6 +889,8 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         ImGui::Text("%.0f fps", io.Framerate);
         ImGui::End();
     }
+
+    if (!open && !kbd) touchpad_draw((float)tw, (float)th);
 
     if (open) {
         // dim the game behind the menu

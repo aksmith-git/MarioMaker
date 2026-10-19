@@ -673,6 +673,20 @@ static const char *present_src =
     "fragment float4 fs_alpha(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]]) {\n"
     "  return float4(float3(t.sample(s, in.uv).a), 1.0); }\n";
 
+// The guest heap as one Metal buffer. A device whose buffers can't be that large (iOS) gets as much as it allows,
+// from the heap's start, where the game's memory pools are; the log says so.
+static id<MTLBuffer> wrap_guest_heap(void) {
+    id<MTLBuffer> b = [dev newBufferWithBytesNoCopy:(void *)HEAP_BASE length:HEAP_MAX
+                                            options:MTLResourceStorageModeShared deallocator:nil];
+    if (b) return b;
+    uint64_t len = (uint64_t)dev.maxBufferLength & ~0x3fffull;
+    if (len >= HEAP_MAX) return nil;
+    b = [dev newBufferWithBytesNoCopy:(void *)HEAP_BASE length:len options:MTLResourceStorageModeShared deallocator:nil];
+    LOG("[metal] guest heap: %llu MB wrapped of %llu (the device's largest buffer)%s\n", len >> 20,
+        (uint64_t)HEAP_MAX >> 20, b ? "" : ": failed too");
+    return b;
+}
+
 void backend_init(void) {
     while (!atomic_load(&ui_ready)) usleep(1000);
     queue = [dev newCommandQueue];
@@ -689,8 +703,7 @@ void backend_init(void) {
     present_sampler = [dev newSamplerStateWithDescriptor:sd];
     // Wrap the guest heap: memory pools live there, and GPU addresses are guest addresses.
     g_guest_buffer_base = HEAP_BASE;
-    g_guest_buffer = [dev newBufferWithBytesNoCopy:(void *)HEAP_BASE length:HEAP_MAX
-                                           options:MTLResourceStorageModeShared deallocator:nil];
+    g_guest_buffer = wrap_guest_heap();
     if (!g_guest_buffer) FATAL("cannot wrap guest heap in a Metal buffer (max %llu)\n", (uint64_t)dev.maxBufferLength);
     renderer_init(dev);
     if (getenv("LARECOMP_ASPECT_TEST")) {  // experiment: widen the game's 16:9 aspect constant
@@ -724,8 +737,7 @@ void backend_reset(void) {
 
 void backend_guest_memory_reset(void) {
     if (!queue) return;
-    g_guest_buffer = [dev newBufferWithBytesNoCopy:(void *)HEAP_BASE length:HEAP_MAX
-                                           options:MTLResourceStorageModeShared deallocator:nil];
+    g_guest_buffer = wrap_guest_heap();
     if (!g_guest_buffer) FATAL("cannot wrap guest heap in a Metal buffer\n");
 }
 
@@ -1340,12 +1352,21 @@ void ui_window_init(void) {
     // (no SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS here: on macOS reading controllers in the background opens them
     // as HID devices, for which the system asks for Input Monitoring - "receive keystrokes from any application")
     settings_load();
+#if TARGET_OS_IPHONE
+    // iOS: the whole screen, in landscape, no status bar (a windowed SDL window keeps the size and orientation the app
+    // started in: a portrait window on a landscape screen); the home indicator hides, edge swipes need a second swipe
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+    SDL_SetHint(SDL_HINT_IOS_HIDE_HOME_INDICATOR, "2");
+#endif
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) FATAL("SDL_Init: %s\n", SDL_GetError());
     int win_w = 1280, win_h = 720;
     if (getenv("LARECOMP_WINDOW")) sscanf(getenv("LARECOMP_WINDOW"), "%dx%d", &win_w, &win_h);
     // LARECOMP_HIDDEN=1: never shown (automated test runs render off screen without taking the user's focus)
     SDL_WindowFlags wflags = SDL_WINDOW_METAL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (getenv("LARECOMP_HIDDEN")) wflags |= SDL_WINDOW_HIDDEN;
+#if TARGET_OS_IPHONE
+    wflags |= SDL_WINDOW_FULLSCREEN | SDL_WINDOW_BORDERLESS;
+#endif
     window = SDL_CreateWindow(GAME_TITLE, win_w, win_h, wflags);
     if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
     rt_window_icon(window);

@@ -487,7 +487,7 @@ def main():
     args = ap.parse_args()
 
     t0 = time.time()
-    patches.load(args.patches)
+    patches.load(args.patches, args.base)
     m = Module(args.name, args.nso, args.base, args.simd)
     starts = m.boundaries()
     hle = {}

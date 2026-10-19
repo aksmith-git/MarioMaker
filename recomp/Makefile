@@ -39,6 +39,10 @@ GAMEFILES := $(DATA)/extracted
 GEN      ?= generated/$(GAME)
 B        ?= build/$(GAME)
 
+# The guest window's base (runtime/rt.h GUEST_ORIGIN): the game code is generated for it. Another base gets its own
+# generated/ and build/ folders.
+GUEST_ORIGIN ?= 0x7000000000
+
 IOS := $(filter ios iossim,$(PLATFORM))
 ifneq ($(IOS),)
 # iOS / the Simulator: Xcode's clang for the SDK. The game code is generated/<game> (arm64, as macOS), compiled into
@@ -84,6 +88,11 @@ GENFLAGS := -O1 -fno-strict-aliasing -Wno-return-type -Wno-unused-label -fvisibi
 GAMEDEFS := -DGAME_TITLE_ID=$(GAME_TITLE_ID)ull -DGAME_ID='"$(GAME_ID)"' -DGAME_TITLE='"$(GAME_TITLE)"' -DGAME_BUNDLE_ID='"$(GAME_BUNDLE_ID)"' \
             -DGAME_DISPLAY_VERSION='"$(GAME_DISPLAY_VERSION)"'
 
+ifneq ($(GUEST_ORIGIN),0x7000000000)
+GEN      := $(GEN)-$(GUEST_ORIGIN)
+B        := $(B)-$(GUEST_ORIGIN)
+GAMEDEFS += -DGUEST_ORIGIN=$(GUEST_ORIGIN)ull
+endif
 GEN_SRC  := $(wildcard $(GEN)/main/*.c) $(wildcard $(GEN)/sdk/*.c)
 GEN_OBJ  := $(patsubst %.c,$(B)/obj/%.o,$(patsubst $(GEN)/%,%,$(GEN_SRC))) $(B)/obj/tools/gamelib_entry.o
 RT_SRC   := $(wildcard runtime/*.c) $(wildcard runtime/hle/*.c) $(wildcard runtime/services/*.c) \
@@ -273,8 +282,8 @@ setup:
 # Recompile every module to C (AArch64 -> C, on this machine, from the player's own files).
 gen:
 	$(if $(PY),,$(error run `make venv` first))
-	cd tools && ../$(PY) gen.py sdk ../$(GAMEFILES)/exefs/sdk 0x7004000000 ../$(GEN)/sdk --hle ../$(GAME_HLE) $(GENSIMD)
-	cd tools && ../$(PY) gen.py main ../$(GAMEFILES)/exefs/main 0x7000000000 ../$(GEN)/main \
+	cd tools && ../$(PY) gen.py sdk ../$(GAMEFILES)/exefs/sdk $(shell printf '%#x' $$(($(GUEST_ORIGIN) + 0x4000000))) ../$(GEN)/sdk --hle ../$(GAME_HLE) $(GENSIMD)
+	cd tools && ../$(PY) gen.py main ../$(GAMEFILES)/exefs/main $(GUEST_ORIGIN) ../$(GEN)/main \
 	    $(if $(wildcard $(GAME_PATCHES)),--patches ../$(GAME_PATCHES)) $(GENSIMD)
 
 clean-gen:
