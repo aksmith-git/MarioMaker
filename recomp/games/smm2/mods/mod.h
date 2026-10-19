@@ -20,11 +20,14 @@ typedef struct {
     char server[256];    // RECOMP_MOD_SERVER / server=: our server's base URL ("http://127.0.0.1:8080")
     char token[160];     // RECOMP_MOD_TOKEN / token=: the account token (`mmk register`)
     char ruleset[16];    // RECOMP_MOD_RULESET / ruleset=: "hundred" (SMM1's rules, default) or "smm2"
+    char courses[16];    // RECOMP_MOD_COURSES / courses=: "server" (server= above) or "tgrcode" (a server built into the
+                         // game, fed from TGRCode's course archive; iOS default)
     int timeout_ms;      // RECOMP_MOD_TIMEOUT_MS / timeout_ms=: per HTTP request (default 8000)
     bool log;            // RECOMP_MOD_LOG / log=1: log every request and override
 } ModSettings;
 extern ModSettings g_mod;
 void mod_settings_load(void);   // once (idempotent)
+void mod_server_ready(void);    // before the first request: with courses=tgrcode, start the built-in server (once)
 bool mod_hundred(void);         // the 100 Mario mod is on
 bool mod_hundred_rules(void);   // ... and its runs use SMM1's rules (ruleset "hundred")
 #define MLOG(...) do { if (g_mod.log) LOG("[mod] " __VA_ARGS__); } while (0)
@@ -33,6 +36,7 @@ bool mod_hundred_rules(void);   // ... and its runs use SMM1's rules (ruleset "h
 typedef struct Json Json;
 Json *srv_call(const char *method, const char *path, const char *body, int *status);
 void *srv_get_bytes(const char *path, size_t *len);  // raw body (course data); malloc'd
+Json *srv_post_bytes(const char *path, const void *data, size_t len, int *status);  // raw body up (a course)
 
 // ---- game state the overrides share
 uint64_t netobj(void);          // the network-session object (requests and answers of the wrappers)

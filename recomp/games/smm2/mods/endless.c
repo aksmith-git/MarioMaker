@@ -19,6 +19,9 @@
 
 void bridge_event(const char *what, uint32_t d);  // bridge.c
 bool endless_run_complete(uint32_t d);
+int style_index(const char *s);
+bool bridge_take_start_over(void);  // bridge.c: the life being posted is a Start Over from the pause
+void endless_prefetch(int d);
 
 static const char *const DIFF[4] = {"easy", "normal", "expert", "super_expert"};
 
@@ -54,8 +57,11 @@ static struct {
     uint32_t lives, clears, goal;
     uint64_t current;        // the course being (or about to be) played
     int ncredits;            // the run's cleared courses (for the ending's credits)
+    int form;                // Mario at the last goal: 0 small, 1 big (the ending's Mario)
     struct hundred_credit credits[32];
 } runs[4];
+
+static volatile int last_search_d = -1;  // the difficulty of the last Endless course list
 
 // Names and makers of the courses served (data id -> credit), for the ending's credits.
 static struct { uint64_t id; struct hundred_credit c; int style; } course_names[64];
@@ -82,29 +88,52 @@ static void add_credit(uint32_t d, uint64_t id) {  // (state_lock held)
         if (course_names[i].id == id) *c = course_names[i].c;
 }
 
+static char own_maker_id[16];
+static uint64_t pid_of_maker_id(const char *maker_id);
+
 uint64_t mod_player_pid(void) {
-    // A stable fake player id for the signed-in account (Course World compares makers with it: own courses).
-    uint64_t h = 1469598103934665603ull;
-    for (const char *p = g_mod.token; *p; p++) h = (h ^ (uint8_t)*p) * 1099511628211ull;
-    return 0x4000000000000000ull | (h & 0x0000ffffffffffffull) | 1;
+    // The signed-in account's player id: the same hash of its maker ID as every maker's (Course World compares
+    // course owners with it: own courses). Asked from the server once.
+    static volatile int known;
+    if (!known) {
+        Json *me = srv_call("GET", "/api/me", NULL, NULL);
+        const char *id = json_str(json_get(me, "maker_id"), NULL);
+        if (id) snprintf(own_maker_id, sizeof own_maker_id, "%s", id), known = 1;
+        json_free(me);
+        if (!known) {  // (no server answer: a stable id from the token, for this session)
+            uint64_t h = 1469598103934665603ull;
+            for (const char *p = g_mod.token; *p; p++) h = (h ^ (uint8_t)*p) * 1099511628211ull;
+            return 0x4000000000000000ull | (h & 0x0000ffffffffffffull) | 1;
+        }
+    }
+    return pid_of_maker_id(own_maker_id);
 }
 
 // Makers of the courses served (fake player ids -> names), for the user records the game asks for next.
-static struct { uint64_t pid; char name[48]; } makers[64];
+// A maker's player id is a hash of their maker ID on our server (the player's own too, once /api/me answered), so the
+// game's "is this my course / me" comparisons work; the table maps ids back to maker IDs and names.
+#define NMAKERS 512
+static struct { uint64_t pid; char name[48]; char maker_id[16]; } makers[NMAKERS];
 static int nmakers;
 
-static uint64_t maker_pid(const char *maker_id, const char *name) {
+static uint64_t pid_of_maker_id(const char *maker_id) {
     uint64_t h = 1469598103934665603ull;
     for (const char *p = maker_id ? maker_id : ""; *p; p++) h = (h ^ (uint8_t)*p) * 1099511628211ull;
-    uint64_t pid = 0x5000000000000000ull | (h & 0x0000ffffffffffffull) | 1;
+    return 0x5000000000000000ull | (h & 0x0000ffffffffffffull) | 1;
+}
+
+static uint64_t maker_pid(const char *maker_id, const char *name) {
+    uint64_t pid = pid_of_maker_id(maker_id);
     pthread_mutex_lock(&state_lock);
     int i = 0;
     while (i < nmakers && makers[i].pid != pid) i++;
     if (i == nmakers) {
-        i = nmakers < 64 ? nmakers++ : (int)(pid % 64);
+        i = nmakers < NMAKERS ? nmakers++ : (int)(pid % NMAKERS);
         makers[i].pid = pid;
     }
-    snprintf(makers[i].name, sizeof makers[i].name, "%s", name && *name ? name : "Maker");
+    if (name && *name) snprintf(makers[i].name, sizeof makers[i].name, "%s", name);
+    else if (!makers[i].name[0]) snprintf(makers[i].name, sizeof makers[i].name, "Maker");
+    snprintf(makers[i].maker_id, sizeof makers[i].maker_id, "%s", maker_id ? maker_id : "");
     pthread_mutex_unlock(&state_lock);
     return pid;
 }
@@ -116,6 +145,20 @@ static void maker_name(uint64_t pid, char *out, size_t cap) {
         if (makers[i].pid == pid) snprintf(out, cap, "%s", makers[i].name);
     pthread_mutex_unlock(&state_lock);
 }
+
+// for world.c
+uint64_t mod_maker_pid(const char *maker_id, const char *name) { return maker_pid(maker_id, name); }
+void mod_maker_name(uint64_t pid, char *out, size_t cap) { maker_name(pid, out, cap); }
+bool mod_maker_id(uint64_t pid, char out[16]) {  // the maker ID behind a player id ("" unknown)
+    pthread_mutex_lock(&state_lock);
+    out[0] = 0;
+    if (pid == mod_player_pid()) snprintf(out, 16, "%s", own_maker_id);
+    for (int i = 0; i < nmakers && !out[0]; i++)
+        if (makers[i].pid == pid) snprintf(out, 16, "%s", makers[i].maker_id);
+    pthread_mutex_unlock(&state_lock);
+    return out[0] != 0;
+}
+const char *mod_own_maker_id(void) { return own_maker_id; }
 
 static bool hundred_rules(void) { return mod_hundred_rules(); }
 
@@ -217,20 +260,23 @@ WRAPPER(get_status, 0x14ec2d0) {
         uint32_t clears = (uint32_t)json_num(json_get(run, "clears"), 0);
         uint32_t coins = (uint32_t)json_num(json_get(run, "coins"), 0);
         uint32_t score = (uint32_t)json_num(json_get(run, "score"), 0);
-        // Present for every difficulty: New Game reads the start lives from here (the game has no default).
+        // Present for every difficulty: New Game reads the start lives from here (the game has no default). The
+        // run state +4 is 1 for a run that can go on: the menu offers Continue only for state 1 or 2 with lives
+        // (+0x30) and a history [obs 0x7101a26850]; 0 resets its map to an empty run.
+        bool cont = active && lives > 0 && !complete;
+        uint8_t lv = (uint8_t)(lives > 255 ? 255 : lives);
         s8(r + 0x00, 1);
-        s32(r + 0x04, 0);
+        s32(r + 0x04, cont ? 1 : 0);
         s8(r + 0x08, (uint8_t)(coins % 100));
         s32(r + 0x0c, score);
-        s8(r + 0x10, 0);
+        s8(r + 0x10, cont ? lv : 0);
         s8(r + 0x11, start_lives);
         s64(r + 0x18, 0);
         s64(r + 0x20, 0);
         // The play part: a run that can go on (Continue) has lives; a finished or completed one shows none.
-        bool cont = active && lives > 0 && !complete;
         s8(r + 0x28, cont ? 1 : 0);
         s32(r + 0x2c, cont ? clears : 0);
-        s8(r + 0x30, cont ? (uint8_t)(lives > 255 ? 255 : lives) : 0);
+        s8(r + 0x30, cont ? lv : 0);
         pthread_mutex_lock(&state_lock);
         runs[d].coins = coins, runs[d].score = score, runs[d].complete = complete;
         runs[d].active = cont, runs[d].lives = lives, runs[d].clears = clears;
@@ -242,6 +288,50 @@ WRAPPER(get_status, 0x14ec2d0) {
     netobj_unlock(c);
     json_free(st);
     finish(c, no, true, 0);
+}
+
+// ---- the next course, known before the game asks for it (the flow's start card shows it, as SMM1's does): the
+// server's queue only moves on a result, so asking for its head now gives what the game's own search gets later.
+
+static void *prefetch_thread(void *arg) {
+    int d = (int)(intptr_t)arg;
+    char path[96];
+    snprintf(path, sizeof path, "/api/endless/%s/next?count=1", DIFF[d]);
+    Json *j = srv_call("GET", path, NULL, NULL);
+    Json *m = json_at(json_get(j, "courses"), 0);
+    uint32_t id;
+    if (m && code_to_data_id(json_str(json_get(m, "code"), ""), &id)) {
+        const char *maker = json_str(json_get(m, "maker"), "");
+        note_course(id, json_str(json_get(m, "name"), ""), maker, style_index(json_str(json_get(m, "style"), "")));
+        pthread_mutex_lock(&state_lock);
+        if (!runs[d].started) runs[d].current = id;
+        pthread_mutex_unlock(&state_lock);
+        MLOG("next course (%s): %s %s\n", DIFF[d], json_str(json_get(m, "code"), ""), json_str(json_get(m, "name"), ""));
+    }
+    json_free(j);
+    return NULL;
+}
+
+void endless_prefetch(int d) {
+    if (d < 0 || d > 3) return;
+    pthread_t th;
+    pthread_create(&th, NULL, prefetch_thread, (void *)(intptr_t)d);
+    pthread_detach(th);
+}
+
+// A run the flow starts (hundred_run_start): a new one has the start lives at once (the status the start card reads
+// before the game's New Game request is answered); a continued one has the server's.
+void endless_prepare_run(int d, bool resume) {
+    if (d < 0 || d > 3) return;
+    static const uint32_t totals[4] = {8, 16, 16, 6};
+    pthread_mutex_lock(&state_lock);
+    if (!resume) {
+        memset(&runs[d], 0, sizeof runs[d]);
+        runs[d].active = true, runs[d].lives = hundred_rules() ? 100 : 5, runs[d].goal = totals[d];
+    }
+    runs[d].current = 0;
+    pthread_mutex_unlock(&state_lock);
+    if (resume) endless_prefetch(d);
 }
 
 // ---- InitEndlessMode: New Game
@@ -264,6 +354,7 @@ WRAPPER(init_run, 0x14ece20) {
         bridge_event("new", d);
         LOG("[mod] New Game: %s, %s rules, %u lives\n", DIFF[d], g_mod.ruleset,
             (uint32_t)json_num(json_get(json_get(j, "run"), "lives"), 0));
+        endless_prefetch(d);
     }
     json_free(j);
     finish(c, no, ok, 2);
@@ -370,9 +461,15 @@ static void fill_course(uint64_t e, Json *m, uint32_t data_id, uint32_t difficul
     s32(e + 0x1a4, 0);
     uint32_t plays = (uint32_t)json_num(json_get(m, "plays"), 0), clears = (uint32_t)json_num(json_get(m, "clears"), 0),
              attempts = (uint32_t)json_num(json_get(m, "attempts"), 0);
-    uint32_t stats[10] = {plays, attempts, 0, clears, 0};  // play statistics (keys 0-4); ratings unknown: 0
+    // play statistics (keys 0-4: plays, attempts, ?, clears, versus plays), two unknown counters, the ratings
+    // (key 0: likes) [obs converter 0x71014daf60: +0x1a8.. play stats, +0x1bc/+0x1c0 map 0x40, +0x1c4.. ratings]
+    uint32_t stats[10] = {plays, attempts, 0, clears, 0, 0, 0, (uint32_t)json_num(json_get(m, "likes"), 0)};
     for (int i = 0; i < 10; i++) s32(e + 0x1a8 + 4 * i, stats[i]);
-    s64(e + 0x1d0, 0), s64(e + 0x1d8, 0), s32(e + 0x1e0, 0), s32(e + 0x1e4, 0), s32(e + 0x1e8, 0);
+    // time stats: first clear, world record holder (player ids), world record and the maker's time (ms)
+    const char *fc = json_str(json_get(m, "first_clear"), ""), *wr = json_str(json_get(m, "record_holder"), "");
+    s64(e + 0x1d0, *fc ? maker_pid(fc, NULL) : 0), s64(e + 0x1d8, *wr ? maker_pid(wr, NULL) : 0);
+    s32(e + 0x1e0, (uint32_t)json_num(json_get(m, "record_ms"), 0)), s32(e + 0x1e4, 0);
+    s32(e + 0x1e8, (uint32_t)json_num(json_get(m, "comments"), 0));
     // thumbnails / record holders: none (empty addresses: the game downloads nothing for them)
     s64(e + 0x1f0, data_id);
     if (g64(e + 0x200)) s8(g64(e + 0x200), 0);
@@ -385,9 +482,14 @@ static void fill_course(uint64_t e, Json *m, uint32_t data_id, uint32_t difficul
     s8(e + 0x540, 1);
 }
 
+void mod_fill_course(uint64_t e, Json *m, uint32_t data_id, uint32_t difficulty) {
+    fill_course(e, m, data_id, difficulty);
+}
+
 WRAPPER(search_courses, 0x14d8550) {
-    if (g32(no + NO_SEARCH_TYPE) != 0xE) {  // other searches (Course World's lists): the game's own code (offline)
-        guest_call_orig(c, MAIN_ADDR(0x14d8550));
+    if (g32(no + NO_SEARCH_TYPE) != 0xE) {  // Course World's lists (world.c)
+        extern void world_search(Cpu * c, uint64_t no, uint32_t type);
+        world_search(c, no, g32(no + NO_SEARCH_TYPE));
         return;
     }
     uint32_t d = req_diff(no, NO_SEARCH_DIFF);
@@ -409,41 +511,11 @@ WRAPPER(search_courses, 0x14d8550) {
     }
     s32(ring + 0x10, count);
     netobj_unlock(c);
+    last_search_d = (int)d;
     bridge_event("list", d);
     LOG("[mod] course list (%s): %u courses%s\n", DIFF[d], count, json_bool(json_get(j, "widened"), false) ? " (band widened)" : "");
     json_free(j);
     finish(c, no, count > 0, 2);
-}
-
-// GetUsers for a list of players (the makers of the courses just listed): request ring of u64 player ids at
-// +0x72b10 (+8 capacity, +0xc head, +0x10 count); answer: the user ring at +0x68, one record each (name from the
-// course list, the default Mii).
-void user_entry_reset(uint64_t e);                                     // online.c
-void mii_default_charinfo(uint8_t out[0x58], const char *nickname);  // runtime/services/mii.c
-
-WRAPPER(get_users, 0x14d02d0) {
-    netobj_lock(c);
-    uint64_t req = no + 0x72b10, out = no + 0x68;
-    uint32_t rcap = g32(req + 8), rhead = g32(req + 0xc), rcount = g32(req + 0x10);
-    uint32_t ocap = g32(out + 8), n = 0;
-    s64(out + 0xc, 0);
-    for (uint32_t i = 0; i < rcount && rcap && n < ocap; i++) {
-        uint64_t pid = g64(g64(req) + 8ull * ((rhead + i) % rcap));
-        if (!pid) continue;
-        char name[48];
-        if (pid == mod_player_pid()) snprintf(name, sizeof name, "%s", getenv("RECOMP_USER_NAME") ? getenv("RECOMP_USER_NAME") : "Player");
-        else maker_name(pid, name, sizeof name);
-        uint64_t e = g64(out) + 0x1f0ull * n++;
-        user_entry_reset(e);
-        put_utf16(g64(e + 0x08), g32(e + 0x10), name);
-        s64(e + 0x58, pid);
-        mii_default_charinfo((uint8_t *)(uintptr_t)(e + 0x9c), name);
-        s8(e + 0x1ec, 1);
-    }
-    s32(out + 0x10, n);
-    netobj_unlock(c);
-    MLOG("GetUsers: %u players\n", n);
-    finish(c, no, true, 0);
 }
 
 // Course details the game asks for around a course start (names [?]; outputs as the originals write them): two
@@ -451,14 +523,6 @@ WRAPPER(get_users, 0x14d02d0) {
 // clear), a list for a course (ring at +0xe85a0, 0x18-byte entries), and a check on an id (+0x141480 -> u32 result
 // at +0x141604, 0 = fine). Answered empty: no records, an empty list, the check passes. Not connected, the game
 // shows a communication error at times (it doesn't need them to play).
-WRAPPER(course_records, 0x14ebc60) {
-    netobj_lock(c);
-    s8(no + 0xe8542, 0);
-    s8(no + 0xe8592, 0);
-    netobj_unlock(c);
-    finish(c, no, true, 0);
-}
-
 WRAPPER(course_list_info, 0x14ec0d0) {
     netobj_lock(c);
     s64(no + 0xe85ac, 0);  // head 0, count 0
@@ -485,19 +549,7 @@ WRAPPER(course_comments, 0x14e8ec0) {
     finish(c, no, true, 0);
 }
 
-// A play report for a course (data id +0xe8548, two bytes, the "notify the maker" setting), sent after a skip that
-// followed a miss: nothing to store, accepted.
-WRAPPER(play_report, 0x14e6b90) {
-    MLOG("play report for %llu: accepted\n", (unsigned long long)g64(no + 0xe8548));
-    finish(c, no, true, 0);
-}
-
-// The play result of a course (data id +0x8e618, time +0x8e620 and more, with a recording of the play uploaded
-// first [inf]): our server keeps its own statistics from the Endless reports; accepted.
-WRAPPER(play_result, 0x14e30e0) {
-    MLOG("play result for %llu: accepted\n", (unsigned long long)g64(no + 0x8e618));
-    finish(c, no, true, 0);
-}
+// (CanPostRatingAndComment, PostRatingInfo, PostPlayResult and the GetUsers of listed players: world.c)
 
 // Course records by data id (asked for after a clear, for the map): the ids are in a linked list at +0x74748 (count
 // +0x74760); the answer goes to the course list ring at +0x30780, as for a search. From GET /api/courses/<code>.
@@ -537,10 +589,28 @@ WRAPPER(get_courses, 0x14dbae0) {
     finish(c, no, count > 0 || n == 0, 2);
 }
 
-// A post about a course (id +0x141480, a byte +0x141518, a text of up to 100 characters +0x141528 [inf: a comment or
-// a report]): accepted, not stored.
+// ReportFromBugDetection (142): data id +0x141480, a kind +0x141518, a text +0x141528. The game posts it when a
+// downloaded course fails its own validity check (main+0xfcab10 in the download job; then "The course data is
+// corrupt."). In an Endless run the course is reported to the server as broken (it leaves the run's queue) and the
+// bridge answers the window and goes on.
 WRAPPER(course_post, 0x14f2910) {
-    MLOG("course post for %llu (kind %u): accepted\n", (unsigned long long)g64(no + 0x141480), g8(no + 0x141518));
+    uint64_t id = g64(no + 0x141480);
+    LOG("[mod] course %llu reported broken by the game (kind %u)\n", (unsigned long long)id, g8(no + 0x141518));
+    int d = -1;
+    pthread_mutex_lock(&state_lock);
+    for (int i = 0; i < 4 && d < 0; i++)  // (the run whose next course this is: the head of its server queue)
+        if (runs[i].current == id || runs[i].started == id) d = i;
+    pthread_mutex_unlock(&state_lock);
+    if (d < 0 && last_search_d >= 0 && runs[last_search_d].active) d = last_search_d;
+    if (d >= 0) {
+        char code[12], path[64], body[96];
+        code_of(id, code);
+        snprintf(path, sizeof path, "/api/endless/%s/result", DIFF[d]);
+        snprintf(body, sizeof body, "{\"code\":\"%s\",\"result\":\"broken\"}", code);
+        Json *j = srv_call("POST", path, body, NULL);
+        json_free(j);
+        bridge_event("broken", (uint32_t)d);
+    }
     finish(c, no, true, 0);
 }
 
@@ -635,7 +705,8 @@ WRAPPER(start_course, 0x14ecf30) {
     }
     char path[64], body[160];
     snprintf(path, sizeof path, "/api/endless/%s/result", DIFF[d]);
-    snprintf(body, sizeof body, "{\"code\":\"%s\",\"result\":\"death\"}", code);
+    snprintf(body, sizeof body, "{\"code\":\"%s\",\"result\":\"%s\"}", code,
+             bridge_take_start_over() ? "start_over" : "death");
     Json *j = srv_call("POST", path, body, NULL);
     if (j) {
         set_play(c, no, d, (uint32_t)json_num(json_get(j, "lives"), 0), (uint32_t)json_num(json_get(j, "clears"), 0));
@@ -646,12 +717,24 @@ WRAPPER(start_course, 0x14ecf30) {
     finish(c, no, j != NULL, 2);
 }
 
+// Mario's form at the goal (player 0, read when the clear is posted): 0 small, 1 big, -1 unknown. Player actors at
+// *(main+0x2c19290) + 0x28, form at player +0x4a8, the form -> size class table at main+0x23d5e0c (1 = small size).
+static int player_form(void) {
+    uint64_t holder = g64(MAIN_ADDR(0x2c19290));
+    uint64_t pl = holder ? g64(holder + 0x28) : 0;
+    if (!pl) return -1;
+    uint32_t form = g32(pl + 0x4a8);
+    if (form >= 16) return -1;
+    return g32(MAIN_ADDR(0x23d5e0c) + 4ull * form) == 1 ? 0 : 1;
+}
+
 // ---- DominateEndlessModeCourse: a clear (pending 1-Ups, coins, score with the time bonus)
 
 WRAPPER(clear_course, 0x14ed120) {
     uint32_t d = req_diff(no, NO_DIFF);
     uint64_t id = g64(no + NO_CLEAR_ID);
     uint32_t pending = g8(no + NO_PENDING), coins = g8(no + NO_COINS), score = g32(no + NO_SCORE);
+    int form = player_form();
     pthread_mutex_lock(&state_lock);
     uint32_t dcoins = (coins + 100 - runs[d].coins % 100) % 100;  // (the game sends coins below 100)
     uint32_t dscore = score >= runs[d].score ? score - runs[d].score : 0;
@@ -669,11 +752,14 @@ WRAPPER(clear_course, 0x14ed120) {
         set_play(c, no, d, lives, clears);
         pthread_mutex_lock(&state_lock);
         runs[d].coins += dcoins, runs[d].score += dscore, runs[d].started = 0;
+        if (form >= 0) runs[d].form = form;
         add_credit(d, id);
         if (complete) runs[d].complete = true;
         pthread_mutex_unlock(&state_lock);
         bridge_event("clear", d);
-        LOG("[mod] clear %s (%s): lives %u, clears %u%s\n", code, DIFF[d], lives, clears,
+        if (!complete) endless_prefetch((int)d);
+        LOG("[mod] clear %s (%s): lives %u, clears %u, pending %u, Mario %s%s\n", code, DIFF[d], lives, clears,
+            pending, form == 0 ? "small" : form == 1 ? "big" : "?",
             complete ? " -- 100 Mario Challenge complete!" : "");
     }
     json_free(j);
@@ -695,6 +781,7 @@ WRAPPER(skip_course, 0x14ed5e0) {
         runs[d].started = 0;
         pthread_mutex_unlock(&state_lock);
         bridge_event("skip", d);
+        endless_prefetch((int)d);
         LOG("[mod] skip %s (%s): lives %u\n", code, DIFF[d], (uint32_t)json_num(json_get(j, "lives"), 0));
     }
     json_free(j);
@@ -718,7 +805,10 @@ static void post_simple(Cpu *c, uint64_t no, const char *what) {
     finish(c, no, j != NULL, 2);
 }
 
-WRAPPER(suspend_run, 0x14ed360) { post_simple(c, no, "suspend"); }
+WRAPPER(suspend_run, 0x14ed360) {
+    post_simple(c, no, "suspend");
+    bridge_event("suspend", req_diff(no, NO_DIFF));
+}
 WRAPPER(finish_run, 0x14ed4a0) { post_simple(c, no, "finish"); }
 
 // The run as the flow sees it (hundred.h hundred_run_status): from the last server answers, no network here.
@@ -736,8 +826,9 @@ void endless_fill_status(struct hundred_status *out, int active_d) {
         static const int totals[4] = {8, 16, 16, 6};
         out->lives = (int)runs[active_d].lives;
         out->cleared = (int)runs[active_d].clears;
-        out->total = runs[active_d].goal ? (int)runs[active_d].goal : totals[active_d];
+        out->total = !hundred_rules() ? 0 : runs[active_d].goal ? (int)runs[active_d].goal : totals[active_d];
         out->ncredits = runs[active_d].ncredits < 16 ? runs[active_d].ncredits : 16;
+        out->form = runs[active_d].form;
         memcpy(out->credits, runs[active_d].credits, sizeof out->credits);
         uint64_t id = runs[active_d].current;
         if (id) {
@@ -757,6 +848,14 @@ void endless_forget_run(int d) {
     pthread_mutex_unlock(&state_lock);
 }
 
+bool endless_has_course(uint64_t id) {  // world.c: is this course the one an Endless run is on
+    pthread_mutex_lock(&state_lock);
+    bool v = false;
+    for (int d = 0; d < 4; d++) v |= id && (runs[d].current == id || runs[d].started == id);
+    pthread_mutex_unlock(&state_lock);
+    return v;
+}
+
 bool endless_run_complete(uint32_t d) {
     pthread_mutex_lock(&state_lock);
     bool v = d < 4 && runs[d].complete;
@@ -773,13 +872,9 @@ void endless_register(void) {
     hle_override(MAIN_ADDR(0x14eddc0), get_rank, "mod: GetEndlessModeRank");
     hle_override(MAIN_ADDR(0x14d8550), search_courses, "mod: SearchCourses (Endless)");
     hle_override(MAIN_ADDR(0x14de010), get_course_file, "mod: GetObject (course file)");
-    hle_override(MAIN_ADDR(0x14d02d0), get_users, "mod: GetUsers (players)");
-    hle_override(MAIN_ADDR(0x14ebc60), course_records, "mod: course records");
     hle_override(MAIN_ADDR(0x14ec0d0), course_list_info, "mod: course list info");
     hle_override(MAIN_ADDR(0x14f17a0), id_check, "mod: id check");
     hle_override(MAIN_ADDR(0x14e8ec0), course_comments, "mod: course comments");
-    hle_override(MAIN_ADDR(0x14e6b90), play_report, "mod: play report");
-    hle_override(MAIN_ADDR(0x14e30e0), play_result, "mod: play result");
     hle_override(MAIN_ADDR(0x14dbae0), get_courses, "mod: GetCourses (by id)");
     hle_override(MAIN_ADDR(0x14f2910), course_post, "mod: course post");
     hle_override(MAIN_ADDR(0x14ecf30), start_course, "mod: StartEndlessModeCourse");

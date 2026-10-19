@@ -25,6 +25,7 @@ struct hundred_status {
     int style;                      // the current (or last) course's game style: 0 SMB1, 1 SMB3, 2 SMW, 3 NSMBU, 4 SM3DW
     int ncredits;                   // the courses cleared so far in this run, in order
     struct hundred_credit credits[16];
+    int form;   // Mario's power-up at the last goal: 0 small, 1 big (the ending's Mario)
 };
 
 enum {

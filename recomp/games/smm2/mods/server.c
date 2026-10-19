@@ -7,16 +7,36 @@
 #include "../../../runtime/net/http.h"
 #include "../../../runtime/net/json.h"
 
-static int request(const char *method, const char *path, const char *body, size_t blen, HttpResponse *r) {
+static int request_typed(const char *method, const char *path, const char *body, size_t blen, const char *type,
+                         HttpResponse *r) {
     char url[512], hdr[256];
+    mod_server_ready();  // (courses=tgrcode: the built-in server starts before the first request)
     snprintf(url, sizeof url, "%s%s", g_mod.server, path);
     hdr[0] = 0;
     if (g_mod.token[0]) snprintf(hdr, sizeof hdr, "Authorization: Bearer %s\r\n", g_mod.token);
-    if (body) strncat(hdr, "Content-Type: application/json\r\n", sizeof hdr - strlen(hdr) - 1);
+    if (body) {
+        size_t n = strlen(hdr);
+        snprintf(hdr + n, sizeof hdr - n, "Content-Type: %s\r\n", type);
+    }
     int st = http_request(method, url, hdr, body, blen, g_mod.timeout_ms, r);
+    bool text = body && !strcmp(type, "application/json");
     if (!st) LOG("[mod] %s %s: %s\n", method, path, r->error);
-    else MLOG("%s %s -> %d (%zu bytes)%s%.300s\n", method, path, st, r->len, body ? " body " : "", body ? body : "");
+    else MLOG("%s %s -> %d (%zu bytes)%s%.300s\n", method, path, st, r->len, text ? " body " : "", text ? body : "");
     return st;
+}
+
+static int request(const char *method, const char *path, const char *body, size_t blen, HttpResponse *r) {
+    return request_typed(method, path, body, blen, "application/json", r);
+}
+
+Json *srv_post_bytes(const char *path, const void *data, size_t len, int *status) {
+    HttpResponse r;
+    int st = request_typed("POST", path, data, len, "application/octet-stream", &r);
+    if (status) *status = st;
+    Json *j = st >= 200 && st < 300 ? json_parse(r.body, r.len) : NULL;
+    if (st && !j) LOG("[mod] POST %s: HTTP %d %.200s\n", path, st, r.body ? r.body : "");
+    http_free(&r);
+    return j;
 }
 
 Json *srv_call(const char *method, const char *path, const char *body, int *status) {

@@ -39,6 +39,8 @@ int lyt_tex_add(int w, int h, uint8_t *px);  // takes px
 const LTex *lyt_tex(int id);                 // NULL for -1 / unknown
 // BFLIM -> RGBA8 (malloc'd), with the format's channel mapping (luminance / alpha formats replicate one channel).
 uint8_t *lyt_flim_decode(const uint8_t *d, size_t n, int *w, int *h);
+// A GX2 surface (Cafe format code as in BFLIM, tile mode, swizzle word) -> RGBA8 with the raw channels (BC4/BC5: R / RG)
+uint8_t *lyt_surface_raw(const uint8_t *d, size_t n, uint32_t w, uint32_t h, int fmt, uint32_t mode, uint32_t swz);
 
 // ---------------------------------------------------------------- fonts
 typedef struct {
@@ -239,6 +241,7 @@ typedef struct {
 #define LQ_WRAP_S1 4
 #define LQ_WRAP_T1 6
 #define LQ_LINEAR (1u << 8)
+#define LQ_TRI (1u << 9)  // a triangle: corners TL, TR, BL (BR = TR + BL - TL); only the half s + t < 1 is drawn
 #define LQ_COMB_C 12  // 0 replace (tex1), 1 modulate, 2 add, 5 subtract, 15 none
 #define LQ_COMB_A 16
 #define LQ_BLEND_OP 20  // 0 off, 1 add, 2 subtract, 3 reverse subtract, 4 min, 5 max

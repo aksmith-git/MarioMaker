@@ -12,6 +12,7 @@
 
 #include "../games/smm2/mods/smm1/lyt.h"
 #include "../games/smm2/mods/smm1/smm1_data.h"
+#include "../games/smm2/mods/smm1/bfres.h"
 
 // ---- a minimal PNG writer (stored deflate blocks)
 static uint32_t crc_table[256];
@@ -82,6 +83,14 @@ int main(int argc, char **argv) {
     if (argc < 3) {
         fprintf(stderr, "usage: %s <out.png> <Layout> [Anim@frame ...] [text:Pane=...] [hide:Pane] [show:Pane]\n", argv[0]);
         return 2;
+    }
+    if (!strcmp(argv[1], "--bfres")) {  // --bfres <Output.bfres>: what bfres.c reads
+        size_t n;
+        uint8_t *d = smm1_read_file(argv[2], &n);
+        Bfres *b = d ? bfres_load(d, n) : NULL;
+        if (!b) return 1;
+        bfres_dump(b);
+        return 0;
     }
     if (!smm1_data_open()) return 1;
     if (!strcmp(argv[1], "--flow")) return flow_test_main(argc - 1, argv + 1);

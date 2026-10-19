@@ -5,11 +5,13 @@
 // meta/meta.xml whose title id is Super Mario Maker's (US 1018DC00, EU 1018DD00, JP 1014B700) next to a content/
 // folder. The disc's base game (v16) and the update (v208, which has Super Expert) are overlaid, newer over older.
 //
-// At the first launch that needs them, the files are generated into <data folder>/mods-generated/smm1-ui-v1/:
+// At the first launch that needs them, the files are generated into <data folder>/mods-generated/smm1-ui-v2/:
 //   layout/<Name>.arc   every layout archive of Pack/{Layout,Nwk,NormalPlay,Lcl}.pack and the loose Layout/*.szs
 //                       (Yaz0 removed: SARC of blyt/ anim/ timg/)
 //   font/<Name>.bffnt   the bitmap fonts of Font/BmpFont_<region>.szs
 //   msg/<Layout>.msbt   the English layout texts (Message/LayoutMsg_<US|EU>en.szs), common/<Group>/<Name>.msbt
+//   model/<Name>.bfres  the ending scene's models from Pack/StaticSkin.pack: <Style>_Object_peach (Peach / Toad and
+//                       the ground), <Style>_Player_{Mario,SpMario}Mdl (Mario), Yaz0 and SARC removed
 // Nothing of it is in the repository; the folder is the player's own, like the rest of the data folder.
 #include "smm1_data.h"
 
@@ -23,7 +25,7 @@
 
 #include "lyt.h"
 
-#define CACHE "mods-generated/smm1-ui-v1"
+#define CACHE "mods-generated/smm1-ui-v2"
 #define LOGP "[smm1ui] "
 
 #ifdef _WIN32
@@ -268,6 +270,34 @@ static bool generate(void) {
             if (b) put_pack(b, n), free(b);
         }
     }
+    // the ending scene's models (Pack/StaticSkin.pack -> Model/<Name>.szs -> Output.bfres)
+    {
+        size_t n;
+        uint8_t *pack = dump_file("Pack/StaticSkin.pack", &n);
+        LSarc ps;
+        if (pack && lyt_sarc_open(&ps, pack, n)) {
+            static const char *styles[4] = {"M1", "M3", "MW", "WU"}, *kinds[3] = {"Object_peach", "Player_MarioMdl", "Player_SpMarioMdl"};
+            for (int st = 0; st < 4; st++)
+                for (int k = 0; k < 3; k++) {
+                    char rel[128], out[128];
+                    snprintf(rel, sizeof rel, "Model/%s_%s.szs", styles[st], kinds[k]);
+                    size_t zn, an;
+                    const uint8_t *z = lyt_sarc_get(&ps, rel, &zn);
+                    uint8_t *arc = z ? lyt_yaz0(z, zn, &an) : NULL;
+                    LSarc inner;
+                    if (arc && lyt_sarc_open(&inner, arc, an)) {
+                        size_t bn;
+                        const uint8_t *bf = lyt_sarc_get(&inner, "Output.bfres", &bn);
+                        snprintf(out, sizeof out, "model/%s_%s.bfres", styles[st], kinds[k]);
+                        if (bf) put(out, bf, bn);
+                        lyt_sarc_close(&inner);
+                    }
+                    free(arc);
+                }
+            lyt_sarc_close(&ps);
+        }
+        free(pack);
+    }
     static const char *fonts[] = {"Font/BmpFont_US.szs", "Font/BmpFont_EU.szs", "Font/BmpFont_JP.szs", NULL};
     static const char *lmsg[] = {"Message/LayoutMsg_USen.szs", "Message/LayoutMsg_EUen.szs", NULL};
     static const char *cmsg[] = {"Message/CommonMsg_USen.szs", "Message/CommonMsg_EUen.szs", NULL};
@@ -278,7 +308,7 @@ static bool generate(void) {
     fprintf(stderr, LOGP "generated %d files into " CACHE " from the SMM1 dump\n", g_written);
     if (!f || !l) return false;
     char ver[64];
-    int n = snprintf(ver, sizeof ver, "smm1-ui-v1 titles %d newest v%d\n", g_ntitles, g_titles[g_ntitles - 1].version);
+    int n = snprintf(ver, sizeof ver, "smm1-ui-v2 titles %d newest v%d\n", g_ntitles, g_titles[g_ntitles - 1].version);
     put("done", (const uint8_t *)ver, (size_t)n);
     return true;
 }
@@ -339,6 +369,12 @@ bool smm1_data_open(void) {
     bool ok = g_state == 1;
     pthread_mutex_unlock(&g_lock);
     return ok;
+}
+
+uint8_t *smm1_model(const char *name, size_t *n) {
+    char p[300];
+    snprintf(p, sizeof p, CACHE "/model/%s.bfres", name);
+    return smm1_read_file(p, n);
 }
 
 uint8_t *smm1_common_msbt(const char *group_and_name, size_t *n) {

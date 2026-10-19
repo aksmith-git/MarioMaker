@@ -29,6 +29,7 @@ Environment variables, or `smm2mods.ini` (`key=value` lines) in the data folder 
 | `RECOMP_MOD_SERVER=<url>` | `server=` | the course server, plain `http://` (default `http://127.0.0.1:8080`) |
 | `RECOMP_MOD_TOKEN=<token>` | `token=` | your account's token on that server (see below); keep it private |
 | `RECOMP_MOD_RULESET=hundred\|smm2` | `ruleset=` | `hundred`: Course World's Endless Challenge button opens SMM1's 100 Mario Challenge (default); `smm2`: it opens SMM2's own Endless Challenge |
+| `RECOMP_MOD_COURSES=server\|tgrcode` | `courses=` | `server` (default): the server above; `tgrcode` (iOS default, with the mod on): a course server built into the app on a loopback port, with a local account, fed from TGRCode's archive of SMM2 courses (needs the course key table: the mod writes it once from your game into `mods-generated/course_table.bin`, private); falls back to `server=` when the build has no built-in server. Also in the Mods tab ("Courses: TGRCode"), from the next start |
 | `RECOMP_MOD_TIMEOUT_MS=<n>` | `timeout_ms=` | per request (default 8000) |
 | `RECOMP_MOD_LOG=1` | `log=1` | log every request and answer |
 
@@ -81,13 +82,35 @@ World screen runs the game's own code, which finds no connection and shows "A co
 | DominateEndlessModeCourse (clear) | `POST /api/endless/<d>/result {"result":"clear", pending, coins, score}` |
 | PassEndlessModeCourse (skip) | `result: skip` |
 | Suspend / FinishEndlessMode | `POST /api/endless/<d>/suspend`, `/finish` |
-| GetUsers (own) | `GET /api/me` (name), best per difficulty (completed 100 Mario runs under `hundred`) |
-| GetUsers (players) | the makers of the listed courses (names from the course list, the default Mii) |
+| GetUsers (own) | `GET /api/me` (name, maker ID), best per difficulty (completed 100 Mario runs under `hundred`) |
 | GetCourses (by id) | `GET /api/courses/<code>` |
-| comments, play report / result, two course records, a course post, an id check | answered empty or accepted (nothing the run needs) |
+| course list info, an id check | answered empty / passes |
+| ReportFromBugDetection (the game found a downloaded course invalid: "The course data is corrupt.") | in a run: `result: broken` (the course leaves the queue); the bridge answers the window, the flow hears `HUNDRED_SKIP`, the next course comes |
 | GetApplicationConfig | Endless switched on for the four difficulties |
 
 Data ids and course codes map 1:1 (`games/smm2/mods/course.c`, the same arithmetic as `mmk_formats::course_id`).
+A maker's player id is a hash of their maker ID on our server (the player's own too), so the game's "my course"
+and "me" checks work.
+
+### Course World against our server (`games/smm2/mods/world.c`)
+
+The rest of Course World goes to our server too. Each request's name is the DataStore (SMM2) method its function
+calls (read from the client vtable slot it uses):
+
+| Request (method id) | Function (main+) | Answered from |
+|---|---|---|
+| course lists: PickUp (84, "Hot"), PointRanking (71, "Popular", by difficulty), Latest (73, "New"), Advanced (72, detailed search: difficulty, style, sort), PostedBy (74, a maker's courses), BestTime / FirstClear (81 / 80) | 0x14d8550 (search type +0x746e8) | `GET /api/courses?sort=popular\|new&style=&offset=&limit=100`, filtered into the game's difficulty bands; a maker's courses from `GET /api/makers/<id>`; followed / liked / played-by lists and versus: empty |
+| GetUserOrCourse (131): the ID search | 0x14dc0d0 | `GET /api/courses/<code>`, else `GET /api/makers/<code>` |
+| GetUsers (48): the makers of listed courses, a maker's page | 0x14d02d0, 0x14d7780, 0x14d2f00 | `GET /api/makers/<id>`: name, maker code, likes received and maker points from their courses; the default Mii |
+| SearchUsers* (50, 51, 57, 58): leaderboards | 0x14d1820 (kind +0x73a14) | `GET /api/rankings/maker_points` (makers, also the period's board), `endless_<d>` (Endless), `clears` |
+| CanPostRatingAndComment (61) | 0x14ebc60 | allowed |
+| PostRatingInfo (104): like / boo | 0x14e6b90 | `POST /api/courses/<code>/like` or `/boo` |
+| PostPlayResult (96) | 0x14e30e0 | `POST /api/courses/<code>/play`, and `/clear {time_ms}` on a clear (not for Endless courses: those are counted by the Endless reports) |
+| SearchComments (94 / 95), PostCommentText (91) | 0x14e8ec0, 0x14e96b0 | `GET` / `POST /api/courses/<code>/comments` (text) |
+| CanPostCourse (60), the course upload (66 + upload + 67), DeleteObject | 0x14e0d40, 0x14de3f0, 0x14e0c50 | allowed; the game's own course (header "SCDL", not yet encrypted) to `POST /api/courses` as the signed-in maker, its code back as the upload's data id; `DELETE /api/courses/<code>` |
+
+Course World courses download and play exactly like the Endless ones (the same GetObject). Not served: thumbnails
+(the game shows its placeholder), Super Worlds, Ninji speedruns, notifications, follows, Network Play.
 
 ### The bridge (100 Mario)
 
@@ -100,9 +123,10 @@ How a server course starts in SMM2's play without SMM2's Endless screens: they s
 and the run side drives them. SMM2's Endless machinery is what makes a server course play in SMM2's own play (the
 run manager, the course list and download jobs, the checks, the course-in card, the HUD with the lives and three
 banked 1-Ups, the skip, the retry after a miss, the goal), and its requests already go to our server. The run side
-catches the Endless menu's page in its Disp state, picks the difficulty with the game's own tab handler (on the game
-thread), and presses the menu's own buttons (New Game, the map's Play, skip, back) through the test-input hook while
-the player's input goes to the flow. The course's outcome comes back through the game's own requests (course start,
+picks the difficulty with L / R until the menu's difficulty (main+0x2c3f618) is the one wanted, then Down to the
+buttons (after L / R the focus is on the tab bar), and presses the menu's own buttons (New Game or Continue, the
+confirm window's Yes, the map's Play, skip, back) through the test-input hook while the player's input goes to the
+flow. The course's outcome comes back through the game's own requests (course start,
 miss, clear, skip). After a skip SMM2's Endless starts the next course at once; after a miss it retries by itself.
 
 The win: the Nth clear's answer has `run_complete`; the flow plays SMM1's ending (`hundred_ending_show`) and calls
@@ -119,14 +143,77 @@ the run. `RECOMP_MOD_AUTOPLAY=1` (or `=jump`) plays the courses (right + run [+ 
 scripts the way to the Endless menu. `RECOMP_MOD_UNLOCK_ALL=1` opens every difficulty; `RECOMP_MOD_TRACE=1` logs
 Course World's states and every request the mod doesn't answer.
 
-Not driven yet: Continue (a saved run is started as New Game) and SMM2's pause during a run course (to become
-`hundred_flow_pause()`: the play scene's pause state is a virtual of the scene object, `cPausePlay` at index 3 of the
-machine registered at main+0x1bc19c0, so the interception needs the scene's vtable caught at run time).
+**Pause.** During a run course SMM2's pause state (`cPausePlay`, state 3 of the Endless play scene's machine; its exec
+is the scene's virtual at vtable+0x390, main+0x1bba050) is held without opening its menu: the play stays frozen and
+the flow gets `hundred_flow_pause()`. `hundred_play_resume()` leaves it as the menu's close does (state 1),
+`hundred_play_retry()` as Start Over (state 0x13, a life, posted as `start_over`), `hundred_run_save_quit()` as the
+confirm window's Yes (state 0x12, the suspend). **Continue:** the run record's state byte (+4 = 1) makes the menu
+offer Continue (and show the run on its map); `hundred_run_start(d, true)` presses it. **Course on screen:**
+`hundred_flow_course_started()` comes on the first frame of the play scene's play state (state 1, vtable+0x350,
+main+0x1bb9440) after a course start or a retry. **Next course:** the head of the server's queue is read after New
+Game, each clear / skip and on Continue, so `hundred_run_status().current` names the next course before the game
+asks. `form` is player 0's form at the goal (+0x4a8, small / big from the size class table main+0x23d5e0c).
+
+Flow test extras: `RECOMP_MOD_FLOW_TEST_CONTINUE=1` (Continue instead of New Game), `RECOMP_MOD_FLOW_TEST_PAUSE=<letters>`
+(pause 8 s into a course and answer r resume, o Start Over, q Save & Quit), `RECOMP_MOD_SHOTS=<name>` (window shots
+at the run's moments into `build/<name>_<n>_<what>.png`).
+
+### Test recipe (end to end, unattended)
+
+The whole chain (difficulty select -> map -> card -> course -> clear -> ... -> ending) against a local server, the
+window hidden. Paths are the ones on the dev machine; any folder works.
+
+**1. The server.** The test server is `/Volumes/SSD/smm-work/recomp-mods/server-test` on port **8650**, 12 short
+test courses (flat / items / power-up courses in each style; running right and jumping clears most), one account "Runner" whose token is in
+`/Volumes/SSD/smm-work/recomp-mods/account-test.txt` (line `token <hex>`; keep it out of logs and commits). The
+corpus server is `server-data` on port 8640 (550 real courses, account in `account.txt`). Start one (if
+`curl http://127.0.0.1:8650/api/health` doesn't answer):
+
+    cd /Volumes/SSD/smm-work/recomp-mods
+    ./cargo-target/release/mmk server --dir server-test --addr 127.0.0.1:8650 \
+        --writes-per-minute 100000 --accounts-per-hour 1000 > server-test.log 2>&1 &
+
+A new one, seeded (any raw / zlib SMM2 course files; the 30 short ones in `testcourses/` were made for this):
+
+    cd core && cargo build --release -p mmk-cli          # (target/release/mmk)
+    mmk server --dir my-test --addr 127.0.0.1:8651 --writes-per-minute 100000 --accounts-per-hour 1000 &
+    mmk register Runner --server http://127.0.0.1:8651 > my-account.txt   # maker ID + token
+    mmk upload --server http://127.0.0.1:8651 --maker testlib /Volumes/SSD/smm-work/recomp-mods/testcourses/*.course
+
+A run needs at least `total` courses in the difficulty's band (or the band widens): with only short test courses,
+every difficulty draws from all of them.
+
+**2. The game.** Build (`cd recomp && make GAME=smm2 -j10 all`), then from the data folder (`recomp/private/smm2`):
+
+    cd recomp/private/smm2
+    export LARECOMP_HIDDEN=1 SMM2_SEED=4 RECOMP_LOG_TIME=1
+    export RECOMP_MOD_100MARIO=1 RECOMP_MOD_RULESET=hundred RECOMP_MOD_LOG=1 RECOMP_MOD_UNLOCK_ALL=1
+    export RECOMP_MOD_SERVER=http://127.0.0.1:8650
+    export RECOMP_MOD_TOKEN="$(sed -n 's/^token //p' /Volumes/SSD/smm-work/recomp-mods/account-test.txt)"
+    export RECOMP_MOD_AUTOPLAY=jump RECOMP_MOD_AUTOPLAY_SKIP=25
+    export LARECOMP_INPUT="2500:L:20,2500:R:20,2800:RIGHT:8,2900:A:8,3300:DOWN:8,3400:A:8,4600:DOWN:8,4700:RIGHT:8,4800:A:8"
+    ../../build/smm2/smm2recomp extracted > run.log 2>&1
+
+- `LARECOMP_INPUT` (`frame:BUTTON:frames`, presented frames from boot) goes from the title to the main menu, to
+  Course World, then to Endless Challenge (frame 4800: DOWN, RIGHT, A).
+  It is timed for `SMM2_SEED=4` and the save in `/Volumes/SSD/smm-work/recomp-mods/private/smm2/save` (Course
+  World seen before, no first-visit intro): copy that `save/` over yours if the script lands elsewhere.
+  `LARECOMP_HOST_INPUT=<frame>:shot:<name>,...` saves window shots into `private/smm2/build/`.
+- Entering the Endless menu under `ruleset=hundred` calls `hundred_flow_open()`: the flow takes over from there
+  (it calls `hundred_run_start()`, `hundred_play_next()` ...). `RECOMP_MOD_FLOW_TEST=<0..3>` instead plays the run
+  without the flow (the stand-in in `bridge.c`).
+- `RECOMP_MOD_AUTOPLAY=jump` plays each course (right + run + jump) and skips it with the test input after
+  `RECOMP_MOD_AUTOPLAY_SKIP` seconds; the result screen's Next is pressed by the run side after a clear.
+  `RECOMP_MOD_UNLOCK_ALL=1` opens Expert and Super Expert without winning the runs before.
+- A Super Expert run (6 clears) takes about 6-12 minutes of game time; Easy (8) about 10. Expected log lines
+  (`grep '\[mod\]' run.log`): `New Game: super_expert, hundred rules, 100 lives`, `course start <code>`,
+  `clear <code> ... clears n`, `... -- 100 Mario Challenge complete!`, `bridge: run finished`.
+- After the run: `curl -s http://127.0.0.1:8650/api/rankings/hundred_super_expert` lists the completion.
 
 ### Limits
 
-- Only the Endless Challenge is online. Course lists, uploads, Network Play, leaderboards and Super Worlds answer
-  "not connected".
+- Not online yet: Network Play (plan: `DECISIONS.md` "Online multiplayer"), Super Worlds, Ninji speedruns,
+  thumbnails, follows, notifications; they answer "not connected" or empty.
 - The Maker avatar is the console's default Mii with your account's name (creating one needs the Mii editor applet,
   which the runtime doesn't have).
 - No SMM2 Mii-costume rewards (the server sends no notifications).

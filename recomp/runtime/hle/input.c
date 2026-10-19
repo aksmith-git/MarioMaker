@@ -399,7 +399,7 @@ extern bool menu_input_captured(void);  // runtime/ui/menu.mm: overlay menu or n
 // Buttons held right now (keyboard, gamepad, on-screen controller, test script), independent of whether the game
 // polls (movies, a game's host-drawn screens). The on-screen controller has no d-pad: its stick is the d-pad here.
 extern void touchpad_state(uint64_t *buttons, int32_t *lx, int32_t *ly);  // runtime/ui/touchpad.mm
-uint64_t input_buttons_now(void) {
+static uint64_t touch_buttons_dpad(void) {
     uint64_t tb;
     int32_t tx, ty;
     touchpad_state(&tb, &tx, &ty);
@@ -407,7 +407,15 @@ uint64_t input_buttons_now(void) {
     if (tx > 16000) tb |= 1ull << BTN_RIGHT;
     if (ty > 16000) tb |= 1ull << BTN_UP;
     if (ty < -16000) tb |= 1ull << BTN_DOWN;
-    return (menu_input_captured() ? 0 : key_buttons | pad_buttons | tb) | script_buttons;
+    return tb;
+}
+
+// The player's own buttons (keyboard, gamepad, on-screen controller), for a game's host-drawn screens (not the
+// menu's, not test scripts).
+uint64_t input_player_buttons(void) { return menu_input_captured() ? 0 : key_buttons | pad_buttons | touch_buttons_dpad(); }
+
+uint64_t input_buttons_now(void) {
+    return (menu_input_captured() ? 0 : key_buttons | pad_buttons | touch_buttons_dpad()) | script_buttons;
 }
 
 static int32_t clamp_axis(int32_t v) { return v > 32767 ? 32767 : v < -32767 ? -32767 : v; }
@@ -447,13 +455,15 @@ static void fill_state(Cpu *c, uint8_t *s, uint32_t id, bool single) {
         g_watch_hi = c->x[1] - 8 - 0x98 + hi;
         LOG("[input] watching controller object %llx\n", c->x[1] - 8);
     }
-    extern bool game_overlay_captured(void);  // a game's host-drawn screen has the controls (runtime/game_hooks.c)
-    bool overlay = game_overlay_captured();
-    bool menu = menu_input_captured() || overlay;  // the overlay menu / name entry has the controls (typing there isn't for the game)
+    // a game's host-drawn screen has the player's controls (runtime/game_hooks.c); test input (scripts, a mod's own
+    // presses) still reaches the game. game_input_mask: buttons of the player's a host screen keeps for itself.
+    extern bool game_overlay_captured(void);
+    extern uint64_t game_input_mask(void);
+    bool menu = menu_input_captured() || game_overlay_captured();  // the overlay menu / name entry has the controls (typing there isn't for the game)
     uint64_t touch_b = 0;  // the on-screen controller (runtime/ui/touchpad.mm)
     int32_t touch_lx = 0, touch_ly = 0;
     if (!menu) touchpad_state(&touch_b, &touch_lx, &touch_ly);
-    uint64_t b = overlay ? 0 : menu ? script_buttons : key_buttons | pad_buttons | touch_b | script_buttons;
+    uint64_t b = menu ? script_buttons : ((key_buttons | pad_buttons | touch_b) & game_input_mask()) | script_buttons;
     {   // injected Plus: held for ~10 presented frames (the game polls several times per frame)
         extern uint64_t renderer_present_count(void);
         static uint64_t until;
