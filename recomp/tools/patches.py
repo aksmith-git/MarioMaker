@@ -5,8 +5,8 @@ PATCHES = {address: fn}; gen.py --patches <file> loads it. Each patch should che
 replaces (so a different build of the game fails loudly instead of being patched in the wrong place) and
 describe what it does in words, not as disassembly.
 
-A patch module's addresses assume the module at its MAIN (the desktop layout, runtime/rt.h); given another base (iOS
-keeps the guest lower: runtime/rt.h GUEST_ORIGIN) they are moved with it.
+A patch module's addresses assume the module at its MAIN (0x7000000000, runtime/rt.h); given another base (`make
+GUEST_ORIGIN=<base>`: runtime/rt.h GUEST_ORIGIN) they are moved with it.
 """
 import importlib.util
 import os
