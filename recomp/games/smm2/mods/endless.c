@@ -19,6 +19,9 @@
 
 void bridge_event(const char *what, uint32_t d);  // bridge.c
 bool endless_run_complete(uint32_t d);
+int style_index(const char *s);
+bool bridge_take_start_over(void);  // bridge.c: the life being posted is a Start Over from the pause
+void endless_prefetch(int d);
 
 static const char *const DIFF[4] = {"easy", "normal", "expert", "super_expert"};
 
@@ -54,6 +57,7 @@ static struct {
     uint32_t lives, clears, goal;
     uint64_t current;        // the course being (or about to be) played
     int ncredits;            // the run's cleared courses (for the ending's credits)
+    int form;                // Mario at the last goal: 0 small, 1 big (the ending's Mario)
     struct hundred_credit credits[32];
 } runs[4];
 
@@ -217,20 +221,23 @@ WRAPPER(get_status, 0x14ec2d0) {
         uint32_t clears = (uint32_t)json_num(json_get(run, "clears"), 0);
         uint32_t coins = (uint32_t)json_num(json_get(run, "coins"), 0);
         uint32_t score = (uint32_t)json_num(json_get(run, "score"), 0);
-        // Present for every difficulty: New Game reads the start lives from here (the game has no default).
+        // Present for every difficulty: New Game reads the start lives from here (the game has no default). The
+        // run state +4 is 1 for a run that can go on: the menu offers Continue only for state 1 or 2 with lives
+        // (+0x30) and a history [obs 0x7101a26850]; 0 resets its map to an empty run.
+        bool cont = active && lives > 0 && !complete;
+        uint8_t lv = (uint8_t)(lives > 255 ? 255 : lives);
         s8(r + 0x00, 1);
-        s32(r + 0x04, 0);
+        s32(r + 0x04, cont ? 1 : 0);
         s8(r + 0x08, (uint8_t)(coins % 100));
         s32(r + 0x0c, score);
-        s8(r + 0x10, 0);
+        s8(r + 0x10, cont ? lv : 0);
         s8(r + 0x11, start_lives);
         s64(r + 0x18, 0);
         s64(r + 0x20, 0);
         // The play part: a run that can go on (Continue) has lives; a finished or completed one shows none.
-        bool cont = active && lives > 0 && !complete;
         s8(r + 0x28, cont ? 1 : 0);
         s32(r + 0x2c, cont ? clears : 0);
-        s8(r + 0x30, cont ? (uint8_t)(lives > 255 ? 255 : lives) : 0);
+        s8(r + 0x30, cont ? lv : 0);
         pthread_mutex_lock(&state_lock);
         runs[d].coins = coins, runs[d].score = score, runs[d].complete = complete;
         runs[d].active = cont, runs[d].lives = lives, runs[d].clears = clears;
@@ -242,6 +249,50 @@ WRAPPER(get_status, 0x14ec2d0) {
     netobj_unlock(c);
     json_free(st);
     finish(c, no, true, 0);
+}
+
+// ---- the next course, known before the game asks for it (the flow's start card shows it, as SMM1's does): the
+// server's queue only moves on a result, so asking for its head now gives what the game's own search gets later.
+
+static void *prefetch_thread(void *arg) {
+    int d = (int)(intptr_t)arg;
+    char path[96];
+    snprintf(path, sizeof path, "/api/endless/%s/next?count=1", DIFF[d]);
+    Json *j = srv_call("GET", path, NULL, NULL);
+    Json *m = json_at(json_get(j, "courses"), 0);
+    uint32_t id;
+    if (m && code_to_data_id(json_str(json_get(m, "code"), ""), &id)) {
+        const char *maker = json_str(json_get(m, "maker"), "");
+        note_course(id, json_str(json_get(m, "name"), ""), maker, style_index(json_str(json_get(m, "style"), "")));
+        pthread_mutex_lock(&state_lock);
+        if (!runs[d].started) runs[d].current = id;
+        pthread_mutex_unlock(&state_lock);
+        MLOG("next course (%s): %s %s\n", DIFF[d], json_str(json_get(m, "code"), ""), json_str(json_get(m, "name"), ""));
+    }
+    json_free(j);
+    return NULL;
+}
+
+void endless_prefetch(int d) {
+    if (d < 0 || d > 3) return;
+    pthread_t th;
+    pthread_create(&th, NULL, prefetch_thread, (void *)(intptr_t)d);
+    pthread_detach(th);
+}
+
+// A run the flow starts (hundred_run_start): a new one has the start lives at once (the status the start card reads
+// before the game's New Game request is answered); a continued one has the server's.
+void endless_prepare_run(int d, bool resume) {
+    if (d < 0 || d > 3) return;
+    static const uint32_t totals[4] = {8, 16, 16, 6};
+    pthread_mutex_lock(&state_lock);
+    if (!resume) {
+        memset(&runs[d], 0, sizeof runs[d]);
+        runs[d].active = true, runs[d].lives = hundred_rules() ? 100 : 5, runs[d].goal = totals[d];
+    }
+    runs[d].current = 0;
+    pthread_mutex_unlock(&state_lock);
+    if (resume) endless_prefetch(d);
 }
 
 // ---- InitEndlessMode: New Game
@@ -264,6 +315,7 @@ WRAPPER(init_run, 0x14ece20) {
         bridge_event("new", d);
         LOG("[mod] New Game: %s, %s rules, %u lives\n", DIFF[d], g_mod.ruleset,
             (uint32_t)json_num(json_get(json_get(j, "run"), "lives"), 0));
+        endless_prefetch(d);
     }
     json_free(j);
     finish(c, no, ok, 2);
@@ -635,7 +687,8 @@ WRAPPER(start_course, 0x14ecf30) {
     }
     char path[64], body[160];
     snprintf(path, sizeof path, "/api/endless/%s/result", DIFF[d]);
-    snprintf(body, sizeof body, "{\"code\":\"%s\",\"result\":\"death\"}", code);
+    snprintf(body, sizeof body, "{\"code\":\"%s\",\"result\":\"%s\"}", code,
+             bridge_take_start_over() ? "start_over" : "death");
     Json *j = srv_call("POST", path, body, NULL);
     if (j) {
         set_play(c, no, d, (uint32_t)json_num(json_get(j, "lives"), 0), (uint32_t)json_num(json_get(j, "clears"), 0));
@@ -646,12 +699,24 @@ WRAPPER(start_course, 0x14ecf30) {
     finish(c, no, j != NULL, 2);
 }
 
+// Mario's form at the goal (player 0, read when the clear is posted): 0 small, 1 big, -1 unknown. Player actors at
+// *(main+0x2c19290) + 0x28, form at player +0x4a8, the form -> size class table at main+0x23d5e0c (1 = small size).
+static int player_form(void) {
+    uint64_t holder = g64(MAIN_ADDR(0x2c19290));
+    uint64_t pl = holder ? g64(holder + 0x28) : 0;
+    if (!pl) return -1;
+    uint32_t form = g32(pl + 0x4a8);
+    if (form >= 16) return -1;
+    return g32(MAIN_ADDR(0x23d5e0c) + 4ull * form) == 1 ? 0 : 1;
+}
+
 // ---- DominateEndlessModeCourse: a clear (pending 1-Ups, coins, score with the time bonus)
 
 WRAPPER(clear_course, 0x14ed120) {
     uint32_t d = req_diff(no, NO_DIFF);
     uint64_t id = g64(no + NO_CLEAR_ID);
     uint32_t pending = g8(no + NO_PENDING), coins = g8(no + NO_COINS), score = g32(no + NO_SCORE);
+    int form = player_form();
     pthread_mutex_lock(&state_lock);
     uint32_t dcoins = (coins + 100 - runs[d].coins % 100) % 100;  // (the game sends coins below 100)
     uint32_t dscore = score >= runs[d].score ? score - runs[d].score : 0;
@@ -669,11 +734,14 @@ WRAPPER(clear_course, 0x14ed120) {
         set_play(c, no, d, lives, clears);
         pthread_mutex_lock(&state_lock);
         runs[d].coins += dcoins, runs[d].score += dscore, runs[d].started = 0;
+        if (form >= 0) runs[d].form = form;
         add_credit(d, id);
         if (complete) runs[d].complete = true;
         pthread_mutex_unlock(&state_lock);
         bridge_event("clear", d);
-        LOG("[mod] clear %s (%s): lives %u, clears %u%s\n", code, DIFF[d], lives, clears,
+        if (!complete) endless_prefetch((int)d);
+        LOG("[mod] clear %s (%s): lives %u, clears %u, pending %u, Mario %s%s\n", code, DIFF[d], lives, clears,
+            pending, form == 0 ? "small" : form == 1 ? "big" : "?",
             complete ? " -- 100 Mario Challenge complete!" : "");
     }
     json_free(j);
@@ -695,6 +763,7 @@ WRAPPER(skip_course, 0x14ed5e0) {
         runs[d].started = 0;
         pthread_mutex_unlock(&state_lock);
         bridge_event("skip", d);
+        endless_prefetch((int)d);
         LOG("[mod] skip %s (%s): lives %u\n", code, DIFF[d], (uint32_t)json_num(json_get(j, "lives"), 0));
     }
     json_free(j);
@@ -718,7 +787,10 @@ static void post_simple(Cpu *c, uint64_t no, const char *what) {
     finish(c, no, j != NULL, 2);
 }
 
-WRAPPER(suspend_run, 0x14ed360) { post_simple(c, no, "suspend"); }
+WRAPPER(suspend_run, 0x14ed360) {
+    post_simple(c, no, "suspend");
+    bridge_event("suspend", req_diff(no, NO_DIFF));
+}
 WRAPPER(finish_run, 0x14ed4a0) { post_simple(c, no, "finish"); }
 
 // The run as the flow sees it (hundred.h hundred_run_status): from the last server answers, no network here.
@@ -736,8 +808,9 @@ void endless_fill_status(struct hundred_status *out, int active_d) {
         static const int totals[4] = {8, 16, 16, 6};
         out->lives = (int)runs[active_d].lives;
         out->cleared = (int)runs[active_d].clears;
-        out->total = runs[active_d].goal ? (int)runs[active_d].goal : totals[active_d];
+        out->total = !hundred_rules() ? 0 : runs[active_d].goal ? (int)runs[active_d].goal : totals[active_d];
         out->ncredits = runs[active_d].ncredits < 16 ? runs[active_d].ncredits : 16;
+        out->form = runs[active_d].form;
         memcpy(out->credits, runs[active_d].credits, sizeof out->credits);
         uint64_t id = runs[active_d].current;
         if (id) {

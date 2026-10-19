@@ -12,6 +12,8 @@
 
 #define RUN_OBJECT MAIN_ADDR(0x2c56bb0) // the Endless run: +0x30 current counters, +0x40 counters at course start
 
+void bridge_event(const char *what, uint32_t d);  // bridge.c
+
 static __thread uint32_t pending_before;  // pending 1-Ups before an award (the game's main thread)
 
 static void lives_cap(Cpu *c, uint64_t addr) {
@@ -29,6 +31,9 @@ static void retry_rollback(void) {
     if (!run) return;
     uint64_t cur = g64(run + 0x30), snap = g64(run + 0x40);
     if (!cur || !snap || !g64(cur + 0x10) || !g64(snap + 0x10) || !g64(cur + 0x18) || !g64(snap + 0x18)) return;
+    LOG("[mod] retry: coins %u (total %u) -> %u (total %u), score %u -> %u\n", g32(g64(cur + 0x10)),
+        g32(g64(cur + 0x10) + 4), g32(g64(snap + 0x10)), g32(g64(snap + 0x10) + 4), g32(g64(cur + 0x18)),
+        g32(g64(snap + 0x18)));
     s64(g64(cur + 0x10), g64(g64(snap + 0x10)));  // coins {below 100, total}
     s32(g64(cur + 0x18), g32(g64(snap + 0x18)));  // score
 }
@@ -41,12 +46,15 @@ void smm2_mod_after(Cpu *c, uint64_t addr) {
         break;
     case 0x16dfb40:  // Endless retry: clears and lives reloaded from the run record
         retry_rollback();
+        bridge_event("retry", 0);
         break;
     case 0x16ce788: case 0x16ce9e0:  // pending 1-Ups loaded (w4) before an award is added
         pending_before = (uint32_t)c->x[4];
         break;
     case 0x16ce7f4: case 0x16cea48:  // ... and stored: an award counts as one
         if ((uint32_t)c->x[4] > pending_before + 1) {
+            LOG("[mod] award: pending 1-Ups %u -> %u, banked as %u (SMM1: one per award)\n", pending_before,
+                (uint32_t)c->x[4], pending_before + 1);
             c->x[4] = pending_before + 1;
             s32(c->x[16] + 0x38, pending_before + 1);
         }

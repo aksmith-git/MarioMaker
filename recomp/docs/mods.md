@@ -123,6 +123,58 @@ Not driven yet: Continue (a saved run is started as New Game) and SMM2's pause d
 `hundred_flow_pause()`: the play scene's pause state is a virtual of the scene object, `cPausePlay` at index 3 of the
 machine registered at main+0x1bc19c0, so the interception needs the scene's vtable caught at run time).
 
+### Test recipe (end to end, unattended)
+
+The whole chain (difficulty select -> map -> card -> course -> clear -> ... -> ending) against a local server, the
+window hidden. Paths are the ones on the dev machine; any folder works.
+
+**1. The server.** The test server is `/Volumes/SSD/smm-work/recomp-mods/server-test` on port **8650**, 12 short
+test courses (flat / items / power-up courses in each style; running right and jumping clears most), one account "Runner" whose token is in
+`/Volumes/SSD/smm-work/recomp-mods/account-test.txt` (line `token <hex>`; keep it out of logs and commits). The
+corpus server is `server-data` on port 8640 (550 real courses, account in `account.txt`). Start one (if
+`curl http://127.0.0.1:8650/api/health` doesn't answer):
+
+    cd /Volumes/SSD/smm-work/recomp-mods
+    ./cargo-target/release/mmk server --dir server-test --addr 127.0.0.1:8650 \
+        --writes-per-minute 100000 --accounts-per-hour 1000 > server-test.log 2>&1 &
+
+A new one, seeded (any raw / zlib SMM2 course files; the 30 short ones in `testcourses/` were made for this):
+
+    cd core && cargo build --release -p mmk-cli          # (target/release/mmk)
+    mmk server --dir my-test --addr 127.0.0.1:8651 --writes-per-minute 100000 --accounts-per-hour 1000 &
+    mmk register Runner --server http://127.0.0.1:8651 > my-account.txt   # maker ID + token
+    mmk upload --server http://127.0.0.1:8651 --maker testlib /Volumes/SSD/smm-work/recomp-mods/testcourses/*.course
+
+A run needs at least `total` courses in the difficulty's band (or the band widens): with only short test courses,
+every difficulty draws from all of them.
+
+**2. The game.** Build (`cd recomp && make GAME=smm2 -j10 all`), then from the data folder (`recomp/private/smm2`):
+
+    cd recomp/private/smm2
+    export LARECOMP_HIDDEN=1 SMM2_SEED=4 RECOMP_LOG_TIME=1
+    export RECOMP_MOD_100MARIO=1 RECOMP_MOD_RULESET=hundred RECOMP_MOD_LOG=1 RECOMP_MOD_UNLOCK_ALL=1
+    export RECOMP_MOD_SERVER=http://127.0.0.1:8650
+    export RECOMP_MOD_TOKEN="$(sed -n 's/^token //p' /Volumes/SSD/smm-work/recomp-mods/account-test.txt)"
+    export RECOMP_MOD_AUTOPLAY=jump RECOMP_MOD_AUTOPLAY_SKIP=25
+    export LARECOMP_INPUT="2500:L:20,2500:R:20,2800:RIGHT:8,2900:A:8,3300:DOWN:8,3400:A:8,4600:DOWN:8,4700:RIGHT:8,4800:A:8"
+    ../../build/smm2/smm2recomp extracted > run.log 2>&1
+
+- `LARECOMP_INPUT` (`frame:BUTTON:frames`, presented frames from boot) goes from the title to the main menu, to
+  Course World, then to Endless Challenge (frame 4800: DOWN, RIGHT, A).
+  It is timed for `SMM2_SEED=4` and the save in `/Volumes/SSD/smm-work/recomp-mods/private/smm2/save` (Course
+  World seen before, no first-visit intro): copy that `save/` over yours if the script lands elsewhere.
+  `LARECOMP_HOST_INPUT=<frame>:shot:<name>,...` saves window shots into `private/smm2/build/`.
+- Entering the Endless menu under `ruleset=hundred` calls `hundred_flow_open()`: the flow takes over from there
+  (it calls `hundred_run_start()`, `hundred_play_next()` ...). `RECOMP_MOD_FLOW_TEST=<0..3>` instead plays the run
+  without the flow (the stand-in in `bridge.c`).
+- `RECOMP_MOD_AUTOPLAY=jump` plays each course (right + run + jump) and skips it with the test input after
+  `RECOMP_MOD_AUTOPLAY_SKIP` seconds; the result screen's Next is pressed by the run side after a clear.
+  `RECOMP_MOD_UNLOCK_ALL=1` opens Expert and Super Expert without winning the runs before.
+- A Super Expert run (6 clears) takes about 6-12 minutes of game time; Easy (8) about 10. Expected log lines
+  (`grep '\[mod\]' run.log`): `New Game: super_expert, hundred rules, 100 lives`, `course start <code>`,
+  `clear <code> ... clears n`, `... -- 100 Mario Challenge complete!`, `bridge: run finished`.
+- After the run: `curl -s http://127.0.0.1:8650/api/rankings/hundred_super_expert` lists the completion.
+
 ### Limits
 
 - Only the Endless Challenge is online. Course lists, uploads, Network Play, leaderboards and Super Worlds answer
