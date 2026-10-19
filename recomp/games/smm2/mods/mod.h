@@ -33,6 +33,7 @@ bool mod_hundred_rules(void);   // ... and its runs use SMM1's rules (ruleset "h
 typedef struct Json Json;
 Json *srv_call(const char *method, const char *path, const char *body, int *status);
 void *srv_get_bytes(const char *path, size_t *len);  // raw body (course data); malloc'd
+Json *srv_post_bytes(const char *path, const void *data, size_t len, int *status);  // raw body up (a course)
 
 // ---- game state the overrides share
 uint64_t netobj(void);          // the network-session object (requests and answers of the wrappers)

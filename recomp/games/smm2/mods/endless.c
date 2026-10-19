@@ -86,29 +86,52 @@ static void add_credit(uint32_t d, uint64_t id) {  // (state_lock held)
         if (course_names[i].id == id) *c = course_names[i].c;
 }
 
+static char own_maker_id[16];
+static uint64_t pid_of_maker_id(const char *maker_id);
+
 uint64_t mod_player_pid(void) {
-    // A stable fake player id for the signed-in account (Course World compares makers with it: own courses).
-    uint64_t h = 1469598103934665603ull;
-    for (const char *p = g_mod.token; *p; p++) h = (h ^ (uint8_t)*p) * 1099511628211ull;
-    return 0x4000000000000000ull | (h & 0x0000ffffffffffffull) | 1;
+    // The signed-in account's player id: the same hash of its maker ID as every maker's (Course World compares
+    // course owners with it: own courses). Asked from the server once.
+    static volatile int known;
+    if (!known) {
+        Json *me = srv_call("GET", "/api/me", NULL, NULL);
+        const char *id = json_str(json_get(me, "maker_id"), NULL);
+        if (id) snprintf(own_maker_id, sizeof own_maker_id, "%s", id), known = 1;
+        json_free(me);
+        if (!known) {  // (no server answer: a stable id from the token, for this session)
+            uint64_t h = 1469598103934665603ull;
+            for (const char *p = g_mod.token; *p; p++) h = (h ^ (uint8_t)*p) * 1099511628211ull;
+            return 0x4000000000000000ull | (h & 0x0000ffffffffffffull) | 1;
+        }
+    }
+    return pid_of_maker_id(own_maker_id);
 }
 
 // Makers of the courses served (fake player ids -> names), for the user records the game asks for next.
-static struct { uint64_t pid; char name[48]; } makers[64];
+// A maker's player id is a hash of their maker ID on our server (the player's own too, once /api/me answered), so the
+// game's "is this my course / me" comparisons work; the table maps ids back to maker IDs and names.
+#define NMAKERS 512
+static struct { uint64_t pid; char name[48]; char maker_id[16]; } makers[NMAKERS];
 static int nmakers;
 
-static uint64_t maker_pid(const char *maker_id, const char *name) {
+static uint64_t pid_of_maker_id(const char *maker_id) {
     uint64_t h = 1469598103934665603ull;
     for (const char *p = maker_id ? maker_id : ""; *p; p++) h = (h ^ (uint8_t)*p) * 1099511628211ull;
-    uint64_t pid = 0x5000000000000000ull | (h & 0x0000ffffffffffffull) | 1;
+    return 0x5000000000000000ull | (h & 0x0000ffffffffffffull) | 1;
+}
+
+static uint64_t maker_pid(const char *maker_id, const char *name) {
+    uint64_t pid = pid_of_maker_id(maker_id);
     pthread_mutex_lock(&state_lock);
     int i = 0;
     while (i < nmakers && makers[i].pid != pid) i++;
     if (i == nmakers) {
-        i = nmakers < 64 ? nmakers++ : (int)(pid % 64);
+        i = nmakers < NMAKERS ? nmakers++ : (int)(pid % NMAKERS);
         makers[i].pid = pid;
     }
-    snprintf(makers[i].name, sizeof makers[i].name, "%s", name && *name ? name : "Maker");
+    if (name && *name) snprintf(makers[i].name, sizeof makers[i].name, "%s", name);
+    else if (!makers[i].name[0]) snprintf(makers[i].name, sizeof makers[i].name, "Maker");
+    snprintf(makers[i].maker_id, sizeof makers[i].maker_id, "%s", maker_id ? maker_id : "");
     pthread_mutex_unlock(&state_lock);
     return pid;
 }
@@ -120,6 +143,20 @@ static void maker_name(uint64_t pid, char *out, size_t cap) {
         if (makers[i].pid == pid) snprintf(out, cap, "%s", makers[i].name);
     pthread_mutex_unlock(&state_lock);
 }
+
+// for world.c
+uint64_t mod_maker_pid(const char *maker_id, const char *name) { return maker_pid(maker_id, name); }
+void mod_maker_name(uint64_t pid, char *out, size_t cap) { maker_name(pid, out, cap); }
+bool mod_maker_id(uint64_t pid, char out[16]) {  // the maker ID behind a player id ("" unknown)
+    pthread_mutex_lock(&state_lock);
+    out[0] = 0;
+    if (pid == mod_player_pid()) snprintf(out, 16, "%s", own_maker_id);
+    for (int i = 0; i < nmakers && !out[0]; i++)
+        if (makers[i].pid == pid) snprintf(out, 16, "%s", makers[i].maker_id);
+    pthread_mutex_unlock(&state_lock);
+    return out[0] != 0;
+}
+const char *mod_own_maker_id(void) { return own_maker_id; }
 
 static bool hundred_rules(void) { return mod_hundred_rules(); }
 
@@ -422,9 +459,15 @@ static void fill_course(uint64_t e, Json *m, uint32_t data_id, uint32_t difficul
     s32(e + 0x1a4, 0);
     uint32_t plays = (uint32_t)json_num(json_get(m, "plays"), 0), clears = (uint32_t)json_num(json_get(m, "clears"), 0),
              attempts = (uint32_t)json_num(json_get(m, "attempts"), 0);
-    uint32_t stats[10] = {plays, attempts, 0, clears, 0};  // play statistics (keys 0-4); ratings unknown: 0
+    // play statistics (keys 0-4: plays, attempts, ?, clears, versus plays), two unknown counters, the ratings
+    // (key 0: likes) [obs converter 0x71014daf60: +0x1a8.. play stats, +0x1bc/+0x1c0 map 0x40, +0x1c4.. ratings]
+    uint32_t stats[10] = {plays, attempts, 0, clears, 0, 0, 0, (uint32_t)json_num(json_get(m, "likes"), 0)};
     for (int i = 0; i < 10; i++) s32(e + 0x1a8 + 4 * i, stats[i]);
-    s64(e + 0x1d0, 0), s64(e + 0x1d8, 0), s32(e + 0x1e0, 0), s32(e + 0x1e4, 0), s32(e + 0x1e8, 0);
+    // time stats: first clear, world record holder (player ids), world record and the maker's time (ms)
+    const char *fc = json_str(json_get(m, "first_clear"), ""), *wr = json_str(json_get(m, "record_holder"), "");
+    s64(e + 0x1d0, *fc ? maker_pid(fc, NULL) : 0), s64(e + 0x1d8, *wr ? maker_pid(wr, NULL) : 0);
+    s32(e + 0x1e0, (uint32_t)json_num(json_get(m, "record_ms"), 0)), s32(e + 0x1e4, 0);
+    s32(e + 0x1e8, (uint32_t)json_num(json_get(m, "comments"), 0));
     // thumbnails / record holders: none (empty addresses: the game downloads nothing for them)
     s64(e + 0x1f0, data_id);
     if (g64(e + 0x200)) s8(g64(e + 0x200), 0);
@@ -437,9 +480,14 @@ static void fill_course(uint64_t e, Json *m, uint32_t data_id, uint32_t difficul
     s8(e + 0x540, 1);
 }
 
+void mod_fill_course(uint64_t e, Json *m, uint32_t data_id, uint32_t difficulty) {
+    fill_course(e, m, data_id, difficulty);
+}
+
 WRAPPER(search_courses, 0x14d8550) {
-    if (g32(no + NO_SEARCH_TYPE) != 0xE) {  // other searches (Course World's lists): the game's own code (offline)
-        guest_call_orig(c, MAIN_ADDR(0x14d8550));
+    if (g32(no + NO_SEARCH_TYPE) != 0xE) {  // Course World's lists (world.c)
+        extern void world_search(Cpu * c, uint64_t no, uint32_t type);
+        world_search(c, no, g32(no + NO_SEARCH_TYPE));
         return;
     }
     uint32_t d = req_diff(no, NO_SEARCH_DIFF);
@@ -467,50 +515,11 @@ WRAPPER(search_courses, 0x14d8550) {
     finish(c, no, count > 0, 2);
 }
 
-// GetUsers for a list of players (the makers of the courses just listed): request ring of u64 player ids at
-// +0x72b10 (+8 capacity, +0xc head, +0x10 count); answer: the user ring at +0x68, one record each (name from the
-// course list, the default Mii).
-void user_entry_reset(uint64_t e);                                     // online.c
-void mii_default_charinfo(uint8_t out[0x58], const char *nickname);  // runtime/services/mii.c
-
-WRAPPER(get_users, 0x14d02d0) {
-    netobj_lock(c);
-    uint64_t req = no + 0x72b10, out = no + 0x68;
-    uint32_t rcap = g32(req + 8), rhead = g32(req + 0xc), rcount = g32(req + 0x10);
-    uint32_t ocap = g32(out + 8), n = 0;
-    s64(out + 0xc, 0);
-    for (uint32_t i = 0; i < rcount && rcap && n < ocap; i++) {
-        uint64_t pid = g64(g64(req) + 8ull * ((rhead + i) % rcap));
-        if (!pid) continue;
-        char name[48];
-        if (pid == mod_player_pid()) snprintf(name, sizeof name, "%s", getenv("RECOMP_USER_NAME") ? getenv("RECOMP_USER_NAME") : "Player");
-        else maker_name(pid, name, sizeof name);
-        uint64_t e = g64(out) + 0x1f0ull * n++;
-        user_entry_reset(e);
-        put_utf16(g64(e + 0x08), g32(e + 0x10), name);
-        s64(e + 0x58, pid);
-        mii_default_charinfo((uint8_t *)(uintptr_t)(e + 0x9c), name);
-        s8(e + 0x1ec, 1);
-    }
-    s32(out + 0x10, n);
-    netobj_unlock(c);
-    MLOG("GetUsers: %u players\n", n);
-    finish(c, no, true, 0);
-}
-
 // Course details the game asks for around a course start (names [?]; outputs as the originals write them): two
 // player records about the course (+0xe8530 and +0xe8580, each with a "valid" byte; [inf] world record / first
 // clear), a list for a course (ring at +0xe85a0, 0x18-byte entries), and a check on an id (+0x141480 -> u32 result
 // at +0x141604, 0 = fine). Answered empty: no records, an empty list, the check passes. Not connected, the game
 // shows a communication error at times (it doesn't need them to play).
-WRAPPER(course_records, 0x14ebc60) {
-    netobj_lock(c);
-    s8(no + 0xe8542, 0);
-    s8(no + 0xe8592, 0);
-    netobj_unlock(c);
-    finish(c, no, true, 0);
-}
-
 WRAPPER(course_list_info, 0x14ec0d0) {
     netobj_lock(c);
     s64(no + 0xe85ac, 0);  // head 0, count 0
@@ -537,19 +546,7 @@ WRAPPER(course_comments, 0x14e8ec0) {
     finish(c, no, true, 0);
 }
 
-// A play report for a course (data id +0xe8548, two bytes, the "notify the maker" setting), sent after a skip that
-// followed a miss: nothing to store, accepted.
-WRAPPER(play_report, 0x14e6b90) {
-    MLOG("play report for %llu: accepted\n", (unsigned long long)g64(no + 0xe8548));
-    finish(c, no, true, 0);
-}
-
-// The play result of a course (data id +0x8e618, time +0x8e620 and more, with a recording of the play uploaded
-// first [inf]): our server keeps its own statistics from the Endless reports; accepted.
-WRAPPER(play_result, 0x14e30e0) {
-    MLOG("play result for %llu: accepted\n", (unsigned long long)g64(no + 0x8e618));
-    finish(c, no, true, 0);
-}
+// (CanPostRatingAndComment, PostRatingInfo, PostPlayResult and the GetUsers of listed players: world.c)
 
 // Course records by data id (asked for after a clear, for the map): the ids are in a linked list at +0x74748 (count
 // +0x74760); the answer goes to the course list ring at +0x30780, as for a search. From GET /api/courses/<code>.
@@ -830,6 +827,14 @@ void endless_forget_run(int d) {
     pthread_mutex_unlock(&state_lock);
 }
 
+bool endless_has_course(uint64_t id) {  // world.c: is this course the one an Endless run is on
+    pthread_mutex_lock(&state_lock);
+    bool v = false;
+    for (int d = 0; d < 4; d++) v |= id && (runs[d].current == id || runs[d].started == id);
+    pthread_mutex_unlock(&state_lock);
+    return v;
+}
+
 bool endless_run_complete(uint32_t d) {
     pthread_mutex_lock(&state_lock);
     bool v = d < 4 && runs[d].complete;
@@ -846,13 +851,9 @@ void endless_register(void) {
     hle_override(MAIN_ADDR(0x14eddc0), get_rank, "mod: GetEndlessModeRank");
     hle_override(MAIN_ADDR(0x14d8550), search_courses, "mod: SearchCourses (Endless)");
     hle_override(MAIN_ADDR(0x14de010), get_course_file, "mod: GetObject (course file)");
-    hle_override(MAIN_ADDR(0x14d02d0), get_users, "mod: GetUsers (players)");
-    hle_override(MAIN_ADDR(0x14ebc60), course_records, "mod: course records");
     hle_override(MAIN_ADDR(0x14ec0d0), course_list_info, "mod: course list info");
     hle_override(MAIN_ADDR(0x14f17a0), id_check, "mod: id check");
     hle_override(MAIN_ADDR(0x14e8ec0), course_comments, "mod: course comments");
-    hle_override(MAIN_ADDR(0x14e6b90), play_report, "mod: play report");
-    hle_override(MAIN_ADDR(0x14e30e0), play_result, "mod: play result");
     hle_override(MAIN_ADDR(0x14dbae0), get_courses, "mod: GetCourses (by id)");
     hle_override(MAIN_ADDR(0x14f2910), course_post, "mod: course post");
     hle_override(MAIN_ADDR(0x14ecf30), start_course, "mod: StartEndlessModeCourse");

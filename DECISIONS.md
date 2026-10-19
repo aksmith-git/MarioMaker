@@ -1343,3 +1343,28 @@ before.
   emulator footage of the owner's SMM1 dump as the reference.
 - **SMM2's own Endless Challenge** stays as SMM2 made it, against our server under the `smm2`
   ruleset; 100 Mario is a separate mode.
+
+## 2026-10-19 — Online multiplayer: local play over our relay first, Network Play at the enl layer second (plan, not built)
+
+**Decision (plan):** SMM2's multiplayer reaches other players only through our server. SMM2 runs its
+own netcode on Nintendo's PIA library, which has three back ends: `nex` (internet: NEX matchmaking,
+NAT check and relay on Nintendo's servers), `lan` (UDP broadcast) and `local` (local wireless, the
+`ldn` service). The recomp has no bsd / ldn services yet, so none of it reaches a network today.
+1. **First: a virtual local-wireless network over our server's relay.** The runtime implements the
+   `ldn:u` service and the UDP calls of `bsd:u` that PIA's `local` back end uses, with a relay room
+   (`core/crates/netplay` relay, already in every `mmk server`) as "the air". SMM2's own local play
+   (versus and co-op with nearby players) then works between recomp players anywhere, with no game
+   code touched. Our server gets a room list (code, up to 4 players).
+2. **Then: Network Play proper** (random matches, ratings, friends): enl's matchmaking commands
+   (3..7, dropped by the mods today) answered from matchmaking on our server, PIA's `nex` session
+   given the peers and a session key from the room, PIA's packets over the relay as in 1; the
+   versus / co-op result requests (StartBattleMode, EndBattleMode, PostPlayResultBattleMode*,
+   GetBattleModeRating, …) answered from new server endpoints.
+3. Not chosen: speaking NEX / PIA's internet protocols on our server (our server would become a NEX
+   server), or replacing the game's input exchange with our own rollback (most RE, changes the game).
+
+**Why:** the same approach as Course World (answer the game's own requests, never Nintendo's
+protocols); option 1 needs no reverse engineering of SMM2's netcode and gives two-player play soonest.
+**Would change it:** SMM2 exposing PIA's `lan` back end (shorter than 1), or PIA's `nex` session
+depending on NEX state too deeply to answer at the enl layer. Details, unknowns and the research list:
+`research/specs/recomp-online.md`.
