@@ -102,5 +102,6 @@ and `recomp/build` (which may be symlinks to another disk).
 Before the recomp this repo held **SMCraft**, a clean-room engine that played SMM2 courses with
 its own Rust core, a Swift app for macOS / iOS, a portable and web build, the SMM2 menus, a
 Course Maker and its own 100 Mario Challenge. It is kept, complete and building, on the
-[`smcraft-archive`](https://github.com/aksmith-git/MarioMaker/tree/smcraft-archive) branch (tag
+[`smcraft-archive`](https://github.com/aksmith-git/MarioMaker/tree/smcraft-archive) branch of
+the project's earlier repository, aksmith-git/MarioMaker (tag
 `smcraft-final`).

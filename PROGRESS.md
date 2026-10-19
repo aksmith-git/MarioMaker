@@ -177,7 +177,9 @@ framework ideas; Ryujinx as the reference). Nothing counts as done without the e
 ## Phase 1 detail
 
 ### Done
-- Repo initialised. Public home: https://github.com/smcraft-git/smcraft (published as snapshots;
+- Repo initialised. Public home since 2026-10-19: https://github.com/smm2recomp/smm2recomp (published as
+  snapshots; the full history, SMCraft included, is at https://github.com/aksmith-git/MarioMaker). Earlier:
+  https://github.com/smcraft-git/smcraft (snapshots;
   2026-10-18). `.gitignore` excludes dumps, keys, extracted data and `research/`.
 - Proprietary-content guard (`scripts/check_no_proprietary.py`) + tests + CI workflow + pre-commit hook.
 - Toolchain installed and pinned outside the repo — see [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md).
