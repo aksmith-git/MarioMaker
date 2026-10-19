@@ -3,8 +3,8 @@
 A native port of **Super Mario Maker 2 v3.0.3**, built by **static recompilation** of your own
 dump: the game's AArch64 code is translated to C ahead of time on your machine and compiled for
 it, its system calls run on a native runtime, and its graphics run on Metal (macOS, iOS) or Vulkan
-(Windows, Linux). SMM1's **100 Mario Challenge** (on SMM2's Endless Challenge, against an
-open-source course server instead of Nintendo's) and **Mystery Mushroom costumes** come as mods.
+(Windows, Linux). SMM1's **100 Mario Challenge** (exactly as in SMM1, with SMM1's screens and ending, against
+our open-source course server instead of Nintendo's) and **Mystery Mushroom costumes** come as mods.
 
 **Nothing from the game is in this repository**: no code, assets, text, keys or recompiled output.
 You supply your own dump; everything made from it is generated on your machine into gitignored
@@ -25,9 +25,9 @@ Captured from the macOS build, running from the owner's own dump.
 |---|---|---|
 | ![Title screen](docs/screenshots/title.jpg) | ![Mario running the title course](docs/screenshots/title-course.jpg) | ![Make and Play menu](docs/screenshots/menu.jpg) |
 
-**100 Mario Challenge mod** (in progress): SMM2's own Endless Challenge screens with 100 lives,
-courses served by our open-source server. Relabelling the screens and widening the lives counter
-are still to do.
+**100 Mario Challenge mod** (in progress). These are early captures: the mod's server plumbing
+running on SMM2's Endless screens with 100 lives and courses from our open-source server. The goal
+is SMM1's 100 Mario exactly, with SMM1's own screens, map, rules and ending, which are being built.
 
 | 100 lives on the Endless menu | A course from our server, ×100 in the HUD |
 |---|---|

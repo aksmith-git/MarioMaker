@@ -94,14 +94,27 @@ framework ideas; Ryujinx as the reference). Nothing counts as done without the e
     in both runtimes); Course Maker test play reached through the menus (L + R, Make, −) on the presented-frame clock
   Evidence: `recomp/private/smm2/evidence/r2/` (per-course tables `results/*.md`, traces of both runtimes, sessions,
   screenshots; private, not in git)
-- 🔄 Mods: 100 Mario Challenge on SMM2's Endless Challenge (100 lives, SMM1 run rules, courses from
-  our server or the local library); Mystery Mushroom costumes (model, sounds, physics swaps)
-  - ✅ Server side: Endless runs take a ruleset at `/start` (`smm2`, or `hundred`: 100 lives capped
-    at 100, done after 8 / 16 / 16 / 6 clears with `run_complete`, SMM1's fail-rate bands, skips
-    free after a death); completed runs on `hundred_<d>` leaderboards apart from SMM2's Endless
-    boards; rankings carry the caller's own row (`me`) (tests: modes, server)
-  - ⬜ Recomp hooks (the game's Endless NEX calls answered by our server, lives text and cap,
-    skip rule); ⬜ costumes
+- 🔄 Mods (owner's plan, 2026-10-19: a perfect SMM2 v3.0.3 recomp; SMM1's 100 Mario exactly as SMM1;
+  each SMM1 feature behind its own setting; never Nintendo's servers)
+  - 🔄 **100 Mario Challenge exactly as in SMM1** (not SMM2's Endless screens reskinned): SMM1's own
+    screens from the owner's SMM1 dump, drawn by the recomp host: difficulty tabs, the world map with
+    the Goombas carrying Peach and the castle at the end, the dot walk, the start card with 100 little
+    Marios, pause, clear, game over, credits (`Nwk_StaffCredit_00/01/03`) and `T_ThankYou_10/20/30`;
+    the rescue / ending scene recovered from the Wii U binary (code, not a layout), emulator footage
+    of the owner's SMM1 dump as the reference. Courses play in SMM2's own course play.
+    - ✅ Server: `hundred` ruleset (100 lives capped at 100, runs of Easy 8 / Normal 16 / Expert 16 /
+      Super Expert 6 then `run_complete`, SMM1 fail-rate bands, free skips), `hundred_<d>` boards
+    - 🔄 Game side over our server (built first on SMM2's Endless plumbing): pretend-online, Course
+      World opens against our server, courses download and play, clear / miss / skip reported, ×100
+      on the course card and HUD [obs, mod branch]; ⬜ run end as a win (not a game over); ⬜ SMM1
+      client rules (death rolls back coins and score, a multi-life award counts 1, unlocks Expert after
+      Normal / Super Expert after Expert)
+    - 🔄 SMM1 screens and the ending, host-drawn (SMCraft's archived SMM1 layout player reused)
+  - ⬜ **Settings, one toggle per SMM1 feature**: Mystery Mushroom costumes (model, sounds, physics
+    swaps), mid-air shell jumps, overlapping (overlay) pipes, and more from research/specs/smm1-extras*
+  - ⬜ **Our open-source server everywhere the game would reach Nintendo**: course search and
+    download (Course World, SMM2's own Endless Challenge under the `smm2` ruleset, 100 Mario), and
+    online multiplayer (versus / co-op through our server, not Nintendo's matchmaking)
 
 | Platform | Builds | Boots to title | Plays courses | Frames match Ryujinx | Input replays in sync |
 |---|---|---|---|---|---|
