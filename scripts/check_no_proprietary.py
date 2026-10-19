@@ -48,7 +48,8 @@ BLOCKED_EXTENSIONS = {
     # native binaries and translated shaders: the recomp generates these locally from the dump
     ".elf", ".o", ".obj", ".a", ".lib", ".so", ".dylib", ".dll", ".exe", ".spv", ".nss", ".kip",
 }
-BLOCKED_NAMES = {"prod.keys", "title.keys", "dev.keys", "otp.bin", "seeprom.bin", "common.key", "game.key"}
+BLOCKED_NAMES = {"prod.keys", "title.keys", "dev.keys", "otp.bin", "seeprom.bin", "common.key", "game.key",
+                 "course_table.bin"}  # (course_table.bin: the course key table the mods write from the player's game)
 
 MAGICS = [
     (0, b"Yaz0", "Yaz0 compressed data"),

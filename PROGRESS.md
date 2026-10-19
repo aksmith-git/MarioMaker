@@ -115,19 +115,33 @@ framework ideas; Ryujinx as the reference). Nothing counts as done without the e
     - ✅ The bridge to the SMM1 screens (`games/smm2/mods/hundred.h`, `bridge.c`): a host call starts a
       server course in SMM2's play (the Endless menu stays hidden and is driven), the outcome comes back
       as `hundred_course_result`; the win plays the ending and finishes the run (not a game over).
-      ⬜ Continue (a saved run), ⬜ SMM2's pause routed to the flow
+      ✅ Continue (the menu offers it; a saved Easy run continued at 100 lives / 1 clear and cleared on),
+      ✅ SMM2's pause held closed and routed to the flow (resume, Start Over = a life, Save & Quit), ✅ the
+      next course named before the card, `form` at the goal, the difficulty picked with L / R (New Game
+      on Super Expert with a saved Easy run started)
     - ✅ SMM1 client rules (`games/smm2/mods/hooks.c`, 22 hook points, only in a 100 Mario run): lives
       cap 100 (HUD and in-course clamps), free skip during the miss demo, a miss rolls back the
       attempt's coins and score, a multi-life award banks one 1-Up; unlocks Expert after a won Normal /
-      Super Expert after a won Expert (server boards). Seen in runs: free skips, 100 -> 99 per miss;
-      the rollback and the award cap not yet exercised in a recorded run
+      Super Expert after a won Expert (server boards). Seen in runs: free skips, 100 -> 99 per miss,
+      1-Ups banked 0 -> 1 -> 2 -> 3 on the HUD (`evidence/mods/pending_1ups_*`); the coin / score rollback
+      runs on every retry (logged) but no recorded attempt collected coins before dying yet; no SMM2
+      award worth several lives found in a test course (the cap is untested in play)
     - 🔄 SMM1 screens and the ending, host-drawn (SMCraft's archived SMM1 layout player reused)
   - 🔄 **Settings, one toggle per SMM1 feature** (overlay menu's Mods tab, kept in `smm2mods.ini`):
-    🔄 "100 Mario Challenge (SMM1)" (built, not yet checked on screen); ⬜ Mystery Mushroom costumes (model, sounds, physics
+    ✅ "100 Mario Challenge (SMM1)" (on screen in the Mods tab: `evidence/mods/mods_tab.png`); ⬜ Mystery Mushroom costumes (model, sounds, physics
     swaps), mid-air shell jumps, overlapping (overlay) pipes, and more from research/specs/smm1-extras*
-  - ⬜ **Our open-source server everywhere the game would reach Nintendo**: course search and
-    download (Course World, SMM2's own Endless Challenge under the `smm2` ruleset, 100 Mario), and
-    online multiplayer (versus / co-op through our server, not Nintendo's matchmaking)
+  - 🔄 **Our open-source server everywhere the game would reach Nintendo** (`recomp/docs/mods.md`,
+    `games/smm2/mods/world.c`): ✅ Course World's course lists (Hot, Popular, New, detailed search, a
+    maker's courses) from `/api/courses`, the course page (likes, plays, clear rate, world record, maker
+    name and Mii), download and play in SMM2's own play, the play / clear posted with its time
+    (`evidence/mods/world/`); ✅ leaderboards list the server's makers with their maker points
+    (`leaderboard_makers.png`); ✅ SMM2's own Endless under the `smm2` ruleset (5 lives, endless, its
+    own screens and HUD; an Easy run against the server: `evidence/mods/smm2_endless/`); 🔄 built, not
+    yet seen working: likes / boos (the clear screen's hearts took no test input), comments (text),
+    uploads from the Course Maker, the ID search, maker pages; ⬜ thumbnails, Super Worlds, Ninji;
+    ✅ courses=tgrcode setting (built-in server, awaiting core/crates/embed);
+    ⬜ online multiplayer: plan in `DECISIONS.md` (local play over our relay first, Network Play at
+    the enl layer second)
 
 | Platform | Builds | Boots to title | Plays courses | Frames match Ryujinx | Input replays in sync |
 |---|---|---|---|---|---|

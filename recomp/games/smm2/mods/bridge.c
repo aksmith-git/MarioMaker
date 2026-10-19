@@ -37,7 +37,7 @@ enum { BTN_A = 1 << 0, BTN_B = 1 << 1, BTN_Y = 1 << 3, BTN_L = 1 << 6, BTN_R = 1
 
 // ---- driver: one request at a time, pressed on its own thread
 enum { DRV_IDLE, DRV_NEW_GAME, DRV_CONTINUE, DRV_PLAY, DRV_SKIP, DRV_AFTER_CLEAR, DRV_RESULT_QUIT, DRV_BACK,
-       DRV_SAVE_QUIT, DRV_COURSE, DRV_PAUSE_TEST };
+       DRV_SAVE_QUIT, DRV_COURSE, DRV_PAUSE_TEST, DRV_BROKEN };
 static volatile int drv = DRV_IDLE;
 static volatile uint64_t drv_since, course_since;
 static volatile int run_d = -1;          // the flow's run (difficulty), -1 none
@@ -120,6 +120,10 @@ static void *driver(void *arg) {
                 b = BTN_RIGHT | BTN_Y;
                 if (jump && t % 90 < 20) b |= BTN_A;
             }
+            break;
+        case DRV_BROKEN:  // the "corrupt" window: A every 2 s for 10 s, then the map's Play
+            if (t >= 120 && t % 120 < 8) b = BTN_A;
+            else if (t > 600) set_drv(DRV_PLAY);
             break;
         case DRV_PAUSE_TEST:  // (flow test) + in the course: SMM2's pause, which the mod keeps closed
             if (t < 8) b = BTN_PLUS;
@@ -365,6 +369,11 @@ void bridge_event(const char *what, uint32_t d) {
         result(HUNDRED_SKIP);
     } else if (!strcmp(what, "new")) {
         run_d = (int)d;
+        mod_shot("map", 200);
+    } else if (!strcmp(what, "broken")) {  // "The course data is corrupt.": OK, then the run goes on (Play)
+        LOG("[mod] bridge: a broken course: the window is answered, the next course comes\n");
+        set_drv(DRV_BROKEN);
+        result(HUNDRED_SKIP);
     } else if (!strcmp(what, "suspend")) {
         suspending = true;
     }

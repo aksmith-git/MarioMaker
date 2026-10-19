@@ -29,6 +29,7 @@ Environment variables, or `smm2mods.ini` (`key=value` lines) in the data folder 
 | `RECOMP_MOD_SERVER=<url>` | `server=` | the course server, plain `http://` (default `http://127.0.0.1:8080`) |
 | `RECOMP_MOD_TOKEN=<token>` | `token=` | your account's token on that server (see below); keep it private |
 | `RECOMP_MOD_RULESET=hundred\|smm2` | `ruleset=` | `hundred`: Course World's Endless Challenge button opens SMM1's 100 Mario Challenge (default); `smm2`: it opens SMM2's own Endless Challenge |
+| `RECOMP_MOD_COURSES=server\|tgrcode` | `courses=` | `server` (default): the server above; `tgrcode` (iOS default, with the mod on): a course server built into the app on a loopback port, with a local account, fed from TGRCode's archive of SMM2 courses (needs the course key table: the mod writes it once from your game into `mods-generated/course_table.bin`, private); falls back to `server=` when the build has no built-in server. Also in the Mods tab ("Courses: TGRCode"), from the next start |
 | `RECOMP_MOD_TIMEOUT_MS=<n>` | `timeout_ms=` | per request (default 8000) |
 | `RECOMP_MOD_LOG=1` | `log=1` | log every request and answer |
 
@@ -83,7 +84,8 @@ World screen runs the game's own code, which finds no connection and shows "A co
 | Suspend / FinishEndlessMode | `POST /api/endless/<d>/suspend`, `/finish` |
 | GetUsers (own) | `GET /api/me` (name, maker ID), best per difficulty (completed 100 Mario runs under `hundred`) |
 | GetCourses (by id) | `GET /api/courses/<code>` |
-| course list info, an id check, a bug report | answered empty or accepted |
+| course list info, an id check | answered empty / passes |
+| ReportFromBugDetection (the game found a downloaded course invalid: "The course data is corrupt.") | in a run: `result: broken` (the course leaves the queue); the bridge answers the window, the flow hears `HUNDRED_SKIP`, the next course comes |
 | GetApplicationConfig | Endless switched on for the four difficulties |
 
 Data ids and course codes map 1:1 (`games/smm2/mods/course.c`, the same arithmetic as `mmk_formats::course_id`).
