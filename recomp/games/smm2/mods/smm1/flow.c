@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "ending.h"
 #include "smm1_data.h"
@@ -140,7 +141,8 @@ static void to_intro(int entry) {
     F.state = in ? S_INTRO : S_CLOSED;
 }
 static void to_ending(int d, int lives, int n, const struct hundred_credit *cr) {
-    Ending *e = ending_new(d, lives, n, cr);
+    (void)lives;
+    Ending *e = ending_new_style(d, n, cr, F.st.style, F.st.form);
     close_scenes();
     ov_hide(&F.ov);
     F.end = e;
@@ -405,6 +407,10 @@ static void flow_test_open(const char *spec) {
     else if (!strcmp(s, "ending")) {
         struct hundred_credit cr[16];
         int n = y > 0 ? y : RUN_LENGTHS[F.d];
+        char *c3 = b ? strchr(b, ':') : NULL;  // ending:<d>:<n>:<style>[:<form>]
+        F.st.style = c3 ? atoi(c3 + 1) : 0;
+        char *c4 = c3 ? strchr(c3 + 1, ':') : NULL;
+        F.st.form = c4 ? atoi(c4 + 1) : 0;
         for (int i = 0; i < n && i < 16; i++) fake_course(i, &cr[i]);
         F.ending_only = true;
         to_ending(F.d, 100, n, cr);
@@ -554,11 +560,15 @@ int flow_test_main(int argc, char **argv) {
             bool any = build(&q, bg);
             if (!any) bg[0] = bg[1] = bg[2] = 60, bg[3] = 255;  // (the game would show here)
             if (bg[3] == 0) bg[0] = 60, bg[1] = 90, bg[2] = 60, bg[3] = 255;
+            struct timespec t0, t1;
+            clock_gettime(CLOCK_MONOTONIC, &t0);
             raster_to(&q, bg, px);
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            double ms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
             char path[512];
             snprintf(path, sizeof path, pat, (int)t);
             write_png(path, px, W, H);
-            fprintf(stderr, "frame %ld: state %d, %d quads -> %s\n", t, F.state, q.n, path);
+            fprintf(stderr, "frame %ld: state %d, %d quads, raster %.1f ms -> %s\n", t, F.state, q.n, ms, path);
         }
     }
     free(px);

@@ -112,7 +112,13 @@ static void raster_quad(const LQuad *q, const Job *j) {
     bool flat = true;  // one vertex colour: skip the per-pixel colour interpolation
     for (int v = 1; v < 4; v++) flat = flat && !memcmp(q->col[v], q->col[0], 4);
     bool untextured = q->tex0 < 0 && q->tex1 < 0;
-    bool normal = op == 1 && bs == 4 && bd == 5;
+    bool normal = op == 1 && bs == 4 && bd == 5, tri = fl & LQ_TRI;
+    // uv(s, t) = a + b s + c t when the corners' coordinates are affine (the cross term is ~0)
+    float au = q->uv0[0][0], bu = q->uv0[1][0] - au, cu = q->uv0[2][0] - au;
+    float av = q->uv0[0][1], bv = q->uv0[1][1] - av, cv = q->uv0[2][1] - av;
+    bool affine = tri || (fabsf(q->uv0[3][0] - q->uv0[1][0] - q->uv0[2][0] + au) < 1e-5f &&
+                          fabsf(q->uv0[3][1] - q->uv0[1][1] - q->uv0[2][1] + av) < 1e-5f);
+    bool fast = affine && normal && flat && !two;
     for (int y = y0; y < y1; y++) {
         float dy = y + 0.5f - P[0][1], dx = x0 + 0.5f - P[0][0];
         float s = (dx * e2y - dy * e2x) * inv, t = (e1x * dy - e1y * dx) * inv;
@@ -135,8 +141,28 @@ static void raster_quad(const LQuad *q, const Job *j) {
         if (i1 > x1 - x0) i1 = x1 - x0;
         s += dsdx * i0, t += dtdx * i0;
         uint8_t *row = j->px + ((size_t)y * j->w + x0 + i0) * 4;
+        if (fast) {  // one texture, affine coordinates, flat colour, source over: incremental, integer where it can
+            float u = au + bu * s + cu * t, v = av + bv * s + cv * t, dudx = bu * dsdx + cu * dtdx, dvdx = bv * dsdx + cv * dtdx;
+            for (int x = x0 + i0; x < x0 + i1; x++, s += dsdx, t += dtdx, u += dudx, v += dvdx, row += 4) {
+                if (s < 0 || s >= 1 || t < 0 || t >= 1 || (tri && s + t >= 1)) continue;
+                float tx[4];
+                if (t0) sample(t0, u, v, ws0, wt0, lin, tx);
+                else tx[0] = tx[1] = tx[2] = tx[3] = 1;
+                float sa = (blk[3] + dw[3] * tx[3]) * col[0][3];
+                if (sa <= 0.5f / 255) continue;
+                if (sa > 1) sa = 1;
+                float ia = 1 - sa;
+                for (int c = 0; c < 3; c++) {
+                    float vv = (blk[c] + dw[c] * tx[c]) * col[0][c] * sa * 255 + row[c] * ia;
+                    row[c] = (uint8_t)(vv < 0 ? 0 : vv > 255 ? 255 : vv + 0.5f);
+                }
+                float va = sa * sa * 255 + row[3] * ia;
+                row[3] = (uint8_t)(va > 255 ? 255 : va + 0.5f);
+            }
+            continue;
+        }
         for (int x = x0 + i0; x < x0 + i1; x++, s += dsdx, t += dtdx, row += 4) {
-            if (s < 0 || s >= 1 || t < 0 || t >= 1) continue;
+            if (s < 0 || s >= 1 || t < 0 || t >= 1 || (tri && s + t >= 1)) continue;
             float a0 = (1 - s) * (1 - t), a1 = s * (1 - t), a2 = (1 - s) * t, a3 = s * t;
             float tx[4] = {1, 1, 1, 1};
             if (!untextured) {
