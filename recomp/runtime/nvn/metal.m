@@ -1120,7 +1120,28 @@ static void window_server_shot(const char *path) {
 static void window_server_shot(const char *path) { LOG("[metal] no window-server capture on iOS (%s)\n", path); }
 #endif
 
+#if TARGET_OS_IPHONE
+// iOS refuses GPU work from an app in the background: the game holds at its next frame until the app is back
+// (set from SDL's event watch, which runs as the app changes state, not when the main loop gets to the event)
+static atomic_bool g_in_background;
+static bool SDLCALL app_state_watch(void *userdata, SDL_Event *e) {
+    (void)userdata;
+    if (e->type == SDL_EVENT_WILL_ENTER_BACKGROUND) atomic_store(&g_in_background, true);
+    else if (e->type == SDL_EVENT_DID_ENTER_FOREGROUND) atomic_store(&g_in_background, false);
+    return true;
+}
+static void wait_while_in_background(void) {
+    if (!atomic_load(&g_in_background)) return;
+    LOG("[metal] the app is in the background: the game waits\n");
+    while (atomic_load(&g_in_background)) usleep(20000);
+    LOG("[metal] back in the foreground\n");
+}
+#endif
+
 void backend_present(NvnTexture *t) {
+#if TARGET_OS_IPHONE
+    wait_while_in_background();
+#endif
     g_last_presented = t;
     extern void renderer_submit(void);
     renderer_submit();  // same queue: the present pass runs after the frame's work
@@ -1359,6 +1380,9 @@ void ui_window_init(void) {
     SDL_SetHint(SDL_HINT_IOS_HIDE_HOME_INDICATOR, "2");
 #endif
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) FATAL("SDL_Init: %s\n", SDL_GetError());
+#if TARGET_OS_IPHONE
+    SDL_AddEventWatch(app_state_watch, NULL);
+#endif
     int win_w = 1280, win_h = 720;
     if (getenv("LARECOMP_WINDOW")) sscanf(getenv("LARECOMP_WINDOW"), "%dx%d", &win_w, &win_h);
     // LARECOMP_HIDDEN=1: never shown (automated test runs render off screen without taking the user's focus)

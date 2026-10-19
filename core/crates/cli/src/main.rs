@@ -51,6 +51,18 @@ enum Cmd {
         /// Behind your own reverse proxy: take client addresses from X-Forwarded-For.
         #[arg(long)]
         trust_proxy: bool,
+        /// Endless Challenge / 100 Mario courses also from an upstream source: `tgrcode`
+        /// (tgrcode.com/mm2, a third-party service reading Nintendo's Course World). Needs the
+        /// course key table: --keys, or --exe to find it in your game.
+        #[arg(long)]
+        upstream: Option<String>,
+        /// The course key table (smmfmt.smm2.keyfind's output) for --upstream.
+        #[arg(long)]
+        keys: Option<PathBuf>,
+        /// Your own SMM2 executable (the `main` NSO) to find the course key table in, for
+        /// --upstream.
+        #[arg(long)]
+        exe: Option<PathBuf>,
     },
     /// Upload courses (raw, zlib, or .bcd with --keys); several at once seed a new server.
     Upload {
@@ -88,6 +100,9 @@ fn main() -> ExitCode {
             writes_per_minute,
             accounts_per_hour,
             trust_proxy,
+            upstream,
+            keys,
+            exe,
         } => {
             let admin = admin_token.or_else(|| std::env::var("MMK_ADMIN_TOKEN").ok());
             let store = match mmk_server::Store::open(&dir) {
@@ -118,7 +133,47 @@ fn main() -> ExitCode {
                 },
                 trust_proxy,
             };
-            match mmk_server::serve_with(store, &addr, opts) {
+            let store = std::sync::Arc::new(store);
+            if let Some(up) = upstream {
+                if up != "tgrcode" {
+                    eprintln!("server: --upstream {up}: the source is tgrcode");
+                    return ExitCode::FAILURE;
+                }
+                let keys = match (read_key_table(keys), exe) {
+                    (Some(t), _) => mmk_server::upstream::Keys::Table(Box::new(t)),
+                    (None, Some(p)) => {
+                        match std::fs::read(&p).map(|b| mmk_formats::nso::Nso::parse(&b)) {
+                            Ok(Ok(nso)) => mmk_server::upstream::Keys::Find(
+                                [
+                                    mmk_formats::nso::SegmentKind::Ro,
+                                    mmk_formats::nso::SegmentKind::Data,
+                                ]
+                                .into_iter()
+                                .filter_map(|k| nso.segment(k).map(<[u8]>::to_vec))
+                                .collect(),
+                            ),
+                            _ => {
+                                eprintln!("server: {}: not an NSO", p.display());
+                                return ExitCode::FAILURE;
+                            }
+                        }
+                    }
+                    (None, None) => {
+                        eprintln!(
+                            "server: --upstream needs --keys or --exe (the course key table)"
+                        );
+                        return ExitCode::FAILURE;
+                    }
+                };
+                mmk_server::upstream::start(
+                    store.clone(),
+                    Box::new(mmk_server::upstream::TgrCode::new()),
+                    keys,
+                    Default::default(),
+                );
+                eprintln!("mmk-server: Endless / 100 Mario courses also from tgrcode.com/mm2");
+            }
+            match mmk_server::serve_shared(store, &addr, opts) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("server: {e}");

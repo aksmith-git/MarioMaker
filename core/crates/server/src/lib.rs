@@ -56,6 +56,7 @@ use serde_json::{Value, json};
 
 pub mod accounts;
 pub mod endless;
+pub mod upstream;
 
 use accounts::Accounts;
 
@@ -89,6 +90,9 @@ pub struct Meta {
     /// The record was set by a replay the server re-simulated (its run is at `…/replay`).
     pub record_verified: bool,
     pub first_clear: String,
+    /// Fetched from an upstream course source ([`upstream`]): its code and data ID are the
+    /// source's, and local IDs never count it.
+    pub upstream: bool,
 }
 
 impl Meta {
@@ -107,7 +111,7 @@ impl Meta {
             "attempts": self.attempts, "likes": self.likes, "difficulty": self.difficulty(),
             "boos": self.boos, "maker_id": self.maker_id, "record_ms": self.record_ms,
             "record_holder": self.record_holder, "first_clear": self.first_clear,
-            "record_verified": self.record_verified,
+            "record_verified": self.record_verified, "upstream": self.upstream,
         })
     }
 
@@ -134,6 +138,7 @@ impl Meta {
             record_holder: s("record_holder"),
             record_verified: v["record_verified"].as_bool().unwrap_or(false),
             first_clear: s("first_clear"),
+            upstream: v["upstream"].as_bool().unwrap_or(false),
         })
     }
 }
@@ -146,6 +151,9 @@ pub struct Store {
     admin: Option<String>,
     /// Records only from verified replays (typed-in times count as clears only).
     verified_records: bool,
+    /// Told when a run's difficulty is short of courses ([`upstream`] fetches more); never
+    /// blocks.
+    wants: std::sync::OnceLock<Box<dyn Fn(mmk_modes::endless::Difficulty) + Send + Sync>>,
 }
 
 struct Inner {
@@ -217,7 +225,13 @@ impl Store {
             .and_then(|v| v["courses"].as_array().cloned())
             .map(|a| a.iter().filter_map(Meta::from_json).collect())
             .unwrap_or_default();
-        let next_id = courses.iter().map(|m| m.data_id).max().unwrap_or(0x10_0000) + 1;
+        let next_id = courses
+            .iter()
+            .filter(|m| !m.upstream)
+            .map(|m| m.data_id)
+            .max()
+            .unwrap_or(0x10_0000)
+            + 1;
         let by_code = courses
             .iter()
             .enumerate()
@@ -318,7 +332,53 @@ impl Store {
             }),
             admin: None,
             verified_records: false,
+            wants: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Who to tell when a run's difficulty is short of courses (once per store).
+    pub fn on_short(&self, f: impl Fn(mmk_modes::endless::Difficulty) + Send + Sync + 'static) {
+        let _ = self.wants.set(Box::new(f));
+    }
+
+    pub(crate) fn short_of(&self, d: mmk_modes::endless::Difficulty) {
+        if let Some(f) = self.wants.get() {
+            f(d);
+        }
+    }
+
+    /// Store a course from an upstream source under its own code (`meta.code`, the source's
+    /// data ID and statistics); `data` is the plain course body. A code already held is kept.
+    pub fn import(&self, data: &[u8], mut meta: Meta) -> Result<Meta, StoreError> {
+        if data.len() > MAX_UPLOAD {
+            return Err(StoreError::TooLarge);
+        }
+        let course = Course::parse(data).map_err(|e| StoreError::NotACourse(e.to_string()))?;
+        let mut g = self.inner.lock().unwrap();
+        if let Some(&i) = g.by_code.get(&meta.code) {
+            return Ok(g.courses[i].clone());
+        }
+        meta.upstream = true;
+        meta.owner = 0;
+        meta.style = course.header.game_style.as_str_lossy();
+        meta.theme = course.main.header.theme;
+        if meta.name.is_empty() {
+            meta.name = course.header.name.to_string_lossy();
+        }
+        let code = meta.code.clone();
+        fs::write(self.dir.join(format!("courses/{code}.bin")), data)
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        let i = g.courses.len();
+        g.courses.push(meta.clone());
+        g.by_code.insert(code, i);
+        self.save_index(&g)?;
+        Ok(meta)
+    }
+
+    /// Courses held from an upstream source.
+    pub fn upstream_count(&self) -> usize {
+        let g = self.inner.lock().unwrap();
+        g.courses.iter().filter(|m| m.upstream).count()
     }
 
     /// (courses, accounts) held.
@@ -637,6 +697,7 @@ impl Store {
             record_holder: String::new(),
             record_verified: false,
             first_clear: String::new(),
+            upstream: false,
         };
         fs::write(self.dir.join(format!("courses/{code}.bin")), data)
             .map_err(|e| StoreError::Io(e.to_string()))?;
@@ -1143,10 +1204,41 @@ pub fn serve(store: Store, addr: &str) -> Result<(), String> {
 }
 
 pub fn serve_with(store: Store, addr: &str, opts: ServeOptions) -> Result<(), String> {
+    serve_shared(std::sync::Arc::new(store), addr, opts)
+}
+
+/// [`serve_with`] for a store shared with something else (an upstream fetcher).
+pub fn serve_shared(
+    store: std::sync::Arc<Store>,
+    addr: &str,
+    opts: ServeOptions,
+) -> Result<(), String> {
+    let (_, workers) = start(store, addr, opts)?;
+    for w in workers {
+        let _ = w.join();
+    }
+    Ok(())
+}
+
+/// Serve on `addr` from worker threads and return the bound port at once (`addr` may end in
+/// `:0`: a free port). The server runs as long as the process does (an app's own server).
+pub fn serve_background(
+    store: std::sync::Arc<Store>,
+    addr: &str,
+    opts: ServeOptions,
+) -> Result<u16, String> {
+    start(store, addr, opts).map(|(port, _)| port)
+}
+
+fn start(
+    store: std::sync::Arc<Store>,
+    addr: &str,
+    opts: ServeOptions,
+) -> Result<(u16, Vec<std::thread::JoinHandle<()>>), String> {
     let server = std::sync::Arc::new(tiny_http::Server::http(addr).map_err(|e| e.to_string())?);
-    let store = std::sync::Arc::new(store);
+    let port = server.server_addr().to_ip().map_or(0, |a| a.port());
     let gate = std::sync::Arc::new(limits::Gate::new(opts.limits));
-    let workers: Vec<_> = (0..opts.threads.max(1))
+    let workers = (0..opts.threads.max(1))
         .map(|_| {
             let (server, store, gate) = (server.clone(), store.clone(), gate.clone());
             std::thread::spawn(move || {
@@ -1156,10 +1248,7 @@ pub fn serve_with(store: Store, addr: &str, opts: ServeOptions) -> Result<(), St
             })
         })
         .collect();
-    for w in workers {
-        let _ = w.join();
-    }
-    Ok(())
+    Ok((port, workers))
 }
 
 fn respond(store: &Store, gate: &limits::Gate, trust_proxy: bool, mut req: tiny_http::Request) {

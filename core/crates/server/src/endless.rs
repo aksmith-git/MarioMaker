@@ -145,6 +145,8 @@ impl Store {
         rec.status.best_before = best;
         let out = rec.status;
         self.save_endless(&g)?;
+        drop(g);
+        self.short_of(d); // (an upstream source tops the difficulty up while the run starts)
         Ok(out)
     }
 
@@ -238,6 +240,10 @@ impl Store {
             .collect();
         let run = rec.status;
         self.save_endless(&g)?;
+        drop(g);
+        if widened {
+            self.short_of(d); // (the bands ran dry: an upstream source fetches more)
+        }
         Ok(Batch {
             courses: list,
             widened,

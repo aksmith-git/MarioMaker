@@ -14,6 +14,8 @@ serde_json.workspace = true
 tiny_http = "0.12.0"
 getrandom = "0.3"
 ring = "0.17"
+# upstream course source (src/upstream.rs): HTTPS with rustls (ring, as above)
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
 mmk-editor = { path = "../editor" }
