@@ -431,8 +431,10 @@ static void fill_state(Cpu *c, uint8_t *s, uint32_t id, bool single) {
         g_watch_hi = c->x[1] - 8 - 0x98 + hi;
         LOG("[input] watching controller object %llx\n", c->x[1] - 8);
     }
-    bool menu = menu_input_captured();  // the overlay menu / name entry has the controls (typing there isn't for the game)
-    uint64_t b = menu ? script_buttons : key_buttons | pad_buttons | script_buttons;
+    extern bool game_overlay_captured(void);  // a game's host-drawn screen has the controls (runtime/game_hooks.c)
+    bool overlay = game_overlay_captured();
+    bool menu = menu_input_captured() || overlay;  // the overlay menu / name entry has the controls (typing there isn't for the game)
+    uint64_t b = overlay ? 0 : menu ? script_buttons : key_buttons | pad_buttons | script_buttons;
     {   // injected Plus: held for ~10 presented frames (the game polls several times per frame)
         extern uint64_t renderer_present_count(void);
         static uint64_t until;

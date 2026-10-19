@@ -108,15 +108,20 @@ miss, clear, skip). After a skip SMM2's Endless starts the next course at once; 
 The win: the Nth clear's answer has `run_complete`; the flow plays SMM1's ending (`hundred_ending_show`) and calls
 `hundred_run_finish()`, which finishes the run on the server (the completion is on its `hundred_<d>` board already).
 
-Stand-ins (weak) for the flow's functions are in `bridge.c`, for the ending in `ending_stub.c`. With
-`RECOMP_MOD_FLOW_TEST=<difficulty>` the stand-in flow plays a whole run by itself (start, Play after every clear, the
-ending, the finish), and `RECOMP_MOD_AUTOPLAY=1` (or `=jump`) plays the courses (right + run [+ jump], skip after
+The flow is `games/smm2/mods/smm1/` (strong `hundred_flow_*`, `hundred_course_result`, the ending); it keeps weak
+stand-ins of the run side's functions, which `bridge.c` / `endless.c` replace. `hundred_run_status()` returns a
+snapshot under the run's lock (it is called on the render thread); `style` is the current course's game style.
+
+`RECOMP_MOD_FLOW_TEST=<difficulty>` plays a whole run unattended in place of the flow (the flow's screens are left
+out): the run starts on entering the Endless menu, Play follows every clear, the win plays the ending and finishes
+the run. `RECOMP_MOD_AUTOPLAY=1` (or `=jump`) plays the courses (right + run [+ jump], skip after
 `RECOMP_MOD_AUTOPLAY_SKIP` seconds, default 20). Both need `LARECOMP_INPUT` set (the test-input hook), which also
 scripts the way to the Endless menu. `RECOMP_MOD_UNLOCK_ALL=1` opens every difficulty; `RECOMP_MOD_TRACE=1` logs
 Course World's states and every request the mod doesn't answer.
 
-Not driven yet: Continue (a saved run is started as New Game), SMM2's pause (not intercepted for the flow), and
-hiding the game frame / routing the player's input while the flow is up (`hundred_flow_active()`).
+Not driven yet: Continue (a saved run is started as New Game) and SMM2's pause during a run course (to become
+`hundred_flow_pause()`: the play scene's pause state is a virtual of the scene object, `cPausePlay` at index 3 of the
+machine registered at main+0x1bc19c0, so the interception needs the scene's vtable caught at run time).
 
 ### Limits
 

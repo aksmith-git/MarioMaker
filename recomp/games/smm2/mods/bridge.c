@@ -98,6 +98,13 @@ static void *driver(void *arg) {
     return NULL;
 }
 
+static int test_difficulty(void);
+static void test_result(int outcome);
+static void result(int outcome) {
+    if (test_difficulty() >= 0) test_result(outcome);
+    else hundred_course_result(outcome);
+}
+
 static void driver_start(void) {
     pthread_t th;
     pthread_create(&th, NULL, driver, NULL);
@@ -124,7 +131,10 @@ static void menu_disp(Cpu *c) {
         MLOG("bridge: difficulty %d selected\n", d);
     }
     guest_call_orig(c, MENU_DISP_EXEC);
-    if (entered && !hundred_flow_active()) {
+    if (entered && test_difficulty() >= 0) {
+        LOG("[mod] bridge: Endless menu entered: flow test run\n");
+        hundred_run_start(test_difficulty(), false);
+    } else if (entered && !hundred_flow_active()) {
         LOG("[mod] bridge: Endless menu entered: the 100 Mario flow opens\n");
         hundred_flow_open();
     }
@@ -135,16 +145,16 @@ void bridge_event(const char *what, uint32_t d) {
     pthread_once(&once, driver_start);
     if (!strcmp(what, "start")) {
         drv = DRV_COURSE, drv_since = course_since = renderer_present_count();
-        hundred_flow_course_started();
+        if (test_difficulty() < 0) hundred_flow_course_started();
     } else if (!strcmp(what, "miss")) {
         drv = DRV_COURSE, drv_since = renderer_present_count();  // (SMM2 retries the course by itself)
-        hundred_course_result(HUNDRED_MISS);
+        result(HUNDRED_MISS);
     } else if (!strcmp(what, "clear")) {
         set_drv(DRV_AFTER_CLEAR);
-        hundred_course_result(HUNDRED_CLEAR);
+        result(HUNDRED_CLEAR);
     } else if (!strcmp(what, "skip")) {
         set_drv(DRV_IDLE);  // (SMM2's Endless starts the next course at once)
-        hundred_course_result(HUNDRED_SKIP);
+        result(HUNDRED_SKIP);
     } else if (!strcmp(what, "new")) {
         run_d = (int)d;
     }
@@ -210,8 +220,9 @@ void hundred_run_finish(void) {
 
 void hundred_flow_exit(void) { set_drv(DRV_BACK); }
 
-// ---- stand-ins for the flow (the SMM1 screens agent's code replaces them). With RECOMP_MOD_FLOW_TEST=<d> they play
-// a whole run: start on difficulty d, Play after every clear, the ending and the finish on the win.
+// ---- RECOMP_MOD_FLOW_TEST=<difficulty>: an unattended run in place of the flow (evidence, regression checks). The
+// flow's screens are left out (hundred_flow_open is not called); the run starts on menu entry, Play follows every
+// clear, and the win plays the ending (hundred_ending_show) and finishes the run.
 static int flow_test = -2;
 
 static int test_difficulty(void) {
@@ -219,32 +230,24 @@ static int test_difficulty(void) {
     return flow_test;
 }
 
-__attribute__((weak)) void hundred_flow_open(void) {
-    if (test_difficulty() >= 0) hundred_run_start(test_difficulty(), false);
-}
-__attribute__((weak)) bool hundred_flow_active(void) { return false; }
-__attribute__((weak)) bool hundred_flow_overlay(void) { return false; }
-__attribute__((weak)) void hundred_flow_pause(void) {}
-__attribute__((weak)) void hundred_flow_course_started(void) { LOG("[mod] flow (stand-in): course started\n"); }
-
 static void *test_win(void *arg) {
     (void)arg;
     struct hundred_status st;
     hundred_run_status(&st);
     hundred_ending_show(st.difficulty, st.ncredits, st.credits);
-    while (!hundred_ending_done()) usleep(20000);
+    for (int i = 0; i < 30 * 60 * 50 && !hundred_ending_done(); i++) usleep(20000);
     hundred_run_finish();
     return NULL;
 }
 
-__attribute__((weak)) void hundred_course_result(int outcome) {
+static void test_result(int outcome) {
     static const char *const names[] = {"clear", "miss", "skip", "save & quit", "error"};
     struct hundred_status st;
     hundred_run_status(&st);
-    LOG("[mod] flow (stand-in): result %s, lives %d, cleared %d / %d\n", names[outcome], st.lives, st.cleared, st.total);
-    if (test_difficulty() < 0 || outcome != HUNDRED_CLEAR) return;
-    if (st.total && st.cleared >= st.total) {  // the win: the ending, then the run is finished
-        LOG("[mod] flow (stand-in): 100 Mario Challenge won\n");
+    LOG("[mod] flow test: result %s, lives %d, cleared %d / %d\n", names[outcome], st.lives, st.cleared, st.total);
+    if (outcome != HUNDRED_CLEAR) return;
+    if (st.total && st.cleared >= st.total) {
+        LOG("[mod] flow test: 100 Mario Challenge won\n");
         pthread_t th;
         pthread_create(&th, NULL, test_win, NULL);
         pthread_detach(th);

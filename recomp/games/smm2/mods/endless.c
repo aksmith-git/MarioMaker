@@ -58,15 +58,16 @@ static struct {
 } runs[4];
 
 // Names and makers of the courses served (data id -> credit), for the ending's credits.
-static struct { uint64_t id; struct hundred_credit c; } course_names[64];
+static struct { uint64_t id; struct hundred_credit c; int style; } course_names[64];
 static int ncourse_names;
 
-static void note_course(uint64_t id, const char *name, const char *maker) {
+static void note_course(uint64_t id, const char *name, const char *maker, int style) {
     pthread_mutex_lock(&state_lock);
     int i = 0;
     while (i < ncourse_names && course_names[i].id != id) i++;
     if (i == ncourse_names) i = ncourse_names < 64 ? ncourse_names++ : (int)(id % 64);
     course_names[i].id = id;
+    course_names[i].style = style;
     snprintf(course_names[i].c.name, sizeof course_names[i].c.name, "%s", name);
     snprintf(course_names[i].c.maker, sizeof course_names[i].c.maker, "%s", maker);
     pthread_mutex_unlock(&state_lock);
@@ -355,7 +356,7 @@ static void fill_course(uint64_t e, Json *m, uint32_t data_id, uint32_t difficul
     s64(e + 0x000, data_id);
     put_utf16(g64(e + 0x010), g32(e + 0x018), bare);
     const char *maker = json_str(json_get(m, "maker"), "");
-    note_course(data_id, json_str(json_get(m, "name"), ""), maker);
+    note_course(data_id, json_str(json_get(m, "name"), ""), maker, style_index(json_str(json_get(m, "style"), "")));
     s64(e + 0x030, maker_pid(json_str(json_get(m, "maker_id"), ""), maker));
     put_utf16(g64(e + 0x040), g32(e + 0x048), json_str(json_get(m, "name"), ""));
     put_utf16(g64(e + 0x098), g32(e + 0x0a0), json_str(json_get(m, "description"), ""));
@@ -742,7 +743,7 @@ void endless_fill_status(struct hundred_status *out, int active_d) {
         if (id) {
             data_id_to_code((uint32_t)id, out->current_code);
             for (int i = 0; i < ncourse_names; i++)
-                if (course_names[i].id == id) out->current = course_names[i].c;
+                if (course_names[i].id == id) out->current = course_names[i].c, out->style = course_names[i].style;
         }
     }
     pthread_mutex_unlock(&state_lock);
