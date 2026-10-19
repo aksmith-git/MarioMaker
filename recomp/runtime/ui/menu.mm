@@ -508,6 +508,21 @@ static void tab_audio(void) {
     opt_end();
 }
 
+// Mods: the game's mod switches (runtime/game_hooks.c game_mod_toggles; the tab shows only when a game has some)
+typedef struct { const char *label, *desc; bool *value; bool def; } GameModToggle;
+extern "C" int game_mod_toggles(const GameModToggle **out);
+extern "C" void game_mod_toggles_changed(void);
+static void tab_mods(void) {
+    const GameModToggle *t;
+    int n = game_mod_toggles(&t);
+    opt_begin("##mods", ImGui::GetFontSize() / 34);
+    opt_section("Mods");
+    bool changed = false;
+    for (int i = 0; i < n; i++) changed |= opt_toggle(t[i].label, t[i].value, t[i].def, t[i].desc);
+    if (changed) game_mod_toggles_changed();
+    opt_end();
+}
+
 // Quit: back to the start screen (in game: the game reboots to it) or out to the desktop. Each asks first (progress
 // since the last save is lost); B / Esc or Cancel backs out.
 extern "C" void rt_request_reboot(int kind);  // runtime/main.c (RT_REBOOT_TITLE = 2: the start screen)
@@ -651,10 +666,12 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
     // (LAS Recomp's game tabs - Save Editor, Randomizer, Warp, Cheats, Gameplay, Cosmetics - are not part of the
     // shared runtime; their ids stay unused so the test hooks keep their numbers)
-    static const char *names[] = {"Video", "Audio", "", "", "", "", "", "", "Controls", "Quit"};
-    static const int order[] = {8, 0, 1, 9};  // Controls, Video, Audio, Quit
-    for (int i : order)  // (Quit: in game only)
-        if (i != 9 || !prelaunch) tabs[ntabs++] = {names[i], i, true};
+    static const char *names[] = {"Video", "Audio", "Mods", "", "", "", "", "", "Controls", "Quit"};
+    static const int order[] = {8, 0, 1, 2, 9};  // Controls, Video, Audio, Mods, Quit
+    const GameModToggle *mods;
+    bool have_mods = game_mod_toggles(&mods) > 0;
+    for (int i : order)  // (Quit: in game only; Mods: when the game has some)
+        if ((i != 9 || !prelaunch) && (i != 2 || have_mods)) tabs[ntabs++] = {names[i], i, true};
     int cur = 0;  // g_tab / g_tab_request hold ids
     for (int i = 0; i < ntabs; i++) if (tabs[i].id == g_tab) cur = i;
     if (!tabs[cur].on) cur = 0;
@@ -738,6 +755,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 case -1: prelaunch(scale); break;
                 case 0: tab_display(); break;
                 case 1: tab_audio(); break;
+                case 2: tab_mods(); break;
                 case 8: tab_about(); break;
                 case 9: tab_quit(scale, in_game); break;
                 }

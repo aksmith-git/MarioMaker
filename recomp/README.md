@@ -187,3 +187,6 @@ Input replays against Ryujinx (both runtimes play the same script from the first
 update for update): `tools/replay_sync.py`, findings in [docs/smm2-bringup.md](docs/smm2-bringup.md) ("Input replays").
 
 Status and evidence: `../PROGRESS.md` ("Recomp"); what the bring-up needed: [docs/smm2-bringup.md](docs/smm2-bringup.md).
+
+Mods (SMM1's 100 Mario Challenge on SMM2's Endless Challenge, against our own course server): how to turn them on,
+server setup and how they work in [docs/mods.md](docs/mods.md).

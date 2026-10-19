@@ -22,6 +22,7 @@ struct hundred_status {
     int continue_lives[4], continue_cleared[4];
     struct hundred_credit current;  // the course about to be / being played
     char current_code[12];          // its course code ("" none)
+    int style;                      // the current (or last) course's game style: 0 SMB1, 1 SMB3, 2 SMW, 3 NSMBU, 4 SM3DW
     int ncredits;                   // the courses cleared so far in this run, in order
     struct hundred_credit credits[16];
     int style;  // game style of the current / last course: 0 SMB1, 1 SMB3, 2 SMW, 3 NSMBU, 4 SM3DW (the ending's scene)

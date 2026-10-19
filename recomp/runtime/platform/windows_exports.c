@@ -5,6 +5,6 @@
 #ifdef _WIN32
 __asm__(".section .drectve\n"
         ".ascii \" -export:rt_dispatch -export:rt_svc -export:rt_brk -export:rt_udf -export:rt_ticks\"\n"
-        ".ascii \" -export:fnprof_hit -export:g_fnprof,data -export:smm2_player_hook\"\n"
+        ".ascii \" -export:fnprof_hit -export:g_fnprof,data -export:smm2_player_hook -export:smm2_mod_after\"\n"
         ".text\n");
 #endif

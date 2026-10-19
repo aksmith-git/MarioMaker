@@ -15,6 +15,13 @@
 // ---- frame / level (renderers): the current level's name, for logs and per-level render-target resets
 WEAK const char *game_level_name(void) { return ""; }
 WEAK void romfs_file_read_hook(const char *path) { (void)path; }
+// a folder of files a game's mods generate, laid over the RomFS when no RECOMP_MOD_DIR is set (runtime/services/fs.c)
+WEAK const char *game_romfs_overlay(void) { return NULL; }
+
+// ---- a game's mod settings (the overlay menu's Mods tab, runtime/ui/menu.mm): on/off toggles; none by default
+typedef struct { const char *label, *desc; bool *value; bool def; } GameModToggle;
+WEAK int game_mod_toggles(const GameModToggle **out) { *out = NULL; return 0; }
+WEAK void game_mod_toggles_changed(void) {}
 
 // ---- once per frame on the game's main thread (runtime/hle/input.c), and per presented frame (renderers)
 WEAK void warp_game_tick(Cpu *c) { (void)c; }
