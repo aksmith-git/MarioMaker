@@ -46,8 +46,8 @@ Ending *ending_new(int d, int lives, int n, const struct hundred_credit *c) {
 Ending *ending_new_style(int d, int n, const struct hundred_credit *c, int style, int form) {
     Ending *e = calloc(1, sizeof *e);
     e->d = d < 0 ? 0 : d > 3 ? 3 : d;
-    e->style = style > 3 ? 0 : style;
-    e->rescue = rescue_new(e->style, e->d != 0, form);  // (SM3DW has no SMM1 scene: SMB1's [inf])
+    e->style = style == 4 ? 3 : style < 0 || style > 3 ? 0 : style;  // (SM3DW has no SMM1 scene: NSMBU's, the 3-D one [inf])
+    e->rescue = rescue_new(e->style, e->d != 0, form);
     e->rescue_len = rescue_length(e->rescue);
     e->text = lay_open("Play_EndingText_00");
     if (e->text) {

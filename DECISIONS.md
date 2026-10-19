@@ -1382,7 +1382,7 @@ balloon line comes 30 frames after he stops (row by difficulty, variant by the c
 the credits follow on black (`_01` Easy, `_00` Normal / Expert, `_03` Super Expert). **Nothing
 skips**: neither ending scene reads the controller [obs], so A does not skip the ending (the brief
 said it did). The staff-roll music is `easy` for Easy and Super Expert, `normal` for Normal and Expert.
-SMM2's SM3DW style has no SMM1 scene; its courses end in SMB1's [inf].
+SMM2's SM3DW style has no SMM1 scene; its courses end in NSMBU's, the 3-D one [inf].
 
 **Between courses, from the binary** (research/specs/smm1-100mario-screens.md, private): the map's demo
 states, the card's In by case (AnimA + AnimB on a new run, AnimB after Continue or a miss, none

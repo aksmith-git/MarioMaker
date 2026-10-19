@@ -293,6 +293,7 @@ static void handle_queue(void) {
             break;
         case Q_RESULT:
             if (F.state == S_PLAYING || F.state == S_INTRO) on_result(q[i][1]);
+            else if (F.state == S_SELECT && q[i][1] == HUNDRED_GIVEUP_SAVE) to_select();  // (the saved run's record now)
             break;
         case Q_ENDING:
             if (open_data()) {
@@ -333,7 +334,7 @@ static void step_playing(const UiIn *in) {
             ov_hide_pause(o);
             if (sel == 0) hundred_play_resume();
             else if (sel == 1) hundred_play_retry();
-            else hundred_run_save_quit();
+            else { hundred_run_save_quit(); to_select(); }  // (SMM1: back to the menu; the run side reports when SMM2 is there)
         }
         return;
     }
@@ -342,7 +343,7 @@ static void step_playing(const UiIn *in) {
             if (o->tick >= F.clear_act_at) {
                 bool next = o->clear_focus == 1;
                 ov_hide(o);
-                if (!next) hundred_run_save_quit();
+                if (!next) { hundred_run_save_quit(); to_select(); }
                 else if (F.st.cleared >= F.st.total) {
                     to_ending(F.d, F.st.lives, F.st.ncredits, F.st.credits);
                 } else {
@@ -433,6 +434,7 @@ static void tick(unsigned buttons) {
             if (t == 90 && auto_d() > F.sel->d) in.pressed |= BT_RIGHT;
             if (t == 120 && auto_d() > F.sel->d) in.pressed |= BT_RIGHT;
             if (t == 150 && auto_d() > F.sel->d) in.pressed |= BT_RIGHT;
+            if (t == 200) in.pressed |= BT_DOWN;  // (New Game, not Continue)
             if (t == 240) in.pressed |= BT_A;
         }
         int ev = select_step(F.sel, &in, &F.st, &resume);
