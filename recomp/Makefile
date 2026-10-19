@@ -192,6 +192,16 @@ GAMELIB_SRCS := tools/gen.py tools/lifter.py tools/analyze.py tools/nso.py tools
 GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(GENFLAGS)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
 
 RT_OBJ   := $(patsubst %.c,$(B)/rt/%.o,$(patsubst runtime/%,%,$(RT_SRC)))
+# The course server inside the app (core/crates/embed, runtime/net/embed_server.h): linked when its library is built
+# (`make embed-server`: cargo) or EMBED_SERVER=1, Apple builds for now; a build never needs Rust otherwise.
+EMBED_TRIPLE := $(if $(filter ios,$(PLATFORM)),aarch64-apple-ios,$(if $(filter iossim,$(PLATFORM)),aarch64-apple-ios-sim,$(if $(filter macos,$(PLATFORM)),aarch64-apple-darwin)))
+EMBED_LIB := $(if $(EMBED_TRIPLE),../core/target/$(EMBED_TRIPLE)/release/libmmk_embed.a)
+EMBED_SERVER ?= $(if $(wildcard $(EMBED_LIB)),1,0)
+ifeq ($(EMBED_SERVER),1)
+OSFLAGS  += -DRECOMP_EMBED_SERVER
+LDFLAGS  += $(EMBED_LIB)
+endif
+
 RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Iruntime/nvn $(DEPINC) $(OSFLAGS) $(GAMEDEFS)
 CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime/nvn $(DEPINC) $(GAMEDEFS)
 
@@ -210,6 +220,8 @@ $(B)/rt/gamebuild.o: $(GAMELIB_SRCS) Makefile
 $(B)/rt/gamebuild.o: RTFLAGS += -DGAMELIB_ID='"$(GAMELIB_ID)"' -DGAMELIB_CFLAGS='"$(strip $(filter-out -Iruntime,$(GENFLAGS)))"' \
                                 -DGAMELIB_SHARED='"$(GAMELIB_SHARED)"' -DGAMEBUILD_HLE='"$(GAME_HLE)"' \
                                 -DGAMEBUILD_PATCHES='"$(GAME_PATCHES)"'
+
+$(B)/rt/net/embed_server.o: $(wildcard $(EMBED_LIB))  # (built again when the library appears)
 
 $(B)/rt/%.o: runtime/%.c $(RT_HDRS)
 	@mkdir -p $(dir $@)
@@ -300,6 +312,11 @@ package: all
 	$(if $(TARGET),,$(error package: pass TARGET=windows-x86_64 | linux-x86_64 | linux-aarch64))
 	tools/package.sh $(TARGET) $(B) $(GAME_ID) $(GAME_HLE) $(DEPS)
 
+# The course server inside the app (core/crates/embed) for this target, with cargo
+embed-server:
+	$(if $(EMBED_TRIPLE),,$(error embed-server: macOS / iOS builds only for now))
+	cd ../core && cargo build -p mmk-embed --release --target $(EMBED_TRIPLE)
+
 # Run from the data folder (saves, settings and shader caches go there); RUN_ARGS / env vars as the runtime reads them
 run: all
 	cd $(DATA) && $(CURDIR)/$(EXE) extracted $(RUN_ARGS)
@@ -325,4 +342,4 @@ JOBS ?= $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 build/test_shaders: tools/test_shaders.m runtime/nvn/maxwell/translate.c runtime/nvn/maxwell/shader.h
 	clang -O1 -fobjc-arc -framework Metal -framework Foundation -o $@ tools/test_shaders.m runtime/nvn/maxwell/translate.c
 
-.PHONY: all venv setup gen clean-gen run gen-objs runtime-objs test-tools smm2 run-smm2 package app
+.PHONY: all venv setup gen clean-gen run gen-objs runtime-objs test-tools smm2 run-smm2 package embed-server app
