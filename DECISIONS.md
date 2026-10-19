@@ -1317,3 +1317,29 @@ before.
   stays as it is and keeps working" is met by the archive branch, not main.
 - **Open:** the server's verified records re-simulate replays with SMCraft's engine; recomp runs
   need another proof (or none) before records from the recomp count as verified.
+
+## 2026-10-19 — The recomp's goals: perfect SMM2, SMM1's 100 Mario as SMM1, our server only
+
+**Owner's plan** (to session mario-maker-27, relayed; also to this session):
+1. **A perfect SMM2 v3.0.3 recomp** — frames and input replays checked against Ryujinx.
+2. **100 Mario Challenge exactly as in SMM1**, replacing the earlier "SMM2's Endless screens with 100
+   lives" presentation: SMM1's own screens from the player's SMM1 dump (difficulty tabs, world map
+   with the Goombas carrying Peach to the castle at the end, dot walk, the start card with 100 little
+   Marios, pause, clear, credits `Nwk_StaffCredit_00/01/03`, `T_ThankYou_10/20/30`), SMM1's rules, and
+   the ending when you win. Run lengths Easy 8, Normal 16, Expert 16, Super Expert 6 (owner confirmed).
+3. **A setting per SMM1 feature** (Mystery Mushroom costumes, mid-air shell jumps, overlapping pipes …).
+4. **Never Nintendo's servers**: course search / download for 100 Mario, SMM2's Endless and Course
+   World, and online multiplayer, all through our open-source server.
+
+**How:**
+- **Screens host-drawn, courses in the game.** The SMM1 screens and the ending are drawn by the
+  recomp host over (or instead of) the game's frame, from SMM1 layouts generated on the player's
+  machine; SMCraft's SMM1 layout player (our own Rust, `smcraft-archive`: `core/crates/ui`,
+  `front/src/smm1.rs`, choreography notes in its DECISIONS "100 Mario screens: SMM1 layouts, inferred
+  choreography") is reused rather than rewritten. Courses still play in SMM2's own course play, so
+  play is exact; the mod's server plumbing (built first on SMM2's Endless path) carries the run.
+- **The rescue scene** is code in SMM1, not a layout (SMCraft only showed the Thank-you balloon over the
+  map, which isn't it): recovered from Block.rpx v208 (ending scene 0x0259e7d4 / 0x0259f40c) with
+  emulator footage of the owner's SMM1 dump as the reference.
+- **SMM2's own Endless Challenge** stays as SMM2 made it, against our server under the `smm2`
+  ruleset; 100 Mario is a separate mode.
