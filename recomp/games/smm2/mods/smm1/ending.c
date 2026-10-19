@@ -83,6 +83,7 @@ void ending_free(Ending *e) {
     lay_free(e->text), lay_free(e->credits);
     free(e);
 }
+int ending_length(const Ending *e) { return e ? e->end : 0; }
 int ending_step(Ending *e, const UiIn *in) {
     (void)in;  // nothing skips [obs]
     e->tick++;

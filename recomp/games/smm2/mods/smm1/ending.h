@@ -9,6 +9,7 @@ Ending *ending_new(int difficulty, int lives, int n, const struct hundred_credit
 Ending *ending_new_style(int difficulty, int n, const struct hundred_credit *credits, int style, int form);
 void ending_free(Ending *e);
 int ending_step(Ending *e, const UiIn *in);  // EV_DONE when over
+int ending_length(const Ending *e);          // ticks until EV_DONE
 void ending_draw(Ending *e, LQuads *out);
 // what the ending wants behind its layouts this frame: a background colour (RGBA) the frame is cleared to
 void ending_background(Ending *e, uint8_t rgba[4]);

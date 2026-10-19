@@ -5,7 +5,7 @@
 // meta/meta.xml whose title id is Super Mario Maker's (US 1018DC00, EU 1018DD00, JP 1014B700) next to a content/
 // folder. The disc's base game (v16) and the update (v208, which has Super Expert) are overlaid, newer over older.
 //
-// At the first launch that needs them, the files are generated into <data folder>/mods-generated/smm1-ui-v2/:
+// At the first launch that needs them, the files are generated into <data folder>/mods-generated/smm1-ui-v4/:
 //   layout/<Name>.arc   every layout archive of Pack/{Layout,Nwk,NormalPlay,Lcl}.pack and the loose Layout/*.szs
 //                       (Yaz0 removed: SARC of blyt/ anim/ timg/)
 //   font/<Name>.bffnt   the bitmap fonts of Font/BmpFont_<region>.szs

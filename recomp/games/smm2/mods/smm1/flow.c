@@ -190,7 +190,8 @@ static void to_ending(int d, int lives, int n, const struct hundred_credit *cr) 
     ov_hide(&F.ov);
     F.end = e;
     F.state = S_ENDING;
-    static const int t[] = {200, 450, 950, 1500, 2300};
+    int len = ending_length(e);  // (credits_end: the last line of the roll, before the costume window)
+    const int t[] = {200, 450, 950, 1500, len > 260 ? len - 260 : 1};
     static const char *w[] = {"ending_walk", "ending_text", "credits", "credits_scroll", "credits_end"};
     shots_at(5, t, w);
 }
@@ -429,13 +430,14 @@ static void tick(unsigned buttons) {
     bool resume = false;
     switch (F.state) {
     case S_SELECT: {
-        if (auto_d() >= 0 && F.sel) {  // (unattended: the difficulty, then New Game)
+        static bool auto_started;  // (one run: back on the select after it, nothing more is pressed)
+        if (auto_d() >= 0 && F.sel && !auto_started) {  // (unattended: the difficulty, then New Game)
             int t = F.sel->tick;
             if (t == 90 && auto_d() > F.sel->d) in.pressed |= BT_RIGHT;
             if (t == 120 && auto_d() > F.sel->d) in.pressed |= BT_RIGHT;
             if (t == 150 && auto_d() > F.sel->d) in.pressed |= BT_RIGHT;
             if (t == 200) in.pressed |= BT_DOWN;  // (New Game, not Continue)
-            if (t == 240) in.pressed |= BT_A;
+            if (t == 240) in.pressed |= BT_A, auto_started = true;
         }
         int ev = select_step(F.sel, &in, &F.st, &resume);
         if (ev == EV_TAB) smm1_bgm_track(track_for(F.sel->d));

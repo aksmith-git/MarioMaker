@@ -1349,7 +1349,7 @@ before.
 **What:** the host-drawn SMM1 screens (`recomp/games/smm2/mods/smm1/`): difficulty select, world map
 and walk, start card, pause / clear / skip / miss overlays, game over, and the ending (rescue scene,
 Thank-you line, staff credits), from the player's SMM1 dump (base v16 + update v208), generated at
-first use into `<data>/mods-generated/smm1-ui-v3/` (layouts, fonts, texts, the ending's models,
+first use into `<data>/mods-generated/smm1-ui-v4/` (layouts, fonts, texts, the ending's models,
 the screens' music and sound banks). Nothing of SMM1 is in the repository.
 
 **Port, not link (coordinator approved):** "reused rather than rewritten" above meant SMCraft's Rust
