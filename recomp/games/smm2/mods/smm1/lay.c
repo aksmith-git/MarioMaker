@@ -85,6 +85,24 @@ bool lay_text_from(Lay *l, const char *pane, const char *label) {
     lyt_set_text(l->in, pane, m->text, m->n);
     return true;
 }
+bool lay_text_args(Lay *l, const char *pane, const char *label, const char *const *args, int nargs) {
+    const LMsg *m = lyt_message(l->in, label);
+    if (!m) return false;
+    uint32_t out[512];
+    int n = 0, a = 0;
+    for (int i = 0; i < m->n && n < 500; i++) {
+        if (m->text[i] != LYT_ARG) { out[n++] = m->text[i]; continue; }
+        if (a < nargs && args[a]) {
+            int k;
+            uint32_t *u = lyt_utf8(args[a], &k);
+            for (int j = 0; j < k && n < 500; j++) out[n++] = u[j];
+            free(u);
+        }
+        a++;
+    }
+    lyt_set_text(l->in, pane, out, n);
+    return true;
+}
 void lay_show(Lay *l, const char *pane, bool v) { lyt_set_visible(l->in, pane, v ? 1 : 0); }
 void lay_visible(Lay *l, const char *pane) { lyt_set_visible(l->in, pane, -1); }
 bool lay_pane(Lay *l, const char *pane, LPaneInfo *out) { return lyt_pane_info(l->in, pane, out); }

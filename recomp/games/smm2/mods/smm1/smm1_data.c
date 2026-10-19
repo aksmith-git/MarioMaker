@@ -26,7 +26,7 @@
 
 #include "lyt.h"
 
-#define CACHE "mods-generated/smm1-ui-v3"
+#define CACHE "mods-generated/smm1-ui-v4"
 #define LOGP "[smm1ui] "
 
 #ifdef _WIN32
@@ -301,7 +301,7 @@ static bool generate(void) {
     }
     // the screens' music and sound effects
     {
-        static const char *streams[] = {"BGM_100MarioMap", "BGM_100MarioMapExpert", "BGM_100mario_staffroll_easy",
+        static const char *streams[] = {"BGM_100MarioMap", "BGM_100MarioMapExpert", "BGM_100MarioMapSuperExpert", "BGM_100mario_staffroll_easy",
                                         "BGM_100mario_staffroll_normal", "BGM_NetworkMainScene", "BGM_CourseListScene",
                                         "M1_BGM_Ending", "M3_BGM_EndingDemo1", "M3_BGM_EndingDemo2", "MW_BGM_Ending2",
                                         "WU_STRM_BGM_LAST_BOSS2_HARP", "WU_STRM_BGM_LAST_BOSS_HARP_Dummy", "M1_GameOver",

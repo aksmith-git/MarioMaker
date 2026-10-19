@@ -134,9 +134,11 @@ typedef struct {
     double pos;
     float gain, fade;  // fade: gain change per output sample (< 0 fading out)
     bool loop, on;
+    int ch0;  // the first channel played (a multi-track stream's track: channels 2t, 2t + 1)
 } Voice;
 static pthread_mutex_t g_mx = PTHREAD_MUTEX_INITIALIZER;
 static Voice g_bgm, g_se[8];
+static char g_bgm_name[64];
 static float g_game_gain = 1, g_game_target = 1;
 
 static struct { char name[64]; SPcm *p; } g_pcm[48];
@@ -156,10 +158,26 @@ static SPcm *get_stream(const char *name) {
 void smm1_bgm(const char *name, bool loop) {
     SPcm *p = name ? get_stream(name) : NULL;
     pthread_mutex_lock(&g_mx);
-    g_bgm = (Voice){p, 0, 1, 0, loop && p && p->loop, p != NULL};
+    g_bgm = (Voice){p, 0, 1, 0, loop && p && p->loop, p != NULL, 0};
     if (p && loop && !p->loop) g_bgm.loop = true, p->loop_start = 0;
+    snprintf(g_bgm_name, sizeof g_bgm_name, "%s", name ? name : "");
     pthread_mutex_unlock(&g_mx);
 }
+void smm1_bgm_track(int track) {
+    pthread_mutex_lock(&g_mx);
+    if (g_bgm.p) {
+        int c = 2 * track;
+        g_bgm.ch0 = c + 1 < g_bgm.p->channels ? c : 0;
+    }
+    pthread_mutex_unlock(&g_mx);
+}
+double smm1_bgm_pos(void) {
+    pthread_mutex_lock(&g_mx);
+    double p = g_bgm.on && g_bgm.p ? g_bgm.pos : -1;
+    pthread_mutex_unlock(&g_mx);
+    return p;
+}
+const char *smm1_bgm_name(void) { return g_bgm.on ? g_bgm_name : ""; }
 void smm1_bgm_fade(int frames) {
     pthread_mutex_lock(&g_mx);
     if (g_bgm.on) g_bgm.fade = -1.0f / (float)(frames > 0 ? frames * 800 : 1);  // (48000 / 60 samples a frame)
@@ -197,7 +215,7 @@ void smm1_se(const char *name) {
         if (!strcmp(g_sfx[i].name, name)) {
             pthread_mutex_lock(&g_mx);
             for (int k = 0; k < 8; k++)
-                if (!g_se[k].on) { g_se[k] = (Voice){g_sfx[i].p, 0, 1, 0, false, true}; break; }
+                if (!g_se[k].on) { g_se[k] = (Voice){g_sfx[i].p, 0, 1, 0, false, true, 0}; break; }
             pthread_mutex_unlock(&g_mx);
             return;
         }
@@ -215,9 +233,9 @@ static void mix_voice(Voice *v, float *out, int n, int rate) {
             else { v->on = false; return; }
         }
         float f = (float)(v->pos - k), g = v->gain * (1.0f / 32768);
-        const int16_t *a = p->pcm + (size_t)k * (size_t)p->channels, *b = a + p->channels;
+        const int16_t *a = p->pcm + (size_t)k * (size_t)p->channels + v->ch0, *b = a + p->channels;
         float l = (a[0] + (b[0] - a[0]) * f) * g;
-        float r = p->channels > 1 ? (a[1] + (b[1] - a[1]) * f) * g : l;
+        float r = p->channels > 1 + v->ch0 ? (a[1] + (b[1] - a[1]) * f) * g : l;
         out[2 * i] += l, out[2 * i + 1] += r;
         v->pos += step;
         if (v->fade < 0 && (v->gain += v->fade) <= 0) { v->on = false; return; }
