@@ -25,13 +25,14 @@ Captured from the macOS build, running from the owner's own dump.
 |---|---|---|
 | ![Title screen](docs/screenshots/title.jpg) | ![Mario running the title course](docs/screenshots/title-course.jpg) | ![Make and Play menu](docs/screenshots/menu.jpg) |
 
-**100 Mario Challenge mod** (in progress). These are early captures: the mod's server plumbing
-running on SMM2's Endless screens with 100 lives and courses from our open-source server. The goal
-is SMM1's 100 Mario exactly, with SMM1's own screens, map, rules and ending, which are being built.
+**100 Mario Challenge mod** (in progress): SMM1's own screens, drawn from the player's SMM1 dump
+over the recomp, with courses from our open-source server playing in SMM2's own course play.
+Runs end after Easy 8 / Normal 16 / Expert 16 / Super Expert 6 clears with SMM1's ending (being
+finished).
 
-| 100 lives on the Endless menu | A course from our server, ×100 in the HUD |
-|---|---|
-| ![100 Mario Challenge menu](docs/screenshots/100mario-menu.jpg) | ![100 Mario Challenge course](docs/screenshots/100mario-course.jpg) |
+| Difficulty select | Super Expert map, 2 of 6 cleared | Start card, ×100 |
+|---|---|---|
+| ![100 Mario Challenge difficulty select](docs/screenshots/100mario-select.jpg) | ![Super Expert world map with Bowser's castle](docs/screenshots/100mario-map.jpg) | ![Start card with 100 little Marios](docs/screenshots/100mario-card.jpg) |
 
 ## Layout
 
