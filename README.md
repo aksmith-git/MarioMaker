@@ -1,3 +1,9 @@
+> [!IMPORTANT]
+> **This project has moved to [github.com/smm2recomp/smm2recomp](https://github.com/smm2recomp/smm2recomp).**
+> This repository is frozen as of 2026-10-19 and gets no further updates. It keeps the full history
+> up to the move, and **SMCraft**, the archived clean-room engine, on the
+> [`smcraft-archive`](https://github.com/aksmith-git/MarioMaker/tree/smcraft-archive) branch (tag `smcraft-final`).
+
 # SMM2 Recomp
 
 A native port of **Super Mario Maker 2 v3.0.3**, built by **static recompilation** of your own
