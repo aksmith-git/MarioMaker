@@ -64,8 +64,32 @@ typedef struct {
     BMatPat *mat;
 } BTexPat;
 
+// skeletal animations (FSKA): per bone a base transform and curves over its components
 typedef struct {
-    int nmodels, ntex, npat;
+    int target;  // byte offset of the component: scale 0x4-0xC, translate 0x10-0x18, rotate 0x20-0x2C
+    int type;    // 0 cubic, 1 linear
+    int nk;
+    float *frame, (*coef)[4];
+    float scale, offset;
+} BFCurve;
+typedef struct {
+    char name[32];
+    uint32_t flags;  // bit 3 base scale, 4 base rotate, 5 base translate
+    float base_s[3], base_r[4], base_t[3];
+    int nc;
+    BFCurve *c;
+} BBoneAnim;
+typedef struct {
+    char name[32];
+    int frames;
+    bool loop, euler;
+    int nb;
+    BBoneAnim *b;
+} BSkelAnim;
+
+typedef struct {
+    int nmodels, ntex, npat, nskel;
+    BSkelAnim *skels;
     BModel *models;
     char (*tex_name)[32];
     int *tex;  // lyt texture ids (decoded RGBA)
@@ -79,3 +103,8 @@ const BTexPat *bfres_texpat(const Bfres *b, const char *name);
 // the texture a pattern animation shows on material `mat` (slot 0) at `frame`; NULL if it doesn't animate it
 const char *bfres_texpat_at(const BTexPat *p, const char *mat, float frame);
 void bfres_dump(const Bfres *b);
+const BSkelAnim *bfres_skelanim(const Bfres *b, const char *name);
+// the model's bone matrices (model space, 3x4 each) with a skeletal animation at a frame (NULL: the rest pose)
+void bfres_pose(const BModel *m, const BSkelAnim *a, float frame, float (*world)[3][4]);
+// bone of a vertex's skinning index (the skeleton's smooth + rigid matrix table)
+int bfres_skin_bone(const BModel *m, int index);

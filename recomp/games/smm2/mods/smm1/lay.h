@@ -36,6 +36,8 @@ void lay_draw(Lay *l, int tick, LQuads *out);
 void lay_text(Lay *l, const char *pane, const char *utf8);
 void lay_text32(Lay *l, const char *pane, const uint32_t *s, int n);
 bool lay_text_from(Lay *l, const char *pane, const char *label);  // this layout's message `label`
+// message `label` with its value tags filled in order from args
+bool lay_text_args(Lay *l, const char *pane, const char *label, const char *const *args, int nargs);
 void lay_show(Lay *l, const char *pane, bool v);
 void lay_visible(Lay *l, const char *pane);  // back to the animations
 bool lay_pane(Lay *l, const char *pane, LPaneInfo *out);

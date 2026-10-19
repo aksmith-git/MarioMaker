@@ -1,4 +1,5 @@
-// SMM1's 100 Mario Challenge screens (screens.h). Port of SMCraft's front/src/smm1.rs.
+// SMM1's 100 Mario Challenge screens (screens.h), as Block.rpx v208 strings them together
+// [obs unless marked: research/specs/smm1-100mario-screens.md].
 #include "screens.h"
 
 #include <math.h>
@@ -7,15 +8,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "smm1_audio.h"
+
 const int RUN_LENGTHS[4] = {8, 16, 16, 6};
 static const char *SUFFIX[4] = {"Esy", "Nml", "Exp", "SpExp"};
-#define MARIO "N_WorldMapMario_00"
 #define MARIO_PART "L_WorldMapMario_00"
+#define KURIBO "L_WorldMapKuribo_00"
 
 static const char *F(const char *fmt, ...) {  // a formatted path (ring of buffers)
-    static char buf[8][160];
+    static char buf[16][160];
     static int k;
-    char *b = buf[k++ & 7];
+    char *b = buf[k++ & 15];
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(b, 160, fmt, ap);
@@ -23,8 +26,10 @@ static const char *F(const char *fmt, ...) {  // a formatted path (ring of buffe
     return b;
 }
 
-// ---------------------------------------------------------------- the start card
-// One small Mario per life: the formation is 100 and AnimB sends #99 forward, so the hidden ones are the first [inf].
+// ---------------------------------------------------------------- the start card (Play_CourseIn100Mario_00)
+// T_CourseNum_00 "n/total", T_Zanki_00 the lives, P_MarioSml_i shown for i < lives, Type frame 1 on the run's last
+// course; the In by case: a new run's first course AnimA (215) + AnimB (70), the first after Continue or a retry
+// AnimB alone (AnimA at its end), any other course nothing (AnimB at its end).
 void card_configure(Lay *c, const CardInfo *i) {
     lay_text(c, "T_CourseName_00", i->name);
     lay_text(c, "T_PlayerName_00", i->maker);
@@ -35,59 +40,30 @@ void card_configure(Lay *c, const CardInfo *i) {
         lay_show(c, "N_CourseID_00", false);
     lay_text(c, "T_Zanki_00", F("%d", i->lives));
     lay_text(c, "T_CourseNum_00", F("%d/%d", i->number, i->total));
-    lay_show(c, "L_NF_00", false);  // national flag: no region data
+    lay_show(c, "L_NF_00", false);  // national flag: our makers have no SMM1 country code
     lay_show(c, "P_NFBase_00", false);
-    int shown = i->lives < 100 ? (i->lives < 0 ? 0 : i->lives) : 100;
     for (int k = 0; k < 100; k++) {
-        if (k >= 100 - shown) lay_visible(c, F("P_MarioSml_%02d", k));
+        if (k < i->lives) lay_visible(c, F("P_MarioSml_%02d", k));
         else lay_show(c, F("P_MarioSml_%02d", k), false);
     }
+    lay_hold(c, "Type", i->last ? 1 : 0);
 }
 
-// ---------------------------------------------------------------- world map
+// ---------------------------------------------------------------- world map (Nwk_WorldMap{Esy,Nml,Exp,SpExp}_00)
 static const char *dot(const WorldMap *m, int i) { return F("L_WorldMapCourse%s_%02d", SUFFIX[m->d], i); }
-
-float wm_stop(const WorldMap *m, int i) {
-    if (!m->nstops) return 0;
-    return m->stops[i < m->nstops ? i : m->nstops - 1];
-}
-
-// Mario's stops: the MoveMario frame at which his pane reaches each course dot (the animation authors one walk along
-// all dots)
-static void compute_stops(WorldMap *m) {
-    float len = lay_length(m->l, "MoveMario");
-    m->nstops = 0;
-    if (len <= 0) return;
-    float dx[16], dy[16];
-    int nd = 0;
-    for (int i = 0; i < m->count && i < 16; i++) {
-        LPaneInfo p;
-        if (lay_pane(m->l, dot(m, i), &p)) dx[nd] = p.t[0], dy[nd] = p.t[1], nd++;
-    }
-    for (float f = 0; f <= len && m->nstops < nd; f += 1) {
-        lyt_bind(m->l->in, "MoveMario", f);
-        LPaneInfo p;
-        if (lay_pane(m->l, MARIO, &p) && fabsf(p.t[0] - dx[m->nstops]) < 1.5f && fabsf(p.t[1] - dy[m->nstops]) < 1.5f)
-            m->stops[m->nstops++] = f;
-    }
-    lay_stop(m->l, "MoveMario");
-    while (m->nstops < m->count) m->stops[m->nstops++] = len;
-}
+float wm_dot_frame(const WorldMap *m, int i) { return (float)(i * m->step + m->base); }
 
 WorldMap *wm_new(int d) {
     Lay *l = lay_open(F("Nwk_WorldMap%s_00", SUFFIX[d]));
     if (!l) return NULL;
     WorldMap *m = calloc(1, sizeof *m);
     m->l = l, m->d = d, m->count = RUN_LENGTHS[d];
-    compute_stops(m);
-    // resting loops; the beat bounces run on a fixed period here (the game syncs them to the music) [inf]
+    // MoveMario: frames 0-48 the jump out of the start castle, then 12 frames a dot from 60; Super Expert's step is
+    // (162 - 48) / 6 = 19 from 67
+    m->step = d == 3 ? 19 : 12, m->base = d == 3 ? 67 : 60;
     lay_play_loop(l, "Default", 0);
-    lay_play_loop(l, "Beat_00_00", 0);
-    lay_play_loop(l, "Beat_00_01", 0);
     lay_play_loop(l, "L_Castle_00/Default", 0);
     lay_play_loop(l, "L_Castle_01/Default", 0);
-    lay_play_loop(l, "L_WorldMapKuribo_00/Default", 0);
-    lay_hold(l, MARIO_PART "/Stand", 0);
     return m;
 }
 void wm_free(WorldMap *m) {
@@ -95,86 +71,85 @@ void wm_free(WorldMap *m) {
     lay_free(m->l);
     free(m);
 }
-// dots before n show cleared (Type frame 1: the "clear" disc) [inf]
-void wm_set_cleared(WorldMap *m, int n) {
-    for (int i = 0; i < m->count; i++) lay_hold(m->l, F("%s/Type", dot(m, i)), i < n ? 1 : 0);
+void wm_set_counters(WorldMap *m, int lives, int cleared) {  // the layout's texts: "<lives>", "<cleared>/<total>"
+    const char *a[1] = {F("%d", lives)}, *b[1] = {F("%d", cleared)};
+    lay_text_args(m->l, "T_RestMarioNum_00", "T_RestMarioNum_00", a, 1);
+    lay_text_args(m->l, "T_ClearCourseNum_00", "T_ClearCourseNum_00", b, 1);
 }
-void wm_set_counters(WorldMap *m, int lives, int cleared) {
-    lay_text(m->l, "T_RestMarioNum_00", F("%d", lives));
-    lay_text(m->l, "T_ClearCourseNum_00", F("%d/%d", cleared, m->count));
+// a course dot: hidden (In frame 0) or shown (In at its end); Type frame 0 shows its clear stamp, 1 hides it
+static void wm_dot(WorldMap *m, int i, bool shown, bool stamp) {
+    lay_hold(m->l, F("%s/In", dot(m, i)), shown ? lay_length(m->l, F("%s/In", dot(m, i))) : 0);
+    lay_hold(m->l, F("%s/Type", dot(m, i)), stamp ? 0 : 1);
 }
-void wm_stand(WorldMap *m) {
-    lay_stop(m->l, MARIO_PART "/Walk");
-    lay_stop(m->l, MARIO_PART "/Jump");
+static void wm_dot_in(WorldMap *m, int i, int tick) {
+    lay_hold(m->l, F("%s/Type", dot(m, i)), 1);
+    lay_play(m->l, F("%s/In", dot(m, i)), tick);
+}
+static void mario_reset(WorldMap *m) {
+    static const char *all[] = {"In", "Jump", "TwoJump", "Walk", "Stand", "Go", "Out"};
+    for (int i = 0; i < 7; i++) lay_stop(m->l, F(MARIO_PART "/%s", all[i]));
+}
+static void mario_hide(WorldMap *m) { mario_reset(m), lay_show(m->l, MARIO_PART, false); }
+static void mario_stand(WorldMap *m) {
+    mario_reset(m), lay_visible(m->l, MARIO_PART);
+    lay_hold(m->l, MARIO_PART "/In", lay_length(m->l, MARIO_PART "/In"));
     lay_hold(m->l, MARIO_PART "/Stand", 0);
 }
-void wm_place_mario(WorldMap *m, int i) {
-    lay_hold(m->l, "MoveMario", i < 0 ? 0 : wm_stop(m, i));
-    wm_stand(m);
+static void mario_play(WorldMap *m, const char *anim, int tick, bool with_in) {
+    mario_reset(m), lay_visible(m->l, MARIO_PART);
+    if (with_in) lay_play(m->l, MARIO_PART "/In", tick);
+    else lay_hold(m->l, MARIO_PART "/In", lay_length(m->l, MARIO_PART "/In"));
+    if (!strcmp(anim, "Walk")) lay_play_loop(m->l, MARIO_PART "/Walk", tick);
+    else lay_play(m->l, F(MARIO_PART "/%s", anim), tick);
 }
-int wm_walk(WorldMap *m, float from, float to, int tick) {
-    lay_play_ex(m->l, "MoveMario", tick, from, to, false, 1);
-    lay_stop(m->l, MARIO_PART "/Stand");
-    if (from < 28) lay_play(m->l, MARIO_PART "/Jump", tick);  // out of the start castle first
-    lay_play_loop(m->l, MARIO_PART "/Walk", tick + (from < 28 ? 28 : 0));
-    return tick + (int)ceilf(to - from);
+// the map before MapIn as the select screen shows it, from the difficulty's continue record
+static void wm_pose(WorldMap *m, bool cont, int lives, int cleared) {
+    int k = cont ? cleared : 0;
+    lay_hold(m->l, "MapIn", 0);
+    for (int i = 0; i < m->count; i++) wm_dot(m, i, i < k || (cont && i == k), i < k);
+    if (cont) lay_hold_end(m->l, "AnimB");  // Peach on the castle
+    else lay_hold(m->l, "AnimB", 0);
+    wm_set_counters(m, cont ? lives : 100, cont ? cleared : 0);
+    if (cont) {
+        lay_hold(m->l, "MoveMario", wm_dot_frame(m, k));
+        mario_stand(m);
+    } else {
+        lay_hold(m->l, "MoveMario", 0);
+        mario_hide(m);
+    }
+    lay_show(m->l, "L_StartBtn_01", cont);  // Continue only with a continue record
 }
 
-// ---------------------------------------------------------------- difficulty select
+// ---------------------------------------------------------------- difficulty select (Nwk_ListTitle_00 over the map)
 static const char *TABS[4] = {"L_Sub_00/L_ListSelectBtnSub_10", "L_Sub_00/L_ListSelectBtnSub_00",
                               "L_Sub_00/L_ListSelectBtnSub_01", "L_Sub_00/L_ListSelectBtnSub_08"};
 
-static void btn_state(Lay *l, int tick, const char *part, const char *anim, float frame) {
-    static const char *all[5] = {"OnOff", "Valid", "Invalid", "Decide", "Cancel"};
-    for (int i = 0; i < 5; i++)
-        if (strcmp(all[i], anim)) lay_stop(l, F("%s/%s", part, all[i]));
-    if (frame >= 0) lay_hold(l, F("%s/%s", part, anim), frame);
-    else lay_play(l, F("%s/%s", part, anim), tick);
-}
+static int open_tabs(const struct hundred_status *st) { return st->unlocked[3] ? 4 : st->unlocked[2] ? 3 : 2; }
 
-static void update_tabs(Select *s, const struct hundred_status *st) {
-    for (int d = 0; d < 4; d++) {
-        if (d == s->d) btn_state(s->title, s->tick, TABS[d], "Decide", lay_length(s->title, F("%s/Decide", TABS[d])));
-        else btn_state(s->title, s->tick, TABS[d], st->unlocked[d] ? "Valid" : "Invalid", 1);
-    }
+static void btn(Lay *l, int tick, const char *part, const char *anim, bool play) {
+    static const char *all[6] = {"OnOff", "Valid", "Invalid", "Decide", "Cancel", "DecideLoop"};
+    for (int i = 0; i < 6; i++)
+        if (strcmp(all[i], anim)) lay_stop(l, F("%s/%s", part, all[i]));
+    if (play) lay_play(l, F("%s/%s", part, anim), tick);
+    else lay_hold_end(l, F("%s/%s", part, anim));
 }
-static void update_buttons(Select *s, const struct hundred_status *st) {
-    int d = s->d;
-    bool open = st->unlocked[d], cont = open && st->can_continue[d];
-    if (!cont && s->focus == 0) s->focus = 1;
-    WorldMap *m = s->maps[d];
+static void update_tabs(Select *s, const struct hundred_status *st) {
+    int open = open_tabs(st);
+    for (int d = 0; d < open; d++) btn(s->title, s->tick, TABS[d], d == s->d ? "Decide" : "Valid", false);
+}
+static void update_buttons(Select *s, bool play) {
+    WorldMap *m = s->maps[s->d];
     if (!m) return;
     static const char *parts[2] = {"L_StartBtn_01", "L_StartBtn_00"};  // Continue (upper), New Game
     for (int i = 0; i < 2; i++) {
-        bool enabled = open && (i == 1 || cont);
-        if (!enabled) btn_state(m->l, s->tick, parts[i], "Invalid", 1);
-        else if (i == s->focus) btn_state(m->l, s->tick, parts[i], "OnOff", 3);
-        else btn_state(m->l, s->tick, parts[i], "Valid", 1);
+        if (i == s->focus) btn(m->l, s->tick, parts[i], "OnOff", play);  // Select: OnOff forward
+        else lay_hold(m->l, F("%s/OnOff", parts[i]), 0);                // UnSelect: back to its start
     }
-}
-// a map in its selection state: before MapIn, counters and Mario from the continue record
-static void refresh(Select *s, int d, const struct hundred_status *st) {
-    WorldMap *m = s->maps[d];
-    if (!m) return;
-    bool cont = st->can_continue[d];
-    lay_hold(m->l, "MapIn", 0);
-    wm_set_cleared(m, cont ? st->continue_cleared[d] : 0);
-    wm_set_counters(m, cont ? st->continue_lives[d] : 100, cont ? st->continue_cleared[d] : 0);
-    if (cont) {
-        wm_place_mario(m, st->continue_cleared[d]);
-        lay_hold_end(m->l, "AnimB");  // Peach already on the castle
-    } else {
-        wm_place_mario(m, -1);
-        lay_stop(m->l, "AnimB");
-    }
-    update_buttons(s, st);
 }
 static bool prepare(Select *s, int d, const struct hundred_status *st) {
-    if (!s->maps[d]) {
-        s->maps[d] = wm_new(d);
-        if (!s->maps[d]) return false;
-        refresh(s, d, st);
-    }
+    if (!s->maps[d] && !(s->maps[d] = wm_new(d))) return false;
+    bool cont = st->can_continue[d];
+    wm_pose(s->maps[d], cont, st->continue_lives[d], st->continue_cleared[d]);
     return true;
 }
 
@@ -182,15 +157,20 @@ Select *select_new(int d, const struct hundred_status *st) {
     Lay *t = lay_open("Nwk_ListTitle_00");
     if (!t) return NULL;
     Select *s = calloc(1, sizeof *s);
-    s->title = t, s->d = d, s->focus = 1;
+    s->title = t, s->exit_at = -1;
+    int open = open_tabs(st);
+    s->d = d < open ? d : 0;
     lay_play(t, "In", 0);
     lay_play_loop(t, "Default", 0);
     lay_hold(t, "MapIn", 0);
-    lay_hold(t, "L_Sub_00/ListTitleType", 0);  // frame 0: the 100 Mario list
-    lay_hold(t, "L_Sub_00/OpenType", 2);  // OpenType 0/1/2 shows 2/3/4 tabs; all four are shown, locked ones greyed
-    if (!prepare(s, d, st)) { select_free(s); return NULL; }
-    lay_play(s->maps[d]->l, "In", 0);
+    lay_hold(t, "L_Sub_00/ListTitleType", 0);              // the 100 Mario list
+    lay_hold(t, "L_Sub_00/OpenType", (float)(open - 2));  // 2 / 3 / 4 tabs as they unlock
+    if (!prepare(s, s->d, st)) { select_free(s); return NULL; }
+    lay_play(s->maps[s->d]->l, "In", 0);  // the map comes in (48)
+    s->cont = st->can_continue[s->d];
+    s->focus = s->cont ? 0 : 1;  // the cursor on Continue when there is one
     update_tabs(s, st);
+    update_buttons(s, false);
     return s;
 }
 void select_free(Select *s) {
@@ -200,41 +180,54 @@ void select_free(Select *s) {
     lay_free(s->title);
     free(s);
 }
+// to a lower difficulty (or Easy) the maps slide with OutR / InR, else OutL / InL (64 frames each)
 static void switch_to(Select *s, int d, const struct hundred_status *st) {
     if (d == s->d || !prepare(s, d, st)) return;
-    bool right = d > s->d;
-    WorldMap *m = s->maps[s->d];
-    s->maps[s->d] = NULL;
+    int old = s->d;
+    bool r = d == 0 || (d == 1 && old == 2) || (d == 2 && old == 3);
+    WorldMap *m = s->maps[old];
+    s->maps[old] = NULL;
     if (m) {
-        lay_play(m->l, right ? "OutL" : "OutR", s->tick);
+        lay_play(m->l, r ? "OutR" : "OutL", s->tick);
         wm_free(s->leaving);
-        s->leaving = m;
-        s->leave_until = s->tick + 32;
+        s->leaving = m, s->leave_until = s->tick + 64;
     }
     s->d = d;
-    refresh(s, d, st);
-    lay_play(s->maps[d]->l, right ? "InR" : "InL", s->tick);
+    lay_play(s->maps[d]->l, r ? "InR" : "InL", s->tick);
+    s->cont = st->can_continue[d];
+    s->focus = s->cont ? 0 : 1;
     update_tabs(s, st);
+    update_buttons(s, false);
 }
 int select_step(Select *s, const UiIn *in, const struct hundred_status *st, bool *resume) {
     s->tick++;
     if (s->leaving && s->tick >= s->leave_until) wm_free(s->leaving), s->leaving = NULL;
+    if (s->exit_at >= 0) return s->tick >= s->exit_at ? (s->exit_at = -1, EV_EXIT) : EV_NONE;
     if (!s->maps[s->d]) return EV_NONE;
     unsigned p = in->pressed;
-    if (p & (BT_LEFT | BT_RIGHT)) {
-        int d = p & BT_RIGHT ? (s->d < 3 ? s->d + 1 : 3) : (s->d > 0 ? s->d - 1 : 0);
-        switch_to(s, d, st);
+    int open = open_tabs(st);
+    if (p & (BT_LEFT | BT_RIGHT | BT_L | BT_R)) {  // the tab group's cursor (and the shoulder shortcuts)
+        int d = s->d + ((p & (BT_RIGHT | BT_R)) ? 1 : -1);
+        if (d >= 0 && d < open) {
+            switch_to(s, d, st);
+            smm1_se("SE_PageNext1");
+            return EV_TAB;
+        }
         return EV_NONE;
     }
-    bool cont = st->unlocked[s->d] && st->can_continue[s->d];
-    if ((p & BT_UP) && cont) s->focus = 0, update_buttons(s, st);
-    if (p & BT_DOWN) s->focus = 1, update_buttons(s, st);
-    if (p & BT_B) return EV_EXIT;
+    if ((p & BT_UP) && s->cont && s->focus != 0) s->focus = 0, update_buttons(s, true), smm1_se("SE_BongoCursol");
+    if ((p & BT_DOWN) && s->focus != 1) s->focus = 1, update_buttons(s, true), smm1_se("SE_BongoCursol");
+    if (p & BT_B) {  // the map plays Out (32) and Course World's top comes back
+        lay_play(s->maps[s->d]->l, "Out", s->tick);
+        lay_play(s->title, "Out", s->tick);
+        s->exit_at = s->tick + 32;
+        return EV_NONE;
+    }
     if (p & BT_A) {
-        if (!st->unlocked[s->d]) return EV_LOCKED;
-        *resume = s->focus == 0 && cont;
-        static const char *slides[4] = {"OutL", "OutR", "InL", "InR"};
-        for (int i = 0; i < 4; i++) lay_stop(s->maps[s->d]->l, slides[i]);
+        *resume = s->focus == 0 && s->cont;
+        btn(s->maps[s->d]->l, s->tick, *resume ? "L_StartBtn_01" : "L_StartBtn_00", "Decide", true);
+        smm1_se("daikettefinal");
+        if (s->d >= 2) smm1_se("SI_DaiketeiExpert");
         return EV_START;
     }
     return EV_NONE;
@@ -245,28 +238,165 @@ void select_draw(Select *s, LQuads *out) {
     lay_draw(s->title, s->tick, out);
 }
 
-// ---------------------------------------------------------------- map walk + start card
-#define CARD_HOLD 150  // the card's Out animation length: a timer [inf]
+// ---------------------------------------------------------------- map demos + the card
+enum { P_MAPIN, P_COUNTIN, P_TELOP, P_KURIBO, P_CASTLE, P_ANIMB, P_JUMP, P_DOTIN, P_WALK, P_TWOJUMP, P_GO, P_FADE,
+       P_CARD_IN, P_CARD_HOLD, P_CARD_OUT, P_DONE };
+#define FADE 30  // the iris wipe to the card [inf: its length]
 
-static void schedule_card(Intro *s) {
-    if (s->card_start < 0) return;
-    lay_play(s->card, "AnimA", s->card_start);
-    lay_play(s->card, "AnimB", s->card_start + (int)lay_length(s->card, "AnimA"));
+struct Intro {
+    WorldMap *map;
+    Lay *title, *card;
+    int d, entry, cleared, tick, phase, end, from_dot, to_dot, kuribo_walk, kuribo_stand, card_intro;
+    bool had_continue, started, skip;
+};
+
+static const int KURIBO_STAND[4] = {156, 268, 268, 174};  // MoveKuribo frame the Goombas stop walking
+
+static void phase(Intro *s, int p);
+static void iris(LQuads *out, float cx, float cy, float r);
+static void card_in(Intro *s) {
+    int t = s->tick;
+    if (s->card_intro == CARD_NEW_RUN) {
+        lay_hold(s->card, "AnimA", 0);
+        lay_play(s->card, "AnimA", t);
+        lay_play(s->card, "AnimB", t + (int)lay_length(s->card, "AnimA"));
+        smm1_se("SE_100marioAshioto");
+        s->end = t + (int)(lay_length(s->card, "AnimA") + lay_length(s->card, "AnimB"));
+    } else if (s->card_intro == CARD_RETRY) {
+        lay_hold_end(s->card, "AnimA");
+        lay_play(s->card, "AnimB", t);
+        s->end = t + (int)lay_length(s->card, "AnimB");
+    } else {
+        lay_hold_end(s->card, "AnimA");
+        lay_hold_end(s->card, "AnimB");
+        s->end = t;
+    }
 }
-static int card_end(Intro *s) {
-    if (s->card_start < 0) return -1;
-    return s->card_start + (int)(lay_length(s->card, "AnimA") + lay_length(s->card, "AnimB")) + CARD_HOLD;
+static void phase(Intro *s, int p) {
+    s->phase = p;
+    int t = s->tick;
+    WorldMap *m = s->map;
+    Lay *l = m ? m->l : NULL;
+    switch (p) {
+    case P_MAPIN:  // the curtains open and the view zooms in (300), with the title bar's MapIn
+        lay_play(l, "MapIn", t);
+        if (s->title) lay_play(s->title, "MapIn", t);
+        smm1_se("M3_StarsGather");
+        s->end = t + (int)lay_length(l, "MapIn");
+        if (s->entry == ENTRY_NEW) {
+            for (int i = 0; i < m->count; i++) wm_dot(m, i, false, false);
+            mario_hide(m);
+            if (s->had_continue) lay_play(l, "CountOut", t), lay_hold(l, "AnimB", 0);
+        }
+        break;
+    case P_COUNTIN:
+        if (s->had_continue) lay_play(l, "CountIn", t), s->end = t + (int)lay_length(l, "CountIn");
+        else s->end = t;
+        wm_set_counters(m, 100, 0);
+        break;
+    case P_TELOP:  // the banner (210): the layout's own text ("in trouble!", Expert "again", Super Expert "yet again")
+        lay_hold(l, "MoveMario", 0);
+        lay_play(l, "Telop", t);
+        s->end = t + (int)lay_length(l, "Telop");
+        break;
+    case P_KURIBO:  // the Goombas carry Peach to the castle
+        lay_hold(l, KURIBO "/Stand", 0);
+        lay_play(l, "L_Castle_00/Anim", t);
+        lay_play(l, "MoveKuribo", t);
+        s->kuribo_walk = t + 60, s->kuribo_stand = t + KURIBO_STAND[s->d];
+        s->end = t + (int)lay_length(l, "MoveKuribo");
+        break;
+    case P_CASTLE:
+        lay_stop(l, KURIBO "/Walk"), lay_stop(l, KURIBO "/Stand"), lay_stop(l, KURIBO "/Default");
+        lay_play(l, "L_Castle_01/Anim", t);
+        s->end = t + (int)lay_length(l, "L_Castle_01/Anim");
+        break;
+    case P_ANIMB:  // Peach appears on the castle: "Help!"
+        lay_play(l, "AnimB", t);
+        smm1_se("MW_PeachHelp");
+        s->end = t + (int)lay_length(l, "AnimB");
+        break;
+    case P_JUMP:  // Mario jumps (out of the start castle, or in on his dot after a clear)
+        if (s->entry == ENTRY_NEW) {
+            lay_play(l, "L_Castle_00/Anim", t);
+            lay_play_ex(l, "MoveMario", t, 0, 48, false, 1);
+        } else
+            lay_hold(l, "MoveMario", wm_dot_frame(m, s->from_dot));
+        mario_play(m, "Jump", t, true);
+        smm1_se("M1_SmallMarioJump");
+        s->end = t + (int)lay_length(l, MARIO_PART "/Jump");
+        break;
+    case P_DOTIN:  // the next dot pops in (42)
+        wm_dot_in(m, s->to_dot, t);
+        s->end = t + (int)lay_length(l, F("%s/In", dot(m, s->to_dot)));
+        break;
+    case P_WALK: {  // one step along MoveMario (12 frames, Super Expert 19), then Stand
+        float a = s->entry == ENTRY_NEW ? 48 : wm_dot_frame(m, s->from_dot), b = wm_dot_frame(m, s->to_dot);
+        lay_play_ex(l, "MoveMario", t, a, b, false, 1);
+        mario_play(m, "Walk", t, false);
+        smm1_se("M3_MoveMap");
+        s->end = t + (int)ceilf(b - a);
+        break;
+    }
+    case P_TWOJUMP:  // Continue: Mario's double hop on his dot (36)
+        lay_hold(l, "MoveMario", wm_dot_frame(m, s->from_dot));
+        mario_play(m, "TwoJump", t, false);
+        s->end = t + (int)lay_length(l, MARIO_PART "/TwoJump");
+        break;
+    case P_GO: {  // Mario's Go (128, at least 60), then the scene changes
+        mario_play(m, "Go", t, false);
+        smm1_se("M3_Wipe");
+        int g = (int)lay_length(l, MARIO_PART "/Go");
+        s->end = t + (g > 60 ? g : 60);
+        break;
+    }
+    case P_FADE: s->end = t + FADE; break;
+    case P_CARD_IN: card_in(s); break;
+    case P_CARD_HOLD: s->end = -1; break;
+    case P_CARD_OUT:  // the card leaves (Out, 150) over the starting course
+        lay_play(s->card, "Out", t);
+        s->end = t + (int)lay_length(s->card, "Out");
+        break;
+    default: break;
+    }
+}
+// the phase after p for this entry
+static int next_phase(const Intro *s, int p) {
+    switch (s->entry) {
+    case ENTRY_NEW: return p == P_MAPIN ? P_COUNTIN : p == P_COUNTIN ? P_TELOP : p == P_TELOP ? P_KURIBO : p == P_KURIBO ? P_CASTLE
+                         : p == P_CASTLE ? P_ANIMB : p == P_ANIMB ? P_JUMP : p == P_JUMP ? P_DOTIN : p == P_DOTIN ? P_WALK
+                         : p == P_WALK ? P_GO : p + 1;
+    case ENTRY_RESUME: return p == P_MAPIN ? P_TWOJUMP : p == P_TWOJUMP ? P_GO : p + 1;
+    case ENTRY_AFTER_CLEAR: return p == P_JUMP ? P_DOTIN : p == P_DOTIN ? P_WALK : p == P_WALK ? P_GO : p + 1;
+    default: return p + 1;
+    }
+}
+// A on the map: every demo jumps to its end pose and Mario's Go plays [obs 0x024f6d30]
+static void cancel_demo(Intro *s) {
+    WorldMap *m = s->map;
+    Lay *l = m->l;
+    lay_hold_end(l, "MapIn");
+    if (s->title) lay_hold_end(s->title, "MapIn");
+    static const char *ends[] = {"Telop", "MoveKuribo", "AnimB", "CountIn"};
+    for (int i = 0; i < 4; i++)
+        if (lay_playing(l, ends[i])) lay_hold_end(l, ends[i]);
+    if (s->entry == ENTRY_NEW) lay_hold_end(l, "AnimB");
+    lay_stop(l, KURIBO "/Walk"), lay_stop(l, KURIBO "/Stand");
+    wm_dot(m, s->to_dot, true, false);
+    lay_hold(l, "MoveMario", wm_dot_frame(m, s->to_dot));
+    smm1_se("yr_Sweep_GOAL");
+    phase(s, P_GO);
 }
 
-Intro *intro_new(int entry, int d, const CardInfo *info, int cleared, Select *handoff) {
+Intro *intro_new(int entry, int d, const CardInfo *info, int cleared, bool had_continue, Select *handoff) {
     Lay *card = lay_open("Play_CourseIn100Mario_00");
     if (!card) return NULL;
     Intro *s = calloc(1, sizeof *s);
-    s->card = card, s->card_start = s->out_at = s->walk_start = s->walk_end = -1;
+    s->card = card, s->d = d, s->entry = entry, s->cleared = cleared, s->had_continue = had_continue;
+    s->card_intro = info->intro;
     card_configure(card, info);
     if (entry == ENTRY_DIRECT) {
-        s->card_start = 0;
-        schedule_card(s);
+        phase(s, P_CARD_IN);
         return s;
     }
     if ((entry == ENTRY_NEW || entry == ENTRY_RESUME) && handoff && handoff->d == d && handoff->maps[d]) {
@@ -276,42 +406,25 @@ Intro *intro_new(int entry, int d, const CardInfo *info, int cleared, Select *ha
         s->map = wm_new(d);
     WorldMap *m = s->map;
     if (!m) {
-        s->card_start = 0;
-        schedule_card(s);
+        phase(s, P_CARD_IN);
         return s;
     }
-    wm_set_counters(m, info->lives, cleared);
-    Lay *l = m->l;
     if (entry == ENTRY_NEW) {
-        lay_play(l, "MapIn", 0);
-        if (s->title) lay_play(s->title, "MapIn", 0);
-        wm_set_cleared(m, 0);
-        wm_place_mario(m, -1);
-        lay_stop(l, "AnimB");
-        // the Goombas carry Peach to the castle under the banner, she appears on it, then Mario jumps out of the
-        // start castle and walks to the first dot [inf]
-        lay_play(l, "Telop", 200);
-        lay_play(l, "MoveKuribo", 200);
-        float tl = lay_length(l, "Telop"), mk = lay_length(l, "MoveKuribo");
-        int b = 200 + (int)(tl > mk ? tl : mk);
-        lay_play(l, "AnimB", b);
-        s->walk_start = b + 20, s->walk_from = 0, s->walk_to = wm_stop(m, 0);
+        s->from_dot = 0, s->to_dot = 0;
+        phase(s, P_MAPIN);
     } else if (entry == ENTRY_RESUME) {
-        lay_play(l, "MapIn", 0);
-        if (s->title) lay_play(s->title, "MapIn", 0);
-        wm_set_cleared(m, cleared);
-        wm_place_mario(m, cleared);
-        lay_hold_end(l, "AnimB");
-        s->out_at = 230;
-    } else {  // after a clear
-        lay_hold_end(l, "MapIn");
-        lay_play(l, "In", 0);
-        lay_hold_end(l, "AnimB");
-        wm_set_cleared(m, cleared);
-        if (cleared > 0) lay_play(l, F("%s/Clear", dot(m, cleared - 1)), 40);
-        int prev = cleared > 0 ? cleared - 1 : 0;
-        wm_place_mario(m, prev);
-        s->walk_start = 70, s->walk_from = wm_stop(m, prev), s->walk_to = wm_stop(m, cleared);
+        s->from_dot = s->to_dot = cleared;
+        wm_set_counters(m, info->lives, cleared);
+        phase(s, P_MAPIN);
+    } else {  // after a clear (NetWorldMapScene): the map at its MapIn end, Mario jumps in on the cleared dot
+        int c = cleared > 0 ? cleared : 1;
+        s->from_dot = c - 1, s->to_dot = c < m->count ? c : m->count - 1;
+        lay_hold_end(m->l, "MapIn");
+        lay_hold_end(m->l, "AnimB");
+        for (int i = 0; i < m->count; i++) wm_dot(m, i, i < c, i < c);
+        wm_set_counters(m, info->lives, cleared);
+        mario_hide(m);
+        phase(s, P_JUMP);
     }
     return s;
 }
@@ -322,50 +435,118 @@ void intro_free(Intro *s) {
     lay_free(s->card);
     free(s);
 }
+void intro_card(Intro *s, const CardInfo *info) {
+    CardInfo c = *info;
+    c.intro = s->card_intro;
+    card_configure(s->card, &c);
+    if (s->map) wm_set_counters(s->map, info->lives, s->cleared);
+}
+void intro_started(Intro *s) {
+    s->started = true;
+    if (s->phase == P_CARD_HOLD) phase(s, P_CARD_OUT);
+}
+bool intro_full(const Intro *s) { return s->phase < P_CARD_OUT; }
+Lay *intro_map_layout(Intro *s) { return s->map && s->phase < P_CARD_IN ? s->map->l : NULL; }
+int intro_tick(const Intro *s) { return s->tick; }
+
 int intro_step(Intro *s, const UiIn *in) {
     s->tick++;
-    if (s->finished) return EV_NONE;
     int t = s->tick;
-    if (s->map) {
-        if (s->walk_start == t) s->walk_end = wm_walk(s->map, s->walk_from, s->walk_to, t);
-        if (s->walk_end == t) {
-            wm_stand(s->map);
-            lay_hold(s->map->l, "MoveMario", s->walk_to);
-            s->out_at = t + 30;
+    if (s->phase == P_DONE) return EV_NONE;
+    if (s->map && s->phase == P_KURIBO) {  // the Goombas walk from MoveKuribo frame 60, stand again at 156 / 268 / 174
+        if (t == s->kuribo_walk) {
+            lay_play(s->map->l, KURIBO "/Default", t);
+            lay_play_loop(s->map->l, KURIBO "/Walk", t + (int)lay_length(s->map->l, KURIBO "/Default"));
+            smm1_se(s->d == 0 ? "SE_KuriboAshiotoShort" : "SE_KuriboAshioto");
         }
-        if (s->out_at == t && s->card_start < 0) {
-            lay_play(s->map->l, "Out", t);
-            s->card_start = t + lay_ticks(s->map->l, "Out", 1);
-            schedule_card(s);
+        if (t == s->kuribo_stand) lay_stop(s->map->l, KURIBO "/Walk"), lay_stop(s->map->l, KURIBO "/Default"), lay_hold(s->map->l, KURIBO "/Stand", 0);
+    }
+    if (in->pressed & BT_A) {
+        if (s->map && s->phase < P_GO && s->phase != P_MAPIN) cancel_demo(s);
+        else if (s->map && s->phase == P_MAPIN) {  // during MapIn: MapIn to its end, the following demos cancel too
+            cancel_demo(s);
+        } else if (s->phase >= P_CARD_IN && s->phase <= P_CARD_OUT && s->started) {
+            s->phase = P_DONE;  // (once the course is there A cuts the card short)
+            return EV_DONE;
         }
     }
-    if (in->pressed & BT_A) {  // A skips ahead (the game skips these with A since 1.20)
-        if (s->card_start >= 0 && t >= s->card_start) { s->finished = true; return EV_PLAY; }
-        s->card_start = t;
-        schedule_card(s);
-        return EV_NONE;
+    if (s->end >= 0 && t >= s->end) {
+        if (s->phase == P_WALK && s->map) mario_stand(s->map), lay_hold(s->map->l, "MoveMario", wm_dot_frame(s->map, s->to_dot));
+        if (s->phase == P_CARD_IN) {
+            phase(s, s->started ? P_CARD_OUT : P_CARD_HOLD);
+        } else if (s->phase == P_CARD_OUT) {
+            s->phase = P_DONE;
+            return EV_DONE;
+        } else {
+            phase(s, next_phase(s, s->phase));
+            if (s->phase == P_CARD_IN) return EV_FETCH;  // the card is up: the course may come
+        }
     }
-    int e = card_end(s);
-    if (e >= 0 && t >= e) { s->finished = true; return EV_PLAY; }
     return EV_NONE;
 }
 void intro_draw(Intro *s, LQuads *out) {
     int t = s->tick;
-    if (s->card_start >= 0 && t >= s->card_start) {
+    if (s->phase >= P_CARD_IN) {
         lay_draw(s->card, t, out);
         return;
     }
     if (s->map) lay_draw(s->map->l, t, out);
     if (s->title) lay_draw(s->title, t, out);
+    if (s->phase == P_FADE && s->map) {  // the iris closes on Mario (fader type 7, centred on him [obs]; its speed [inf])
+        float c[2] = {0, 0}, sz[2];
+        bool v;
+        lay_rect(s->map->l, MARIO_PART, c, sz, &v);
+        float k = (float)(s->end - t) / FADE, r = 800 * (k < 0 ? 0 : k);
+        iris(out, c[0], c[1], r);
+    }
 }
 
-// ---------------------------------------------------------------- game over
+// black over everything but a circle of radius r around (cx, cy) (layout units): a generated mask texture (alpha 0
+// inside the circle, 1 outside) on the circle's square, black rectangles around it
+static int iris_texture(void) {
+    static int tex = -2;
+    if (tex != -2) return tex;
+    enum { N = 256 };
+    uint8_t *px = malloc(N * N * 4);
+    for (int y = 0; y < N; y++)
+        for (int x = 0; x < N; x++) {
+            float dx = (x + 0.5f) / N - 0.5f, dy = (y + 0.5f) / N - 0.5f, d = sqrtf(dx * dx + dy * dy) * 2;
+            float a = (d - 0.99f) / 0.01f;
+            uint8_t *p = px + ((size_t)y * N + x) * 4;
+            p[0] = p[1] = p[2] = 255, p[3] = (uint8_t)(a <= 0 ? 0 : a >= 1 ? 255 : a * 255);
+        }
+    return tex = lyt_tex_add(N, N, px);
+}
+static void black_quad(LQuads *out, float x0, float y0, float x1, float y1, int tex) {
+    if (x1 <= x0 || y0 <= y1) return;
+    LQuad q;
+    memset(&q, 0, sizeof q);
+    float p[4][2] = {{x0, y0}, {x1, y0}, {x0, y1}, {x1, y1}}, uv[4][2] = {{0, 0}, {1, 0}, {0, 1}, {1, 1}};
+    memcpy(q.pos, p, sizeof p), memcpy(q.uv0, uv, sizeof uv);
+    memset(q.col, 255, sizeof q.col);
+    q.black[3] = 0, q.white[3] = 255;  // (black, by the texture's alpha)
+    q.tex0 = tex, q.tex1 = -1;
+    q.flags = LQ_LINEAR | LQ_BLEND_NORMAL | LQ_COMB_NONE << LQ_COMB_C | LQ_COMB_NONE << LQ_COMB_A;
+    if (out->n == out->cap) out->cap = out->cap ? out->cap * 2 : 256, out->q = realloc(out->q, sizeof(LQuad) * (size_t)out->cap);
+    out->q[out->n++] = q;
+}
+static void iris(LQuads *out, float cx, float cy, float r) {
+    const float L = -640, R = 640, T = 360, B = -360;
+    black_quad(out, L, T, R, cy + r, -1);           // above
+    black_quad(out, L, cy - r, R, B, -1);           // below
+    black_quad(out, L, cy + r, cx - r, cy - r, -1);  // left
+    black_quad(out, cx + r, cy + r, R, cy - r, -1);  // right
+    if (r > 0) black_quad(out, cx - r, cy + r, cx + r, cy - r, iris_texture());
+}
+
+// ---------------------------------------------------------------- game over (Cmn_GameOver_00, OneTime 320)
 GameOver *gameover_new(void) {
     Lay *l = lay_open("Cmn_GameOver_00");
     if (!l) return NULL;
     GameOver *g = calloc(1, sizeof *g);
     g->l = l;
     lay_play(l, "OneTime", 0);
+    smm1_bgm("M1_GameOver", false);
     return g;
 }
 void gameover_free(GameOver *g) {
@@ -374,9 +555,10 @@ void gameover_free(GameOver *g) {
     free(g);
 }
 int gameover_step(GameOver *g, const UiIn *in) {
+    (void)in;  // (a one-shot layout: it runs to its end)
     g->tick++;
     if (g->done) return EV_NONE;
-    if (g->tick >= lay_ticks(g->l, "OneTime", 60) || (g->tick > 60 && (in->pressed & (BT_A | BT_B)))) {
+    if (g->tick >= lay_ticks(g->l, "OneTime", 60)) {
         g->done = true;
         return EV_BACK;
     }
@@ -390,7 +572,7 @@ enum { W_PAUSE = 1, W_SKIP = 2 };
 
 void ov_init(Overlay *o) {
     memset(o, 0, sizeof *o);
-    o->clear_focus = 1;
+    o->clear_focus = 1, o->card_out_at = -1;
 }
 void ov_free(Overlay *o) {
     lay_free(o->pause), lay_free(o->clear), lay_free(o->skip), lay_free(o->card);
@@ -404,29 +586,34 @@ void ov_draw(Overlay *o, LQuads *out) {
            : o->mode == OV_SKIP ? o->skip : NULL;
     if (l) lay_draw(l, t, out);
 }
-void ov_show_pause(Overlay *o, const char *mode_line, const char *course, const char *maker) {
+// pause type 2 (a 100 Mario course): Type frame 0, TypeCourseInfo frame 1; the title "100 Mario Challenge (n/total)"
+void ov_show_pause(Overlay *o, int cleared, int total, const char *course, const char *maker) {
     if (!o->pause && (o->pause = lay_open("Cmn_PauseMenu_00"))) {
         Lay *p = o->pause;
-        // Type 6: the two play buttons without the network ones; the exit button reads "Save & Quit" [inf]
-        lay_hold(p, "Type", 6);
-        lay_text_from(p, "L_ExitBtn_00/T_Btn_00", "T_ExitBtn_01");
-        lay_hold(p, "TypeCourseInfo", 2);
-        static const char *hide[5] = {"N_NetworkBtn_00", "P_YeahCountIcon_00", "P_PlayerCountIcon_00", "L_NationalFlag_00",
-                                      "L_OptionBtn_00"};
-        for (int i = 0; i < 5; i++) lay_show(p, hide[i], false);
+        lay_hold(p, "Type", 0);
+        lay_hold(p, "TypeCourseInfo", 1);
+        lay_text_from(p, "L_ExitBtn_00/T_Btn_00", "T_ExitBtn_01");  // "Save & Quit"
+        static const char *hide[4] = {"P_YeahCountIcon_00", "P_PlayerCountIcon_00", "L_NationalFlag_00", "L_OptionBtn_00"};
+        for (int i = 0; i < 4; i++) lay_show(p, hide[i], false);
     }
     if (!o->pause) return;
-    lay_text(o->pause, "T_Mode_00", mode_line);
+    const char *args[2] = {NULL, NULL};
+    char a[16], b[16];
+    snprintf(a, sizeof a, "%d", cleared + 1), snprintf(b, sizeof b, "%d", total);
+    args[0] = a, args[1] = b;
+    lay_text_args(o->pause, "T_Mode_00", "T_Mode100Mario_00", args, 2);
     lay_text(o->pause, "T_CourseName_00", course);
     lay_text(o->pause, "T_MiiName_00", maker);
     lay_stop(o->pause, "Out");
     lay_play(o->pause, "In", o->tick);
+    smm1_se("M1_Pose");
     o->closing_which = 0;
     set_mode(o, OV_PAUSE);
     ov_pause_select(o, 0);
 }
 void ov_pause_select(Overlay *o, int i) {
     if (!o->pause) return;
+    if (o->pause_sel != i) smm1_se("SE_BongoCursol");
     o->pause_sel = i;
     for (int k = 0; k < 3; k++) {
         if (k == i) lay_play(o->pause, F("%s/OnOff", PAUSE_PARTS[k]), o->tick);
@@ -440,14 +627,14 @@ void ov_hide_pause(Overlay *o) {
     o->closing_which = W_PAUSE, o->closing_until = o->tick + lay_ticks(o->pause, "Out", 1);
     set_mode(o, OV_NONE);
 }
+// the course clear: ModeType frame 0 (Save & Quit + Next); ClearType frame 1 on the run's last course (Next alone)
 void ov_show_clear(Overlay *o, const char *course, const char *maker, bool last) {
     if (!o->clear) o->clear = lay_open("Play_CourseClear_00");
     Lay *c = o->clear;
     if (!c) return;
     o->clear_last = last;
-    // 100 Mario variant: Save & Quit + Next; ClearType centres Next alone on the run's last course [inf]
-    if (last) lay_hold(c, "ClearType", 1);
-    else lay_hold(c, "ModeType", 0);
+    lay_hold(c, "ModeType", 0);
+    lay_hold(c, "ClearType", last ? 1 : 0);
     static const char *hide[4] = {"N_MiiverseComment_01", "N_RcmText_00", "N_RcmCourseBtn_02", "N_CommentGoodBtn_00"};
     for (int i = 0; i < 4; i++) lay_show(c, hide[i], false);
     lay_show(c, "N_Player_00/L_NF_00", false);
@@ -462,7 +649,9 @@ void ov_show_clear(Overlay *o, const char *course, const char *maker, bool last)
     ov_clear_select(o, 1);
 }
 void ov_clear_select(Overlay *o, int i) {
-    o->clear_focus = o->clear_last ? 1 : (i > 1 ? 1 : i);
+    int f = o->clear_last ? 1 : (i > 1 ? 1 : i < 0 ? 0 : i);
+    if (f != o->clear_focus) smm1_se("SE_nwk_select");
+    o->clear_focus = f;
     if (!o->clear) return;
     static const char *parts[2] = {"L_ExitBtn_00", "L_NextBtn_00"};
     for (int k = 0; k < 2; k++) {
@@ -476,7 +665,9 @@ bool ov_clear_ready(Overlay *o) {
 }
 void ov_press_clear(Overlay *o) {
     if (o->clear) lay_play(o->clear, F("%s/Decide", o->clear_focus == 0 ? "L_ExitBtn_00" : "L_NextBtn_00"), o->tick);
+    smm1_se("SE_nwk_decide");
 }
+// the skip: In (16), then CountDown_00 / 01 / 02 (32 each); at the end of the third the skip fires, then Pass (32)
 void ov_skip_begin(Overlay *o) {
     if (!o->skip) o->skip = lay_open("Play_SlidePassIconKey_00");
     Lay *s = o->skip;
@@ -484,16 +675,24 @@ void ov_skip_begin(Overlay *o) {
     o->closing_which = 0;
     static const char *stop[5] = {"Out", "Pass", "CountDown_00", "CountDown_01", "CountDown_02"};
     for (int i = 0; i < 5; i++) lay_stop(s, stop[i]);
-    lay_play_loop(s, "Default", o->tick);
-    lay_play(s, "In", o->tick);
-    lay_play(s, "CountDown_00", o->tick);
-    lay_play(s, "CountDown_01", o->tick + 32);
-    lay_play(s, "CountDown_02", o->tick + 64);
+    int t = o->tick, in = (int)lay_length(s, "In");
+    lay_play_loop(s, "Default", t);
+    lay_play(s, "In", t);
+    lay_play(s, "CountDown_00", t + in);
+    lay_play(s, "CountDown_01", t + in + 32);
+    lay_play(s, "CountDown_02", t + in + 64);
     set_mode(o, OV_SKIP);
+}
+bool ov_skip_counted(Overlay *o) {
+    if (o->mode != OV_SKIP || !o->skip) return false;
+    int since = o->tick - o->mode_start, in = (int)lay_length(o->skip, "In");
+    if (since == in || since == in + 32 || since == in + 64) smm1_se(since == in + 64 ? "yr_Sys_Cursor_ON_02" : "yr_Sys_Cursor_ON_01");
+    return since >= in + 96;
 }
 void ov_skip_cancel(Overlay *o) {
     if (o->mode != OV_SKIP || !o->skip) return;
     lay_play(o->skip, "Out", o->tick);
+    smm1_se("yr_Sys_Cursor_OFF_01");
     o->closing_which = W_SKIP, o->closing_until = o->tick + lay_ticks(o->skip, "Out", 1);
     set_mode(o, OV_NONE);
 }
@@ -502,19 +701,28 @@ int ov_skip_pass(Overlay *o) {
     lay_play(o->skip, "Pass", o->tick);
     return lay_ticks(o->skip, "Pass", 1);
 }
+// the card after a miss: AnimA at its end, AnimB (70), held until the retry has started, then OutMiss (60)
 void ov_show_card(Overlay *o, const CardInfo *c) {
     if (!o->card) o->card = lay_open("Play_CourseIn100Mario_00");
     if (!o->card) return;
     card_configure(o->card, c);
+    lay_stop(o->card, "OutMiss");
     lay_hold_end(o->card, "AnimA");
     lay_play(o->card, "AnimB", o->tick);
-    lay_play(o->card, "OutMiss", o->tick + (int)lay_length(o->card, "AnimB"));
+    smm1_se("M1_SmallMarioJump");
+    o->card_out_at = -1;
     set_mode(o, OV_CARD);
 }
+void ov_card_started(Overlay *o) {
+    if (o->mode != OV_CARD || !o->card || o->card_out_at >= 0) return;
+    int b = o->mode_start + (int)lay_length(o->card, "AnimB");
+    o->card_out_at = o->tick > b ? o->tick : b;
+    lay_play(o->card, "OutMiss", o->card_out_at);
+}
+bool ov_card_out(Overlay *o) { return o->mode == OV_CARD && o->card_out_at >= 0 && o->tick >= o->card_out_at; }
 bool ov_card_done(Overlay *o) {
     if (o->mode != OV_CARD || !o->card) return true;
-    float om = lay_length(o->card, "OutMiss");
-    return o->tick - o->mode_start >= (int)(lay_length(o->card, "AnimB") + (om > 1 ? om : 1));
+    return o->card_out_at >= 0 && o->tick >= o->card_out_at + (int)lay_length(o->card, "OutMiss");
 }
 void ov_hide(Overlay *o) {
     o->closing_which = 0;
